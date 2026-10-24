@@ -92,6 +92,7 @@
     targetLang: "",
     panelRetry: null,
     panelSpeakText: "",
+    panelCopyText: "",
     speaking: false,
     translating: false,
   };
@@ -568,6 +569,7 @@
     state.panelRetry = null;
     state.panelSpeakText = "";
     panel.hidden = false;
+    setPanelCopyText("");
     panelTitle.textContent = title;
     setPanelLanguage("");
     pickerEl.classList.add("panel-mode");
@@ -590,6 +592,7 @@
     state.panelOpen = false;
     state.panelRetry = null;
     state.panelSpeakText = "";
+    setPanelCopyText("");
     pickerEl.classList.remove("panel-mode");
     scheduleToolbarResize();
   }
@@ -598,6 +601,36 @@
     panelBody.innerHTML = "";
     panelBody.appendChild(node);
     panelBody.scrollTop = 0;
+    syncPanelFoot();
+  }
+
+  function isNearBottom(node) {
+    if (!node) {
+      return true;
+    }
+    return node.scrollHeight - node.scrollTop - node.clientHeight < 40;
+  }
+
+  /* Render model output as Markdown (safe subset, HTML-escaped by the helper). */
+  function renderMarkdownInto(node, text) {
+    if (!node) {
+      return;
+    }
+    node.classList.add("markdown");
+    var value = String(text == null ? "" : text);
+    if (LP.renderMarkdown) {
+      node.innerHTML = LP.renderMarkdown(value);
+    } else {
+      node.textContent = value;
+    }
+  }
+
+  function plainFromMarkdown(text) {
+    return LP.markdownToPlain ? LP.markdownToPlain(text) : String(text == null ? "" : text);
+  }
+
+  function setPanelCopyText(text) {
+    state.panelCopyText = String(text == null ? "" : text);
     syncPanelFoot();
   }
 
@@ -660,6 +693,7 @@
     wrap.appendChild(actions);
     setPanelRetry(retry);
     setPanelSpeakText("");
+    setPanelCopyText("");
     setBody(wrap);
     resizePanelForContent();
   }
@@ -701,11 +735,13 @@
     }
     state.translating = false;
     removeLoadingRow(request);
-    if (!request.result.textContent.trim()) {
+    if (!String(request.raw || "").trim()) {
       failTranslation(request, "翻译服务没有返回结果（可能正在启动或引擎不可用）。");
       return;
     }
-    setPanelSpeakText(request.result.textContent);
+    renderMarkdownInto(request.result, request.raw);
+    setPanelSpeakText(plainFromMarkdown(request.raw));
+    setPanelCopyText(plainFromMarkdown(request.raw));
     resizePanelForContent();
   }
 
@@ -721,9 +757,11 @@
     state.translating = false;
     removeLoadingRow(request);
     var text = friendlyError(message || "翻译失败");
-    if (request.result.textContent.trim()) {
+    if (String(request.raw || "").trim()) {
       appendErrorNote(request.target, text);
-      setPanelSpeakText(request.result.textContent);
+      renderMarkdownInto(request.result, request.raw);
+      setPanelSpeakText(plainFromMarkdown(request.raw));
+      setPanelCopyText(plainFromMarkdown(request.raw));
       resizePanelForContent();
       return;
     }
@@ -737,6 +775,26 @@
     );
   }
 
+  function renderTranslationDraft(request) {
+    if (!request || !request.active || request.renderPending) {
+      return;
+    }
+    request.renderPending = true;
+    window.requestAnimationFrame(function () {
+      request.renderPending = false;
+      if (!request.active) {
+        return;
+      }
+      var stickToBottom = isNearBottom(panelBody);
+      renderMarkdownInto(request.result, request.raw);
+      if (stickToBottom) {
+        panelBody.scrollTop = panelBody.scrollHeight;
+      }
+      setPanelSpeakText(plainFromMarkdown(request.raw));
+      setPanelCopyText(plainFromMarkdown(request.raw));
+    });
+  }
+
   function handleTranslateEvent(event) {
     var request = activeRequest;
     if (!request || !request.active || !event) {
@@ -748,9 +806,8 @@
     if (event.type === "chunk") {
       request.sawContent = true;
       removeLoadingRow(request);
-      request.result.textContent += event.text || "";
-      panelBody.scrollTop = panelBody.scrollHeight;
-      setPanelSpeakText(request.result.textContent);
+      request.raw += event.text || "";
+      renderTranslationDraft(request);
       return;
     }
     if (event.type === "done") {
@@ -784,7 +841,7 @@
     target.appendChild(sourceNode());
     var loadingRow = loadingNode("正在翻译…");
     target.appendChild(loadingRow);
-    var result = el("p", "result-text");
+    var result = el("div", "result-text markdown");
     target.appendChild(result);
     setBody(target);
 
@@ -792,6 +849,8 @@
       id: makeRequestId(),
       target: target,
       result: result,
+      raw: "",
+      renderPending: false,
       loading: loadingRow,
       active: true,
       failed: false,
@@ -865,9 +924,12 @@
       }
       var wrap = el("div");
       wrap.appendChild(sourceNode());
-      wrap.appendChild(el("p", "result-text", resultText));
+      var resultNode = el("div", "result-text markdown");
+      renderMarkdownInto(resultNode, resultText);
+      wrap.appendChild(resultNode);
       setBody(wrap);
-      setPanelSpeakText(resultText);
+      setPanelSpeakText(plainFromMarkdown(resultText));
+      setPanelCopyText(plainFromMarkdown(resultText));
       resizePanelForContent();
     });
   }
@@ -1097,8 +1159,21 @@
     speak(state.panelSpeakText);
   });
   panelCopy.addEventListener("click", function () {
-    var text = state.panelSpeakText || panelBody.textContent || "";
+    var text = state.panelCopyText || state.panelSpeakText || panelBody.textContent || "";
     copyToClipboard(text, "已复制结果", false);
+  });
+  // Markdown links are opened through the shell (https only), never navigated in
+  // the transparent webview.
+  panelBody.addEventListener("click", function (event) {
+    var link = event.target && event.target.closest ? event.target.closest("a[data-external]") : null;
+    if (!link) {
+      return;
+    }
+    event.preventDefault();
+    var href = String(link.getAttribute("href") || "");
+    if (/^https?:\/\//i.test(href)) {
+      API.openExternal(href);
+    }
   });
   panelRetry.addEventListener("click", function () {
     if (typeof state.panelRetry === "function") {

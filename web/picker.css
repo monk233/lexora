@@ -426,6 +426,123 @@ body.is-dragging-panel * {
   white-space: pre-wrap;
 }
 
+/* Markdown rendering inside the result panel. */
+.result-text.markdown {
+  white-space: normal;
+}
+
+.result-text.markdown > :first-child {
+  margin-top: 0;
+}
+
+.result-text.markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.result-text.markdown p {
+  margin: 0 0 8px;
+}
+
+.result-text.markdown h1,
+.result-text.markdown h2,
+.result-text.markdown h3,
+.result-text.markdown h4,
+.result-text.markdown h5,
+.result-text.markdown h6 {
+  margin: 10px 0 6px;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.result-text.markdown h1 {
+  font-size: 16px;
+}
+
+.result-text.markdown h2 {
+  font-size: 15px;
+}
+
+.result-text.markdown ul,
+.result-text.markdown ol {
+  margin: 0 0 8px;
+  padding-left: 20px;
+}
+
+.result-text.markdown li {
+  margin: 2px 0;
+}
+
+.result-text.markdown blockquote {
+  margin: 0 0 8px;
+  padding: 4px 10px;
+  border-left: 3px solid var(--border-strong);
+  color: var(--text-muted);
+}
+
+.result-text.markdown code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--surface-muted);
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+}
+
+.result-text.markdown pre {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-muted);
+  overflow-x: auto;
+}
+
+.result-text.markdown pre code {
+  padding: 0;
+  background: transparent;
+}
+
+.result-text.markdown a {
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.result-text.markdown hr {
+  margin: 10px 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+.result-text.markdown table {
+  width: 100%;
+  margin: 0 0 8px;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.result-text.markdown th,
+.result-text.markdown td {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.result-text.markdown th {
+  background: var(--surface-muted);
+  font-weight: 600;
+}
+
+.result-text.markdown .align-center {
+  text-align: center;
+}
+
+.result-text.markdown .align-right {
+  text-align: right;
+}
+
 .source-label {
   margin: 0 0 4px;
   color: var(--text-faint);
