@@ -37,11 +37,10 @@
 
   /* Toolbar overflow budget (CSS/logical px). Skills that no longer fit are
    * moved into the "more" menu instead of widening (and clipping) the window.
-   * MORE_RESERVED_WIDTH covers the divider + more button (~54px), the two flex
-   * gaps around them and the transparent padding resizeToolbar adds. */
+   * The divider and "more" button are measured during layout, so the budget
+   * below only caps the whole toolbar. */
   var MAX_TOOLBAR_WIDTH = 560;
   var COMPACT_MAX_TOOLBAR_WIDTH = 420;
-  var MORE_RESERVED_WIDTH = 62;
   var TOOLBAR_BUTTON_GAP = 2;
 
   /* Label fallback only: LP.SKILL_MAP is the primary source for built-in
@@ -172,6 +171,9 @@
     /* Skills moved out of the toolbar because they do not fit (in toolbar
      * order); the "more" menu renders them as skill items. */
     overflowSkills: [],
+    /* Safety margin (px) added when a DPI/font-metrics mismatch still clipped
+     * the toolbar after resize; reset for every new picker payload. */
+    overflowBias: 0,
     /* id -> {id, label, icon} for the custom skills enabled in settings. */
     customSkills: {},
     compact: false,
@@ -251,12 +253,35 @@
     if (state.panelOpen || state.menuOpen) {
       return;
     }
+    // Measure without the `max-width:100%` cap: when the window is still at its
+    // previous (narrower) size, the capped rect would under-report the natural
+    // width and resize the window too small — clipping the trailing "more"
+    // button.
+    var previousMaxWidth = toolbar.style.maxWidth;
+    toolbar.style.maxWidth = "none";
     var rect = toolbar.getBoundingClientRect();
-    // Window = card + transparent padding (2px each side); keep it snug so the
-    // transparent area around the card stays minimal. Skills are already
-    // capped to the toolbar budget, so this clamp is only a safety net.
+    toolbar.style.maxWidth = previousMaxWidth;
     var width = Math.min(Math.ceil(rect.width + 4), maxToolbarWidth());
-    API.resize(width, Math.ceil(rect.height + 4));
+    Promise.resolve(API.resize(width, Math.ceil(rect.height + 4))).then(function () {
+      window.requestAnimationFrame(guardToolbarClipping);
+    });
+  }
+
+  /* Safety net: if the window is still narrower than the rendered toolbar (DPI
+   * rounding, font fallbacks), move one more skill into the overflow menu and
+   * re-render. Bounded by `overflowBias` so this can never loop forever. */
+  function guardToolbarClipping() {
+    if (state.panelOpen || state.menuOpen) {
+      return;
+    }
+    if (toolbar.scrollWidth + 4 <= window.innerWidth + 1) {
+      return;
+    }
+    if (state.overflowBias >= 120) {
+      return;
+    }
+    state.overflowBias += 24;
+    renderToolbar();
   }
 
   function scheduleToolbarResize() {
@@ -497,29 +522,52 @@
   function renderToolbar() {
     toolbar.innerHTML = "";
     toolbar.classList.toggle("compact", state.compact);
-    var budget = maxToolbarWidth() - MORE_RESERVED_WIDTH;
     var buttons = state.skills.map(function (skill) {
       return skillButton(skill);
     });
+    var divider = el("span", "divider");
+    var more = el("button", "tool-btn more-btn");
+    more.type = "button";
+    more.title = "更多";
+    more.setAttribute("aria-label", "更多");
+    more.innerHTML = ICONS.more;
+    more.addEventListener("click", function (event) {
+      event.stopPropagation();
+      toggleMenu();
+    });
 
-    // Measure unconstrained: max-content width with no viewport cap. Reading
-    // rect widths forces the layout so buttons keep their natural size while
-    // the window itself is still small.
+    // Measure unconstrained: max-content width with no viewport cap. The window
+    // is typically still at its previous (narrower) size here, so a capped
+    // measurement would under-estimate widths and clip the trailing "more".
     toolbar.style.visibility = "hidden";
     toolbar.style.maxWidth = "none";
     buttons.forEach(function (button) {
       toolbar.appendChild(button);
     });
+    toolbar.appendChild(divider);
+    toolbar.appendChild(more);
+
     // Keep the first skills that fit in toolbar order; everything after the
-    // first overflow moves to the "more" menu as a contiguous block. Raw
-    // fractional widths are used so rounding does not push a button that
-    // actually fits (e.g. the last one) into the menu.
+    // first overflow moves to the "more" menu as a contiguous block. All widths
+    // (buttons, divider, more, toolbar chrome, window padding) are part of the
+    // budget so the "more" button itself can never be clipped.
+    var style = window.getComputedStyle(toolbar);
+    var chrome =
+      4 +
+      (parseFloat(style.paddingLeft) || 0) +
+      (parseFloat(style.paddingRight) || 0) +
+      (parseFloat(style.borderLeftWidth) || 0) +
+      (parseFloat(style.borderRightWidth) || 0);
+    var dividerWidth = divider.getBoundingClientRect().width;
+    var moreWidth = more.getBoundingClientRect().width;
+    var fixed = TOOLBAR_BUTTON_GAP + dividerWidth + TOOLBAR_BUTTON_GAP + moreWidth + chrome;
+    var max = maxToolbarWidth() - (state.overflowBias || 0);
     var used = 0;
     var cutoff = buttons.length;
     for (var index = 0; index < buttons.length; index += 1) {
       var buttonWidth = buttons[index].getBoundingClientRect().width;
       var next = used + (index ? TOOLBAR_BUTTON_GAP : 0) + buttonWidth;
-      if (next > budget) {
+      if (next + fixed > max) {
         cutoff = index;
         break;
       }
@@ -531,18 +579,6 @@
     }
     toolbar.style.maxWidth = "";
     toolbar.style.visibility = "";
-
-    toolbar.appendChild(el("span", "divider"));
-    var more = el("button", "tool-btn more-btn");
-    more.type = "button";
-    more.title = "更多";
-    more.setAttribute("aria-label", "更多");
-    more.innerHTML = ICONS.more;
-    more.addEventListener("click", function (event) {
-      event.stopPropagation();
-      toggleMenu();
-    });
-    toolbar.appendChild(more);
     syncSpeakUi();
     scheduleToolbarResize();
   }
@@ -1631,6 +1667,7 @@
     });
     state.skills = skills.length ? skills : DEFAULT_SKILLS.slice();
     state.compact = config.compact === true;
+    state.overflowBias = 0;
     resetForHidden();
     renderToolbar();
   });

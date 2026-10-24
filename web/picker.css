@@ -79,6 +79,11 @@ body {
   box-shadow: var(--shadow-float);
 }
 
+.toolbar .tool-btn {
+  /* Never let flex shrink a skill button: widths are measured for overflow. */
+  flex: 0 0 auto;
+}
+
 .tool-btn {
   display: inline-flex;
   align-items: center;
