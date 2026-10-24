@@ -268,6 +268,7 @@
           defaultTargetLang: "auto",
           blacklist: ["vscode.exe"],
           maxChars: 5000,
+          prompts: { translate: "", summarize: "", explain: "" },
         },
         provider: {
           mode: "online",
@@ -339,6 +340,14 @@
       download: null,
       picker: { visible: false, pinned: false },
       loginItem: { supported: !portable, enabled: false },
+      promptDefaults: {
+        translate:
+          "You are a professional translation engine. Translate the user's text into {target}. Output only the translation, without explanations, quotes, or the source text.",
+        summarize:
+          "You are a concise Chinese writing assistant. Summarize the user's text in Simplified Chinese and list the key points accurately, without adding anything that is not in the source.",
+        explain:
+          "You are a knowledge assistant. Explain the user's text in Simplified Chinese, covering its meaning, background and key concepts, with short examples when helpful.",
+      },
     };
     refreshMockDerived();
   }
@@ -416,6 +425,12 @@
     });
     picker.blacklist = blacklist;
     picker.maxChars = Math.min(20000, Math.max(100, Number(picker.maxChars) || 5000));
+    var promptStore =
+      picker.prompts && typeof picker.prompts === "object" ? picker.prompts : {};
+    picker.prompts = {};
+    ["translate", "summarize", "explain"].forEach(function (id) {
+      picker.prompts[id] = String(promptStore[id] || "").trim().slice(0, 4000);
+    });
     if (settings.provider.mode !== "local") {
       settings.provider.mode = "online";
     }
@@ -1130,6 +1145,7 @@
           ok: result.ok !== false,
           models: Array.isArray(result.models) ? result.models : [],
           error: result.error || "",
+          hint: result.hint || "",
         };
       });
     },

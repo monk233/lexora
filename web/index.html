@@ -100,11 +100,18 @@
           <div class="field">
             <div class="field-label">
               <label for="online-model">模型名</label>
-              <p class="field-hint">例如 deepseek-chat、gpt-4o-mini、qwen2.5:1.5b</p>
+              <p class="field-hint">从服务端 /models 拉取；也可选「自定义模型…」手动填写</p>
             </div>
             <div class="field-control">
-              <input class="input" id="online-model" type="text" spellcheck="false"
-                     placeholder="deepseek-chat" autocomplete="off">
+              <div class="inline-actions inline-actions-grow">
+                <select class="select" id="online-model"></select>
+                <button type="button" class="btn" id="fetch-online-models">拉取模型</button>
+              </div>
+              <input class="input" id="online-model-custom" type="text" spellcheck="false"
+                     placeholder="deepseek-chat" autocomplete="off"
+                     aria-label="自定义模型名" hidden>
+              <p class="inline-hint" id="online-model-hint" hidden></p>
+              <p class="inline-error" id="online-model-error" hidden></p>
             </div>
           </div>
 
@@ -223,7 +230,7 @@
         <div class="field field-stack">
           <div class="field-label">
             <span class="field-name">工具栏技能</span>
-            <p class="field-hint">勾选要显示在工具栏的技能，使用箭头调整顺序</p>
+            <p class="field-hint">勾选要显示在工具栏的技能，拖动调整顺序</p>
           </div>
           <div class="field-control">
             <ul class="skill-list" id="skill-list"></ul>
@@ -246,7 +253,7 @@
         <div class="field">
           <div class="field-label">
             <label for="default-target-lang">默认目标语言</label>
-            <p class="field-hint">「自动」按原文判断：中文译为英文，其他语言译为中文</p>
+            <p class="field-hint">「自动识别」按原文判断：中文译为英文，其他语言译为中文</p>
           </div>
           <div class="field-control">
             <select class="select" id="default-target-lang"></select>

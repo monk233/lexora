@@ -14,6 +14,8 @@ pub const SKILLS: [&str; 5] = ["translate", "summarize", "explain", "read", "cop
 pub const TARGET_LANGS: [&str; 9] = ["auto", "zh", "en", "ja", "de", "fr", "es", "ru", "ko"];
 pub const DEFAULT_SHORTCUT: &str = "Ctrl+Shift+D";
 pub const MAX_SELECTION_CHARS: u32 = 5000;
+/// Maximum length of a single custom prompt (characters, not bytes).
+const PROMPT_MAX_CHARS: usize = 4_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
@@ -34,6 +36,18 @@ pub struct PickerSettings {
     pub default_target_lang: String,
     pub blacklist: Vec<String>,
     pub max_chars: u32,
+    #[serde(default)]
+    pub prompts: PromptSettings,
+}
+
+/// Per-skill prompt overrides. An empty string means "use the system default";
+/// the defaults are exposed to the UI through `StatePayload::prompt_defaults`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PromptSettings {
+    pub translate: String,
+    pub summarize: String,
+    pub explain: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -95,6 +109,17 @@ impl Default for PickerSettings {
             default_target_lang: "auto".to_string(),
             blacklist: Vec::new(),
             max_chars: MAX_SELECTION_CHARS,
+            prompts: PromptSettings::default(),
+        }
+    }
+}
+
+impl Default for PromptSettings {
+    fn default() -> Self {
+        Self {
+            translate: String::new(),
+            summarize: String::new(),
+            explain: String::new(),
         }
     }
 }
@@ -202,6 +227,11 @@ impl Settings {
         }
         self.picker.blacklist = blacklist;
         self.picker.max_chars = self.picker.max_chars.clamp(100, 20_000);
+        // Custom prompts are user-editable text: trim and cap them so a pasted
+        // document cannot bloat settings.json or every request.
+        self.picker.prompts.translate = truncate(&self.picker.prompts.translate, PROMPT_MAX_CHARS);
+        self.picker.prompts.summarize = truncate(&self.picker.prompts.summarize, PROMPT_MAX_CHARS);
+        self.picker.prompts.explain = truncate(&self.picker.prompts.explain, PROMPT_MAX_CHARS);
 
         self.provider.mode = if self.provider.mode == "local" {
             "local".to_string()
@@ -415,5 +445,67 @@ mod tests {
             .as_object()
             .unwrap()
             .contains_key("unknown"));
+    }
+
+    #[test]
+    fn prompt_overrides_default_to_empty() {
+        let settings = Settings::default().normalize();
+        assert_eq!(settings.picker.prompts, PromptSettings::default());
+        let value = serde_json::to_value(settings).unwrap();
+        assert_eq!(
+            value["picker"]["prompts"],
+            json!({ "translate": "", "summarize": "", "explain": "" })
+        );
+    }
+
+    #[test]
+    fn prompt_overrides_are_trimmed_and_truncated() {
+        let (store, dir) = store();
+        let too_long = "x".repeat(PROMPT_MAX_CHARS + 1);
+        let updated = store
+            .update_json(json!({
+                "picker": {
+                    "prompts": {
+                        "translate": format!("  {too_long}  "),
+                        "summarize": "  用一句话总结  ",
+                        "explain": ""
+                    }
+                }
+            }))
+            .unwrap();
+        assert_eq!(
+            updated.picker.prompts.translate.chars().count(),
+            PROMPT_MAX_CHARS
+        );
+        assert!(!updated.picker.prompts.translate.starts_with(' '));
+        assert_eq!(updated.picker.prompts.summarize, "用一句话总结");
+        assert_eq!(updated.picker.prompts.explain, "");
+        let reloaded = SettingsStore::load(dir.path().join("settings.json"));
+        assert_eq!(
+            reloaded.get().picker.prompts.translate.chars().count(),
+            PROMPT_MAX_CHARS
+        );
+    }
+
+    #[test]
+    fn prompt_overrides_deserialize_from_json() {
+        let settings: Settings = serde_json::from_str(
+            r#"{
+                "picker": {
+                    "prompts": {
+                        "translate": "Translate into {target}.",
+                        "summarize": "Summarize briefly.",
+                        "explain": "Explain simply."
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            settings.picker.prompts.translate,
+            "Translate into {target}."
+        );
+        assert_eq!(settings.picker.prompts.summarize, "Summarize briefly.");
+        assert_eq!(settings.picker.prompts.explain, "Explain simply.");
     }
 }

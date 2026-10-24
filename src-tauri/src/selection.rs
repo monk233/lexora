@@ -62,6 +62,8 @@ pub struct PickerPayload {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TriggerSource {
     Mouse,
+    /// Multi-click (double/triple click) selection, not a drag.
+    Click,
     Hotkey,
 }
 
@@ -69,6 +71,7 @@ impl TriggerSource {
     fn label(self) -> &'static str {
         match self {
             TriggerSource::Mouse => "鼠标拖选",
+            TriggerSource::Click => "鼠标多击选词",
             TriggerSource::Hotkey => "快捷键",
         }
     }
@@ -604,6 +607,13 @@ mod tests {
             start + Duration::from_millis(450),
             DUPLICATE_WINDOW
         ));
+    }
+
+    #[test]
+    fn trigger_sources_have_log_labels() {
+        assert_eq!(TriggerSource::Mouse.label(), "鼠标拖选");
+        assert_eq!(TriggerSource::Click.label(), "鼠标多击选词");
+        assert_eq!(TriggerSource::Hotkey.label(), "快捷键");
     }
 
     #[test]

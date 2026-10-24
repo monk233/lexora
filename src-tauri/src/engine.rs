@@ -33,6 +33,7 @@ mod openai;
 mod prompts;
 
 pub use llama::LocalState;
+pub use prompts::default_prompts;
 
 /// Pinned llama.cpp Windows CPU release used when the user installs the engine.
 /// Verified to exist and to contain `llama-server.exe`; the archive is ~23 MB.
@@ -399,7 +400,8 @@ impl EngineService {
         }
         let truncated = prompts::truncate_chars(cleaned, settings.picker.max_chars as usize);
         let target = prompts::resolve_target_lang(target_lang, &truncated);
-        let (system, user) = prompts::translate_messages(&truncated, &target);
+        let (system, user) =
+            prompts::translate_messages(&truncated, &target, &settings.picker.prompts.translate);
         let messages = vec![
             json!({"role": "system", "content": system}),
             json!({"role": "user", "content": user}),
@@ -425,7 +427,12 @@ impl EngineService {
             ));
         }
         let truncated = prompts::truncate_chars(cleaned, prompts::ASSIST_MAX_CHARS);
-        let (system, user) = prompts::assist_messages(action, &truncated)?;
+        let custom_prompt = match action.trim().to_ascii_lowercase().as_str() {
+            "summarize" | "summary" | "总结" => settings.picker.prompts.summarize.as_str(),
+            "explain" | "解释" => settings.picker.prompts.explain.as_str(),
+            _ => "",
+        };
+        let (system, user) = prompts::assist_messages(action, &truncated, custom_prompt)?;
         let messages = vec![
             json!({"role": "system", "content": system}),
             json!({"role": "user", "content": user}),

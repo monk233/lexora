@@ -15,6 +15,9 @@
 
   var SKILL_IDS = ["translate", "summarize", "explain", "read", "copy"];
   var DEFAULT_SKILLS = SKILL_IDS.slice();
+  /* Skills that expose an editable prompt (read/copy have no model call). */
+  var PROMPT_SKILLS = ["translate", "summarize", "explain"];
+  var CUSTOM_MODEL_VALUE = "__custom__";
 
   var state = null;
   var saveQueue = null;
@@ -26,6 +29,21 @@
   var recording = null;
   var localBusy = false;
   var loginBusy = false;
+
+  /* Online models fetched from /models, cached per baseUrl + apiKey. */
+  var onlineModelCache = {};
+  var customModelMode = false;
+  var onlineModelHint = "";
+  var onlineModelError = "";
+  var fetchModelsBusy = false;
+
+  /* Skill prompt editors: expansion, pending drafts and debounce timers. */
+  var promptExpanded = {};
+  var promptTimers = {};
+  var promptDrafts = {};
+
+  /* Skill id currently being dragged in the toolbar-order list. */
+  var dragSkillId = "";
 
   /* ---- DOM helpers ----------------------------------------------------- */
 
@@ -261,6 +279,9 @@
         save(field.buildPatch());
       }
     });
+    Object.keys(promptDrafts).forEach(function (id) {
+      flushPromptDraft(id);
+    });
   }
 
   /* ---- State loading --------------------------------------------------- */
@@ -363,7 +384,181 @@
     }
     setInputValue(byId("online-base-url"), online.baseUrl || "");
     setInputValue(byId("online-api-key"), online.apiKey || "");
-    setInputValue(byId("online-model"), online.model || "");
+    renderOnlineModelOptions(online);
+  }
+
+  /* ---- Online model list ---------------------------------------------- */
+
+  function onlineModelCacheKey(baseUrl, apiKey) {
+    return String(baseUrl || "") + "\u0000" + String(apiKey || "");
+  }
+
+  function cachedOnlineModels(online) {
+    return onlineModelCache[onlineModelCacheKey(online.baseUrl, online.apiKey)] || [];
+  }
+
+  function cacheOnlineModels(online, models) {
+    var seen = {};
+    var cleaned = [];
+    (models || []).forEach(function (model) {
+      var text = typeof model === "string" ? model.trim() : "";
+      if (text && !seen[text]) {
+        seen[text] = true;
+        cleaned.push(text);
+      }
+    });
+    onlineModelCache[onlineModelCacheKey(online.baseUrl, online.apiKey)] = cleaned;
+    return cleaned;
+  }
+
+  /* Currently selected model: plain option value or the custom input. */
+  function getSelectedModel() {
+    var select = byId("online-model");
+    var value = select ? String(select.value || "") : "";
+    if (value === CUSTOM_MODEL_VALUE) {
+      var custom = byId("online-model-custom");
+      return custom ? String(custom.value || "").trim() : "";
+    }
+    return value;
+  }
+
+  function onlineModelOptions(online) {
+    var models = cachedOnlineModels(online);
+    var saved = String(online.model || "");
+    var seen = {};
+    var options = [];
+    if (!saved && !customModelMode) {
+      options.push({ value: "", label: "（未选择模型）" });
+    }
+    models.forEach(function (model) {
+      seen[model] = true;
+      options.push({ value: model, label: model });
+    });
+    if (!customModelMode && saved && !seen[saved]) {
+      options.push({ value: saved, label: saved + "（当前）" });
+    }
+    options.push({ value: CUSTOM_MODEL_VALUE, label: "自定义模型…" });
+    return options;
+  }
+
+  function renderOnlineModelOptions(online) {
+    var select = byId("online-model");
+    if (!select) {
+      return;
+    }
+    var options = onlineModelOptions(online);
+    var signature = options
+      .map(function (option) {
+        return option.value + "\u0002" + option.label;
+      })
+      .join("\u0001");
+    var desired = customModelMode ? CUSTOM_MODEL_VALUE : String(online.model || "");
+    if (select.getAttribute("data-signature") !== signature) {
+      select.setAttribute("data-signature", signature);
+      fillSelect(select, options);
+      select.value = desired;
+    } else {
+      setSelectValue(select, desired);
+    }
+    var custom = byId("online-model-custom");
+    if (custom) {
+      setHidden(custom, !customModelMode);
+      if (customModelMode) {
+        setInputValue(custom, online.model || "");
+      }
+    }
+    renderOnlineModelFeedback();
+  }
+
+  function renderOnlineModelFeedback() {
+    var hint = byId("online-model-hint");
+    var error = byId("online-model-error");
+    if (hint) {
+      hint.textContent = onlineModelHint;
+      hint.hidden = !onlineModelHint;
+    }
+    if (error) {
+      error.textContent = onlineModelError;
+      error.hidden = !onlineModelError;
+    }
+  }
+
+  function showOnlineModelError(message) {
+    onlineModelHint = "";
+    onlineModelError = String(message || "");
+    renderOnlineModelFeedback();
+  }
+
+  function chooseCustomModel() {
+    var online = state.settings.provider.online || {};
+    var custom = byId("online-model-custom");
+    customModelMode = true;
+    onlineModelError = "";
+    if (custom) {
+      custom.value = String(online.model || "");
+      setHidden(custom, false);
+      custom.focus();
+      custom.select();
+    }
+    renderOnlineModelOptions(online);
+  }
+
+  function selectOnlineModel(value) {
+    if (value === CUSTOM_MODEL_VALUE) {
+      chooseCustomModel();
+      return;
+    }
+    customModelMode = false;
+    onlineModelError = "";
+    renderOnline();
+    save(onlinePatch({ model: value }));
+  }
+
+  function fetchOnlineModels() {
+    if (fetchModelsBusy) {
+      return;
+    }
+    var button = byId("fetch-online-models");
+    var baseUrl = byId("online-base-url").value.trim();
+    var apiKey = byId("online-api-key").value;
+    if (!baseUrl) {
+      showOnlineModelError("请先填写服务地址");
+      return;
+    }
+    if (!/^https?:\/\//i.test(baseUrl)) {
+      showOnlineModelError("服务地址必须以 http:// 或 https:// 开头");
+      return;
+    }
+    fetchModelsBusy = true;
+    onlineModelHint = "";
+    onlineModelError = "";
+    renderOnlineModelFeedback();
+    if (button) {
+      button.disabled = true;
+      button.textContent = "拉取中…";
+    }
+    API.listOnlineModels({ baseUrl: baseUrl, apiKey: apiKey }).then(function (result) {
+      fetchModelsBusy = false;
+      if (button) {
+        button.disabled = false;
+        button.textContent = "拉取模型";
+      }
+      var online = (state && state.settings.provider.online) || {};
+      if (result && result.ok) {
+        var models = cacheOnlineModels(online, result.models);
+        onlineModelError = "";
+        if (models.length) {
+          onlineModelHint = "已加载 " + models.length + " 个模型";
+        } else {
+          onlineModelHint = "服务端没有返回模型，请选择「自定义模型…」手动填写";
+        }
+      } else {
+        onlineModelError = (result && result.error) || "拉取模型失败";
+        onlineModelHint =
+          (result && result.hint) || "可改用「自定义模型…」手动填写模型名";
+      }
+      renderOnlineModelOptions(online);
+    });
   }
 
   function emptyOption(label) {
@@ -711,46 +906,54 @@
     list.setAttribute("data-signature", signature);
     list.innerHTML = "";
     order.forEach(function (id) {
-      list.appendChild(skillRow(id, enabled.indexOf(id) >= 0, enabled.length));
+      list.appendChild(skillRow(id, enabled.indexOf(id) >= 0));
     });
   }
 
-  function skillRow(id, enabled, enabledCount) {
+  function skillRow(id, enabled) {
     var meta = (LP.SKILL_MAP && LP.SKILL_MAP[id]) || { label: id, description: "" };
     var row = el("li", "skill-item" + (enabled ? "" : " is-disabled"));
     row.setAttribute("data-skill", id);
+
+    var line = el("div", "skill-row");
+    if (enabled) {
+      line.setAttribute("draggable", "true");
+    }
+
+    var drag = el("span", "skill-drag");
+    drag.setAttribute("role", "img");
+    drag.setAttribute("aria-label", enabled ? "拖动排序" : "启用后可拖动排序");
+    drag.title = enabled ? "拖动排序" : "启用后可拖动排序";
+    drag.innerHTML =
+      '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' +
+      '<circle cx="9" cy="6" r="1.5"></circle><circle cx="15" cy="6" r="1.5"></circle>' +
+      '<circle cx="9" cy="12" r="1.5"></circle><circle cx="15" cy="12" r="1.5"></circle>' +
+      '<circle cx="9" cy="18" r="1.5"></circle><circle cx="15" cy="18" r="1.5"></circle>' +
+      "</svg>";
+    line.appendChild(drag);
 
     var main = el("div", "skill-main");
     main.appendChild(el("span", "skill-name", meta.label));
     if (meta.description) {
       main.appendChild(el("span", "skill-desc", meta.description));
     }
-    row.appendChild(main);
+    line.appendChild(main);
 
-    var order = el("div", "skill-order");
-    var up = el("button", "order-btn");
-    up.type = "button";
-    up.setAttribute("data-move", "-1");
-    up.setAttribute("aria-label", "上移" + meta.label);
-    up.innerHTML =
-      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 14 6-6 6 6"></path></svg>';
-    var down = el("button", "order-btn");
-    down.type = "button";
-    down.setAttribute("data-move", "1");
-    down.setAttribute("aria-label", "下移" + meta.label);
-    down.innerHTML =
-      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 10 6 6 6-6"></path></svg>';
-    var enabledIndex = enabled
-      ? Array.prototype.indexOf.call(
-          (state.settings.picker.skills || DEFAULT_SKILLS),
-          id
-        )
-      : -1;
-    up.disabled = enabledIndex <= 0;
-    down.disabled = enabledIndex < 0 || enabledIndex >= enabledCount - 1;
-    order.appendChild(up);
-    order.appendChild(down);
-    row.appendChild(order);
+    var editable = PROMPT_SKILLS.indexOf(id) >= 0;
+    if (editable) {
+      var editButton = el("button", "skill-edit");
+      editButton.type = "button";
+      editButton.setAttribute("data-prompt-toggle", id);
+      editButton.setAttribute("aria-label", "编辑提示词");
+      editButton.setAttribute(
+        "aria-expanded",
+        promptExpanded[id] ? "true" : "false"
+      );
+      editButton.title = "编辑提示词";
+      editButton.innerHTML =
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>';
+      line.appendChild(editButton);
+    }
 
     var toggle = el("label", "switch");
     var input = document.createElement("input");
@@ -763,9 +966,253 @@
     track.appendChild(thumb);
     toggle.appendChild(input);
     toggle.appendChild(track);
-    row.appendChild(toggle);
+    line.appendChild(toggle);
 
+    row.appendChild(line);
+
+    if (editable && promptExpanded[id]) {
+      row.appendChild(skillPromptPanel(id, meta));
+    }
     return row;
+  }
+
+  /* ---- Skill prompts --------------------------------------------------- */
+
+  function promptCustomValue(id) {
+    var prompts =
+      (state && state.settings && state.settings.picker && state.settings.picker.prompts) ||
+      {};
+    var value = prompts[id];
+    return typeof value === "string" ? value : "";
+  }
+
+  function promptDefault(id) {
+    var defaults = (state && state.promptDefaults) || {};
+    var value = defaults[id];
+    return typeof value === "string" ? value : "";
+  }
+
+  /* Textarea value: pending draft wins, then custom prompt, then the default. */
+  function promptEditorValue(id) {
+    if (Object.prototype.hasOwnProperty.call(promptDrafts, id)) {
+      return promptDrafts[id];
+    }
+    return promptCustomValue(id) || promptDefault(id);
+  }
+
+  function skillPromptPanel(id, meta) {
+    var panel = el("div", "skill-prompt");
+    var textarea = document.createElement("textarea");
+    textarea.className = "textarea";
+    textarea.rows = 5;
+    textarea.spellcheck = false;
+    textarea.setAttribute("data-prompt-input", id);
+    textarea.setAttribute("aria-label", meta.label + "提示词");
+    textarea.value = promptEditorValue(id);
+    textarea.addEventListener("input", function () {
+      promptDrafts[id] = textarea.value;
+      if (promptTimers[id]) {
+        window.clearTimeout(promptTimers[id]);
+      }
+      promptTimers[id] = window.setTimeout(function () {
+        promptTimers[id] = null;
+        savePromptDraft(id);
+      }, 500);
+    });
+    textarea.addEventListener("blur", function () {
+      flushPromptDraft(id);
+    });
+    textarea.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        textarea.blur();
+      }
+    });
+    panel.appendChild(textarea);
+
+    var foot = el("div", "skill-prompt-foot");
+    foot.appendChild(
+      el(
+        "p",
+        "skill-prompt-hint",
+        "留空或重置后使用系统默认提示词；translate 支持 {target} 占位符"
+      )
+    );
+    var reset = el("button", "btn btn-ghost skill-prompt-reset", "重置为默认");
+    reset.type = "button";
+    reset.setAttribute("data-prompt-reset", id);
+    foot.appendChild(reset);
+    panel.appendChild(foot);
+    return panel;
+  }
+
+  function savePromptDraft(id) {
+    if (!Object.prototype.hasOwnProperty.call(promptDrafts, id)) {
+      return;
+    }
+    var value = promptDrafts[id];
+    delete promptDrafts[id];
+    savePromptValue(id, value);
+  }
+
+  function flushPromptDraft(id) {
+    if (promptTimers[id]) {
+      window.clearTimeout(promptTimers[id]);
+      promptTimers[id] = null;
+    }
+    savePromptDraft(id);
+  }
+
+  function savePromptValue(id, rawValue) {
+    var text = String(rawValue === null || rawValue === undefined ? "" : rawValue);
+    var trimmed = text.trim();
+    var stored = "";
+    if (trimmed && trimmed !== promptDefault(id).trim()) {
+      stored = trimmed;
+    }
+    var patch = { picker: { prompts: {} } };
+    patch.picker.prompts[id] = stored;
+    save(patch);
+  }
+
+  function togglePromptPanel(id) {
+    if (promptExpanded[id]) {
+      flushPromptDraft(id);
+      delete promptExpanded[id];
+    } else {
+      promptExpanded[id] = true;
+    }
+    renderSkills(true);
+  }
+
+  function resetPromptValue(id) {
+    flushPromptDraft(id);
+    savePromptValue(id, "");
+    var list = byId("skill-list");
+    var row = list && list.querySelector('[data-skill="' + id + '"]');
+    var textarea = row && row.querySelector(".skill-prompt .textarea");
+    if (textarea) {
+      textarea.value = promptDefault(id);
+    }
+    toast("已重置为默认提示词", "success");
+  }
+
+  /* ---- Skill drag ordering -------------------------------------------- */
+
+  function enabledSkills() {
+    return Array.isArray(state.settings.picker.skills)
+      ? state.settings.picker.skills.slice()
+      : DEFAULT_SKILLS.slice();
+  }
+
+  function skillItemFromEvent(event) {
+    var target = event.target;
+    if (!target || !target.closest) {
+      return null;
+    }
+    return target.closest(".skill-item");
+  }
+
+  function clearDropMarks() {
+    var list = byId("skill-list");
+    if (!list) {
+      return;
+    }
+    each(list.querySelectorAll(".drop-before, .drop-after"), function (node) {
+      node.classList.remove("drop-before", "drop-after");
+    });
+  }
+
+  function clearDragMarks() {
+    var list = byId("skill-list");
+    dragSkillId = "";
+    if (!list) {
+      return;
+    }
+    clearDropMarks();
+    each(list.querySelectorAll(".is-dragging"), function (node) {
+      node.classList.remove("is-dragging");
+    });
+  }
+
+  function startSkillDrag(event) {
+    var row = skillItemFromEvent(event);
+    var target = event.target;
+    if (!row || row.classList.contains("is-disabled") || !target.closest) {
+      return;
+    }
+    if (target.closest("button, input, label, textarea, .switch, .skill-prompt")) {
+      event.preventDefault();
+      return;
+    }
+    var id = row.getAttribute("data-skill");
+    if (!id) {
+      event.preventDefault();
+      return;
+    }
+    dragSkillId = id;
+    row.classList.add("is-dragging");
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = "move";
+      try {
+        event.dataTransfer.setData("text/plain", id);
+      } catch (ignored) {
+        /* IE-style dataTransfer quirks - order is tracked in memory */
+      }
+    }
+  }
+
+  function overSkillDrop(event) {
+    if (!dragSkillId) {
+      return;
+    }
+    var row = skillItemFromEvent(event);
+    if (!row || row.classList.contains("is-disabled")) {
+      return;
+    }
+    event.preventDefault();
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = "move";
+    }
+    clearDropMarks();
+    if (row.getAttribute("data-skill") === dragSkillId) {
+      return;
+    }
+    var rect = row.getBoundingClientRect();
+    var after = event.clientY > rect.top + rect.height / 2;
+    row.classList.add(after ? "drop-after" : "drop-before");
+  }
+
+  function dropSkill(event) {
+    var row = skillItemFromEvent(event);
+    if (!dragSkillId || !row || row.classList.contains("is-disabled")) {
+      clearDragMarks();
+      return;
+    }
+    event.preventDefault();
+    var targetId = row.getAttribute("data-skill");
+    var after = row.classList.contains("drop-after");
+    var movedId = dragSkillId;
+    clearDragMarks();
+    if (!targetId || targetId === movedId) {
+      return;
+    }
+    var original = enabledSkills();
+    var from = original.indexOf(movedId);
+    if (from < 0) {
+      return;
+    }
+    var next = original.slice();
+    next.splice(from, 1);
+    var to = next.indexOf(targetId);
+    if (to < 0) {
+      return;
+    }
+    next.splice(after ? to + 1 : to, 0, movedId);
+    if (next.join("|") === original.join("|")) {
+      return;
+    }
+    save({ picker: { skills: next } });
   }
 
   function renderBlacklist() {
@@ -886,6 +1333,9 @@
     if (badge) {
       badge.hidden = true;
     }
+    customModelMode = false;
+    onlineModelHint = "";
+    onlineModelError = "";
     save({
       provider: {
         online: {
@@ -904,7 +1354,7 @@
   function testConnection() {
     var baseUrl = byId("online-base-url").value.trim();
     var apiKey = byId("online-api-key").value;
-    var model = byId("online-model").value.trim();
+    var model = getSelectedModel();
     var errorNode = byId("test-error");
     var badge = byId("test-badge");
     var button = byId("test-connection");
@@ -944,6 +1394,13 @@
             badge.textContent = parts.join(" · ");
             setTone(badge, "ok");
           }
+          if (result.models && result.models.length) {
+            var online = (state && state.settings.provider.online) || {};
+            var models = cacheOnlineModels(online, result.models);
+            onlineModelError = "";
+            onlineModelHint = "已加载 " + models.length + " 个模型";
+            renderOnlineModelOptions(online);
+          }
           if (
             result.models &&
             result.models.length &&
@@ -954,8 +1411,7 @@
               errorNode,
               "连接成功，但模型列表中没有「" +
                 model +
-                "」。可用模型：" +
-                result.models.slice(0, 6).join("、")
+                "」。可从模型下拉列表选择其他模型，或继续使用自定义模型。"
             );
           }
         } else {
@@ -1086,23 +1542,6 @@
         return skill !== id;
       });
     }
-    save({ picker: { skills: skills } });
-  }
-
-  function moveSkill(id, delta) {
-    var skills = Array.isArray(state.settings.picker.skills)
-      ? state.settings.picker.skills.slice()
-      : DEFAULT_SKILLS.slice();
-    var index = skills.indexOf(id);
-    if (index < 0) {
-      return;
-    }
-    var next = index + delta;
-    if (next < 0 || next >= skills.length) {
-      return;
-    }
-    var moved = skills.splice(index, 1)[0];
-    skills.splice(next, 0, moved);
     save({ picker: { skills: skills } });
   }
 
@@ -1318,13 +1757,32 @@
     });
 
     bindTextField(byId("online-base-url"), function () {
+      onlineModelHint = "";
+      onlineModelError = "";
       return onlinePatch({ baseUrl: byId("online-base-url").value.trim() });
     });
     bindTextField(byId("online-api-key"), function () {
+      onlineModelHint = "";
+      onlineModelError = "";
       return onlinePatch({ apiKey: byId("online-api-key").value });
     });
-    bindTextField(byId("online-model"), function () {
-      return onlinePatch({ model: byId("online-model").value.trim() });
+    byId("online-model").addEventListener("change", function () {
+      selectOnlineModel(byId("online-model").value);
+    });
+    byId("fetch-online-models").addEventListener("click", fetchOnlineModels);
+    bindTextField(byId("online-model-custom"), function () {
+      return onlinePatch({ model: byId("online-model-custom").value.trim() });
+    });
+    byId("online-model-custom").addEventListener("blur", function () {
+      if (!customModelMode) {
+        return;
+      }
+      var online = (state && state.settings.provider.online) || {};
+      var value = this.value.trim();
+      if (!value || value === String(online.model || "").trim()) {
+        customModelMode = false;
+        renderOnline();
+      }
     });
     byId("api-key-toggle").addEventListener("click", function () {
       var input = byId("online-api-key");
@@ -1405,17 +1863,24 @@
       }
     });
     byId("skill-list").addEventListener("click", function (event) {
-      var button =
-        event.target.closest && event.target.closest("[data-move]");
-      if (!button) {
+      var target = event.target;
+      if (!target.closest) {
         return;
       }
-      var row = button.closest("[data-skill]");
-      if (!row) {
+      var promptToggle = target.closest("[data-prompt-toggle]");
+      if (promptToggle) {
+        togglePromptPanel(promptToggle.getAttribute("data-prompt-toggle"));
         return;
       }
-      moveSkill(row.getAttribute("data-skill"), Number(button.getAttribute("data-move")));
+      var promptReset = target.closest("[data-prompt-reset]");
+      if (promptReset) {
+        resetPromptValue(promptReset.getAttribute("data-prompt-reset"));
+      }
     });
+    byId("skill-list").addEventListener("dragstart", startSkillDrag);
+    byId("skill-list").addEventListener("dragover", overSkillDrop);
+    byId("skill-list").addEventListener("drop", dropSkill);
+    byId("skill-list").addEventListener("dragend", clearDragMarks);
     byId("blacklist-input").addEventListener("keydown", function (event) {
       if (event.key === "Enter") {
         event.preventDefault();

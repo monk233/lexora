@@ -6,7 +6,7 @@
 
 把 `enterprise-ai-translator` 的划词工具抽取为独立开源 Windows 免安装应用 **LingoPick**：
 
-- 完整保留划词体验：拖动选词自动弹出工具栏；翻译（流式）、总结、解释、朗读、复制；结果面板（固定/关闭/目标语言/重试）；菜单（本应用禁用、设置、禁用工具、关闭）；快捷键；应用黑名单；技能配置/排序；紧凑模式；多屏 DPI 定位；面板按内容缩放。
+- 完整保留划词体验：拖动选词、双击/多击选词自动弹出工具栏；翻译（流式）、总结、解释、朗读、复制；结果面板（固定/关闭/目标语言/重试）；菜单（本应用禁用、设置、禁用工具）；快捷键；应用黑名单；技能配置/拖拽排序/提示词编辑；紧凑模式；多屏 DPI 定位；面板按内容缩放。
 - 双模式翻译：**在线**（任意 OpenAI 兼容 `/v1/chat/completions`，含 Ollama/LM Studio）与**本地**（内置 llama.cpp 引擎 = 按需下载，自管理 `llama-server.exe` + 用户下载/导入 GGUF）。
 - 系统托盘后台运行、单实例、可选开机自启；关闭设置窗口进托盘。
 - 免安装：`tauri build --no-bundle` 产出的单 exe（约 5–10MB）+ 可下载引擎/模型；发布资产直接是 exe（不再打 zip）。
@@ -70,9 +70,14 @@ lingopick/
     "shortcut": "Ctrl+Shift+D",          // 仅支持 Ctrl/Shift/Alt + A-Z/0-9/F1-F12
     "skills": ["translate","summarize","explain","read","copy"],
     "compact": false,
-    "defaultTargetLang": "auto",          // auto|zh|en|ja|de|fr|es|ru|ko
+    "defaultTargetLang": "auto",          // auto|zh|en|ja|de|fr|es|ru|ko；auto 显示为「自动识别」
     "blacklist": [],                      // 进程名，可含 .exe
-    "maxChars": 5000
+    "maxChars": 5000,
+    "prompts": {                          // 空字符串 = 使用系统默认提示词
+      "translate": "",
+      "summarize": "",
+      "explain": ""
+    }
   },
   "provider": {
     "mode": "online",                     // online | local
@@ -158,7 +163,12 @@ lingopick/
                 "sizeBytes":1117320736,"license":"Apache-2.0","languages":"多语言","recommended":true,"installed":false} ],
   "download": null,   // 或 DownloadProgress
   "picker": {"visible":false,"pinned":false},
-  "loginItem": {"supported":true,"enabled":false}
+  "loginItem": {"supported":true,"enabled":false},
+  "promptDefaults": {                       // 系统默认提示词，供设置页 textarea 预填
+    "translate": "You are a professional translation engine. Translate the user's text into {target}. ...",
+    "summarize": "You are a concise Chinese writing assistant. ...",
+    "explain": "You are a knowledge assistant. ..."
+  }
 }
 ```
 
@@ -208,11 +218,11 @@ impl EngineService {
 实现要求：
 - 在线：`{baseUrl}/chat/completions`，`stream:true`，SSE `data:` 行解析 `choices[0].delta.content`；非 SSE 响应按 JSON 兜底；超时/取消（abort）支持；错误映射中文 `message+hint`（401/404/429/5xx/网络/超时）。
 - 本地：未安装引擎 → 错误提示「下载 llama.cpp 引擎」；未选模型 → 「下载/导入 GGUF」；启动前选空闲端口（TcpListener 127.0.0.1:0），`llama-server.exe -m <model> --host 127.0.0.1 --port <p> -c <ctxSize> -t <threads> -ngl <gpuLayers> --no-webui`，轮询 `/health` 最长 90s，stderr 写 `logs/llama.log`；进程退出/应用退出要清理；服务就绪后复用在线客户端逻辑。
-- 提示词：
-  - 翻译 system：`你是一名专业的翻译引擎。请把用户提供的文本翻译为目标语言：{target}。只输出译文本身，不要解释、不要加引号、不要输出原文。`
-  - 总结 system：`你是一名中文写作助手。请用简体中文总结用户提供的文本，输出简洁、准确的要点，不要添加与原文无关的内容。`
-  - 解释 system：`你是一名知识助手。请用简体中文解释用户提供的文本，讲清含义、背景和关键概念，必要时举例说明。`
-  - 文本截断：翻译取前 `picker.maxChars`；总结/解释取前 8000 字符。
+- 提示词（系统默认值为英文，用户可在设置里逐个技能自定义，空字符串表示用默认）：
+  - 翻译 system：`You are a professional translation engine. Translate the user's text into {target}. Output only the translation, without explanations, quotes, or the source text.`；`{target}`/`{language}` 替换为英文语言名（Simplified Chinese / English / …），自定义提示词若不含占位符则在末尾追加 `Target language: <name>.`。
+  - 总结 system：`You are a concise Chinese writing assistant. Summarize the user's text in Simplified Chinese and list the key points accurately, without adding anything that is not in the source.`
+  - 解释 system：`You are a knowledge assistant. Explain the user's text in Simplified Chinese, covering its meaning, background and key concepts, with short examples when helpful.`
+  - 文本截断：翻译取前 `picker.maxChars`；总结/解释取前 8000 字符；自定义提示词归一化后最多 4000 字符。
 - 引擎下载：默认 URL `https://github.com/ggml-org/llama.cpp/releases/download/b11851/llama-b11851-bin-win-cpu-x64.zip`（23.1MB，已验证存在），可用 `LINGOPICK_LLAMA_URL` 覆盖；下载到 cache，zip 解压后把包含 `llama-server.exe` 的目录内容平铺到 `engine/`；进度事件 `app.emit("download-progress", ...)`。失败文案给出手动放置说明（解压到 engine 目录）。
 - 模型目录（已验证 URL）：
   | id | 文件 | 大小 | 说明 |
@@ -241,7 +251,10 @@ pub struct SelectionService {
 ```
 
 实现要求：
-- `rdev::listen` 专用线程；回调只做状态判断 + channel send（<300ms）。键盘组合按 `settings.picker.shortcut` 解析（Ctrl/Shift/Alt + 字母/数字/F1-F12），鼠标左键按下记录起点，抬起位移 ≥6 物理像素才触发；同文本 400ms 去重；捕获进行中不重复触发。
+- `rdev::listen` 专用线程；回调只做状态判断 + channel send（<300ms）。键盘组合按 `settings.picker.shortcut` 解析（Ctrl/Shift/Alt + 字母/数字/F1-F12），鼠标左键按下记录起点：
+  - 抬起位移 ≥6 物理像素：拖动选词，触发 `TriggerSource::Mouse`；
+  - 抬起位移 <6 物理像素：按多击处理（与上次释放同点 ±6px 且间隔 ≤ `GetDoubleClickTime()` 时计数 +1），计数 ≥2 时触发 `TriggerSource::Click`，即双击/三击选词也能弹出工具栏；单次点击绝不触发 UIA。
+  - 同文本 400ms 去重；捕获进行中不重复触发。
 - 忽略：`picker.enabled=false`、自身进程（`std::process::id()` 对应 exe 名 `lingopick.exe`）、黑名单进程（大小写/.exe 容错）、空文本、写剪贴板回退关闭（不做回退）。
 - UIA 取词（移植 spike 代码，见 `E:\document\workspace\AIProjects\lingopick-spike\src\main.rs`）：`CoInitializeEx(MTA)` + `CoCreateInstance(CLSID_CUIAutomation8)` + `IUIAutomation2::SetConnectionTimeout(1500)/SetTransactionTimeout(1000)`；`GetFocusedElement` → TextPattern → `GetSelection` → `GetText(8192)`；失败重试 2 次（间隔 150ms）；无 TextPattern 时用 `ElementFromPoint(mouse)` 向上找最多 6 层；**每次取词在独立线程执行，recv_timeout(1500ms) 看门狗，超时放弃该线程（不 join）并返回失败**。
 - 锚点：鼠标物理坐标（释放点）；`scale_factor` 用 `win32::monitor_scale_factor(anchor_x, anchor_y)`；`config` 来自 settings 的 skills/compact/defaultTargetLang；随后调用 `crate::windows::show_picker(&app, &payload)`，并更新 `last_selection`。
@@ -278,6 +291,7 @@ pub struct SelectionService {
 
 ### 7.1 picker（复刻现有 UI）
 - 从 `enterprise-ai-translator/electron/picker.html|picker.css|picker.js` 复制并改造：保留白主题工具栏、图标+文字、更多菜单、结果面板（标题/固定/关闭/语言选择）、loading 原文、流式译文、面板脚（朗读/复制/重试）、错误面板、toast、Escape 层级、面板固定、内容自适应。
+- 更多菜单只保留「在此应用中禁用」「划词设置…」「禁用划词工具」三项；不显示翻译服务状态块，也没有「关闭」项。
 - API 层换成 `web/shared/tauri-api.js`：
   - 实现 `window.pickerAPI`：`ready/onData/onHidden/close/pin/resize/copy/openSettings/translate/abortTranslate/onTranslateEvent/assist/status/disableInApp/disableTool` 映射到 §5.2 命令与 §5.3 事件（`listen` 返回 unlisten）。
   - 翻译：`invoke("picker_translate", {requestId,text,targetLang})` 返回错误时展示错误面板；`translate-event` 处理 chunk/error/done。
@@ -289,9 +303,9 @@ pub struct SelectionService {
 - 单窗口、原生标题栏、单页四张卡片（无侧栏/标签页）：**翻译服务**、**划词行为**、**应用与启动**、**关于**。
 - 翻译服务：
   - 分段控件「在线 API / 本地模型」立即保存 mode。
-  - 在线：预设下拉（DeepSeek/OpenAI/Moonshot/智谱/Ollama/LM Studio/自定义，切换填默认 baseUrl/model）、服务地址、API Key（password + 显示切换）、模型名、[测试连接]（显示延迟/模型列表/错误）、状态徽标。
+  - 在线：预设下拉（DeepSeek/OpenAI/Moonshot/智谱/Ollama/LM Studio/自定义，切换填默认 baseUrl/model）、服务地址、API Key（password + 显示切换）、模型名下拉（[拉取模型] 通过 `list_online_models` 拉取 `/models`，并保留「自定义模型…」手填兜底）、[测试连接]（显示延迟/模型列表/错误）、状态徽标。
   - 本地：引擎状态（未安装→[下载引擎]，显示进度/取消；已安装→版本状态）、模型下拉（已安装）、[下载模型]（弹目录列表：名称/大小/量化/协议/推荐标记/下载按钮+进度）、[导入 GGUF]、[启动]/[停止]、当前状态徽标与错误提示。
-- 划词行为：启用开关、快捷键录制框（按下组合键显示 `Ctrl+Shift+D`，Esc 取消）、技能开关+顺序（上下移动）、紧凑模式、默认目标语言、黑名单 chip 输入（回车添加/可删除）。
+- 划词行为：启用开关、快捷键录制框（按下组合键显示 `Ctrl+Shift+D`，Esc 取消）、技能开关 + 拖拽排序（无上下箭头）、技能提示词编辑（行内展开 textarea，默认填充系统默认英文提示词，支持重置默认；translate 支持 `{target}` 占位符）、紧凑模式、默认目标语言（auto 显示「自动识别」）、黑名单 chip 输入（回车添加/可删除）。
 - 应用与启动：开机自启（portable 不支持时置灰说明）、关闭窗口后驻留托盘、打开数据/模型/日志/引擎目录、退出程序。
 - 关于：版本、Tauri/Rust 版本、MIT、GitHub 链接、引擎与模型状态。
 - 交互：改动即自动保存（文本 500ms 防抖），顶部短暂「已保存」；错误内联不弹模态；下载进度实时更新。
@@ -302,7 +316,9 @@ pub struct SelectionService {
 
 - `cargo test`（设置、SSE、catalog、日志脱敏等纯函数）通过。
 - `cargo check` 无错误；`npx tauri build --debug --no-bundle` 产出 exe。
-- 启动 exe：静默启动、托盘出现、不弹窗口；`--show` 才显示设置；快捷键/拖选在某应用触发 picker；picker 菜单/面板/固定/关闭可用。
+- 启动 exe：静默启动、托盘出现、不弹窗口；`--show` 才显示设置；快捷键/拖选/双击选词在某应用触发 picker；picker 菜单/面板/固定可用（菜单不含服务状态与关闭项）。
+- 设置页：在线模型可按 `/models` 拉取并下拉选择；技能可拖拽排序；技能提示词可编辑与重置（默认英文）；默认目标语言显示「自动识别」。
+- 提示词生效：自定义提示词保存后，下一次翻译/总结/解释请求使用自定义 system prompt；空值回退系统默认。
 - 在线模式：填 mock/真实 OpenAI 兼容服务后「测试连接」成功；picker 翻译流式显示。
 - 本地模式：安装引擎 + 下载/导入 Qwen2.5 GGUF 后启动成功，翻译流式返回；总结/解释可用。
 - 构建 release：`scripts/build-portable.ps1` 产出单个 `dist/LingoPick-<version>-win-x64.exe`；双击运行后静默驻留托盘，数据写入 exe 同级 data/；Release 正文由 `scripts/release-notes.ps1` 生成排版化 changelog。

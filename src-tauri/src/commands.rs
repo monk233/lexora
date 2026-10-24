@@ -47,6 +47,8 @@ pub struct AppInfo {
 pub struct StatePayload {
     pub app: AppInfo,
     pub settings: Settings,
+    /// Built-in English default prompts for the skill customization UI.
+    pub prompt_defaults: serde_json::Value,
     pub engine: EngineStatus,
     pub models: Vec<ModelInfo>,
     pub catalog: Vec<CatalogEntry>,
@@ -97,6 +99,7 @@ pub fn build_state(app: &AppHandle, state: &AppState) -> StatePayload {
             license: "MIT".to_string(),
         },
         settings,
+        prompt_defaults: crate::engine::default_prompts(),
         engine: state.engine.status(),
         models: state.engine.installed_models(),
         catalog: state.engine.catalog(),

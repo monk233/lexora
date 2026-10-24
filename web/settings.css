@@ -93,7 +93,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font-family: inherit;
 }
 
@@ -392,6 +393,34 @@ select {
   background: var(--surface-muted);
   color: var(--text-faint);
   cursor: default;
+}
+
+.textarea {
+  width: 100%;
+  min-height: 96px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.55;
+  resize: vertical;
+  outline: none;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.textarea::placeholder {
+  color: var(--text-faint);
+}
+
+.textarea:hover {
+  border-color: var(--text-faint);
+}
+
+.textarea:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-ring);
 }
 
 .input-group {
@@ -884,13 +913,11 @@ select {
 }
 
 .skill-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 10px 8px 12px;
+  position: relative;
   border: 1px solid var(--border);
   border-radius: 9px;
   background: var(--surface);
+  transition: border-color 120ms ease, opacity 120ms ease;
 }
 
 .skill-item.is-disabled {
@@ -900,6 +927,64 @@ select {
 .skill-item.is-disabled .skill-name,
 .skill-item.is-disabled .skill-desc {
   color: var(--text-faint);
+}
+
+.skill-item.is-dragging {
+  border-style: dashed;
+  border-color: var(--primary);
+  opacity: 0.6;
+}
+
+.skill-item.drop-before::before,
+.skill-item.drop-after::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--primary);
+}
+
+.skill-item.drop-before::before {
+  top: -4px;
+}
+
+.skill-item.drop-after::after {
+  bottom: -4px;
+}
+
+.skill-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px 7px 6px;
+}
+
+.skill-drag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 30px;
+  border-radius: 6px;
+  color: var(--text-faint);
+  cursor: grab;
+}
+
+.skill-drag svg {
+  width: 14px;
+  height: 14px;
+}
+
+.skill-drag:active {
+  cursor: grabbing;
+}
+
+.skill-item.is-disabled .skill-drag {
+  opacity: 0.35;
+  cursor: default;
 }
 
 .skill-main {
@@ -924,16 +1009,11 @@ select {
   white-space: nowrap;
 }
 
-.skill-order {
-  display: flex;
-  gap: 2px;
-  flex: 0 0 auto;
-}
-
-.order-btn {
+.skill-edit {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex: 0 0 auto;
   width: 30px;
   height: 30px;
   padding: 0;
@@ -944,24 +1024,57 @@ select {
   cursor: pointer;
 }
 
-.order-btn svg {
+.skill-edit svg {
   width: 15px;
   height: 15px;
 }
 
-.order-btn:hover:not(:disabled) {
+.skill-edit:hover {
   background: var(--surface-hover);
   color: var(--text);
 }
 
-.order-btn:focus-visible {
+.skill-edit[aria-expanded="true"] {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.skill-edit:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 1px;
 }
 
-.order-btn:disabled {
-  opacity: 0.3;
-  cursor: default;
+.skill-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 10px 10px 40px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-muted);
+}
+
+.skill-prompt-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.skill-prompt-hint {
+  flex: 1 1 240px;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.skill-prompt-reset {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
 }
 
 /* ---- Chips -------------------------------------------------------------- */
@@ -1182,7 +1295,9 @@ select {
   .switch-track,
   .switch-thumb,
   .progress-fill,
-  .shortcut-input {
+  .shortcut-input,
+  .textarea,
+  .skill-item {
     transition: none;
   }
 }

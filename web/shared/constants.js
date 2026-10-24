@@ -71,9 +71,7 @@
     LP.LANG_LABELS[language.value] = language.label;
   });
 
-  LP.TARGET_LANGS = [{ value: "auto", label: "自动（中文→英文，其他→中文）" }].concat(
-    LP.LANGUAGES
-  );
+  LP.TARGET_LANGS = [{ value: "auto", label: "自动识别" }].concat(LP.LANGUAGES);
 
   /* ---- Online provider presets ---------------------------------------- */
 

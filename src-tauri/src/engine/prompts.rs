@@ -2,41 +2,41 @@
 //!
 //! Everything here is pure: the shell passes user text and a target language
 //! code, and gets back the exact `messages` array that is sent to the model.
-//! Tests in this module keep the prompt wording and truncation rules locked to
-//! the engineering contract (`docs/contracts.md` §6.1).
+//! Each skill prompt can be overridden by the user (`settings.picker.prompts`):
+//! an empty custom prompt falls back to the built-in English default, and
+//! custom translation prompts may use `{target}` / `{language}` placeholders.
+//! Tests in this module keep the prompt wording, placeholder rules and
+//! truncation rules locked to the engineering contract (`docs/contracts.md` §6.1).
 
 use crate::engine::EngineError;
 
 /// Free-form summary/explanation prompts get this much input at most.
 pub const ASSIST_MAX_CHARS: usize = 8_000;
 
-/// System prompt for translation. `{target}` is replaced by a language name.
-pub const TRANSLATE_SYSTEM_PREFIX: &str =
-    "你是一名专业的翻译引擎。请把用户提供的文本翻译为目标语言：";
-pub const TRANSLATE_SYSTEM_SUFFIX: &str = "。只输出译文本身，不要解释、不要加引号、不要输出原文。";
+/// Built-in English default prompts. `{target}` and `{language}` are replaced
+/// by the target language name; the same rule applies to custom prompts.
+pub const DEFAULT_TRANSLATE_PROMPT: &str = "You are a professional translation engine. Translate the user's text into {target}. Output only the translation, without explanations, quotes, or the source text.";
 
-pub const SUMMARIZE_SYSTEM: &str =
-    "你是一名中文写作助手。请用简体中文总结用户提供的文本，输出简洁、准确的要点，不要添加与原文无关的内容。";
+pub const DEFAULT_SUMMARIZE_PROMPT: &str = "You are a concise Chinese writing assistant. Summarize the user's text in Simplified Chinese and list the key points accurately, without adding anything that is not in the source.";
 
-pub const EXPLAIN_SYSTEM: &str =
-    "你是一名知识助手。请用简体中文解释用户提供的文本，讲清含义、背景和关键概念，必要时举例说明。";
+pub const DEFAULT_EXPLAIN_PROMPT: &str = "You are a knowledge assistant. Explain the user's text in Simplified Chinese, covering its meaning, background and key concepts, with short examples when helpful.";
 
-/// Maps a language code to the Chinese name used inside prompts.
+/// Maps a language code to the English name used inside prompts.
 pub fn language_name(code: &str) -> String {
     match code.trim().to_ascii_lowercase().as_str() {
-        "zh" | "zh-cn" | "zh-hans" => "简体中文".to_string(),
-        "en" | "en-us" | "en-gb" => "英语".to_string(),
-        "ja" => "日语".to_string(),
-        "de" => "德语".to_string(),
-        "fr" => "法语".to_string(),
-        "es" => "西班牙语".to_string(),
-        "ru" => "俄语".to_string(),
-        "ko" => "韩语".to_string(),
+        "zh" | "zh-cn" | "zh-hans" => "Simplified Chinese".to_string(),
+        "en" | "en-us" | "en-gb" => "English".to_string(),
+        "ja" => "Japanese".to_string(),
+        "de" => "German".to_string(),
+        "fr" => "French".to_string(),
+        "es" => "Spanish".to_string(),
+        "ru" => "Russian".to_string(),
+        "ko" => "Korean".to_string(),
         // Unknown codes are handed to the model as-is; it usually understands
         // BCP-47 tags and this keeps custom targets working without a schema
         // change.
         other if !other.is_empty() => other.to_string(),
-        _ => "简体中文".to_string(),
+        _ => "Simplified Chinese".to_string(),
     }
 }
 
@@ -84,17 +84,39 @@ pub fn truncate_chars(text: &str, max_chars: usize) -> String {
 }
 
 /// Builds the chat messages for a translation request.
-pub fn translate_messages(text: &str, target_lang: &str) -> (String, String) {
+///
+/// `custom_prompt` is trimmed first; when it is empty the built-in English
+/// default is used. `{target}` / `{language}` are replaced with the target
+/// language name; a custom prompt without any placeholder gets an explicit
+/// `Target language: ...` suffix so the target still takes effect.
+pub fn translate_messages(text: &str, target_lang: &str, custom_prompt: &str) -> (String, String) {
     let language = language_name(target_lang);
-    let system = format!("{TRANSLATE_SYSTEM_PREFIX}{language}{TRANSLATE_SYSTEM_SUFFIX}");
+    let custom_prompt = custom_prompt.trim();
+    let template = if custom_prompt.is_empty() {
+        DEFAULT_TRANSLATE_PROMPT
+    } else {
+        custom_prompt
+    };
+    let has_placeholder = template.contains("{target}") || template.contains("{language}");
+    let mut system = template
+        .replace("{target}", &language)
+        .replace("{language}", &language);
+    if !has_placeholder {
+        system.push_str(&format!("\n\nTarget language: {language}."));
+    }
     (system, text.to_string())
 }
 
-/// Builds the chat messages for a `summarize` / `explain` request.
-pub fn assist_messages(action: &str, text: &str) -> Result<(String, String), EngineError> {
-    let system = match action.trim().to_ascii_lowercase().as_str() {
-        "summarize" | "summary" | "总结" => SUMMARIZE_SYSTEM,
-        "explain" | "解释" => EXPLAIN_SYSTEM,
+/// Builds the chat messages for a `summarize` / `explain` request. A non-empty
+/// `custom_prompt` replaces the built-in default for that action completely.
+pub fn assist_messages(
+    action: &str,
+    text: &str,
+    custom_prompt: &str,
+) -> Result<(String, String), EngineError> {
+    let default_prompt = match action.trim().to_ascii_lowercase().as_str() {
+        "summarize" | "summary" | "总结" => DEFAULT_SUMMARIZE_PROMPT,
+        "explain" | "解释" => DEFAULT_EXPLAIN_PROMPT,
         _ => {
             return Err(EngineError::new(
                 "不支持的技能操作。",
@@ -102,7 +124,22 @@ pub fn assist_messages(action: &str, text: &str) -> Result<(String, String), Eng
             ))
         }
     };
+    let custom_prompt = custom_prompt.trim();
+    let system = if custom_prompt.is_empty() {
+        default_prompt
+    } else {
+        custom_prompt
+    };
     Ok((system.to_string(), text.to_string()))
+}
+
+/// System default prompts exposed to the settings UI (`promptDefaults`).
+pub fn default_prompts() -> serde_json::Value {
+    serde_json::json!({
+        "translate": DEFAULT_TRANSLATE_PROMPT,
+        "summarize": DEFAULT_SUMMARIZE_PROMPT,
+        "explain": DEFAULT_EXPLAIN_PROMPT,
+    })
 }
 
 #[cfg(test)]
@@ -111,14 +148,21 @@ mod tests {
 
     #[test]
     fn language_names_cover_all_supported_codes() {
-        for code in ["zh", "en", "ja", "de", "fr", "es", "ru", "ko"] {
-            let name = language_name(code);
-            assert!(!name.is_empty(), "empty name for {code}");
-            assert_ne!(name, code, "code {code} should map to a Chinese name");
+        for (code, name) in [
+            ("zh", "Simplified Chinese"),
+            ("en", "English"),
+            ("ja", "Japanese"),
+            ("de", "German"),
+            ("fr", "French"),
+            ("es", "Spanish"),
+            ("ru", "Russian"),
+            ("ko", "Korean"),
+        ] {
+            assert_eq!(language_name(code), name, "wrong name for {code}");
         }
-        assert_eq!(language_name("ZH"), "简体中文");
+        assert_eq!(language_name("ZH"), "Simplified Chinese");
         assert_eq!(language_name("自定义"), "自定义");
-        assert_eq!(language_name(""), "简体中文");
+        assert_eq!(language_name(""), "Simplified Chinese");
     }
 
     #[test]
@@ -153,22 +197,80 @@ mod tests {
     }
 
     #[test]
-    fn translate_prompt_matches_contract() {
-        let (system, user) = translate_messages("hello", "zh");
+    fn default_prompts_are_english_and_match_constants() {
+        assert!(DEFAULT_TRANSLATE_PROMPT.starts_with("You are"));
+        assert!(DEFAULT_TRANSLATE_PROMPT.contains("{target}"));
+        assert!(DEFAULT_SUMMARIZE_PROMPT.starts_with("You are"));
+        assert!(DEFAULT_SUMMARIZE_PROMPT.contains("Simplified Chinese"));
+        assert!(DEFAULT_EXPLAIN_PROMPT.starts_with("You are"));
+        assert!(DEFAULT_EXPLAIN_PROMPT.contains("Simplified Chinese"));
+
+        let (system, user) = translate_messages("hello", "zh", "");
         assert_eq!(
             system,
-            "你是一名专业的翻译引擎。请把用户提供的文本翻译为目标语言：简体中文。只输出译文本身，不要解释、不要加引号、不要输出原文。"
+            DEFAULT_TRANSLATE_PROMPT.replace("{target}", "Simplified Chinese")
         );
         assert_eq!(user, "hello");
+
+        let (summarize, _) = assist_messages("summarize", "text", "").unwrap();
+        assert_eq!(summarize, DEFAULT_SUMMARIZE_PROMPT);
+        let (explain, _) = assist_messages("explain", "text", "").unwrap();
+        assert_eq!(explain, DEFAULT_EXPLAIN_PROMPT);
     }
 
     #[test]
-    fn assist_prompts_match_contract() {
-        let (summarize, _) = assist_messages("summarize", "text").unwrap();
-        assert_eq!(summarize, SUMMARIZE_SYSTEM);
-        let (explain, _) = assist_messages("explain", "text").unwrap();
-        assert_eq!(explain, EXPLAIN_SYSTEM);
-        assert!(assist_messages("read", "text").is_err());
+    fn default_prompts_json_exposes_the_constants() {
+        let defaults = default_prompts();
+        assert_eq!(defaults["translate"], DEFAULT_TRANSLATE_PROMPT);
+        assert_eq!(defaults["summarize"], DEFAULT_SUMMARIZE_PROMPT);
+        assert_eq!(defaults["explain"], DEFAULT_EXPLAIN_PROMPT);
+        assert_eq!(defaults.as_object().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn custom_prompts_override_defaults() {
+        let (translated, _) = translate_messages("hello", "en", "  Translate to {target} only.  ");
+        assert_eq!(translated, "Translate to English only.");
+
+        let (summarized, _) =
+            assist_messages("summarize", "text", "  Be extremely brief.  ").unwrap();
+        assert_eq!(summarized, "Be extremely brief.");
+        let (explained, _) = assist_messages("explain", "text", "Explain like a teacher.").unwrap();
+        assert_eq!(explained, "Explain like a teacher.");
+    }
+
+    #[test]
+    fn translate_custom_prompt_replaces_placeholders() {
+        let (system, _) = translate_messages(
+            "hello",
+            "ja",
+            "Translate into {target}. Reply in {language} only.",
+        );
+        assert_eq!(system, "Translate into Japanese. Reply in Japanese only.");
+        // 有占位符时不再追加目标语言，避免重复。
+        assert!(!system.contains("Target language:"));
+    }
+
+    #[test]
+    fn translate_custom_prompt_without_placeholder_appends_target_language() {
+        let (system, _) = translate_messages("hello", "de", "Translate only.");
+        assert_eq!(system, "Translate only.\n\nTarget language: German.");
+    }
+
+    #[test]
+    fn assist_actions_cover_aliases_and_reject_read() {
+        for action in ["summarize", "summary", "总结"] {
+            let (system, _) = assist_messages(action, "text", "").unwrap();
+            assert_eq!(
+                system, DEFAULT_SUMMARIZE_PROMPT,
+                "wrong prompt for {action}"
+            );
+        }
+        for action in ["explain", "解释"] {
+            let (system, _) = assist_messages(action, "text", "").unwrap();
+            assert_eq!(system, DEFAULT_EXPLAIN_PROMPT, "wrong prompt for {action}");
+        }
+        assert!(assist_messages("read", "text", "").is_err());
     }
 
     #[test]

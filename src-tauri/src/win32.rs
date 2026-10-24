@@ -4,11 +4,14 @@
 //! and the low-level input hooks report. Tauri window positions are logical
 //! pixels, so callers divide by the monitor scale factor.
 
+use std::time::Duration;
+
 use windows::Win32::Foundation::POINT;
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromPoint, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+use windows::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime;
 use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
 #[derive(Debug, Clone, Copy)]
@@ -34,6 +37,14 @@ pub fn cursor_physical() -> (i32, i32) {
         let _ = GetCursorPos(&mut point);
     }
     (point.x, point.y)
+}
+
+/// Maximum interval between two clicks of a double click (system setting).
+///
+/// `GetDoubleClickTime` has no documented failure mode and is cheap enough to
+/// call from the low-level hook callback; no UIA or blocking work is involved.
+pub fn double_click_time() -> Duration {
+    Duration::from_millis(u64::from(unsafe { GetDoubleClickTime() }))
 }
 
 fn monitor_from_point(x: i32, y: i32) -> HMONITOR {
