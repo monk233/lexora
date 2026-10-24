@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-//! LingoPick — Windows selection translator.
+//! Lexora — Windows selection translator.
 //!
 //! A tray-resident Tauri app: global input hooks detect text selections, UI
 //! Automation reads the selected text, a transparent always-on-top webview shows
@@ -55,7 +55,7 @@ fn main() {
             let paths = paths::AppPaths::resolve();
             let log = logger::Logger::new(&paths.logs_dir, "main");
             log.info(&format!(
-                "=== LingoPick {} starting (os={}, exe={:?}, args={:?}) ===",
+                "=== Lexora {} starting (os={}, exe={:?}, args={:?}) ===",
                 env!("CARGO_PKG_VERSION"),
                 std::env::consts::OS,
                 std::env::current_exe().ok(),
@@ -156,6 +156,7 @@ fn main() {
             commands::picker_copy,
             commands::picker_open_settings,
             commands::picker_translate,
+            commands::picker_custom_skill,
             commands::picker_abort_translate,
             commands::picker_assist,
             commands::picker_status,
@@ -163,7 +164,7 @@ fn main() {
             commands::picker_disable_tool
         ])
         .build(tauri::generate_context!())
-        .expect("error while building LingoPick");
+        .expect("error while building Lexora");
 
     app.run(|app_handle, event| match event {
         RunEvent::ExitRequested { .. } => cleanup(app_handle),
@@ -252,19 +253,19 @@ mod tests {
 
     #[test]
     fn double_click_launch_stays_silent() {
-        assert!(!wants_settings_window(&args(&["lingopick.exe"])));
+        assert!(!wants_settings_window(&args(&["lexora.exe"])));
         assert!(!wants_settings_window(&args(&[
-            "lingopick.exe",
+            "lexora.exe",
             "--autostart"
         ])));
     }
 
     #[test]
     fn show_flag_opens_settings() {
-        assert!(wants_settings_window(&args(&["lingopick.exe", "--show"])));
+        assert!(wants_settings_window(&args(&["lexora.exe", "--show"])));
         assert!(wants_settings_window(&args(&["--show", "--autostart"])));
         assert!(!wants_settings_window(&args(&[
-            "lingopick.exe",
+            "lexora.exe",
             "--show-all"
         ])));
     }
@@ -272,9 +273,9 @@ mod tests {
     #[test]
     fn autostart_flag_is_detected() {
         assert!(is_autostart_launch(&args(&[
-            "lingopick.exe",
+            "lexora.exe",
             "--autostart"
         ])));
-        assert!(!is_autostart_launch(&args(&["lingopick.exe", "--show"])));
+        assert!(!is_autostart_launch(&args(&["lexora.exe", "--show"])));
     }
 }

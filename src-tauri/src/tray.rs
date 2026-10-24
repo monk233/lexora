@@ -20,12 +20,12 @@ use tauri::{AppHandle, Emitter, Manager, Wry};
 
 use crate::state::AppState;
 
-pub const TRAY_ID: &str = "lingopick-tray";
+pub const TRAY_ID: &str = "lexora-tray";
 
-const MENU_SHOW_SETTINGS: &str = "lingopick:show-settings";
-const MENU_TOGGLE_PICKER: &str = "lingopick:toggle-picker";
-const MENU_TOGGLE_LOCAL: &str = "lingopick:toggle-local";
-const MENU_QUIT: &str = "lingopick:quit";
+const MENU_SHOW_SETTINGS: &str = "lexora:show-settings";
+const MENU_TOGGLE_PICKER: &str = "lexora:toggle-picker";
+const MENU_TOGGLE_LOCAL: &str = "lexora:toggle-local";
+const MENU_QUIT: &str = "lexora:quit";
 
 /// Creates the tray icon. Called once from the Tauri `setup` hook.
 pub fn setup(app: &tauri::App) -> tauri::Result<()> {
@@ -37,7 +37,7 @@ pub fn setup(app: &tauri::App) -> tauri::Result<()> {
 
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon)
-        .tooltip("LingoPick — 划词翻译")
+        .tooltip("Lexora — 划词翻译")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| {
@@ -105,7 +105,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     };
     let toggle_local = MenuItem::with_id(app, MENU_TOGGLE_LOCAL, local_label, true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
-    let quit = MenuItem::with_id(app, MENU_QUIT, "退出 LingoPick", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, MENU_QUIT, "退出 Lexora", true, None::<&str>)?;
 
     Menu::with_items(
         app,

@@ -4,8 +4,8 @@
  *
  * Requires a llama.cpp engine and at least one GGUF model in the model dir, e.g.:
  *
- *   $env:LINGOPICK_LLAMA_DIR = "E:\...\enterprise-ai-translator\vendor\llama"
- *   $env:LINGOPICK_MODEL_DIR = "E:\...\enterprise-ai-translator\models"
+ *   $env:LEXORA_LLAMA_DIR = "E:\...\enterprise-ai-translator\vendor\llama"
+ *   $env:LEXORA_MODEL_DIR = "E:\...\enterprise-ai-translator\models"
  *   node tests/e2e-local-cdp.mjs
  *
  * The app is started with a temporary data directory; it never touches the real
@@ -20,17 +20,17 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const exe = path.join(root, "src-tauri", "target", "debug", "lingopick.exe");
-const engineDir = process.env.LINGOPICK_LLAMA_DIR || "";
-const modelDir = process.env.LINGOPICK_MODEL_DIR || "";
+const exe = path.join(root, "src-tauri", "target", "debug", "lexora.exe");
+const engineDir = process.env.LEXORA_LLAMA_DIR || "";
+const modelDir = process.env.LEXORA_MODEL_DIR || "";
 const debugPort = 9334;
 
 if (!engineDir || !modelDir) {
-  console.error("Set LINGOPICK_LLAMA_DIR and LINGOPICK_MODEL_DIR first.");
+  console.error("Set LEXORA_LLAMA_DIR and LEXORA_MODEL_DIR first.");
   process.exit(2);
 }
 
-const dataDir = mkdtempSync(path.join(tmpdir(), "lingopick-e2e-local-"));
+const dataDir = mkdtempSync(path.join(tmpdir(), "lexora-e2e-local-"));
 mkdirSync(path.join(dataDir, "logs"), { recursive: true });
 writeFileSync(
   path.join(dataDir, "settings.json"),
@@ -134,7 +134,7 @@ async function main() {
     cwd: root,
     env: {
       ...process.env,
-      LINGOPICK_DATA_DIR: dataDir,
+      LEXORA_DATA_DIR: dataDir,
       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort}`,
     },
     stdio: "ignore",
@@ -196,7 +196,7 @@ async function main() {
     check("local streaming translation", translation && translation.ok === true, `chunks=${translation && translation.chunks} text=${String(translation && translation.text).slice(0, 60)}`);
 
     const assist = await picker.evaluate(
-      "window.__TAURI__.core.invoke('picker_assist', {action:'summarize', text:'LingoPick is a portable selection translator for Windows. It supports online and offline models.'})",
+      "window.__TAURI__.core.invoke('picker_assist', {action:'summarize', text:'Lexora is a portable selection translator for Windows. It supports online and offline models.'})",
       150000
     );
     check("local assist", assist && assist.ok === true && typeof assist.text === "string" && assist.text.length > 0, String(assist && assist.text).slice(0, 60));

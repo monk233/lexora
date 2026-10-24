@@ -2,11 +2,16 @@
  *
  * Receives the selected text + configuration from the Rust shell through
  * `window.pickerAPI` (see shared/tauri-api.js) and renders the skill toolbar
- * with the five skills:
+ * with the five built-in skills:
  *   translate        - streaming translation through the engine
  *   summarize/explain- one-shot assist through the engine
  *   read             - Windows system voices via speechSynthesis
  *   copy             - clipboard through the shell
+ *
+ * `config.customSkills` adds user-defined skills: they reuse the translation
+ * pipeline (`picker_custom_skill` streams through translate-event) with their
+ * own id/label/icon. All skill icons come from the shared LP.SKILL_ICON_SVGS
+ * table so the picker and the settings window share one icon set.
  *
  * Window sizing is driven from here: the Tauri window is transparent and has
  * no decorations, so the renderer reports the content size through
@@ -56,17 +61,10 @@
     }
   })();
 
+  /* Skill icons (translate/summarize/explain/read/copy and the custom-skill
+   * palette) live in shared/constants.js: LP.SKILL_ICON_SVGS / LP.skillIconSvg.
+   * Only the picker-only UI icons stay local. */
   var ICONS = {
-    translate:
-      '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h9"></path><path d="M7.5 3v2"></path><path d="M4.5 9.4c1.3 2.4 3.1 4 5.4 5"></path><path d="M11.5 5c-.5 3-2.3 5.4-5.2 7.1"></path><path d="m12.6 20 3.6-8.6 3.6 8.6"></path><path d="M13.9 17h4.6"></path></svg>',
-    summarize:
-      '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 6h14"></path><path d="M5 10h14"></path><path d="M5 14h9"></path><path d="M5 18h6"></path></svg>',
-    explain:
-      '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 1.5-1.6 1.9-2.2 2.6-.3.4-.4.8-.4 1.4"></path><path d="M12 17h.01"></path></svg>',
-    read:
-      '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9v6h3l5 4V5L7 9H4z"></path><path d="M16 9a4 4 0 0 1 0 6"></path><path d="M18.5 6.5a8 8 0 0 1 0 11"></path></svg>',
-    copy:
-      '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>',
     more:
       '<svg class="icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"></circle><circle cx="12" cy="12" r="1.7"></circle><circle cx="19" cy="12" r="1.7"></circle></svg>',
     settings:
@@ -79,10 +77,32 @@
       '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.9-3M4 4v4h4"></path><path d="M4 13a8 8 0 0 0 14.9 3M20 20v-4h-4"></path></svg>',
   };
 
+  function hasOwn(object, key) {
+    return !!object && Object.prototype.hasOwnProperty.call(object, key);
+  }
+
+  function defaultCustomIcon() {
+    return typeof LP.CUSTOM_SKILL_DEFAULT_ICON === "string" && LP.CUSTOM_SKILL_DEFAULT_ICON
+      ? LP.CUSTOM_SKILL_DEFAULT_ICON
+      : "sparkles";
+  }
+
+  /* Skill icons come from the shared table. The shared markup intentionally
+   * omits the sizing class, so it is injected here (picker.css sizes `.icon`). */
+  function skillIconSvg(key) {
+    var svg = typeof LP.skillIconSvg === "function" ? String(LP.skillIconSvg(key) || "") : "";
+    if (!svg) {
+      return ICONS.more;
+    }
+    return svg.replace("<svg ", '<svg class="icon" ');
+  }
+
   var state = {
     text: "",
     programName: "",
     skills: DEFAULT_SKILLS.slice(),
+    /* id -> {id, label, icon} for the custom skills enabled in settings. */
+    customSkills: {},
     compact: false,
     defaultTargetLang: "auto",
     panelPinned: false,
@@ -368,15 +388,30 @@
 
   /* ---- Toolbar --------------------------------------------------------- */
 
-  function iconButton(skill) {
+  /* Label + icon for one toolbar skill. Built-in ids keep their fixed labels;
+   * custom ids come from `config.customSkills`, unknown ids fall back to the
+   * id itself and the default sparkles icon. */
+  function skillMeta(skill) {
+    if (hasOwn(SKILL_LABELS, skill)) {
+      return { id: skill, label: SKILL_LABELS[skill], icon: skill, builtin: true };
+    }
+    if (hasOwn(state.customSkills, skill)) {
+      return state.customSkills[skill];
+    }
+    return { id: skill, label: skill, icon: defaultCustomIcon() };
+  }
+
+  function skillButton(skill) {
+    var meta = skillMeta(skill);
     var button = el("button", "tool-btn");
     button.type = "button";
     button.setAttribute("data-skill", skill);
-    button.innerHTML = ICONS[skill] || ICONS.more;
-    var label = el("span", "label", SKILL_LABELS[skill] || skill);
-    button.appendChild(label);
+    button.title = meta.label;
+    button.setAttribute("aria-label", meta.label);
+    button.innerHTML = skillIconSvg(meta.icon);
+    button.appendChild(el("span", "label", meta.label));
     button.addEventListener("click", function () {
-      runSkill(skill, button);
+      runSkill(skill);
     });
     return button;
   }
@@ -385,7 +420,7 @@
     toolbar.innerHTML = "";
     toolbar.classList.toggle("compact", state.compact);
     state.skills.forEach(function (skill) {
-      toolbar.appendChild(iconButton(skill));
+      toolbar.appendChild(skillButton(skill));
     });
     toolbar.appendChild(el("span", "divider"));
     var more = el("button", "tool-btn more-btn");
@@ -656,6 +691,9 @@
     if (/引擎|GGUF|llama|本地模型|模型|未安装|未配置|未选择/i.test(text)) {
       return "打开设置 → 翻译服务，下载并启动本地引擎与模型，或切换到在线 API。";
     }
+    if (kind === "custom") {
+      return "自定义技能与翻译使用相同的服务，请检查在线 API 或本地模型状态后重试。";
+    }
     if (kind === "assist") {
       return "总结与解释使用与翻译相同的服务，请检查在线 API 或本地模型状态。";
     }
@@ -736,7 +774,12 @@
     state.translating = false;
     removeLoadingRow(request);
     if (!String(request.raw || "").trim()) {
-      failTranslation(request, "翻译服务没有返回结果（可能正在启动或引擎不可用）。");
+      failTranslation(
+        request,
+        request.kind === "custom"
+          ? "自定义技能没有返回结果（可能正在启动或服务不可用）。"
+          : "翻译服务没有返回结果（可能正在启动或引擎不可用）。"
+      );
       return;
     }
     renderMarkdownInto(request.result, request.raw);
@@ -765,11 +808,16 @@
       resizePanelForContent();
       return;
     }
+    var custom = request.kind === "custom";
     renderErrorPanel(
-      "翻译失败",
+      custom && request.label ? request.label + "失败" : "翻译失败",
       text,
-      hint || hintForError(text, "translate"),
+      hint || hintForError(text, custom ? "custom" : "translate"),
       function () {
+        if (custom && request.skillId) {
+          startCustomSkill(request.skillId);
+          return;
+        }
         translateSkill(panelTargetSelect.value);
       }
     );
@@ -815,7 +863,10 @@
       return;
     }
     if (event.type === "error") {
-      failTranslation(request, event.message || "翻译失败");
+      failTranslation(
+        request,
+        event.message || (request.kind === "custom" ? "处理失败" : "翻译失败")
+      );
     }
   }
 
@@ -847,6 +898,7 @@
 
     var request = {
       id: makeRequestId(),
+      kind: "translate",
       target: target,
       result: result,
       raw: "",
@@ -869,6 +921,71 @@
           failTranslation(
             request,
             (response && response.error) || "翻译服务没有响应",
+            (response && response.hint) || ""
+          );
+        }
+      },
+      function (error) {
+        failTranslation(request, String(error));
+      }
+    );
+  }
+
+  /* ---- Custom skills --------------------------------------------------- */
+
+  /* Streams a user-defined skill through `picker_custom_skill`. The event
+   * pipeline is the same as translation (translate-event: chunk/error/done), so
+   * Markdown rendering, copy/speak, abort, retry and the error panel are
+   * reused. Only the panel title, loading text and error wording differ. */
+  function startCustomSkill(skillId) {
+    var id = String(skillId || "");
+    var meta = hasOwn(state.customSkills, id) ? state.customSkills[id] : null;
+    var label = meta && meta.label ? meta.label : id;
+    openPanel(label);
+    setPanelRetry(function () {
+      startCustomSkill(id);
+    });
+
+    var target = el("div");
+    target.appendChild(sourceNode());
+    var loadingRow = loadingNode("正在处理…");
+    target.appendChild(loadingRow);
+    var result = el("div", "result-text markdown");
+    target.appendChild(result);
+    setBody(target);
+
+    var request = {
+      id: makeRequestId(),
+      kind: "custom",
+      skillId: id,
+      label: label,
+      target: target,
+      result: result,
+      raw: "",
+      renderPending: false,
+      loading: loadingRow,
+      active: true,
+      failed: false,
+      sawContent: false,
+    };
+    activeRequest = request;
+    state.translating = true;
+    resizePanelForContent();
+
+    if (!API || typeof API.customSkill !== "function") {
+      failTranslation(request, "当前版本不支持自定义技能", "请更新应用后再试。");
+      return;
+    }
+
+    API.customSkill(request.id, id, state.text, state.programName).then(
+      function (response) {
+        if (!request.active) {
+          return;
+        }
+        if (!response || !response.ok) {
+          failTranslation(
+            request,
+            (response && response.error) || "自定义技能没有响应",
             (response && response.hint) || ""
           );
         }
@@ -963,7 +1080,7 @@
   function stopSpeech() {
     var utterance = speech.utterance;
     if (utterance) {
-      utterance.__lingopickCancelled = true;
+      utterance.__lexoraCancelled = true;
     }
     speech.utterance = null;
     speech.cancelRequested = true;
@@ -1067,7 +1184,7 @@
       utterance.onerror = function (event) {
         var wasCurrent = speech.utterance === utterance;
         var cancelled =
-          !!utterance.__lingopickCancelled ||
+          !!utterance.__lexoraCancelled ||
           speech.cancelRequested ||
           (event &&
             (event.error === "interrupted" ||
@@ -1111,7 +1228,7 @@
     });
   }
 
-  function runSkill(skill, button) {
+  function runSkill(skill) {
     if (skill === "translate") {
       translateSkill();
     } else if (skill === "summarize" || skill === "explain") {
@@ -1120,6 +1237,10 @@
       speak(state.text);
     } else if (skill === "copy") {
       copyToClipboard(state.text, "已复制选中文本", true);
+    } else if (skill) {
+      // User-defined skill (or an unknown id from config.skills): the shell
+      // reports a disabled/missing skill through the stream error event.
+      startCustomSkill(skill);
     }
   }
 
@@ -1152,8 +1273,8 @@
   window.addEventListener("blur", endPanelDrag);
   panelPin.addEventListener("click", togglePanelPinned);
   document.getElementById("panel-close").addEventListener("click", closePanel);
-  panelSpeak.innerHTML = ICONS.read + "<span>朗读</span>";
-  panelCopy.innerHTML = ICONS.copy + "<span>复制</span>";
+  panelSpeak.innerHTML = skillIconSvg("read") + "<span>朗读</span>";
+  panelCopy.innerHTML = skillIconSvg("copy") + "<span>复制</span>";
   panelRetry.innerHTML = ICONS.refresh + "<span>重试</span>";
   panelSpeak.addEventListener("click", function () {
     speak(state.panelSpeakText);
@@ -1204,11 +1325,33 @@
     state.defaultTargetLang = String(config.defaultTargetLang || "auto");
     state.targetLang = "";
     state.panelPinned = false;
-    var skills = Array.isArray(config.skills)
-      ? config.skills.filter(function (skill) {
-          return !!SKILL_LABELS[skill];
-        })
-      : [];
+    // Rebuild the custom-skill metadata every time: a disabled/removed skill
+    // must never keep its old button or label around.
+    state.customSkills = {};
+    (Array.isArray(config.customSkills) ? config.customSkills : []).forEach(function (entry) {
+      if (!entry || typeof entry !== "object") {
+        return;
+      }
+      var id = String(entry.id || "").trim();
+      if (!id || hasOwn(state.customSkills, id)) {
+        return;
+      }
+      state.customSkills[id] = {
+        id: id,
+        label: String(entry.label || "").trim() || id,
+        icon: String(entry.icon || "").trim() || defaultCustomIcon(),
+      };
+    });
+    var seen = {};
+    var skills = [];
+    (Array.isArray(config.skills) ? config.skills : []).forEach(function (skill) {
+      var id = typeof skill === "string" ? skill.trim() : "";
+      if (!id || hasOwn(seen, id)) {
+        return;
+      }
+      seen[id] = true;
+      skills.push(id);
+    });
     state.skills = skills.length ? skills : DEFAULT_SKILLS.slice();
     state.compact = config.compact === true;
     resetForHidden();

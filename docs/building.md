@@ -21,7 +21,7 @@ npx tauri dev
 
 ```powershell
 npx tauri build --debug --no-bundle
-.\src-tauri\target\debug\lingopick.exe --show
+.\src-tauri\target\debug\lexora.exe --show
 ```
 
 数据目录（开发模式）：`<repo>/data`；日志在 `data/logs/main.log`。
@@ -31,9 +31,9 @@ npx tauri build --debug --no-bundle
 如果本机已有 llama.cpp 与 GGUF（例如从旧项目复制），可直接复用：
 
 ```powershell
-$env:LINGOPICK_LLAMA_DIR = "E:\path\to\llama"       # 含 llama-server.exe
-$env:LINGOPICK_MODEL_DIR = "E:\path\to\models"      # 含 *.gguf
-.\src-tauri\target\debug\lingopick.exe --show
+$env:LEXORA_LLAMA_DIR = "E:\path\to\llama"       # 含 llama-server.exe
+$env:LEXORA_MODEL_DIR = "E:\path\to\models"      # 含 *.gguf
+.\src-tauri\target\debug\lexora.exe --show
 ```
 
 然后在设置中选择本地模式、选择模型并启动。也可用 `scripts/fetch-llama.ps1 -FromDir <目录>` 复制现成引擎。
@@ -44,7 +44,7 @@ $env:LINGOPICK_MODEL_DIR = "E:\path\to\models"      # 含 *.gguf
 .\scripts\build-portable.ps1
 ```
 
-产物：`dist\LingoPick-<version>-win-x64.exe`（release 单文件，约 5–10MB）。
+产物：`dist\Lexora-<version>-win-x64.exe`（release 单文件，约 5–10MB）。
 
 - 不再打包 zip：发布资产就是这一个 exe，用户下载后双击即用。
 - 数据写入 exe 同级 `data/`（settings.json、models、engine、logs、cache）。
@@ -54,7 +54,7 @@ $env:LINGOPICK_MODEL_DIR = "E:\path\to\models"      # 含 *.gguf
 
 ```powershell
 npx tauri build --no-bundle
-# → src-tauri\target\release\lingopick.exe
+# → src-tauri\target\release\lexora.exe
 ```
 
 `scripts/build-portable.ps1` 支持 `-SkipBuild` 复用已有 `target\release` 产物。

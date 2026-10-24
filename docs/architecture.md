@@ -1,11 +1,11 @@
 # 架构说明
 
-LingoPick 是一个 Windows 桌面划词翻译工具，使用 Tauri v2 构建：Rust 负责系统集成与翻译，WebView2 渲染 UI，发布为免安装单 exe。
+Lexora 是一个 Windows 桌面划词翻译工具，使用 Tauri v2 构建：Rust 负责系统集成与翻译，WebView2 渲染 UI，发布为免安装单 exe。
 
 ## 进程与线程
 
 ```
-lingopick.exe
+lexora.exe
 ├─ 主线程 / Tauri runtime
 │   ├─ settings 窗口（WebView2，index.html）
 │   ├─ picker 窗口（WebView2，透明置顶，picker.html）
@@ -70,7 +70,7 @@ picker.js → invoke("picker_translate", {requestId,text,targetLang})
 
 ## 设置与便携
 
-`settings.json` 与模型/引擎都放在数据目录（默认 exe 同级 `data/`），因此解压到 U 盘或任意目录都能独立使用。数据目录不可写时回退 `%APPDATA%\LingoPick`。
+`settings.json` 与模型/引擎都放在数据目录（默认 exe 同级 `data/`），因此解压到 U 盘或任意目录都能独立使用。数据目录不可写时回退 `%APPDATA%\Lexora`。
 
 ## 安全与隐私
 

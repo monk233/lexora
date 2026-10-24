@@ -1,5 +1,5 @@
 param(
-  [string]$AppExe = "E:\document\workspace\AIProjects\lingopick\src-tauri\target\debug\lingopick.exe",
+  [string]$AppExe = "E:\document\workspace\AIProjects\lingopick\src-tauri\target\debug\lexora.exe",
   [int]$CdpPort = 9335
 )
 
@@ -95,7 +95,7 @@ function Capture-Region([string]$path, [int]$left, [int]$top, [int]$width, [int]
 }
 
 # --- prepare data dir -------------------------------------------------------
-Get-Process lingopick -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process lexora -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Milliseconds 500
 if (Test-Path $dataDir) { Remove-Item $dataDir -Recurse -Force }
 New-Item -ItemType Directory -Path (Join-Path $dataDir "logs"), (Join-Path $dataDir "models") -Force | Out-Null
@@ -105,9 +105,9 @@ $settings = @'
 [System.IO.File]::WriteAllText((Join-Path $dataDir "settings.json"), $settings, [System.Text.UTF8Encoding]::new($false))
 New-Item -ItemType Directory -Force -Path $shotDir | Out-Null
 
-$env:LINGOPICK_DATA_DIR = $dataDir
+$env:LEXORA_DATA_DIR = $dataDir
 $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$CdpPort"
-$sample = "LingoPick selection capture live test.`r`nThis sentence lives in another application.`r`nThe catheter shall be inserted under sterile conditions.`r`n"
+$sample = "Lexora selection capture live test.`r`nThis sentence lives in another application.`r`nThe catheter shall be inserted under sterile conditions.`r`n"
 $txtFile = Join-Path $root "test-text.txt"
 [System.IO.File]::WriteAllText($txtFile, $sample, [System.Text.UTF8Encoding]::new($false))
 

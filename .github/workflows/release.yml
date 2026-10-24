@@ -87,7 +87,7 @@ jobs:
       - name: Upload exe to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: LingoPick ${{ steps.meta.outputs.version }}
+          name: Lexora ${{ steps.meta.outputs.version }}
           tag_name: ${{ steps.meta.outputs.tag }}
           body_path: dist/RELEASE_NOTES.md
           files: dist/*.exe
@@ -98,7 +98,7 @@ jobs:
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: lingopick-portable-exe
+          name: lexora-portable-exe
           path: dist/*.exe
           if-no-files-found: error
           retention-days: 14

@@ -41,9 +41,9 @@ pub const ENGINE_DOWNLOAD_URL: &str =
     "https://github.com/ggml-org/llama.cpp/releases/download/b11851/llama-b11851-bin-win-cpu-x64.zip";
 
 /// Optional environment override for the engine archive URL.
-pub const ENV_LLAMA_URL: &str = "LINGOPICK_LLAMA_URL";
+pub const ENV_LLAMA_URL: &str = "LEXORA_LLAMA_URL";
 /// Optional runtime override for the online API key (§4 of the contract).
-pub const ENV_API_KEY: &str = "LINGOPICK_API_KEY";
+pub const ENV_API_KEY: &str = "LEXORA_API_KEY";
 
 /// Event name used for both model and engine download progress.
 const DOWNLOAD_EVENT: &str = "download-progress";
@@ -278,7 +278,7 @@ enum LocalRole {
 impl EngineService {
     pub fn new(paths: AppPaths, settings: Arc<SettingsStore>, logger: Logger) -> Self {
         let http = reqwest::Client::builder()
-            .user_agent(concat!("LingoPick/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("Lexora/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(15))
             .redirect(reqwest::redirect::Policy::limited(10))
             .build()
@@ -446,6 +446,62 @@ impl EngineService {
             config.model,
             truncated.chars().count(),
             target
+        ));
+        openai::stream_chat(&self.http, &config, messages, config.header_timeout()).await
+    }
+
+    /// Streams a user-defined skill: the stored prompt is rendered with the
+    /// `{text}` / `{target}` / `{language}` / `{program}` / `{app}`
+    /// placeholders, then sent through the general model role (custom skills
+    /// are free-form instructions, so they use the same role as summarize).
+    pub async fn custom_stream(
+        &self,
+        skill_id: &str,
+        text: &str,
+        target_lang: &str,
+        program: &str,
+    ) -> Result<BoxStream<'static, Result<String, EngineError>>, EngineError> {
+        let settings = self.settings.get();
+        let skill_id = skill_id.trim();
+        let skill = settings
+            .picker
+            .custom_skills
+            .iter()
+            .find(|skill| skill.id == skill_id)
+            .cloned()
+            .ok_or_else(|| {
+                EngineError::new(
+                    "技能不存在（可能已被删除）",
+                    "请在设置 → 划词行为中重新添加该技能。",
+                )
+            })?;
+        // A defined skill can be disabled while keeping its definition.
+        if !settings.picker.skills.iter().any(|id| id == skill_id) {
+            return Err(EngineError::new(
+                "技能未启用",
+                "请在设置 → 划词行为中启用该技能。",
+            ));
+        }
+        let cleaned = text.trim();
+        if cleaned.is_empty() {
+            return Err(EngineError::new(
+                "没有可翻译的文本。",
+                "请先选中一段文字，然后再点击翻译。",
+            ));
+        }
+        let truncated = prompts::truncate_chars(cleaned, settings.picker.max_chars as usize);
+        let target = prompts::resolve_target_lang(target_lang, &truncated);
+        let system = prompts::render_custom_prompt(&skill.prompt, &truncated, &target, program);
+        let messages = vec![
+            json!({"role": "system", "content": system}),
+            json!({"role": "user", "content": truncated}),
+        ];
+        let config = self.chat_config(&settings, LocalRole::General).await?;
+        self.logger.info(&format!(
+            "custom skill stream start: skill={} provider={} chars={}",
+            skill_id,
+            if config.local { "local" } else { "online" },
+            truncated.chars().count()
         ));
         openai::stream_chat(&self.http, &config, messages, config.header_timeout()).await
     }
@@ -862,7 +918,7 @@ impl EngineService {
         if !url.starts_with("http://") && !url.starts_with("https://") {
             return Err(EngineError::new(
                 "引擎下载地址无效。",
-                format!("LINGOPICK_LLAMA_URL 必须是 http(s) 地址；当前值：{url}"),
+                format!("LEXORA_LLAMA_URL 必须是 http(s) 地址；当前值：{url}"),
             ));
         }
         let filename = url
@@ -962,7 +1018,7 @@ impl EngineService {
         if !models::is_gguf_file(&file_name) {
             return Err(EngineError::new(
                 "仅支持 .gguf 格式的模型文件。",
-                "请下载 LingoPick 模型列表中的 GGUF 文件，或先在设置中下载内置模型。",
+                "请下载 Lexora 模型列表中的 GGUF 文件，或先在设置中下载内置模型。",
             ));
         }
         let metadata = std::fs::metadata(&path).map_err(|error| {
@@ -1211,7 +1267,7 @@ fn cancelled_error() -> EngineError {
 }
 
 /// `rename` first (same volume) and fall back to copy+delete when the cache and
-/// models directories live on different drives (`LINGOPICK_MODEL_DIR` override).
+/// models directories live on different drives (`LEXORA_MODEL_DIR` override).
 fn move_file(source: &Path, target: &Path) -> std::io::Result<()> {
     match std::fs::rename(source, target) {
         Ok(()) => Ok(()),
@@ -1383,6 +1439,27 @@ mod tests {
             .block_on(future)
     }
 
+    /// Registers a custom skill and enables (or disables) it in `picker.skills`.
+    fn save_custom_skill(env: &TestEnv, skill_id: &str, prompt: &str, enabled: bool) {
+        let mut skills = vec!["translate".to_string()];
+        if enabled {
+            skills.push(skill_id.to_string());
+        }
+        env.store
+            .update_json(json!({
+                "picker": {
+                    "skills": skills,
+                    "customSkills": [{
+                        "id": skill_id,
+                        "label": "测试技能",
+                        "icon": "wand",
+                        "prompt": prompt
+                    }]
+                }
+            }))
+            .unwrap();
+    }
+
     #[test]
     fn service_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
@@ -1552,6 +1629,70 @@ mod tests {
             .expect("expected engine error");
         assert!(error.message.contains("没有可翻译"));
         assert!(!error.hint.is_empty());
+    }
+
+    #[test]
+    fn custom_skill_must_exist_and_be_enabled() {
+        let env = test_env();
+        let error = block_on(
+            env.service
+                .custom_stream("custom-missing", "hello", "zh", "Code"),
+        )
+        .err()
+        .expect("expected engine error");
+        assert!(
+            error.message.contains("技能不存在"),
+            "message: {}",
+            error.message
+        );
+        assert!(error.hint.contains("重新添加"), "hint: {}", error.hint);
+
+        // A defined but disabled skill is rejected with its own hint.
+        save_custom_skill(&env, "custom-disabled", "Explain {text}", false);
+        let error = block_on(
+            env.service
+                .custom_stream("custom-disabled", "hello", "zh", "Code"),
+        )
+        .err()
+        .expect("expected engine error");
+        assert!(
+            error.message.contains("技能未启用"),
+            "message: {}",
+            error.message
+        );
+        assert!(error.hint.contains("启用"), "hint: {}", error.hint);
+    }
+
+    #[test]
+    fn custom_skill_rejects_empty_text() {
+        let env = test_env();
+        save_custom_skill(&env, "custom-empty", "Explain {text}", true);
+        let error = block_on(
+            env.service
+                .custom_stream("custom-empty", "   ", "zh", "Code"),
+        )
+        .err()
+        .expect("expected engine error");
+        assert!(error.message.contains("没有可翻译"));
+        assert!(!error.hint.is_empty());
+    }
+
+    #[test]
+    fn custom_skill_requires_a_configured_provider() {
+        let env = test_env();
+        save_custom_skill(&env, "custom-lookup", "Explain {text}", true);
+        env.store
+            .update_json(json!({"provider": {"online": {"baseUrl": ""}}}))
+            .unwrap();
+        // Skill lookup and text checks pass, then provider resolution fails
+        // before any HTTP request is made.
+        let error = block_on(
+            env.service
+                .custom_stream("custom-lookup", "hello", "zh", "Code"),
+        )
+        .err()
+        .expect("expected engine error");
+        assert!(error.message.contains("配置"), "message: {}", error.message);
     }
 
     #[test]
@@ -1830,19 +1971,19 @@ mod tests {
     /// Optional developer smoke test (not run by CI).
     ///
     /// ```text
-    /// $env:LINGOPICK_LLAMA_DIR="...\vendor\llama"
-    /// $env:LINGOPICK_MODEL_DIR="...\models"
+    /// $env:LEXORA_LLAMA_DIR="...\vendor\llama"
+    /// $env:LEXORA_MODEL_DIR="...\models"
     /// cargo test manual_local_engine_smoke -- --ignored --nocapture
     /// ```
     #[test]
     #[ignore = "manual smoke test: needs a real llama.cpp engine and GGUF model"]
     fn manual_local_engine_smoke() {
-        let Ok(engine_dir) = std::env::var("LINGOPICK_LLAMA_DIR") else {
-            eprintln!("skip: LINGOPICK_LLAMA_DIR is not set");
+        let Ok(engine_dir) = std::env::var("LEXORA_LLAMA_DIR") else {
+            eprintln!("skip: LEXORA_LLAMA_DIR is not set");
             return;
         };
-        let Ok(models_dir) = std::env::var("LINGOPICK_MODEL_DIR") else {
-            eprintln!("skip: LINGOPICK_MODEL_DIR is not set");
+        let Ok(models_dir) = std::env::var("LEXORA_MODEL_DIR") else {
+            eprintln!("skip: LEXORA_MODEL_DIR is not set");
             return;
         };
         let dir = TempDir::new().unwrap();
@@ -1901,7 +2042,7 @@ mod tests {
             let summary = service
                 .assist(
                     "summarize",
-                    "LingoPick is a selection translator for Windows.",
+                    "Lexora is a selection translator for Windows.",
                 )
                 .await
                 .expect("assist should succeed");

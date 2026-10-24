@@ -1,10 +1,10 @@
-﻿# LingoPick — build the portable single-file Windows executable.
+﻿# Lexora — build the portable single-file Windows executable.
 #
 # Steps:
 #   1. npm install / npm ci when node_modules is missing;
 #   2. npx tauri build --no-bundle  (release, single exe, no installer);
-#   3. copy src-tauri\target\release\lingopick.exe to
-#      dist\LingoPick-<version>-win-x64.exe.
+#   3. copy src-tauri\target\release\lexora.exe to
+#      dist\Lexora-<version>-win-x64.exe.
 #
 # Usage:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-portable.ps1
@@ -55,7 +55,7 @@ $Version = [string]$conf.version
 if (-not $Version) {
     Fail 'tauri.conf.json 中没有 version 字段'
 }
-Write-Host "LingoPick portable exe $Version (repo: $RepoRoot)" -ForegroundColor DarkGray
+Write-Host "Lexora portable exe $Version (repo: $RepoRoot)" -ForegroundColor DarkGray
 
 # --- node dependencies ------------------------------------------------------
 $cliPath = Join-Path $RepoRoot 'node_modules\@tauri-apps\cli'
@@ -88,10 +88,10 @@ if (-not $SkipBuild) {
     Write-Step '跳过构建（-SkipBuild），复用已有的 target\release 产物'
 }
 
-$sourceExe = Join-Path $TauriDir 'target\release\lingopick.exe'
+$sourceExe = Join-Path $TauriDir 'target\release\lexora.exe'
 if (-not (Test-Path $sourceExe)) {
     # Be tolerant of an exe renamed after the product name.
-    $alt = Join-Path $TauriDir 'target\release\LingoPick.exe'
+    $alt = Join-Path $TauriDir 'target\release\Lexora.exe'
     if (Test-Path $alt) {
         $sourceExe = $alt
     } else {
@@ -102,7 +102,7 @@ Write-Ok ("release exe: {0} ({1:N1} MB)" -f $sourceExe, ((Get-Item $sourceExe).L
 
 # --- publish the exe --------------------------------------------------------
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
-$assetName = "LingoPick-$Version-win-x64.exe"
+$assetName = "Lexora-$Version-win-x64.exe"
 $targetExe = Join-Path $DistDir $assetName
 if (Test-Path $targetExe) {
     Remove-Item -Path $targetExe -Force
@@ -113,9 +113,9 @@ if (-not (Test-Path $targetExe)) {
 }
 
 # Drop leftovers of the old zip-based pipeline so dist\*.exe stays the only asset.
-Get-ChildItem -Path $DistDir -Filter 'LingoPick-*-win-x64.zip' -ErrorAction SilentlyContinue |
+Get-ChildItem -Path $DistDir -Filter 'Lexora-*-win-x64.zip' -ErrorAction SilentlyContinue |
     Remove-Item -Force
-$legacyStage = Join-Path $DistDir "LingoPick-$Version-win-x64"
+$legacyStage = Join-Path $DistDir "Lexora-$Version-win-x64"
 if (Test-Path $legacyStage -PathType Container) {
     Remove-Item -Path $legacyStage -Recurse -Force
 }

@@ -1,4 +1,4 @@
-/* Tauri frontend bridge for LingoPick.
+/* Tauri frontend bridge for Lexora.
  *
  * Exposes the two API shapes used by the renderers:
  *
@@ -239,7 +239,7 @@
     var installedModel = {
       file: "Hy-MT2-1.8B-Q4_K_M.gguf",
       name: "Hy-MT2-1.8B-Q4_K_M",
-      path: "C:\\Users\\Preview\\AppData\\Roaming\\LingoPick\\models\\Hy-MT2-1.8B-Q4_K_M.gguf",
+      path: "C:\\Users\\Preview\\AppData\\Roaming\\Lexora\\models\\Hy-MT2-1.8B-Q4_K_M.gguf",
       sizeBytes: 1133080448,
       modifiedAt: Date.now() - 86400000,
       catalogId: "hy-mt2-1.8b",
@@ -247,15 +247,15 @@
 
     mockStore = {
       app: {
-        name: "LingoPick",
+        name: "Lexora",
         version: "0.1.0",
         platform: "windows",
         packaged: false,
         portable: portable,
-        dataDir: "C:\\Users\\Preview\\AppData\\Roaming\\LingoPick",
-        modelsDir: "C:\\Users\\Preview\\AppData\\Roaming\\LingoPick\\models",
-        logsDir: "C:\\Users\\Preview\\AppData\\Roaming\\LingoPick\\logs",
-        repoUrl: "https://github.com/monk233/lingopick",
+        dataDir: "C:\\Users\\Preview\\AppData\\Roaming\\Lexora",
+        modelsDir: "C:\\Users\\Preview\\AppData\\Roaming\\Lexora\\models",
+        logsDir: "C:\\Users\\Preview\\AppData\\Roaming\\Lexora\\logs",
+        repoUrl: "https://github.com/monk233/lexora",
         license: "MIT",
       },
       settings: {
@@ -268,6 +268,7 @@
           blacklist: ["vscode.exe"],
           maxChars: 5000,
           prompts: { translate: "", summarize: "", explain: "" },
+          customSkills: [],
         },
         provider: {
           mode: "online",
@@ -386,10 +387,37 @@
     var settings = mockStore.settings;
     var picker = settings.picker;
     var known = ["translate", "summarize", "explain", "read", "copy"];
+    var customSkills = [];
+    (Array.isArray(picker.customSkills) ? picker.customSkills : []).forEach(function (entry) {
+      if (!entry || customSkills.length >= 20) {
+        return;
+      }
+      var id = String(entry.id || "").trim().toLowerCase();
+      var prompt = String(entry.prompt || "").trim().slice(0, 4000);
+      if (!/^custom-[a-z0-9_-]{1,40}$/.test(id) || !prompt) {
+        return;
+      }
+      if (customSkills.some(function (skill) { return skill.id === id; })) {
+        return;
+      }
+      var icons =
+        window.LP && Array.isArray(window.LP.CUSTOM_SKILL_ICON_KEYS)
+          ? window.LP.CUSTOM_SKILL_ICON_KEYS
+          : ["sparkles"];
+      var icon = String(entry.icon || "");
+      customSkills.push({
+        id: id,
+        label: String(entry.label || "自定义技能").trim().slice(0, 20) || "自定义技能",
+        icon: icons.indexOf(icon) >= 0 ? icon : "sparkles",
+        prompt: prompt,
+      });
+    });
+    picker.customSkills = customSkills;
+    var knownIds = known.concat(customSkills.map(function (skill) { return skill.id; }));
     var skills = [];
     (Array.isArray(picker.skills) ? picker.skills : []).forEach(function (skill) {
       var value = String(skill || "").toLowerCase();
-      if (known.indexOf(value) >= 0 && skills.indexOf(value) < 0) {
+      if (knownIds.indexOf(value) >= 0 && skills.indexOf(value) < 0) {
         skills.push(value);
       }
     });
@@ -545,11 +573,19 @@
         return;
       }
       var picker = (mockStore && mockStore.settings.picker) || {};
+      var enabledIds = Array.isArray(picker.skills) ? picker.skills : [];
+      var customSkills = [];
+      (Array.isArray(picker.customSkills) ? picker.customSkills : []).forEach(function (skill) {
+        if (enabledIds.indexOf(skill.id) >= 0) {
+          customSkills.push({ id: skill.id, label: skill.label, icon: skill.icon });
+        }
+      });
       mockEmit("picker-data", {
         text: "Translation is the communication of the meaning of a source-language text by means of an equivalent target-language text.",
         programName: "notepad.exe",
         config: {
-          skills: (picker.skills || []).slice(),
+          skills: enabledIds.slice(),
+          customSkills: customSkills,
           compact: !!picker.compact,
           defaultTargetLang: picker.defaultTargetLang || "auto",
         },
@@ -619,7 +655,7 @@
                   file: entry.filename,
                   name: entry.filename.replace(/\.gguf$/i, ""),
                   path:
-                    "C:\\Users\\Preview\\AppData\\Roaming\\LingoPick\\models\\" +
+                    "C:\\Users\\Preview\\AppData\\Roaming\\Lexora\\models\\" +
                     entry.filename,
                   sizeBytes: entry.sizeBytes,
                   modifiedAt: Date.now(),
@@ -704,6 +740,16 @@
           String(args.requestId || ""),
           String(args.text || ""),
           String(args.targetLang || "")
+        );
+        return { ok: true };
+      case "picker_custom_skill":
+        if (!String(args.text || "").trim()) {
+          return { ok: false, error: "没有可处理的文本" };
+        }
+        startMockTranslate(
+          String(args.requestId || ""),
+          String(args.text || ""),
+          "zh"
         );
         return { ok: true };
       case "picker_abort_translate":
@@ -844,7 +890,7 @@
                 file: filename,
                 name: "imported-model-q4_k_m",
                 path:
-                  "C:\\Users\\Preview\\AppData\\Roaming\\LingoPick\\models\\" + filename,
+                  "C:\\Users\\Preview\\AppData\\Roaming\\Lexora\\models\\" + filename,
                 sizeBytes: 1048576000,
                 modifiedAt: Date.now(),
                 catalogId: "",
@@ -1064,6 +1110,15 @@
       return safeInvoke("picker_assist", {
         action: String(action == null ? "" : action),
         text: String(text == null ? "" : text),
+      });
+    },
+    /* Streams a user-defined skill through the same translate-event channel. */
+    customSkill: function (requestId, skillId, text, programName) {
+      return safeInvoke("picker_custom_skill", {
+        requestId: String(requestId == null ? "" : requestId),
+        skillId: String(skillId == null ? "" : skillId),
+        text: String(text == null ? "" : text),
+        programName: String(programName == null ? "" : programName),
       });
     },
     status: function () {

@@ -1,10 +1,10 @@
-# LingoPick 工程契约（Tauri v2 版）
+# Lexora 工程契约（Tauri v2 版）
 
 本文件是并行开发期间的唯一接口契约。**实现必须与本文一致**；需要调整先通知 Lead 改本文件，再改代码。Electron 版设计稿（设置页字段、picke r行为）仍适用，技术栈已切换为 **Tauri v2 + Rust + 原生 HTML/CSS/JS**。
 
 ## 1. 目标与决策
 
-把 `enterprise-ai-translator` 的划词工具抽取为独立开源 Windows 免安装应用 **LingoPick**：
+把 `enterprise-ai-translator` 的划词工具抽取为独立开源 Windows 免安装应用 **Lexora**：
 
 - 完整保留划词体验：拖动选词、双击/多击选词自动弹出工具栏；翻译（流式）、总结、解释、朗读、复制；结果面板（固定/关闭/目标语言/重试，头部可拖动窗口）；菜单（本应用禁用、设置、禁用工具）；应用黑名单；技能配置/拖拽排序/提示词编辑；紧凑模式；多屏 DPI 定位；面板按内容缩放。全局快捷键已移除。
 - 双模式翻译：**在线**（任意 OpenAI 兼容 `/v1/chat/completions`，含 Ollama/LM Studio）与**本地**（内置 llama.cpp 引擎 = 按需下载，自管理 `llama-server.exe` + 用户下载/导入 GGUF）。
@@ -18,7 +18,7 @@
 ## 2. 目录与归属（写作用域）
 
 ```
-lingopick/
+lexora/
 ├─ package.json                 [Lead]   @tauri-apps/cli
 ├─ src-tauri/
 │  ├─ Cargo.toml                [Lead]   依赖；需新增依赖先找 Lead
@@ -56,8 +56,8 @@ lingopick/
 
 ## 3. 数据目录（已实现 `paths.rs`）
 
-- `LINGOPICK_DATA_DIR` 环境变量 > debug 模式 `<repo>/data` > `<exe目录>/data`（可写时） > `%APPDATA%\LingoPick`。
-- `LINGOPICK_MODEL_DIR` / `LINGOPICK_LLAMA_DIR` 覆盖模型/引擎目录。
+- `LEXORA_DATA_DIR` 环境变量 > debug 模式 `<repo>/data` > `<exe目录>/data`（可写时） > `%APPDATA%\Lexora`。
+- `LEXORA_MODEL_DIR` / `LEXORA_LLAMA_DIR` 覆盖模型/引擎目录。
 - 结构：`settings.json`、`models/*.gguf`、`engine/llama-server.exe`、`logs/main.log`、`logs/llama.log`、`cache/*.part`。
 
 ## 4. 设置 Schema（已实现 `settings.rs`，camelCase JSON）
@@ -67,7 +67,7 @@ lingopick/
   "version": 1,
   "picker": {
     "enabled": true,
-    "skills": ["translate","summarize","explain","read","copy"],
+    "skills": ["translate","summarize","explain","read","copy","custom-mvmei8cru1n5"],
     "compact": false,
     "defaultTargetLang": "auto",          // auto + Hy-MT2 支持的 38 种语言（zh/en/zh-hant/yue/ja/…/ug）；auto 显示为「自动识别」
     "blacklist": [],                      // 进程名，可含 .exe
@@ -76,7 +76,15 @@ lingopick/
       "translate": "",
       "summarize": "",
       "explain": ""
-    }
+    },
+    "customSkills": [                     // 用户自定义技能；prompt 必填
+      {
+        "id": "custom-mvmei8cru1n5",       // ^custom-[a-z0-9_-]{1,40}$，全局唯一
+        "label": "润色",                    // <=20 字符
+        "icon": "wand",                    // sparkles|wand|pen|book|globe|code|list|chat|lightbulb|quote|briefcase|star
+        "prompt": "你是中文润色助手。请润色以下文本：{text}"  // <=4000；支持 {text}/{target}/{language}/{program}/{app}
+      }
+    ]
   },
   "provider": {
     "mode": "online",                     // online | local
@@ -88,7 +96,7 @@ lingopick/
 }
 ```
 
-规则：归一化永不失败；非法值回退默认。运行时环境变量覆盖：`LINGOPICK_API_KEY`（覆盖 apiKey）、`LINGOPICK_LLAMA_URL`（引擎下载地址覆盖）。
+规则：归一化永不失败；非法值回退默认。运行时环境变量覆盖：`LEXORA_API_KEY`（覆盖 apiKey）、`LEXORA_LLAMA_URL`（引擎下载地址覆盖）。
 
 ## 5. 前端 ↔ Rust 契约（T3/T4 共同遵守）
 
@@ -126,6 +134,7 @@ lingopick/
 | `picker_copy` | `{text: string}` | `{ok}` |
 | `picker_open_settings` | — | `{ok}` |
 | `picker_translate` | `{requestId, text, targetLang}` | `{ok, error?, hint?}`（随后 `translate-event` 流） |
+| `picker_custom_skill` | `{requestId, skillId, text, programName}` | `{ok, error?, hint?}`（随后 `translate-event` 流；target 取设置默认目标语言） |
 | `picker_abort_translate` | `{requestId}` | `{ok}` |
 | `picker_assist` | `{action: "summarize"|"explain", text}` | `{ok, text?, error?, hint?}` |
 | `picker_status` | — | `{mode, ready, configured, providerLabel, localState, hint}` |
@@ -139,7 +148,7 @@ lingopick/
 | `state-changed` | settings | `StatePayload` |
 | `download-progress` | settings | `DownloadProgress` |
 | `toast` | settings | `{type:"success"|"error"|"info", message}` |
-| `picker-data` | picker | `{text, programName, config:{skills,compact,defaultTargetLang}}` |
+| `picker-data` | picker | `{text, programName, config:{skills,customSkills,compact,defaultTargetLang}}` |
 | `picker-hidden` | picker | `{}` |
 | `translate-event` | picker | `{requestId, type:"chunk"|"error"|"done", text?, message?}` |
 
@@ -147,9 +156,9 @@ lingopick/
 
 ```jsonc
 {
-  "app": { "name":"LingoPick", "version":"0.1.0", "platform":"windows", "packaged":true, "portable":false,
+  "app": { "name":"Lexora", "version":"0.1.0", "platform":"windows", "packaged":true, "portable":false,
            "dataDir":"...", "modelsDir":"...", "logsDir":"...",
-           "repoUrl":"https://github.com/monk233/lingopick", "license":"MIT" },
+           "repoUrl":"https://github.com/monk233/lexora", "license":"MIT" },
   "settings": { /* §4 */ },
   "engine": {
     "mode":"online", "ready":true, "hint":"", "providerLabel":"在线 · deepseek-chat",
@@ -176,7 +185,7 @@ lingopick/
 
 ### 5.5 PickerData.config
 
-`{"skills":["translate","summarize","explain","read","copy"],"compact":false,"defaultTargetLang":"auto"}`。
+`{"skills":["translate","summarize","explain","read","copy","custom-xxx"],"customSkills":[{"id":"custom-xxx","label":"润色","icon":"wand"}],"compact":false,"defaultTargetLang":"auto"}`。customSkills 只下发已启用技能的元数据（不含 prompt）。
 
 ## 6. Rust 模块接口（已存骨架，按此实现）
 
@@ -197,6 +206,8 @@ impl EngineService {
   pub async fn translate_stream(&self, text:&str, target_lang:&str)
       -> Result<BoxStream<'static, Result<String, EngineError>>, EngineError>;
   pub async fn assist(&self, action:&str, text:&str) -> Result<String, EngineError>;
+  pub async fn custom_stream(&self, skill_id:&str, text:&str, target_lang:&str, program:&str)
+      -> Result<BoxStream<'static, Result<String, EngineError>>, EngineError>;
   pub async fn test_online(&self, base_url:&str, api_key:&str, model:&str, timeout_ms:u64) -> TestResult;
   pub async fn list_online_models(&self, base_url:&str, api_key:&str) -> Result<Vec<String>, EngineError>;
   pub fn installed_models(&self) -> Vec<ModelInfo>;
@@ -226,7 +237,8 @@ impl EngineService {
   - 总结 system：`You are a concise Chinese writing assistant. Summarize the user's text in Simplified Chinese and list the key points accurately, without adding anything that is not in the source.`
   - 解释 system：`You are a knowledge assistant. Explain the user's text in Simplified Chinese, covering its meaning, background and key concepts, with short examples when helpful.`
   - 文本截断：翻译取前 `picker.maxChars`；总结/解释取前 8000 字符；自定义提示词归一化后最多 4000 字符。
-- 引擎下载：默认 URL `https://github.com/ggml-org/llama.cpp/releases/download/b11851/llama-b11851-bin-win-cpu-x64.zip`（23.1MB，已验证存在），可用 `LINGOPICK_LLAMA_URL` 覆盖；下载到 cache，zip 解压后把包含 `llama-server.exe` 的目录内容平铺到 `engine/`；进度事件 `app.emit("download-progress", ...)`。失败文案给出手动放置说明（解压到 engine 目录）。
+  - 自定义技能：从 `picker.customSkills` 按 id 查找（不存在/未启用返回明确错误），`prompts::render_custom_prompt` 把 `{text}`（选中文本）、`{target}`/`{language}`（目标语言英文名）、`{program}`/`{app}`（当前应用名，空为「未知应用」）替换进提示词；未知 `{...}` 原样保留；system 为渲染后的提示词，user 为选中文本；本地模型角色使用 General；流式事件与翻译一致。
+- 引擎下载：默认 URL `https://github.com/ggml-org/llama.cpp/releases/download/b11851/llama-b11851-bin-win-cpu-x64.zip`（23.1MB，已验证存在），可用 `LEXORA_LLAMA_URL` 覆盖；下载到 cache，zip 解压后把包含 `llama-server.exe` 的目录内容平铺到 `engine/`；进度事件 `app.emit("download-progress", ...)`。失败文案给出手动放置说明（解压到 engine 目录）。
 - 模型目录（两个模型，已验证 URL）：
   | id | 名称 | 文件 | 大小 | 说明 |
   | --- | --- | --- | --- | --- |
@@ -257,7 +269,7 @@ pub struct SelectionService {
   - 抬起位移 ≥6 物理像素：拖动选词，触发 `TriggerSource::Mouse`；
   - 抬起位移 <6 物理像素：按多击处理（与上次释放同点 ±6px 且间隔 ≤ `GetDoubleClickTime()` 时计数 +1），计数 ≥2 时触发 `TriggerSource::Click`，即双击/三击选词也能弹出工具栏；单次点击绝不触发 UIA。
   - 同文本 400ms 去重；捕获进行中不重复触发。
-- 忽略：`picker.enabled=false`、自身进程（`std::process::id()` 对应 exe 名 `lingopick.exe`）、黑名单进程（大小写/.exe 容错）、空文本、写剪贴板回退关闭（不做回退）。
+- 忽略：`picker.enabled=false`、自身进程（`std::process::id()` 对应 exe 名 `lexora.exe`）、黑名单进程（大小写/.exe 容错）、空文本、写剪贴板回退关闭（不做回退）。
 - UIA 取词（移植 spike 代码，见 `E:\document\workspace\AIProjects\lingopick-spike\src\main.rs`）：`CoInitializeEx(MTA)` + `CoCreateInstance(CLSID_CUIAutomation8)` + `IUIAutomation2::SetConnectionTimeout(1500)/SetTransactionTimeout(1000)`；`GetFocusedElement` → TextPattern → `GetSelection` → `GetText(8192)`；失败重试 2 次（间隔 150ms）；无 TextPattern 时用 `ElementFromPoint(mouse)` 向上找最多 6 层；**每次取词在独立线程执行，recv_timeout(1500ms) 看门狗，超时放弃该线程（不 join）并返回失败**。
 - 锚点：鼠标物理坐标（释放点）；`scale_factor` 用 `win32::monitor_scale_factor(anchor_x, anchor_y)`；`config` 来自 settings 的 skills/compact/defaultTargetLang；随后调用 `crate::windows::show_picker(&app, &payload)`，并更新 `last_selection`。
 - 外部点击隐藏：picker 可见且未固定时，全局左键按下若在 picker 窗口外 → `windows::hide_picker(&app)`；picker 内点击不隐藏。
@@ -286,7 +298,7 @@ pub struct SelectionService {
 ### 6.4 脚本/CI（T4）
 
 - `scripts/fetch-llama.ps1`：下载/解压引擎到 `src-tauri/../data/engine`（dev 用）或指定目录；支持 `-FromDir <已有llama.cpp目录>`；SHA 不校验但校验 zip 大小/解压后存在 llama-server.exe。
-- `scripts/build-portable.ps1`：`npx tauri build --no-bundle` → 取 `src-tauri/target/release/lingopick.exe`；复制为 `dist/LingoPick-<version>-win-x64.exe`（单个 exe，不压缩、不打 zip；支持 `-SkipBuild`）。
+- `scripts/build-portable.ps1`：`npx tauri build --no-bundle` → 取 `src-tauri/target/release/lexora.exe`；复制为 `dist/Lexora-<version>-win-x64.exe`（单个 exe，不压缩、不打 zip；支持 `-SkipBuild`）。
 - `scripts/release-notes.ps1`：从 `CHANGELOG.md` 对应版本小节生成排版化 Release 正文（缺失时退化为按 conventional-commit 分组的 git 提交列表）；`-OutputPath` 写出 Markdown。
 - `.github/workflows/ci.yml`：push/PR：windows-latest，setup node 22 + Rust stable，`npm ci`（无 lock 则 npm install），`cargo test`，`tauri build --no-bundle`（不下载大模型）。
 - `release.yml`：tag `v*` 触发；校验 tag 与 `tauri.conf.json` 版本一致，构建单 exe、生成 release notes、上传 exe 到 GitHub Release。
@@ -297,8 +309,9 @@ pub struct SelectionService {
 - 从 `enterprise-ai-translator/electron/picker.html|picker.css|picker.js` 复制并改造：保留白主题工具栏、图标+文字、更多菜单、结果面板（标题/固定/关闭/语言选择）、loading 原文、流式译文、面板脚（朗读/复制/重试）、错误面板、toast、Escape 层级、面板固定、内容自适应。
 - 更多菜单只保留「在此应用中禁用」「划词设置…」「禁用划词工具」三项；不显示翻译服务状态块，也没有「关闭」项。
 - API 层换成 `web/shared/tauri-api.js`：
-  - 实现 `window.pickerAPI`：`ready/onData/onHidden/close/pin/resize/copy/openSettings/translate/abortTranslate/onTranslateEvent/assist/status/disableInApp/disableTool` 映射到 §5.2 命令与 §5.3 事件（`listen` 返回 unlisten）。
+  - 实现 `window.pickerAPI`：`ready/onData/onHidden/close/pin/resize/dragPanel/copy/openSettings/translate/abortTranslate/onTranslateEvent/assist/customSkill/status/disableInApp/disableTool` 映射到 §5.2 命令与 §5.3 事件（`listen` 返回 unlisten）。
   - 翻译：`invoke("picker_translate", {requestId,text,targetLang})` 返回错误时展示错误面板；`translate-event` 处理 chunk/error/done。
+  - 自定义技能：`invoke("picker_custom_skill", {requestId,skillId,text,programName})`，与翻译共用 `translate-event` 流与结果面板（Markdown、重试、复制、朗读）；面板标题为技能名，目标语言控件隐藏。工具栏技能按钮图标来自 `LP.SKILL_ICON_SVGS`（内置 id 或自定义 icon），未知元数据回退 label=id/icon=sparkles。
   - 结果区渲染 Markdown（安全子集，HTML 先转义）：标题、粗体/斜体/删除线、行内代码、代码块、有序/无序列表、引用、分隔线、表格、http(s) 链接（链接点击经 `open_external` 打开，不在 webview 内导航）；流式输出按 rAF 合并重渲染，用户向上翻阅时不强制滚到底部。
   - 朗读：仅用 `window.speechSynthesis`（Windows 系统语音）；无语音时提示「系统未安装可用的语音包：Windows 设置 → 时间和语言 → 语音」。朗读中再次点击是「停止朗读」，必须静默恢复按钮态，不提示失败（忽略 `interrupted`/`canceled` 错误）。
   - 结果面板可通过标题栏空白处拖动整个工具窗口（`picker_drag_panel`，每次 mousemove 发送屏幕坐标差值的逻辑像素 delta）；按钮/语言下拉区域不触发拖动。
@@ -312,7 +325,7 @@ pub struct SelectionService {
   - 分段控件「在线 API / 本地模型」立即保存 mode。
   - 在线：预设下拉（DeepSeek/OpenAI/Moonshot/智谱/Ollama/LM Studio/自定义）、服务地址、API Key（password + 显示切换）、模型名下拉（[拉取模型] 通过 `list_online_models` 拉取 `/models`，并保留「自定义模型…」手填兜底）、[测试连接]（显示延迟/模型列表/错误）、状态徽标。切换预设必须清空上一个服务商的 API Key / 模型名与模型缓存，且**不再自动填充模型名**；已知预设只填服务地址。
   - 本地：引擎状态（未安装→[下载引擎]，显示进度/取消；已安装→版本状态）、已安装模型列表（显示名称、大小、角色徽标：翻译模型/通用模型/自定义模型；不再有模型下拉选择）、[下载模型]（弹目录列表：名称/大小/量化/协议/推荐标记/下载按钮+进度）、[导入 GGUF]、[启动]/[停止]、当前状态徽标与错误提示。启动时后端自动选择模型；停止后翻译/总结不会自动启动。
-- 划词行为：启用开关、技能开关 + 拖拽排序（无上下箭头）、技能提示词编辑（行内展开 textarea，默认填充系统默认英文提示词，支持重置默认；translate 支持 `{target}` 占位符）、紧凑模式、默认目标语言（auto 显示「自动识别」，共 38 种语言）、黑名单 chip 输入（回车添加/可删除）。快捷键功能已移除。
+- 划词行为：启用开关、技能开关 + 拖拽排序（无上下箭头）、每行显示技能图标（内置用技能 id 图标，自定义用自定义图标）、技能提示词编辑（行内展开 textarea，默认填充系统默认英文提示词，支持重置默认；translate 支持 `{target}` 占位符）、自定义技能管理（[添加技能] 打开内联表单：12 个候选图标、名称 ≤20、提示词必填 ≤4000、变量提示 `{text}/{target}/{language}/{program}/{app}`；支持编辑、删除二次确认）、紧凑模式、默认目标语言（auto 显示「自动识别」，共 38 种语言）、黑名单 chip 输入（回车添加/可删除）。快捷键功能已移除。
 - 应用与启动：开机自启（portable 不支持时置灰说明）、关闭窗口后驻留托盘、打开数据/模型/日志/引擎目录、退出程序。
 - 关于：版本、Tauri/Rust 版本、MIT、GitHub 链接、引擎与模型状态。
 - 交互：改动即自动保存（文本 500ms 防抖），顶部短暂「已保存」；错误内联不弹模态；下载进度实时更新。
@@ -326,9 +339,10 @@ pub struct SelectionService {
 - 启动 exe：静默启动、托盘出现、不弹窗口；`--show` 才显示设置；拖选/双击/多击选词在某应用触发 picker；picker 菜单/面板/固定可用（菜单不含服务状态与关闭项）；全局快捷键已移除。
 - picker 不干扰操作：弹出后前台窗口仍是原应用，Delete/Ctrl+C/Ctrl+X 正常生效；未固定时按任意键、右键自动隐藏工具栏，但鼠标滚轮/触摸板滚动**不会**隐藏；结果面板可用标题栏拖动窗口位置；面板内长内容可滚动阅读；朗读中再次点击为停止且不报错。
 - Markdown：翻译/总结/解释结果按 Markdown 渲染（标题、列表、代码块、引用、表格、链接等），HTTPS 链接通过 `open_external` 打开；HTML 注入被转义。
-- 设置页：在线模型可按 `/models` 拉取并下拉选择；切换服务商预设会清空上一预设的 Key/模型且不自动填模型名；技能可拖拽排序（设置窗口 `dragDropEnabled: false` 保证 Windows 上 HTML5 拖拽可用）；技能提示词可编辑与重置（默认英文）；默认目标语言显示「自动识别」；不再有快捷键与本地模型下拉。
+- 自定义技能：设置页新增/编辑/删除后，picker 工具栏立即出现对应按钮（图标+名称），点击后流式返回、面板标题为技能名；提示词变量在后端替换；空提示词/非法 id 被后端归一化丢弃；未启用技能被点击时返回明确错误。
+- 设置页：在线模型可按 `/models` 拉取并下拉选择；切换服务商预设会清空上一预设的 Key/模型且不自动填模型名；技能可拖拽排序（设置窗口 `dragDropEnabled: false` 保证 Windows 上 HTML5 拖拽可用）；技能列表显示图标；自定义技能可增删改；技能提示词可编辑与重置（默认英文）；默认目标语言显示「自动识别」；不再有快捷键与本地模型下拉。
 - 本地模型目录只提供 2 个模型：Hy-MT2 1.8B（翻译模型，ModelScope）与 Qwen2.5 3B（通用模型）；无需手动选择，启动后按功能自动使用对应模型（切换模型会重新加载）。
 - 提示词生效：自定义提示词保存后，下一次翻译/总结/解释请求使用自定义 system prompt；空值回退系统默认。
 - 在线模式：填 mock/真实 OpenAI 兼容服务后「测试连接」成功；picker 翻译流式显示。
 - 本地模式：安装引擎 + 下载/导入 Qwen2.5 GGUF 后启动成功，翻译流式返回；总结/解释可用。
-- 构建 release：`scripts/build-portable.ps1` 产出单个 `dist/LingoPick-<version>-win-x64.exe`；双击运行后静默驻留托盘，数据写入 exe 同级 data/；Release 正文由 `scripts/release-notes.ps1` 生成排版化 changelog。
+- 构建 release：`scripts/build-portable.ps1` 产出单个 `dist/Lexora-<version>-win-x64.exe`；双击运行后静默驻留托盘，数据写入 exe 同级 data/；Release 正文由 `scripts/release-notes.ps1` 生成排版化 changelog。

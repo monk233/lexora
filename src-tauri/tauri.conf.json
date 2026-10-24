@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "LingoPick",
+  "productName": "Lexora",
   "version": "0.1.0",
-  "identifier": "io.github.monk233.lingopick",
+  "identifier": "io.github.monk233.lexora",
   "build": {
     "frontendDist": "../web"
   },
@@ -11,7 +11,7 @@
     "windows": [
       {
         "label": "settings",
-        "title": "LingoPick 设置",
+        "title": "Lexora 设置",
         "url": "index.html",
         "width": 980,
         "height": 780,
@@ -27,7 +27,7 @@
       },
       {
         "label": "picker",
-        "title": "LingoPick",
+        "title": "Lexora",
         "url": "picker.html",
         "width": 440,
         "height": 56,

@@ -14,11 +14,17 @@
 - 翻译目标语言扩展到 38 种（Hy-MT2 官方支持的语言，含繁体中文、粤语、藏语、哈萨克语、蒙古语、维吾尔语等）。
 - 划词工具栏结果面板支持拖动标题栏移动窗口位置。
 - 翻译/总结/解释结果支持 Markdown 渲染：标题、粗体/斜体、行内代码与代码块、有序/无序列表、引用、分隔线、表格、http(s) 链接（经系统浏览器打开）；流式输出实时渲染，长内容可在面板内滚动阅读。
+- 支持自定义工具栏技能：可选图标、名称、必填提示词（支持 `{text}`/`{target}`/`{language}`/`{program}`/`{app}` 变量）；设置页可添加/编辑/删除/排序/启停，picker 工具栏即时显示并流式执行。
+- 设置页技能列表为每个技能显示对应图标（内置技能与自定义技能）。
 
 ### Changed
 
+- 项目更名为 **Lexora**（原 LingoPick），同步更新应用名、exe 名、包名、identifier、托盘/窗口标题、GitHub 仓库与文档；旧链接由 GitHub 自动跳转。
+- 启用全新几何抽象 Logo（选中括号 + 菱形透镜，无文字），替换应用/托盘/站点图标。
+- README 重写为品牌化简介（为什么是 Lexora、特性、快速开始、致谢），并更新截图。
+
 - 启动逻辑改为静默后台：双击 exe、开机自启、二次启动都只在系统托盘挂载，不再自动弹出设置窗口；需要窗口时通过托盘菜单/双击托盘图标打开，或用 `--show` 参数显式启动。
-- 自动构建产物改为单个 exe：Release 直接上传 `LingoPick-<version>-win-x64.exe`，不再打包 zip；`scripts/build-portable.ps1` 只产出这一份 exe。
+- 自动构建产物改为单个 exe：Release 直接上传 `Lexora-<version>-win-x64.exe`，不再打包 zip；`scripts/build-portable.ps1` 只产出这一份 exe。
 - Release 正文改为读取本文件对应版本小节生成排版化 changelog，不再只放一个 Full Changelog 链接；新增 `scripts/release-notes.ps1`，并在打 tag 时校验版本号一致性。
 - 系统默认提示词改为英文；目标语言在提示词中使用英文语言名（如 Simplified Chinese）。
 - 默认目标语言下拉中 `auto` 显示为「自动识别」。

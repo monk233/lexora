@@ -1,4 +1,4 @@
-/* Shared constants for the LingoPick web UI.
+/* Shared constants for the Lexora web UI.
  *
  * Loaded by both windows (picker + settings) before their own scripts. Keeps
  * skill/language/preset metadata and small formatting helpers in one place so
@@ -9,8 +9,8 @@
 
   var LP = (window.LP = window.LP || {});
 
-  LP.APP_NAME = "LingoPick";
-  LP.REPO_URL = "https://github.com/monk233/lingopick";
+  LP.APP_NAME = "Lexora";
+  LP.REPO_URL = "https://github.com/monk233/lexora";
   LP.LICENSE = "MIT";
 
   /* ---- Skills ---------------------------------------------------------- */
@@ -52,6 +52,90 @@
   LP.DEFAULT_SKILLS = LP.SKILLS.map(function (skill) {
     return skill.id;
   });
+
+  /* ---- Skill icons ----------------------------------------------------- */
+
+  /* Icon keys available to built-in skills and user-defined custom skills.
+   * Values are SVG markup without the outer wrapper class; the consumers set
+   * `innerHTML` (icons are static literals, never model output). */
+  LP.SKILL_ICON_KEYS = [
+    "translate",
+    "summarize",
+    "explain",
+    "read",
+    "copy",
+    "sparkles",
+    "wand",
+    "pen",
+    "book",
+    "globe",
+    "code",
+    "list",
+    "chat",
+    "lightbulb",
+    "quote",
+    "briefcase",
+    "star",
+  ];
+
+  LP.SKILL_ICON_SVGS = {
+    translate:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h9"></path><path d="M7.5 3v2"></path><path d="M4.5 9.4c1.3 2.4 3.1 4 5.4 5"></path><path d="M11.5 5c-.5 3-2.3 5.4-5.2 7.1"></path><path d="m12.6 20 3.6-8.6 3.6 8.6"></path><path d="M13.9 17h4.6"></path></svg>',
+    summarize:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 6h14"></path><path d="M5 10h14"></path><path d="M5 14h9"></path><path d="M5 18h6"></path></svg>',
+    explain:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 1.5-1.6 1.9-2.2 2.6-.3.4-.4.8-.4 1.4"></path><path d="M12 17h.01"></path></svg>',
+    read:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9v6h3l5 4V5L7 9H4z"></path><path d="M16 9a4 4 0 0 1 0 6"></path><path d="M18.5 6.5a8 8 0 0 1 0 11"></path></svg>',
+    copy:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>',
+    sparkles:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.9 4.6L18.5 9.5 13.9 11.4 12 16l-1.9-4.6L5.5 9.5l4.6-1.9L12 3z"></path><path d="M19 14l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8.8-2z"></path><path d="M5 15l.6 1.4L7 17l-1.4.6L5 19l-.6-1.4L3 17l1.4-.6L5 15z"></path></svg>',
+    wand:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20 16 8"></path><path d="m13.5 4.5 1 2.4 2.4 1-2.4 1-1 2.4-1-2.4-2.4-1 2.4-1 1-2.4z"></path><path d="M19 13l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7.7-1.8z"></path></svg>',
+    pen:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>',
+    book:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path><path d="M8 7h8"></path><path d="M8 11h6"></path></svg>',
+    globe:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M3 12h18"></path><path d="M12 3a15 15 0 0 1 0 18"></path><path d="M12 3a15 15 0 0 0 0 18"></path></svg>',
+    code:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 7-5 5 5 5"></path><path d="m16 7 5 5-5 5"></path><path d="m13 4-2 16"></path></svg>',
+    list:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6h11"></path><path d="M9 12h11"></path><path d="M9 18h11"></path><circle cx="4.5" cy="6" r="1"></circle><circle cx="4.5" cy="12" r="1"></circle><circle cx="4.5" cy="18" r="1"></circle></svg>',
+    chat:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-8 8H7l-4 3v-6a8 8 0 0 1 8-8h2a8 8 0 0 1 8 3z"></path><path d="M8 11h8"></path><path d="M8 15h5"></path></svg>',
+    lightbulb:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18h6"></path><path d="M10 22h4"></path><path d="M8.5 14.5a6 6 0 1 1 7 0c-.8.6-1.2 1.5-1.3 2.5h-4.4c-.1-1-.5-1.9-1.3-2.5z"></path></svg>',
+    quote:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 7H5a2 2 0 0 0-2 2v3a2 2 0 0 0 2 2h2v1a3 3 0 0 1-3 3"></path><path d="M20 7h-4a2 2 0 0 0-2 2v3a2 2 0 0 0 2 2h2v1a3 3 0 0 1-3 3"></path></svg>',
+    briefcase:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="7" width="18" height="13" rx="2"></rect><path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"></path><path d="M3 12h18"></path></svg>',
+    star:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 2.8 5.8 6.2.9-4.5 4.4 1.1 6.2L12 17.4l-5.6 2.9 1.1-6.2L3 9.7l6.2-.9L12 3z"></path></svg>',
+  };
+
+  LP.skillIconSvg = function (key) {
+    var icons = LP.SKILL_ICON_SVGS || {};
+    return icons[key] || icons.sparkles || "";
+  };
+
+  LP.CUSTOM_SKILL_ICON_KEYS = [
+    "sparkles",
+    "wand",
+    "pen",
+    "book",
+    "globe",
+    "code",
+    "list",
+    "chat",
+    "lightbulb",
+    "quote",
+    "briefcase",
+    "star",
+  ];
+
+  LP.CUSTOM_SKILL_DEFAULT_ICON = "sparkles";
 
   /* ---- Languages ------------------------------------------------------- */
 

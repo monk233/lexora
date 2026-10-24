@@ -71,7 +71,7 @@ pub struct LoginItemState {
     pub enabled: bool,
 }
 
-/// `PORTABLE_EXECUTABLE_DIR` is used by portable launchers; a plain LingoPick
+/// `PORTABLE_EXECUTABLE_DIR` is used by portable launchers; a plain Lexora
 /// zip has no such variable, so autostart stays available unless it is set.
 pub fn portable_mode() -> bool {
     std::env::var_os("PORTABLE_EXECUTABLE_DIR").is_some()
@@ -87,7 +87,7 @@ pub fn build_state(app: &AppHandle, state: &AppState) -> StatePayload {
     };
     StatePayload {
         app: AppInfo {
-            name: "LingoPick".to_string(),
+            name: "Lexora".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             platform: std::env::consts::OS.to_string(),
             packaged: !cfg!(debug_assertions),
@@ -95,7 +95,7 @@ pub fn build_state(app: &AppHandle, state: &AppState) -> StatePayload {
             data_dir: state.paths.data_dir.to_string_lossy().to_string(),
             models_dir: state.paths.models_dir.to_string_lossy().to_string(),
             logs_dir: state.paths.logs_dir.to_string_lossy().to_string(),
-            repo_url: "https://github.com/monk233/lingopick".to_string(),
+            repo_url: "https://github.com/monk233/lexora".to_string(),
             license: "MIT".to_string(),
         },
         settings,
@@ -433,7 +433,7 @@ pub fn set_start_at_login(app: AppHandle, state: State<'_, Arc<AppState>>, enabl
     if portable_mode() {
         return json!({
             "ok": false,
-            "error": "便携版不支持开机自启。请把 LingoPick 放到固定目录，或在启动文件夹中手动创建快捷方式。",
+            "error": "便携版不支持开机自启。请把 Lexora 放到固定目录，或在启动文件夹中手动创建快捷方式。",
         });
     }
     let result = crate::autostart::set_enabled(enabled);
@@ -552,6 +552,88 @@ pub fn picker_translate(
         };
 
         match engine.translate_stream(&text, &target_lang).await {
+            Ok(mut stream) => {
+                while let Some(item) = stream.next().await {
+                    match item {
+                        Ok(chunk) => {
+                            if chunk.is_empty() {
+                                continue;
+                            }
+                            emit(json!({
+                                "requestId": rid.clone(),
+                                "type": "chunk",
+                                "text": chunk,
+                            }));
+                        }
+                        Err(error) => {
+                            emit(json!({
+                                "requestId": rid.clone(),
+                                "type": "error",
+                                "message": error.message,
+                            }));
+                            return;
+                        }
+                    }
+                }
+                emit(json!({
+                    "requestId": rid.clone(),
+                    "type": "done",
+                }));
+            }
+            Err(error) => {
+                emit(json!({
+                    "requestId": rid.clone(),
+                    "type": "error",
+                    "message": error.message,
+                }));
+            }
+        }
+    });
+
+    *lock(&state.translate_task) = Some(TranslateTask { request_id, handle });
+    json!({ "ok": true })
+}
+
+/// Streams a user-defined skill (`picker.customSkills`) through the same
+/// `translate-event` channel as [`picker_translate`]: chunk/error/done events
+/// carry the same payload shape, so the picker UI reuses one renderer.
+#[tauri::command]
+pub fn picker_custom_skill(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    request_id: String,
+    skill_id: String,
+    text: String,
+    program_name: String,
+) -> Value {
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return json!({
+            "ok": false,
+            "error": "没有可翻译的文本。",
+            "hint": "请先选中一段文字，然后再点击翻译。",
+        });
+    }
+    let skill_id = skill_id.trim().to_string();
+    // Custom skills follow the picker's default target language; there is no
+    // per-request target on this command (the toolbar has one target setting).
+    let target_lang = state.settings.get().picker.default_target_lang;
+
+    // Only one stream at a time: abort the previous request.
+    state.abort_translate();
+
+    let engine = state.engine.clone();
+    let task_app = app.clone();
+    let rid = request_id.clone();
+    let handle = tauri::async_runtime::spawn(async move {
+        let emit = |payload: Value| {
+            let _ = task_app.emit_to(crate::windows::PICKER_LABEL, "translate-event", payload);
+        };
+
+        match engine
+            .custom_stream(&skill_id, &text, &target_lang, &program_name)
+            .await
+        {
             Ok(mut stream) => {
                 while let Some(item) = stream.next().await {
                     match item {

@@ -1,7 +1,7 @@
 [package]
-name = "lingopick"
+name = "lexora"
 version = "0.1.0"
-description = "LingoPick desktop shell: selection translator for Windows"
+description = "Lexora desktop shell: selection translator for Windows"
 edition = "2021"
 rust-version = "1.77"
 

@@ -5,7 +5,7 @@
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src ipc: http://ipc.localhost">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>LingoPick 设置</title>
+  <title>Lexora 设置</title>
   <link rel="stylesheet" href="settings.css">
 </head>
 <body>
@@ -14,13 +14,23 @@
       <div class="brand">
         <span class="brand-mark" aria-hidden="true">
           <svg viewBox="0 0 32 32" role="presentation">
-            <rect width="32" height="32" rx="8" fill="currentColor"></rect>
-            <text x="16" y="21.5" text-anchor="middle" font-size="15" font-weight="600" fill="#ffffff">译</text>
+            <defs>
+              <linearGradient id="lexoraBrandGradient" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#6366f1"></stop>
+                <stop offset="1" stop-color="#5b21b6"></stop>
+              </linearGradient>
+            </defs>
+            <rect width="32" height="32" rx="8" fill="url(#lexoraBrandGradient)"></rect>
+            <path d="M9.5 13.5v-4h4M18.5 9.5h4v4M22.5 18.5v4h-4M13.5 22.5h-4v-4"
+                  fill="none" stroke="#ffffff" stroke-width="2.4"
+                  stroke-linecap="round" stroke-linejoin="round"></path>
+            <path d="M16 12.4 19.6 16 16 19.6 12.4 16Z" fill="none"
+                  stroke="#ffffff" stroke-width="2.2" stroke-linejoin="round"></path>
           </svg>
         </span>
         <div class="brand-text">
-          <span class="brand-title">LingoPick</span>
-          <span class="brand-sub">划词翻译 · 设置</span>
+          <span class="brand-title">Lexora</span>
+          <span class="brand-sub">划词翻译与阅读助手 · 设置</span>
         </div>
       </div>
       <div class="save-status" id="save-status" data-state="idle" role="status" aria-live="polite">
@@ -221,6 +231,53 @@
           </div>
           <div class="field-control">
             <ul class="skill-list" id="skill-list"></ul>
+            <div class="skill-actions">
+              <button type="button" class="btn" id="add-custom-skill">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M12 5v14"></path>
+                  <path d="M5 12h14"></path>
+                </svg>
+                添加技能
+              </button>
+            </div>
+
+            <div class="custom-skill-editor" id="custom-skill-editor" hidden>
+              <div class="custom-skill-editor-head">
+                <span class="custom-skill-editor-title" id="custom-skill-editor-title">新增技能</span>
+                <span class="custom-skill-editor-sub">自定义技能会显示在工具栏中</span>
+              </div>
+
+              <div class="custom-skill-field">
+                <span class="custom-skill-label">图标</span>
+                <div class="icon-grid" id="custom-skill-icons" role="radiogroup"
+                     aria-label="技能图标"></div>
+              </div>
+
+              <div class="custom-skill-field">
+                <label class="custom-skill-label" for="custom-skill-name">名称</label>
+                <input class="input" id="custom-skill-name" type="text" maxlength="20"
+                       placeholder="例如：润色" autocomplete="off" spellcheck="false">
+              </div>
+
+              <div class="custom-skill-field">
+                <label class="custom-skill-label" for="custom-skill-prompt">提示词</label>
+                <textarea class="textarea" id="custom-skill-prompt" rows="6" maxlength="4000"
+                          spellcheck="false"
+                          placeholder="例如：把下面的文本润色得更通顺，保持原意不变，只输出润色后的文本：&#10;{text}"></textarea>
+                <p class="custom-skill-hint">
+                  支持变量：<code>{text}</code> 选中文本、<code>{target}</code> / <code>{language}</code> 目标语言、<code>{program}</code> / <code>{app}</code> 当前应用
+                </p>
+              </div>
+
+              <p class="inline-error" id="custom-skill-error" hidden></p>
+
+              <div class="custom-skill-actions">
+                <button type="button" class="btn btn-primary" id="save-custom-skill">保存</button>
+                <button type="button" class="btn" id="cancel-custom-skill">取消</button>
+                <button type="button" class="btn btn-danger" id="delete-custom-skill" hidden>删除</button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -322,7 +379,7 @@
           </div>
           <div class="danger-row">
             <div class="danger-text">
-              <span class="danger-title">退出 LingoPick</span>
+              <span class="danger-title">退出 Lexora</span>
               <p class="danger-desc">退出后划词与托盘后台全部停止</p>
             </div>
             <button type="button" class="btn btn-danger" id="quit-app">退出程序</button>
@@ -371,7 +428,7 @@
         </dl>
         <div class="about-links">
           <button type="button" class="btn" id="open-repo">GitHub 仓库</button>
-          <span class="about-url">github.com/monk233/lingopick</span>
+          <span class="about-url">github.com/monk233/lexora</span>
           <span class="about-sep" aria-hidden="true">·</span>
           <span class="about-url">MIT License</span>
         </div>

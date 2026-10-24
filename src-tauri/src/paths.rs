@@ -1,18 +1,18 @@
 //! Application data paths.
 //!
-//! LingoPick is a portable Windows app: by default it keeps everything next to
+//! Lexora is a portable Windows app: by default it keeps everything next to
 //! the executable (``<exe dir>\\data``) so a zip can be moved around without
 //! leaving traces in %APPDATA%. If that directory is not writable (Program
-//! Files, read-only share) it falls back to ``%APPDATA%\\LingoPick``.
+//! Files, read-only share) it falls back to ``%APPDATA%\\Lexora``.
 
 use std::path::{Path, PathBuf};
 
 /// Environment override for the whole data directory (tests, dev harnesses).
-pub const ENV_DATA_DIR: &str = "LINGOPICK_DATA_DIR";
+pub const ENV_DATA_DIR: &str = "LEXORA_DATA_DIR";
 /// Environment override for the GGUF model directory.
-pub const ENV_MODEL_DIR: &str = "LINGOPICK_MODEL_DIR";
+pub const ENV_MODEL_DIR: &str = "LEXORA_MODEL_DIR";
 /// Environment override for the llama.cpp engine directory.
-pub const ENV_LLAMA_DIR: &str = "LINGOPICK_LLAMA_DIR";
+pub const ENV_LLAMA_DIR: &str = "LEXORA_LLAMA_DIR";
 
 #[derive(Debug, Clone)]
 pub struct AppPaths {
@@ -92,13 +92,13 @@ fn resolve_data_dir() -> PathBuf {
 
 fn appdata_dir() -> PathBuf {
     if let Some(appdata) = std::env::var_os("APPDATA") {
-        return PathBuf::from(appdata).join("LingoPick");
+        return PathBuf::from(appdata).join("Lexora");
     }
-    std::env::temp_dir().join("LingoPick")
+    std::env::temp_dir().join("Lexora")
 }
 
 fn dir_is_writable(dir: &Path) -> bool {
-    let probe = dir.join(".lingopick-write-test");
+    let probe = dir.join(".lexora-write-test");
     match std::fs::write(&probe, b"ok") {
         Ok(()) => {
             let _ = std::fs::remove_file(&probe);

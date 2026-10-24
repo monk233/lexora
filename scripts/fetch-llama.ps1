@@ -1,4 +1,4 @@
-﻿# LingoPick — download the llama.cpp engine used for local mode.
+﻿# Lexora — download the llama.cpp engine used for local mode.
 #
 # The app expects the *contents* of the archive (llama-server.exe and its DLLs)
 # flattened into the engine directory, i.e.:
@@ -14,7 +14,7 @@
 # Parameters:
 #   -Dest     Target engine directory (default: <repo>/data/engine).
 #   -Url      Archive URL (default: pinned llama.cpp Windows CPU x64 release,
-#             overridable with the LINGOPICK_LLAMA_URL environment variable).
+#             overridable with the LEXORA_LLAMA_URL environment variable).
 #   -FromDir  Copy a local llama.cpp directory instead of downloading.
 #
 # Exit code 0 on success, 1 on failure (with manual placement instructions).
@@ -35,8 +35,8 @@ if (-not $Dest) {
     $Dest = Join-Path $RepoRoot 'data\engine'
 }
 if (-not $Url) {
-    if ($env:LINGOPICK_LLAMA_URL) {
-        $Url = $env:LINGOPICK_LLAMA_URL
+    if ($env:LEXORA_LLAMA_URL) {
+        $Url = $env:LEXORA_LLAMA_URL
     } else {
         $Url = 'https://github.com/ggml-org/llama.cpp/releases/download/b11851/llama-b11851-bin-win-cpu-x64.zip'
     }
@@ -60,7 +60,7 @@ function Fail([string]$Message) {
     Write-Host '  1. 从 https://github.com/ggml-org/llama.cpp/releases 下载 Windows CPU x64 的 zip；'
     Write-Host '  2. 解压后找到包含 llama-server.exe 的目录；'
     Write-Host "  3. 把该目录内的全部文件（含 DLL）复制到：$Dest"
-    Write-Host '  4. 确认存在 llama-server.exe 后重新启动 LingoPick。'
+    Write-Host '  4. 确认存在 llama-server.exe 后重新启动 Lexora。'
     exit 1
 }
 
@@ -92,7 +92,7 @@ function Install-FromDirectory([string]$SourceDirectory) {
     Copy-Item -Path (Join-Path $SourceDirectory '*') -Destination $Dest -Recurse -Force
 }
 
-Write-Host "LingoPick fetch-llama: dest=$Dest" -ForegroundColor DarkGray
+Write-Host "Lexora fetch-llama: dest=$Dest" -ForegroundColor DarkGray
 
 if (Test-EngineDir $Dest) {
     Write-Ok "引擎已存在，跳过：$Dest"
@@ -107,7 +107,7 @@ if ($FromDir) {
     Install-FromDirectory $FromDir
 } else {
     Write-Step "下载 llama.cpp 引擎：$Url"
-    $TempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("lingopick-engine-" + [guid]::NewGuid().ToString('N'))
+    $TempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("lexora-engine-" + [guid]::NewGuid().ToString('N'))
     $ZipPath = Join-Path $TempRoot 'llama.zip'
     $ExtractDir = Join-Path $TempRoot 'extract'
     New-Item -ItemType Directory -Force -Path $TempRoot | Out-Null

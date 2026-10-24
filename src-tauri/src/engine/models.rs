@@ -1,7 +1,7 @@
 //! Local GGUF model catalog, directory scanning and filename helpers.
 //!
 //! The catalog is a compile-time constant so the settings UI always has a stable
-//! list of downloadable models, even offline. LingoPick offers exactly two
+//! list of downloadable models, even offline. Lexora offers exactly two
 //! models: a translation-specialised Tencent Hunyuan Hy-MT2 and a general-purpose
 //! Qwen2.5 3B. `tests` in this module guard against accidental edits that would
 //! break a download.
@@ -27,7 +27,7 @@ pub struct ModelSpec {
     pub modelscope_url: &'static str,
 }
 
-/// The two local models offered by LingoPick: one translation-specialised
+/// The two local models offered by Lexora: one translation-specialised
 /// (Hy-MT2) and one general-purpose (Qwen2.5 3B). `hf_url` may be empty when the
 /// model is only distributed through ModelScope.
 pub const CATALOG: [ModelSpec; 2] = [
@@ -63,7 +63,7 @@ pub const TRANSLATION_MODEL_ID: &str = "hy-mt2-1.8b";
 pub const GENERAL_MODEL_ID: &str = "qwen2.5-3b";
 
 /// Files larger than this are rejected on import (the FLINT const keeps the
-/// comparison lossless on 32-bit builds; LingoPick ships 64-bit only).
+/// comparison lossless on 32-bit builds; Lexora ships 64-bit only).
 pub const MAX_IMPORT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 pub fn spec_by_id(id: &str) -> Option<&'static ModelSpec> {
@@ -362,7 +362,7 @@ mod tests {
 
     #[test]
     fn scan_missing_directory_is_empty() {
-        assert!(scan_models(Path::new("E:\\definitely-missing-dir-lingopick")).is_empty());
+        assert!(scan_models(Path::new("E:\\definitely-missing-dir-lexora")).is_empty());
     }
 
     #[test]

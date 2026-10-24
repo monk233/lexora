@@ -72,7 +72,7 @@ impl ClickChain {
 pub(super) fn start(inner: Arc<Inner>) {
     let logger = inner.logger.clone();
     let spawned = thread::Builder::new()
-        .name("lingopick-hook".to_string())
+        .name("lexora-hook".to_string())
         .spawn(move || run(inner));
     if let Err(error) = spawned {
         logger.error(&format!("无法启动全局输入钩子线程：{error}"));

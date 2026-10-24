@@ -1,4 +1,4 @@
-﻿# LingoPick — generate the GitHub Release body.
+﻿# Lexora — generate the GitHub Release body.
 #
 # The body comes from the matching version section of CHANGELOG.md (Keep a
 # Changelog format). When that section is missing, commits since the previous
@@ -229,11 +229,11 @@ if (-not $section) {
 
 # --- body --------------------------------------------------------------------
 $lines = New-Object System.Collections.ArrayList
-[void]$lines.Add("# LingoPick $cleanVersion")
+[void]$lines.Add("# Lexora $cleanVersion")
 [void]$lines.Add('')
 [void]$lines.Add("_发布日期：${releaseDate}_")
 [void]$lines.Add('')
-[void]$lines.Add('免安装单文件：下载 `LingoPick-' + $cleanVersion + '-win-x64.exe` 后双击即可使用。程序静默驻留系统托盘，通过托盘菜单打开设置。')
+[void]$lines.Add('免安装单文件：下载 `Lexora-' + $cleanVersion + '-win-x64.exe` 后双击即可使用。程序静默驻留系统托盘，通过托盘菜单打开设置。')
 [void]$lines.Add('')
 [void]$lines.Add('## 本次更新')
 [void]$lines.Add('')

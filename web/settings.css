@@ -1,4 +1,4 @@
-/* LingoPick settings window.
+/* Lexora settings window.
  *
  * Visual language (contract §7.2): system font stack, #f6f7f9 page background,
  * white cards with a 1px #e5e7eb border and 12px radius, indigo accent, no
@@ -1075,6 +1075,181 @@ textarea {
   font-size: 12px;
 }
 
+/* ---- Skill icons / custom skill rows ------------------------------------ */
+
+.skill-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  color: var(--text-muted);
+}
+
+.skill-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.skill-item.is-disabled .skill-icon {
+  color: var(--text-faint);
+  opacity: 0.7;
+}
+
+.skill-delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.skill-delete svg {
+  width: 15px;
+  height: 15px;
+}
+
+.skill-delete:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.skill-delete.is-armed {
+  background: var(--danger);
+  color: #ffffff;
+}
+
+.skill-delete:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+.skill-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+/* ---- Custom skill editor ------------------------------------------------ */
+
+.custom-skill-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 4px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-muted);
+}
+
+.custom-skill-editor-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.custom-skill-editor-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.custom-skill-editor-sub {
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.custom-skill-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.custom-skill-label {
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 550;
+}
+
+.custom-skill-hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.custom-skill-hint code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--surface-hover);
+  color: var(--text);
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 11px;
+}
+
+.custom-skill-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.custom-skill-actions .btn-danger {
+  margin-left: auto;
+}
+
+.icon-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.icon-option {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.icon-option svg {
+  width: 18px;
+  height: 18px;
+}
+
+.icon-option:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.icon-option.is-selected {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.icon-option:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
 /* ---- Chips -------------------------------------------------------------- */
 
 .chips {
@@ -1294,6 +1469,7 @@ textarea {
   .switch-thumb,
   .progress-fill,
   .textarea,
+  .icon-option,
   .skill-item {
     transition: none;
   }

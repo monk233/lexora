@@ -113,7 +113,7 @@ impl Default for WorkerConfig {
 struct Inner {
     logger: Logger,
     own_pid: u32,
-    /// Normalized image name of this executable, e.g. `lingopick`.
+    /// Normalized image name of this executable, e.g. `lexora`.
     own_program: String,
     app: OnceLock<tauri::AppHandle>,
     capture_tx: Mutex<Option<Sender<CaptureRequest>>>,
@@ -235,7 +235,7 @@ impl SelectionService {
 
         let capture_inner = self.inner.clone();
         if let Err(error) = thread::Builder::new()
-            .name("lingopick-capture".to_string())
+            .name("lexora-capture".to_string())
             .spawn(move || capture_worker(capture_inner, capture_rx))
         {
             self.inner
@@ -245,7 +245,7 @@ impl SelectionService {
 
         let action_inner = self.inner.clone();
         if let Err(error) = thread::Builder::new()
-            .name("lingopick-picker-action".to_string())
+            .name("lexora-picker-action".to_string())
             .spawn(move || action_worker(action_inner, action_rx))
         {
             self.inner
@@ -488,8 +488,30 @@ fn config_from_settings(settings: &Settings) -> WorkerConfig {
             "skills": &settings.picker.skills,
             "compact": settings.picker.compact,
             "defaultTargetLang": &settings.picker.default_target_lang,
+            // Only enabled custom skills are sent to the picker; the full
+            // definition (including the prompt) stays in settings.
+            "customSkills": enabled_custom_skill_metadata(settings),
         }),
     }
+}
+
+/// Metadata (`{id,label,icon}`) of the custom skills enabled in
+/// `picker.skills`, in their stored order. Prompts are never exposed here: the
+/// picker only needs them to render the toolbar and dispatch the command.
+fn enabled_custom_skill_metadata(settings: &Settings) -> Vec<serde_json::Value> {
+    settings
+        .picker
+        .custom_skills
+        .iter()
+        .filter(|skill| settings.picker.skills.iter().any(|id| id == &skill.id))
+        .map(|skill| {
+            serde_json::json!({
+                "id": skill.id,
+                "label": skill.label,
+                "icon": skill.icon,
+            })
+        })
+        .collect()
 }
 
 /// Lower-cases a process name and strips a trailing `.exe` so `Chrome.EXE`,
@@ -576,10 +598,10 @@ mod tests {
 
     #[test]
     fn own_program_is_ignored() {
-        assert!(is_own_program("LingoPick.EXE", "lingopick"));
-        assert!(is_own_program("lingopick", "lingopick.exe"));
-        assert!(!is_own_program("chrome.exe", "lingopick"));
-        assert!(!is_own_program("", "lingopick"));
+        assert!(is_own_program("Lexora.EXE", "lexora"));
+        assert!(is_own_program("lexora", "lexora.exe"));
+        assert!(!is_own_program("chrome.exe", "lexora"));
+        assert!(!is_own_program("", "lexora"));
         assert!(!is_own_program("", ""));
     }
 
@@ -631,5 +653,37 @@ mod tests {
         assert_eq!(config.picker_config["defaultTargetLang"], "zh");
         assert_eq!(config.picker_config["skills"][0], "translate");
         assert_eq!(config.picker_config["skills"][1], "copy");
+        assert_eq!(config.picker_config["customSkills"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn picker_config_exposes_only_enabled_custom_skills() {
+        let mut settings = Settings::default();
+        settings.picker.skills = vec!["translate".to_string(), "custom-enabled".to_string()];
+        settings.picker.custom_skills = vec![
+            crate::settings::CustomSkill {
+                id: "custom-disabled".to_string(),
+                label: "未启用".to_string(),
+                icon: "star".to_string(),
+                prompt: "disabled {text}".to_string(),
+            },
+            crate::settings::CustomSkill {
+                id: "custom-enabled".to_string(),
+                label: "已启用".to_string(),
+                icon: "wand".to_string(),
+                prompt: "Explain {text} for {program} in {target}".to_string(),
+            },
+        ];
+
+        let config = config_from_settings(&settings);
+        let custom = config.picker_config["customSkills"]
+            .as_array()
+            .expect("customSkills must be an array");
+        assert_eq!(custom.len(), 1, "customSkills: {custom:?}");
+        assert_eq!(custom[0]["id"], "custom-enabled");
+        assert_eq!(custom[0]["label"], "已启用");
+        assert_eq!(custom[0]["icon"], "wand");
+        // Prompts stay in settings; the picker never receives them.
+        assert!(custom[0].get("prompt").is_none());
     }
 }

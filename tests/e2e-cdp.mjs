@@ -3,10 +3,10 @@
  * End-to-end check through the WebView2 DevTools protocol.
  *
  * Prerequisites:
- *   - `npx tauri build --debug --no-bundle` produced src-tauri/target/debug/lingopick.exe
+ *   - `npx tauri build --debug --no-bundle` produced src-tauri/target/debug/lexora.exe
  *   - `node tests/mock-openai-server.js 8770` is already running
  *
- * The script starts LingoPick with a temporary data directory whose settings
+ * The script starts Lexora with a temporary data directory whose settings
  * point at the mock OpenAI server, then uses CDP `Runtime.evaluate` to invoke the
  * real Tauri commands (`test_online`, `picker_translate`, `picker_assist`) and
  * asserts on the results. It never touches the user's real data directory.
@@ -21,8 +21,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const exe = process.env.LINGOPICK_E2E_EXE || path.join(root, "src-tauri", "target", "debug", "lingopick.exe");
-const dataDir = mkdtempSync(path.join(tmpdir(), "lingopick-e2e-"));
+const exe = process.env.LEXORA_E2E_EXE || path.join(root, "src-tauri", "target", "debug", "lexora.exe");
+const dataDir = mkdtempSync(path.join(tmpdir(), "lexora-e2e-"));
 const debugPort = 9333;
 
 mkdirSync(path.join(dataDir, "logs"), { recursive: true });
@@ -129,7 +129,7 @@ async function main() {
     cwd: root,
     env: {
       ...process.env,
-      LINGOPICK_DATA_DIR: dataDir,
+      LEXORA_DATA_DIR: dataDir,
       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort}`,
     },
     stdio: "ignore",
@@ -191,7 +191,7 @@ async function main() {
     check("picker_translate streaming", streaming && streaming.ok === true, `chunks=${streaming && streaming.chunkCount} text=${String(streaming && streaming.text).slice(0, 40)}`);
 
     const assist = await picker.evaluate(
-      "window.__TAURI__.core.invoke('picker_assist', {action:'summarize', text:'LingoPick is a portable selection translator for Windows.'})"
+      "window.__TAURI__.core.invoke('picker_assist', {action:'summarize', text:'Lexora is a portable selection translator for Windows.'})"
     );
     check("picker_assist", assist && assist.ok === true && typeof assist.text === "string", `text=${String(assist && assist.text).slice(0, 40)}`);
   } catch (error) {

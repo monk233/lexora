@@ -165,6 +165,65 @@ pub fn assist_messages(
     Ok((system.to_string(), text.to_string()))
 }
 
+/// Placeholder used in prompts when the source application is unknown.
+pub const UNKNOWN_PROGRAM_NAME: &str = "未知应用";
+
+/// Renders a user-defined skill prompt.
+///
+/// Supported placeholders: `{text}` (selected text), `{target}` / `{language}`
+/// (target language name), `{program}` / `{app}` (source application). Unknown
+/// placeholders are kept verbatim so a user can talk about JSON or code
+/// snippets without escaping; the selected text is inserted verbatim and is
+/// never rendered itself.
+pub fn render_custom_prompt(
+    template: &str,
+    text: &str,
+    target_lang: &str,
+    program: &str,
+) -> String {
+    let language = language_name(target_lang);
+    let program = {
+        let trimmed = program.trim();
+        if trimmed.is_empty() {
+            UNKNOWN_PROGRAM_NAME
+        } else {
+            trimmed
+        }
+    };
+
+    let mut rendered = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        rendered.push_str(&rest[..open]);
+        let after_open = &rest[open + 1..];
+        let Some(close) = after_open.find('}') else {
+            // Unclosed placeholder: keep the rest untouched.
+            rendered.push_str(&rest[open..]);
+            rest = "";
+            break;
+        };
+        let name = &after_open[..close];
+        let replacement = match name {
+            "text" => Some(text),
+            "target" | "language" => Some(language.as_str()),
+            "program" | "app" => Some(program),
+            _ => None,
+        };
+        match replacement {
+            Some(value) => rendered.push_str(value),
+            None => {
+                // Unknown placeholder stays as-is.
+                rendered.push('{');
+                rendered.push_str(name);
+                rendered.push('}');
+            }
+        }
+        rest = &after_open[close + 1..];
+    }
+    rendered.push_str(rest);
+    rendered.trim().to_string()
+}
+
 /// System default prompts exposed to the settings UI (`promptDefaults`).
 pub fn default_prompts() -> serde_json::Value {
     serde_json::json!({
@@ -324,5 +383,66 @@ mod tests {
     #[test]
     fn assist_input_limit_is_8000_chars() {
         assert_eq!(ASSIST_MAX_CHARS, 8_000);
+    }
+
+    #[test]
+    fn custom_prompt_renders_supported_variables() {
+        let rendered = render_custom_prompt(
+            "Explain {text} to a {target} speaker ({language}) in {program}. Source: {app}.",
+            "hello world",
+            "ja",
+            "Notepad",
+        );
+        assert_eq!(
+            rendered,
+            "Explain hello world to a Japanese speaker (Japanese) in Notepad. Source: Notepad."
+        );
+    }
+
+    #[test]
+    fn custom_prompt_keeps_unknown_placeholders() {
+        assert_eq!(
+            render_custom_prompt("Use {tone} and {text}.", "hi", "en", "Code"),
+            "Use {tone} and hi."
+        );
+        // An unclosed brace is text, not a placeholder.
+        assert_eq!(
+            render_custom_prompt("Unclosed {text", "hi", "en", "Code"),
+            "Unclosed {text"
+        );
+    }
+
+    #[test]
+    fn custom_prompt_falls_back_to_unknown_program() {
+        assert_eq!(
+            render_custom_prompt("Selected in {app}.", "hi", "en", "   "),
+            "Selected in 未知应用."
+        );
+        assert_eq!(
+            render_custom_prompt("Selected in {program}.", "hi", "en", ""),
+            "Selected in 未知应用."
+        );
+        assert_eq!(
+            render_custom_prompt("Selected in {program}.", "hi", "en", " VS Code "),
+            "Selected in VS Code."
+        );
+    }
+
+    #[test]
+    fn custom_prompt_trims_and_inserts_text_verbatim() {
+        assert_eq!(
+            render_custom_prompt("  {text}  ", "  hi  ", "en", "Code"),
+            "hi"
+        );
+        // The selected text is data, never re-rendered as a template.
+        assert_eq!(
+            render_custom_prompt("{text}", "{target}", "en", "Code"),
+            "{target}"
+        );
+        // Custom skills may use a target/language without a trailing period.
+        assert_eq!(
+            render_custom_prompt("Translate into {language}", "hi", "de", "Code"),
+            "Translate into German"
+        );
     }
 }

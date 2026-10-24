@@ -1,4 +1,4 @@
-/* LingoPick settings renderer.
+/* Lexora settings renderer.
  *
  * Single-page settings window backed by `window.settingsAPI` (contract §5.1).
  * All changes save automatically: switches/selects immediately, text fields
@@ -43,6 +43,30 @@
 
   /* Skill id currently being dragged in the toolbar-order list. */
   var dragSkillId = "";
+
+  /* Custom skill editor: open flag, edited id ("" means a new skill) and the
+   * in-progress draft. The draft survives `state-changed` refreshes so a
+   * background update never wipes what the user is typing. */
+  var customEditorOpen = false;
+  var customEditingId = "";
+  var customDraft = null;
+
+  var CUSTOM_ICON_LABELS = {
+    sparkles: "灵感",
+    wand: "魔法",
+    pen: "书写",
+    book: "阅读",
+    globe: "语言",
+    code: "代码",
+    list: "要点",
+    chat: "对话",
+    lightbulb: "解释",
+    quote: "引用",
+    briefcase: "工作",
+    star: "收藏",
+  };
+
+  var CUSTOM_ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 
   /* ---- DOM helpers ----------------------------------------------------- */
 
@@ -907,7 +931,79 @@
     setChecked(byId("picker-compact"), picker.compact === true);
     setSelectValue(byId("default-target-lang"), picker.defaultTargetLang || "auto");
     renderSkills();
+    renderCustomSkillEditor(false);
     renderBlacklist();
+  }
+
+  /* ---- Custom skills ----------------------------------------------------- */
+
+  /* Custom skills are stored as {id,label,icon,prompt}. Return copies so a
+   * patch never mutates the state object in place. */
+  function customSkillsList() {
+    var picker = state && state.settings && state.settings.picker;
+    var stored = picker && Array.isArray(picker.customSkills) ? picker.customSkills : [];
+    var seen = {};
+    var result = [];
+    stored.forEach(function (entry) {
+      if (!entry || !entry.id) {
+        return;
+      }
+      var id = String(entry.id);
+      if (seen[id]) {
+        return;
+      }
+      seen[id] = true;
+      result.push({
+        id: id,
+        label: String(entry.label || "").trim() || "自定义技能",
+        icon: validCustomIcon(entry.icon),
+        prompt: String(entry.prompt || ""),
+      });
+    });
+    return result;
+  }
+
+  function findCustomSkill(id) {
+    var skills = customSkillsList();
+    for (var index = 0; index < skills.length; index += 1) {
+      if (skills[index].id === id) {
+        return skills[index];
+      }
+    }
+    return null;
+  }
+
+  function validCustomIcon(icon) {
+    var keys = LP.CUSTOM_SKILL_ICON_KEYS || [];
+    var key = String(icon || "");
+    if (keys.indexOf(key) >= 0) {
+      return key;
+    }
+    return LP.CUSTOM_SKILL_DEFAULT_ICON || "sparkles";
+  }
+
+  function knownSkillIds() {
+    return SKILL_IDS.concat(
+      customSkillsList().map(function (skill) {
+        return skill.id;
+      })
+    );
+  }
+
+  /* Enabled ids in saved toolbar order, ignoring stale/unknown entries. */
+  function enabledSkills() {
+    var picker = state && state.settings && state.settings.picker;
+    var stored =
+      picker && Array.isArray(picker.skills) ? picker.skills : DEFAULT_SKILLS;
+    var known = knownSkillIds();
+    var result = [];
+    stored.forEach(function (value) {
+      var id = String(value || "");
+      if (id && known.indexOf(id) >= 0 && result.indexOf(id) < 0) {
+        result.push(id);
+      }
+    });
+    return result;
   }
 
   function renderSkills(force) {
@@ -915,31 +1011,51 @@
     if (!list) {
       return;
     }
-    var enabled = Array.isArray(state.settings.picker.skills)
-      ? state.settings.picker.skills.slice()
-      : DEFAULT_SKILLS.slice();
-    var order = enabled.concat(
-      SKILL_IDS.filter(function (id) {
-        return enabled.indexOf(id) < 0;
-      })
-    );
+    var customs = customSkillsList();
+    var customMap = {};
+    customs.forEach(function (skill) {
+      customMap[skill.id] = skill;
+    });
+    var enabled = enabledSkills();
+    var order = enabled.slice();
+    SKILL_IDS.forEach(function (id) {
+      if (enabled.indexOf(id) < 0) {
+        order.push(id);
+      }
+    });
+    customs.forEach(function (skill) {
+      if (enabled.indexOf(skill.id) < 0) {
+        order.push(skill.id);
+      }
+    });
     var signature = order
       .map(function (id) {
-        return id + ":" + (enabled.indexOf(id) >= 0 ? 1 : 0);
+        var custom = customMap[id];
+        var detail = custom
+          ? custom.label + "\u0003" + custom.icon + "\u0003" + custom.prompt
+          : "";
+        return id + ":" + (enabled.indexOf(id) >= 0 ? 1 : 0) + ":" + detail;
       })
-      .join(",");
+      .join("\u0001");
     if (!force && signature === list.getAttribute("data-signature")) {
       return;
     }
     list.setAttribute("data-signature", signature);
     list.innerHTML = "";
     order.forEach(function (id) {
-      list.appendChild(skillRow(id, enabled.indexOf(id) >= 0));
+      list.appendChild(skillRow(id, enabled.indexOf(id) >= 0, customMap[id]));
     });
   }
 
-  function skillRow(id, enabled) {
-    var meta = (LP.SKILL_MAP && LP.SKILL_MAP[id]) || { label: id, description: "" };
+  function skillRow(id, enabled, custom) {
+    var meta = custom
+      ? {
+          label: custom.label,
+          description: String(custom.prompt || "")
+            .replace(/\s+/g, " ")
+            .trim(),
+        }
+      : (LP.SKILL_MAP && LP.SKILL_MAP[id]) || { label: id, description: "" };
     var row = el("li", "skill-item" + (enabled ? "" : " is-disabled"));
     row.setAttribute("data-skill", id);
 
@@ -960,6 +1076,11 @@
       "</svg>";
     line.appendChild(drag);
 
+    var icon = el("span", "skill-icon");
+    icon.setAttribute("aria-hidden", "true");
+    icon.innerHTML = LP.skillIconSvg(custom ? custom.icon : id);
+    line.appendChild(icon);
+
     var main = el("div", "skill-main");
     main.appendChild(el("span", "skill-name", meta.label));
     if (meta.description) {
@@ -967,8 +1088,29 @@
     }
     line.appendChild(main);
 
-    var editable = PROMPT_SKILLS.indexOf(id) >= 0;
-    if (editable) {
+    if (custom) {
+      var customEdit = el("button", "skill-edit");
+      customEdit.type = "button";
+      customEdit.setAttribute("data-custom-edit", id);
+      customEdit.setAttribute(
+        "aria-expanded",
+        customEditorOpen && customEditingId === id ? "true" : "false"
+      );
+      customEdit.setAttribute("aria-label", "编辑技能");
+      customEdit.title = "编辑技能";
+      customEdit.innerHTML =
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>';
+      line.appendChild(customEdit);
+
+      var removeButton = el("button", "skill-delete");
+      removeButton.type = "button";
+      removeButton.setAttribute("data-custom-delete", id);
+      removeButton.setAttribute("aria-label", "删除技能" + meta.label);
+      removeButton.title = "删除技能";
+      removeButton.innerHTML =
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"></path><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path></svg>';
+      line.appendChild(removeButton);
+    } else if (PROMPT_SKILLS.indexOf(id) >= 0) {
       var editButton = el("button", "skill-edit");
       editButton.type = "button";
       editButton.setAttribute("data-prompt-toggle", id);
@@ -998,7 +1140,7 @@
 
     row.appendChild(line);
 
-    if (editable && promptExpanded[id]) {
+    if (!custom && PROMPT_SKILLS.indexOf(id) >= 0 && promptExpanded[id]) {
       row.appendChild(skillPromptPanel(id, meta));
     }
     return row;
@@ -1125,13 +1267,299 @@
     toast("已重置为默认提示词", "success");
   }
 
-  /* ---- Skill drag ordering -------------------------------------------- */
+  /* ---- Custom skill editor --------------------------------------------- */
 
-  function enabledSkills() {
-    return Array.isArray(state.settings.picker.skills)
-      ? state.settings.picker.skills.slice()
-      : DEFAULT_SKILLS.slice();
+  function assignFieldValue(input, value) {
+    if (!input) {
+      return;
+    }
+    var text = value === null || value === undefined ? "" : String(value);
+    if (input.value !== text) {
+      input.value = text;
+    }
   }
+
+  function armSkillDelete(button, action, armedLabel) {
+    if (!button) {
+      return;
+    }
+    if (button.getAttribute("data-armed") === "1") {
+      disarmSkillDelete(button);
+      action();
+      return;
+    }
+    button.setAttribute("data-armed", "1");
+    button.classList.add("is-armed");
+    button.setAttribute("data-saved-title", button.title || "");
+    button.setAttribute("data-saved-label", button.getAttribute("aria-label") || "");
+    button.title = "再次点击确认删除";
+    button.setAttribute("aria-label", "再次点击确认删除");
+    if (armedLabel) {
+      button.setAttribute("data-saved-text", button.textContent || "");
+      button.textContent = armedLabel;
+    }
+    window.clearTimeout(button.disarmTimer);
+    button.disarmTimer = window.setTimeout(function () {
+      disarmSkillDelete(button);
+    }, 4000);
+  }
+
+  function disarmSkillDelete(button) {
+    if (!button) {
+      return;
+    }
+    window.clearTimeout(button.disarmTimer);
+    button.removeAttribute("data-armed");
+    button.classList.remove("is-armed");
+    var title = button.getAttribute("data-saved-title");
+    if (title !== null) {
+      button.title = title;
+      button.removeAttribute("data-saved-title");
+    }
+    var ariaLabel = button.getAttribute("data-saved-label");
+    if (ariaLabel !== null) {
+      button.setAttribute("aria-label", ariaLabel);
+      button.removeAttribute("data-saved-label");
+    }
+    var savedText = button.getAttribute("data-saved-text");
+    if (savedText !== null) {
+      button.textContent = savedText;
+      button.removeAttribute("data-saved-text");
+    }
+  }
+
+  function renderCustomIconGrid() {
+    var grid = byId("custom-skill-icons");
+    if (!grid) {
+      return;
+    }
+    var keys = LP.CUSTOM_SKILL_ICON_KEYS || [];
+    var selected = validCustomIcon(customDraft ? customDraft.icon : "");
+    var signature = keys.join("\u0001") + "\u0002" + selected;
+    if (grid.getAttribute("data-signature") === signature) {
+      return;
+    }
+    grid.setAttribute("data-signature", signature);
+    grid.innerHTML = "";
+    keys.forEach(function (key) {
+      var button = el(
+        "button",
+        "icon-option" + (key === selected ? " is-selected" : "")
+      );
+      button.type = "button";
+      button.setAttribute("data-icon-key", key);
+      button.setAttribute("role", "radio");
+      button.setAttribute("aria-checked", key === selected ? "true" : "false");
+      var label = CUSTOM_ICON_LABELS[key] || key;
+      button.setAttribute("aria-label", "图标：" + label);
+      button.title = label;
+      button.innerHTML = LP.skillIconSvg(key);
+      grid.appendChild(button);
+    });
+  }
+
+  /* `syncFields` is only true while opening the editor: state refreshes must
+   * not overwrite what the user is currently typing. */
+  function renderCustomSkillEditor(syncFields) {
+    var editor = byId("custom-skill-editor");
+    if (!editor) {
+      return;
+    }
+    if (!customEditorOpen) {
+      setHidden(editor, true);
+      return;
+    }
+    if (customEditingId && !findCustomSkill(customEditingId)) {
+      closeCustomEditor();
+      return;
+    }
+    setHidden(editor, false);
+    var title = byId("custom-skill-editor-title");
+    if (title) {
+      title.textContent = customEditingId ? "编辑技能" : "新增技能";
+    }
+    setHidden(byId("delete-custom-skill"), !customEditingId);
+    if (syncFields) {
+      assignFieldValue(
+        byId("custom-skill-name"),
+        customDraft ? customDraft.label : ""
+      );
+      assignFieldValue(
+        byId("custom-skill-prompt"),
+        customDraft ? customDraft.prompt : ""
+      );
+      renderCustomIconGrid();
+    }
+  }
+
+  function openCustomEditor(id) {
+    var targetId = String(id || "");
+    var custom = targetId ? findCustomSkill(targetId) : null;
+    if (targetId && !custom) {
+      toast("技能不存在，可能已被删除", "error");
+      refreshState();
+      return;
+    }
+    customEditorOpen = true;
+    customEditingId = custom ? custom.id : "";
+    customDraft = {
+      icon: custom ? custom.icon : validCustomIcon(LP.CUSTOM_SKILL_DEFAULT_ICON),
+      label: custom ? custom.label : "",
+      prompt: custom ? custom.prompt : "",
+    };
+    hideInlineError(byId("custom-skill-error"));
+    disarmSkillDelete(byId("delete-custom-skill"));
+    renderCustomSkillEditor(true);
+    renderSkills(true);
+    var editor = byId("custom-skill-editor");
+    if (editor && editor.scrollIntoView) {
+      editor.scrollIntoView({ block: "nearest" });
+    }
+    var nameInput = byId("custom-skill-name");
+    if (nameInput && nameInput.focus) {
+      nameInput.focus();
+    }
+  }
+
+  function closeCustomEditor() {
+    customEditorOpen = false;
+    customEditingId = "";
+    customDraft = null;
+    disarmSkillDelete(byId("delete-custom-skill"));
+    hideInlineError(byId("custom-skill-error"));
+    renderCustomSkillEditor(false);
+    renderSkills(true);
+  }
+
+  function chooseCustomIcon(key) {
+    if (!customEditorOpen || !customDraft) {
+      return;
+    }
+    customDraft.icon = validCustomIcon(key);
+    renderCustomIconGrid();
+  }
+
+  function generateCustomSkillId(existing) {
+    var taken = {};
+    existing.forEach(function (skill) {
+      taken[skill.id] = true;
+    });
+    var id = "";
+    do {
+      var suffix = "";
+      for (var index = 0; index < 4; index += 1) {
+        suffix += CUSTOM_ID_ALPHABET.charAt(
+          Math.floor(Math.random() * CUSTOM_ID_ALPHABET.length)
+        );
+      }
+      id = "custom-" + Date.now().toString(36) + suffix;
+    } while (taken[id]);
+    return id;
+  }
+
+  function saveCustomSkill() {
+    if (!customEditorOpen || !customDraft) {
+      return;
+    }
+    var nameInput = byId("custom-skill-name");
+    var promptInput = byId("custom-skill-prompt");
+    var errorNode = byId("custom-skill-error");
+    var label = String(nameInput ? nameInput.value : customDraft.label)
+      .replace(/\s+/g, " ")
+      .trim();
+    var prompt = String(promptInput ? promptInput.value : customDraft.prompt).trim();
+    if (!label) {
+      showInlineError(errorNode, "请填写技能名称（最多 20 个字符）");
+      if (nameInput && nameInput.focus) {
+        nameInput.focus();
+      }
+      return;
+    }
+    if (label.length > 20) {
+      showInlineError(errorNode, "技能名称最多 20 个字符");
+      if (nameInput && nameInput.focus) {
+        nameInput.focus();
+      }
+      return;
+    }
+    if (!prompt) {
+      showInlineError(
+        errorNode,
+        "请填写提示词，可使用 {text}、{target}、{language}、{program}、{app} 变量"
+      );
+      if (promptInput && promptInput.focus) {
+        promptInput.focus();
+      }
+      return;
+    }
+    if (prompt.length > 4000) {
+      showInlineError(errorNode, "提示词最多 4000 个字符");
+      if (promptInput && promptInput.focus) {
+        promptInput.focus();
+      }
+      return;
+    }
+    var icon = validCustomIcon(customDraft.icon);
+    var customs = customSkillsList();
+    var skills = enabledSkills();
+    var editingId = customEditingId;
+    var labelText;
+    if (editingId) {
+      var index = -1;
+      customs.forEach(function (skill, position) {
+        if (skill.id === editingId) {
+          index = position;
+        }
+      });
+      if (index < 0) {
+        showInlineError(errorNode, "技能不存在，可能已被删除");
+        refreshState();
+        return;
+      }
+      customs[index] = {
+        id: editingId,
+        label: label,
+        icon: icon,
+        prompt: prompt,
+      };
+      labelText = "已保存技能「" + label + "」";
+    } else {
+      var id = generateCustomSkillId(customs);
+      customs.push({ id: id, label: label, icon: icon, prompt: prompt });
+      if (skills.indexOf(id) < 0) {
+        skills.push(id);
+      }
+      labelText = "已添加技能「" + label + "」";
+    }
+    closeCustomEditor();
+    save({ picker: { customSkills: customs, skills: skills } });
+    toast(labelText, "success");
+  }
+
+  function deleteCustomSkill(id) {
+    var custom = findCustomSkill(id);
+    if (!custom) {
+      toast("技能不存在，可能已被删除", "error");
+      refreshState();
+      return;
+    }
+    var remaining = customSkillsList().filter(function (skill) {
+      return skill.id !== id;
+    });
+    var skills = enabledSkills().filter(function (skillId) {
+      return skillId !== id;
+    });
+    if (!skills.length) {
+      skills = DEFAULT_SKILLS.slice();
+    }
+    if (customEditingId === id) {
+      closeCustomEditor();
+    }
+    save({ picker: { customSkills: remaining, skills: skills } });
+    toast("已删除技能「" + custom.label + "」", "success");
+  }
+
+  /* ---- Skill drag ordering -------------------------------------------- */
 
   function skillItemFromEvent(event) {
     var target = event.target;
@@ -1292,7 +1720,7 @@
       if (note) {
         note.hidden = false;
         note.textContent =
-          "便携版不写入开机启动项，避免在系统里留下注册表记录。如需开机自启，可创建 LingoPick.exe 的快捷方式并放入 shell:startup 目录。";
+          "便携版不写入开机启动项，避免在系统里留下注册表记录。如需开机自启，可创建 Lexora.exe 的快捷方式并放入 shell:startup 目录。";
       }
     } else {
       if (hint) {
@@ -1555,9 +1983,7 @@
   }
 
   function toggleSkill(id, enabled) {
-    var skills = Array.isArray(state.settings.picker.skills)
-      ? state.settings.picker.skills.slice()
-      : DEFAULT_SKILLS.slice();
+    var skills = enabledSkills();
     if (enabled) {
       if (skills.indexOf(id) < 0) {
         skills.push(id);
@@ -1785,12 +2211,73 @@
       var promptReset = target.closest("[data-prompt-reset]");
       if (promptReset) {
         resetPromptValue(promptReset.getAttribute("data-prompt-reset"));
+        return;
+      }
+      var customEdit = target.closest("[data-custom-edit]");
+      if (customEdit) {
+        openCustomEditor(customEdit.getAttribute("data-custom-edit"));
+        return;
+      }
+      var customDelete = target.closest("[data-custom-delete]");
+      if (customDelete) {
+        var deletedId = customDelete.getAttribute("data-custom-delete");
+        armSkillDelete(customDelete, function () {
+          deleteCustomSkill(deletedId);
+        });
       }
     });
     byId("skill-list").addEventListener("dragstart", startSkillDrag);
     byId("skill-list").addEventListener("dragover", overSkillDrop);
     byId("skill-list").addEventListener("drop", dropSkill);
     byId("skill-list").addEventListener("dragend", clearDragMarks);
+
+    byId("add-custom-skill").addEventListener("click", function () {
+      openCustomEditor("");
+    });
+    byId("custom-skill-icons").addEventListener("click", function (event) {
+      var button = event.target.closest && event.target.closest("[data-icon-key]");
+      if (button) {
+        chooseCustomIcon(button.getAttribute("data-icon-key"));
+      }
+    });
+    byId("custom-skill-name").addEventListener("input", function () {
+      if (customDraft) {
+        customDraft.label = this.value;
+      }
+      hideInlineError(byId("custom-skill-error"));
+    });
+    byId("custom-skill-prompt").addEventListener("input", function () {
+      if (customDraft) {
+        customDraft.prompt = this.value;
+      }
+      hideInlineError(byId("custom-skill-error"));
+    });
+    byId("custom-skill-editor").addEventListener("keydown", function (event) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeCustomEditor();
+        return;
+      }
+      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        saveCustomSkill();
+      }
+    });
+    byId("save-custom-skill").addEventListener("click", saveCustomSkill);
+    byId("cancel-custom-skill").addEventListener("click", closeCustomEditor);
+    byId("delete-custom-skill").addEventListener("click", function () {
+      var editingId = customEditingId;
+      if (!editingId) {
+        return;
+      }
+      armSkillDelete(
+        this,
+        function () {
+          deleteCustomSkill(editingId);
+        },
+        "确认删除"
+      );
+    });
     byId("blacklist-input").addEventListener("keydown", function (event) {
       if (event.key === "Enter") {
         event.preventDefault();

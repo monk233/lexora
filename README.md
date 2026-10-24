@@ -1,65 +1,78 @@
-# LingoPick · 划词翻译
+<p align="center">
+  <img src="docs/images/logo.png" width="104" alt="Lexora logo">
+</p>
 
-> 选中即翻译：在任意 Windows 应用里划选文字，LingoPick 会在鼠标旁弹出一个小工具栏，支持**翻译、总结、解释、朗读、复制**。
->
-> 在线可用任意 OpenAI 兼容 API，离线可用本地 llama.cpp + GGUF 模型；免安装、托盘后台运行、约 10MB 的轻量单 exe。
+<h1 align="center">Lexora</h1>
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4)](docs/user-guide.md)
-[![Tauri](https://img.shields.io/badge/Tauri-v2-24c5b9)](https://tauri.app)
-[![CI](https://github.com/monk233/lingopick/actions/workflows/ci.yml/badge.svg)](https://github.com/monk233/lingopick/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/monk233/lingopick?label=release)](https://github.com/monk233/lingopick/releases)
+<p align="center"><strong>选中即理解。Select. Understand. Stay in flow.</strong></p>
 
-<!-- 截图：发布前替换为真实截图 -->
-![划词翻译](docs/images/picker.png)
-![设置页](docs/images/settings.png)
+<p align="center">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
+  <a href="docs/user-guide.md"><img alt="Platform: Windows 10/11" src="https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4"></a>
+  <img alt="Tauri v2" src="https://img.shields.io/badge/Tauri-v2-24c5b9">
+  <a href="https://github.com/monk233/lexora/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/monk233/lexora/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/monk233/lexora/releases"><img alt="Release" src="https://img.shields.io/github/v/release/monk233/lexora?label=release"></a>
+</p>
+
+---
+
+## 为什么是 Lexora
+
+阅读和写作时，最打断心流的往往不是「看不懂」，而是——复制、切换窗口、粘贴、等待、再切回来。
+
+Lexora 把这些动作收拢成一次划选。在浏览器、Word、PDF、IDE 或任意 Windows 应用里选中一段文字，一个克制的浮动工具栏出现在光标旁：翻译、总结、解释、朗读、复制，顺手完成。用完即走，焦点始终留在你正在做的事上。
+
+它起于一个简单的执念：**AI 应该像光一样照进来，而不是像一个应用那样打断你。**  
+Lexora 取自拉丁词根 *lex*（语言、文字）与 *aura*（光晕、氛围）——语言之光。
 
 ## 特性
 
-- **完整划词体验**：拖动选词、双击单词/三击段落自动弹出工具栏；流式翻译（38 种目标语言可切换）；总结；解释；系统语音朗读（再次点击停止）；复制；结果按 Markdown 渲染（标题/列表/代码/表格/链接）；结果面板可固定到桌面、可拖动位置、长内容可滚动；按内容自适应大小；多显示器 DPI 适配。
-- **两种翻译引擎**
-  - 在线：任意 OpenAI 兼容接口（DeepSeek / OpenAI / Moonshot / 智谱 / Ollama / LM Studio / 自建服务），模型列表可从 `/models` 一键拉取后下拉选择，支持测试连接。
-  - 离线：应用内一键下载 llama.cpp 引擎，配合本地 GGUF 模型完全本地推理，断网可用；提供腾讯混元 Hy-MT2 1.8B（翻译专用，推荐）与 Qwen2.5 3B（通用）两个模型，启动后按功能自动选择，无需手动选模型。
-- **轻量免安装**：单个 exe（约 9MB），下载后双击即用，不需要管理员权限，默认不写注册表（仅在你主动开启「开机自启」时写入一条启动项）；引擎与模型按需下载，数据默认保存在 exe 同级 `data/`。
-- **后台常驻**：双击启动后静默驻留系统托盘，不弹窗、不占任务栏；关闭设置窗口回到托盘、单实例、可选开机自启。
-- **可配置**：启用/禁用、技能拖拽排序、技能提示词自定义与重置、紧凑模式、应用黑名单（在微信/IDE 等不想触发的应用里禁用）、开机自启。
-- **隐私**：默认不收集任何数据；只有使用在线模式时，选中的文本才会发送到你配置的服务地址。
+- **划选即用，不打断**：拖动选词、双击单词、三击段落都能唤起；工具栏是非激活浮层，`Delete`、`Ctrl+C` 等操作照常作用于原应用，一旦你继续工作便自动让路。
+- **翻译、总结、解释、朗读、复制**：流式输出，Markdown 排版（标题、列表、代码块、表格、链接），结果可固定、可拖动、可滚动细读。
+- **双引擎，自由取舍**
+  - 云端：任意 OpenAI 兼容接口（DeepSeek / OpenAI / Moonshot / 智谱 / Ollama / LM Studio / 自建服务），模型列表一键拉取。
+  - 本地：应用内安装 llama.cpp 引擎，按功能自动选用腾讯混元 Hy-MT2 1.8B（翻译）或 Qwen2.5 3B（通用），断网亦可用。
+- **可调校到顺手**：技能可拖拽排序、可增删；每个技能可自定义名称、图标与提示词，提示词支持 `{text}`、`{target}`、`{program}` 等变量。
+- **38 种语言**：覆盖 Hy-MT2 支持的全部语言，含繁体中文、粤语、藏语、哈萨克语、蒙古语、维吾尔语等。
+- **轻若无声**：单个 exe（约 9 MB），免安装、托盘常驻、静默启动、单实例、可选开机自启；数据留在 exe 同级 `data/` 目录。
+
+<p align="center">
+  <img src="docs/images/picker.png" alt="Lexora 划词工具栏" width="640">
+</p>
+
+<p align="center">
+  <img src="docs/images/settings.png" alt="Lexora 设置页" width="640">
+</p>
 
 ## 快速开始
 
-### 1. 下载与启动
+### 1. 启动
 
-从 [Releases](https://github.com/monk233/lingopick/releases) 下载 `LingoPick-<version>-win-x64.exe`，放到任意可写目录后双击运行。
+从 [Releases](https://github.com/monk233/lexora/releases) 下载 `Lexora-<version>-win-x64.exe`，放到任意可写目录，双击。
 
-- 双击后**静默启动**：不弹窗口，直接在系统托盘后台运行。右键托盘图标（或双击托盘图标）打开设置完成配置。
-- 支持 Windows 10/11（需要系统自带 WebView2 Runtime，新版 Windows 默认已安装）。
+双击后**静默启动**，不弹窗口，直接驻留系统托盘。右键托盘图标（或双击托盘图标）打开设置完成配置；再次双击 exe 也只在后台启动。
 
-### 2. 配置翻译服务
+### 2. 连接翻译服务
 
-**在线（推荐新手）**：设置 → 翻译服务 → 选择「在线 API」→ 选预设（如 DeepSeek）→ 填入自己的 API Key → 保存后点「测试连接」。
+**在线（上手最快）**  
+设置 → 翻译服务 → 选择「在线 API」→ 选择服务商预设 → 填入 API Key → 点「拉取模型」选择模型 →「测试连接」。
 
-**离线（推荐隐私/断网场景）**：设置 → 翻译服务 → 选择「本地模型」→ 先「下载引擎」（llama.cpp，约 23MB）→ 再下载/导入 GGUF 模型（翻译推荐腾讯混元 Hy-MT2 1.8B，约 1.1GB；通用选 Qwen2.5 3B，约 2.0GB）→ 启动本地模型。
+**离线（隐私优先）**  
+设置 → 翻译服务 → 选择「本地模型」→ 下载 llama.cpp 引擎 → 下载 Hy-MT2（翻译）或 Qwen2.5 3B（通用）→ 点「启动」。之后翻译自动用 Hy-MT2，总结/解释自动用 Qwen2.5 3B。
 
-### 3. 使用
+### 3. 开始划词
 
-在浏览器、Word、PDF 阅读器、微信等任意应用中**拖动选中一段文字**（或双击单词、三击段落），鼠标旁会出现工具栏：
+在任意应用中拖动选中文字（或双击单词、三击段落），工具栏随之出现：
 
 | 技能 | 说明 |
 | --- | --- |
-| 翻译 | 流式翻译为默认目标语言（自动中英互译，可在结果面板切换） |
+| 翻译 | 流式翻译为默认目标语言，可在结果面板切换语言 |
 | 总结 | 用简体中文提炼要点 |
-| 解释 | 用简体中文解释含义与背景 |
-| 朗读 | 用 Windows 系统语音朗读 |
+| 解释 | 用简体中文讲清含义、背景与关键概念 |
+| 朗读 | 使用 Windows 系统语音朗读，再次点击停止 |
 | 复制 | 复制选中文本 |
 
-也可在「⋯」菜单中临时在某个应用中禁用、打开设置或禁用划词工具。
-
-## 常见问题
-
-- **在某个应用里不弹工具栏？** 部分应用（如部分 PDF 阅读器、游戏、提权运行的程序）未暴露可读取的选区，可在「⋯ → 在此应用中禁用」加入黑名单。管理员权限运行的应用通常无法取词，这是 Windows UIPI 的限制。
-- **离线模式很慢/占内存？** 本地模型推理速度取决于 CPU；7B 以下小模型在普通笔记本上可用，更大模型需要更强硬件。
-- **端口被占用/服务连不上？** 在线模式请确认服务地址以 `/v1` 结尾（如 `http://127.0.0.1:11434/v1`），并允许本程序访问该地址。
-- **数据放在哪？** 默认 `<程序目录>/data`；不可写时回退 `%APPDATA%\LingoPick`。可在「关于」中打开目录。
+需要自己的技能？在 设置 → 划词行为 → 工具栏技能 里添加：选图标、起名字、写提示词，即刻出现在工具栏。
 
 ## 从源码构建
 
@@ -67,32 +80,32 @@
 
 ```powershell
 npm install
-npx tauri build --no-bundle     # 产出 src-tauri/target/release/lingopick.exe
-.\scripts\build-portable.ps1    # 产出 dist/LingoPick-<version>-win-x64.exe
+npx tauri build --no-bundle     # 产出 src-tauri/target/release/lexora.exe
+.\scripts\build-portable.ps1    # 产出 dist/Lexora-<version>-win-x64.exe
 ```
 
 开发调试：
 
 ```powershell
 npx tauri dev
-# 或直接构建并运行：
+# 或
 npx tauri build --debug --no-bundle
-.\src-tauri\target\debug\lingopick.exe --show
+.\src-tauri\target\debug\lexora.exe --show
 ```
 
 更多细节见 [构建文档](docs/building.md) 与 [架构说明](docs/architecture.md)。
 
 ## 技术栈
 
-Tauri v2 + Rust（窗口/托盘/全局输入钩子/Windows UI Automation 取词）+ 原生 HTML/CSS/JS（WebView2 渲染）+ llama.cpp（离线推理）。
+Tauri v2 + Rust（窗口、托盘、全局输入钩子、Windows UI Automation 取词）+ 原生 HTML/CSS/JS（WebView2 渲染）+ llama.cpp（本地推理）。前端零构建、零框架，整个应用为一个约 9 MB 的单文件。
 
-特别感谢以下开源项目：
+## 致谢
 
-- [Tauri](https://tauri.app)（MIT/Apache-2.0）
-- [selection-hook](https://github.com/0xfullex/selection-hook)（MIT，本项目的取词思路与兼容性处理参考了它）
+- [Tauri](https://tauri.app)（MIT / Apache-2.0）
+- [selection-hook](https://github.com/0xfullex/selection-hook)（MIT，取词思路与兼容性处理参考）
 - [llama.cpp](https://github.com/ggml-org/llama.cpp)（MIT）
-- [Qwen2.5](https://huggingface.co/Qwen) GGUF 模型（Apache-2.0）
-- [腾讯混元 Hy-MT2](https://www.modelscope.cn/models/liaowenbin/Hy-MT2-1.8B-Q4_K_M-GGUF) GGUF 模型（Apache-2.0）
+- [Qwen2.5](https://huggingface.co/Qwen)（Apache-2.0）
+- [腾讯混元 Hy-MT2](https://www.modelscope.cn/models/liaowenbin/Hy-MT2-1.8B-Q4_K_M-GGUF)（Apache-2.0）
 - [rdev](https://github.com/Narsil/rdev)（MIT）
 
 ## 参与贡献
@@ -101,18 +114,20 @@ Tauri v2 + Rust（窗口/托盘/全局输入钩子/Windows UI Automation 取词�
 
 ## License
 
-[MIT](LICENSE) © 2026 LingoPick contributors
+[MIT](LICENSE) © 2026 Lexora contributors
 
 ---
 
 ## English
 
-**LingoPick** is a lightweight, portable Windows selection translator built with Tauri v2. Select text anywhere, and a small floating toolbar appears next to the cursor with **translate / summarize / explain / read aloud / copy** actions.
+<p align="center"><strong>Select. Understand. Stay in flow.</strong></p>
 
-- Online mode works with any OpenAI-compatible endpoint; offline mode runs locally with llama.cpp + GGUF models (downloaded on demand).
-- Single portable exe (~10MB), silent tray startup on double-click, optional start-at-login. Releases ship the exe directly (no zip).
-- Online model dropdown fed by the provider's `/models` endpoint (with a custom-name fallback), drag-to-reorder toolbar skills, and editable per-skill system prompts (English defaults, one-click reset).
-- Source-level docs: [architecture](docs/architecture.md) · [building](docs/building.md) · [contract](docs/contracts.md).
+**Lexora** is a featherweight Windows selection assistant. Select text anywhere — a browser, Word, a PDF, your IDE — and a quiet floating toolbar appears next to the cursor with **translate, summarize, explain, read aloud, and copy**. The toolbar never steals focus; the moment you keep working, it steps aside.
+
+- Works with any OpenAI-compatible endpoint, or fully offline with llama.cpp + GGUF models (Hy-MT2 for translation, Qwen2.5 3B for general tasks) — the right model is picked for you.
+- 38 translation languages, Markdown-rendered results, draggable and pinnable panel.
+- Reorder, rename, re-icon and re-prompt every skill — including your own custom skills with `{text}`, `{target}` and `{program}` variables.
+- One portable ~9 MB exe, tray-resident, optional start-at-login, no installer, no admin rights.
 
 Build from source on Windows with Node.js ≥ 20, Rust, and VS Build Tools:
 
@@ -120,3 +135,5 @@ Build from source on Windows with Node.js ≥ 20, Rust, and VS Build Tools:
 npm install
 npx tauri build --no-bundle
 ```
+
+Docs: [architecture](docs/architecture.md) · [building](docs/building.md) · [user guide](docs/user-guide.md) · [contract](docs/contracts.md).
