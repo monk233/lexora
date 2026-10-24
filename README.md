@@ -19,7 +19,7 @@
 - **完整划词体验**：拖动选词、双击单词/三击段落自动弹出工具栏；流式翻译（目标语言可切换）；总结；解释；系统语音朗读；复制；结果面板可固定到桌面；按内容自适应大小；多显示器 DPI 适配。
 - **两种翻译引擎**
   - 在线：任意 OpenAI 兼容接口（DeepSeek / OpenAI / Moonshot / 智谱 / Ollama / LM Studio / 自建服务），模型列表可从 `/models` 一键拉取后下拉选择，支持测试连接。
-  - 离线：应用内一键下载 llama.cpp 引擎，配合 Qwen2.5 GGUF 模型完全本地推理，断网可用。
+  - 离线：应用内一键下载 llama.cpp 引擎，配合本地 GGUF 模型完全本地推理，断网可用；提供腾讯混元 Hy-MT2 1.8B（翻译专用，推荐）与 Qwen2.5 3B（通用）两个模型。
 - **轻量免安装**：单个 exe（约 9MB），下载后双击即用，不需要管理员权限，默认不写注册表（仅在你主动开启「开机自启」时写入一条启动项）；引擎与模型按需下载，数据默认保存在 exe 同级 `data/`。
 - **后台常驻**：双击启动后静默驻留系统托盘，不弹窗、不占任务栏；关闭设置窗口回到托盘、单实例、可选开机自启；全局快捷键 `Ctrl+Shift+D` 也可唤起。
 - **可配置**：启用/禁用、快捷键、技能拖拽排序、技能提示词自定义与重置、紧凑模式、应用黑名单（在微信/IDE 等不想触发的应用里禁用）、开机自启。
@@ -38,7 +38,7 @@
 
 **在线（推荐新手）**：设置 → 翻译服务 → 选择「在线 API」→ 选预设（如 DeepSeek）→ 填入自己的 API Key → 保存后点「测试连接」。
 
-**离线（推荐隐私/断网场景）**：设置 → 翻译服务 → 选择「本地模型」→ 先「下载引擎」（llama.cpp，约 23MB）→ 再下载/导入 GGUF 模型（推荐 Qwen2.5 1.5B Instruct，约 1.1GB）→ 启动本地模型。
+**离线（推荐隐私/断网场景）**：设置 → 翻译服务 → 选择「本地模型」→ 先「下载引擎」（llama.cpp，约 23MB）→ 再下载/导入 GGUF 模型（翻译推荐腾讯混元 Hy-MT2 1.8B，约 1.1GB；通用选 Qwen2.5 3B，约 2.0GB）→ 启动本地模型。
 
 ### 3. 使用
 
@@ -92,6 +92,7 @@ Tauri v2 + Rust（窗口/托盘/全局输入钩子/Windows UI Automation 取词�
 - [selection-hook](https://github.com/0xfullex/selection-hook)（MIT，本项目的取词思路与兼容性处理参考了它）
 - [llama.cpp](https://github.com/ggml-org/llama.cpp)（MIT）
 - [Qwen2.5](https://huggingface.co/Qwen) GGUF 模型（Apache-2.0）
+- [腾讯混元 Hy-MT2](https://www.modelscope.cn/models/liaowenbin/Hy-MT2-1.8B-Q4_K_M-GGUF) GGUF 模型（Apache-2.0）
 - [rdev](https://github.com/Narsil/rdev)（MIT）
 
 ## 参与贡献

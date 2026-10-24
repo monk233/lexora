@@ -89,6 +89,10 @@ struct CaptureRequest {
 enum ActionRequest {
     /// Left button pressed outside of the picker: hide it unless pinned.
     OutsideClick { x: i32, y: i32 },
+    /// The user pressed a key / scrolled / clicked another button while the
+    /// toolbar was visible: the toolbar is an auxiliary overlay and must not
+    /// get in the way of normal work, so it disappears.
+    DismissOnInput { reason: &'static str },
 }
 
 /// Settings-derived data used by the capture worker. Replaced atomically on
@@ -421,36 +425,64 @@ fn process_capture(inner: &Arc<Inner>, request: &CaptureRequest) -> Result<(), S
 }
 
 fn action_worker(inner: Arc<Inner>, receiver: Receiver<ActionRequest>) {
-    while let Ok(ActionRequest::OutsideClick { x, y }) = receiver.recv() {
-        if inner.panel_pinned.load(Ordering::Acquire) {
-            continue;
+    while let Ok(request) = receiver.recv() {
+        match request {
+            ActionRequest::OutsideClick { x, y } => {
+                if inner.panel_pinned.load(Ordering::Acquire) {
+                    continue;
+                }
+                let Some(app) = inner.app.get() else {
+                    continue;
+                };
+                let Some(window) = app.get_webview_window(PICKER_LABEL) else {
+                    inner.picker_visible.store(false, Ordering::Release);
+                    continue;
+                };
+                // The authoritative visibility check: `set_picker_visible` may lag
+                // behind a hide performed by the window/main layer.
+                if !window.is_visible().unwrap_or(false) {
+                    inner.picker_visible.store(false, Ordering::Release);
+                    continue;
+                }
+                let (Ok(position), Ok(size)) = (window.outer_position(), window.outer_size())
+                else {
+                    continue;
+                };
+                // Positions from Tauri are physical pixels, like the hook coordinates.
+                let inside = x >= position.x
+                    && x < position.x + size.width as i32
+                    && y >= position.y
+                    && y < position.y + size.height as i32;
+                if inside {
+                    continue;
+                }
+                crate::windows::hide_picker(app);
+                inner.picker_visible.store(false, Ordering::Release);
+            }
+            ActionRequest::DismissOnInput { reason } => {
+                if inner.panel_pinned.load(Ordering::Acquire) {
+                    continue;
+                }
+                // A keypress that arrived right before a fresh capture (e.g. the
+                // modifier of the hotkey that re-opened the toolbar) must not
+                // immediately hide the new toolbar.
+                if crate::windows::show_guard_active() {
+                    continue;
+                }
+                let Some(app) = inner.app.get() else {
+                    continue;
+                };
+                if !crate::windows::is_picker_visible(app) {
+                    inner.picker_visible.store(false, Ordering::Release);
+                    continue;
+                }
+                crate::windows::hide_picker(app);
+                inner.picker_visible.store(false, Ordering::Release);
+                inner
+                    .logger
+                    .info(&format!("用户操作（{reason}），picker 已自动隐藏"));
+            }
         }
-        let Some(app) = inner.app.get() else {
-            continue;
-        };
-        let Some(window) = app.get_webview_window(PICKER_LABEL) else {
-            inner.picker_visible.store(false, Ordering::Release);
-            continue;
-        };
-        // The authoritative visibility check: `set_picker_visible` may lag
-        // behind a hide performed by the window/main layer.
-        if !window.is_visible().unwrap_or(false) {
-            inner.picker_visible.store(false, Ordering::Release);
-            continue;
-        }
-        let (Ok(position), Ok(size)) = (window.outer_position(), window.outer_size()) else {
-            continue;
-        };
-        // Positions from Tauri are physical pixels, like the hook coordinates.
-        let inside = x >= position.x
-            && x < position.x + size.width as i32
-            && y >= position.y
-            && y < position.y + size.height as i32;
-        if inside {
-            continue;
-        }
-        crate::windows::hide_picker(app);
-        inner.picker_visible.store(false, Ordering::Release);
     }
 }
 

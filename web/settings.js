@@ -1323,25 +1323,27 @@
   }
 
   function applyPreset(presetId) {
-    var preset = LP.presetFor(presetId);
-    if (!preset || preset.id === "custom") {
-      save({ provider: { online: { preset: presetId || "custom" } } });
-      return;
-    }
     hideInlineError(byId("test-error"));
     var badge = byId("test-badge");
     if (badge) {
       badge.hidden = true;
     }
+    var preset = LP.presetFor(presetId);
+    var isCustom = !preset || preset.id === "custom";
+    // Switching providers must never keep the previous provider's leftovers:
+    // clear the API key / model and the cached model list, and do not pre-fill
+    // a model name (the user pulls /models and picks one explicitly).
     customModelMode = false;
     onlineModelHint = "";
     onlineModelError = "";
+    onlineModelCache = {};
     save({
       provider: {
         online: {
-          preset: preset.id,
-          baseUrl: preset.baseUrl,
-          model: preset.model,
+          preset: isCustom ? "custom" : preset.id,
+          baseUrl: isCustom ? "" : preset.baseUrl,
+          apiKey: "",
+          model: "",
         },
       },
     });

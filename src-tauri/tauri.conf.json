@@ -22,6 +22,7 @@
         "center": true,
         "visible": false,
         "focus": true,
+        "dragDropEnabled": false,
         "skipTaskbar": false
       },
       {
@@ -38,6 +39,7 @@
         "shadow": false,
         "visible": false,
         "focus": false,
+        "focusable": false,
         "center": false,
         "maximizable": false,
         "minimizable": false,

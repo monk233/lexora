@@ -1,9 +1,10 @@
 //! Local GGUF model catalog, directory scanning and filename helpers.
 //!
 //! The catalog is a compile-time constant so the settings UI always has a stable
-//! list of downloadable Qwen2.5 models, even offline. Sizes and URLs were
-//! verified when the contract was written; `tests` in this module guard against
-//! accidental edits that would break a download.
+//! list of downloadable models, even offline. LingoPick offers exactly two
+//! models: a translation-specialised Tencent Hunyuan Hy-MT2 and a general-purpose
+//! Qwen2.5 3B. `tests` in this module guard against accidental edits that would
+//! break a download.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -26,43 +27,33 @@ pub struct ModelSpec {
     pub modelscope_url: &'static str,
 }
 
-/// The three Qwen2.5 Instruct GGUF models offered by LingoPick.
-pub const CATALOG: [ModelSpec; 3] = [
+/// The two local models offered by LingoPick: one translation-specialised
+/// (Hy-MT2) and one general-purpose (Qwen2.5 3B). `hf_url` may be empty when the
+/// model is only distributed through ModelScope.
+pub const CATALOG: [ModelSpec; 2] = [
     ModelSpec {
-        id: "qwen2.5-0.5b",
-        name: "Qwen2.5 0.5B Instruct",
-        description: "轻量版：内存占用最小，低配电脑也能流畅运行",
-        filename: "qwen2.5-0.5b-instruct-q4_k_m.gguf",
-        size_bytes: 491_400_032,
-        license: "Apache-2.0",
-        languages: "多语言",
-        recommended: false,
-        hf_url: "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf",
-        modelscope_url: "https://modelscope.cn/models/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/master/qwen2.5-0.5b-instruct-q4_k_m.gguf",
-    },
-    ModelSpec {
-        id: "qwen2.5-1.5b",
-        name: "Qwen2.5 1.5B Instruct",
-        description: "推荐：速度与质量平衡，适合大多数电脑（约 3GB 内存）",
-        filename: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
-        size_bytes: 1_117_320_736,
+        id: "hy-mt2-1.8b",
+        name: "腾讯混元 Hy-MT2 1.8B（翻译模型）",
+        description: "翻译专用：混元 Hy-MT2 1.8B Q4_K_M，速度快，适合中英及多语互译",
+        filename: "Hy-MT2-1.8B-Q4_K_M.gguf",
+        size_bytes: 1_133_080_448,
         license: "Apache-2.0",
         languages: "多语言",
         recommended: true,
-        hf_url: "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
-        modelscope_url: "https://modelscope.cn/models/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/master/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+        hf_url: "",
+        modelscope_url: "https://www.modelscope.cn/models/liaowenbin/Hy-MT2-1.8B-Q4_K_M-GGUF/resolve/master/Hy-MT2-1.8B-Q4_K_M.gguf",
     },
     ModelSpec {
         id: "qwen2.5-3b",
-        name: "Qwen2.5 3B Instruct",
-        description: "质量优先：适合内存 16GB 以上的电脑",
+        name: "Qwen2.5 3B（通用模型）",
+        description: "通用模型：翻译、总结、解释都能用；适合内存 16GB 以上的电脑",
         filename: "qwen2.5-3b-instruct-q4_k_m.gguf",
         size_bytes: 2_104_932_768,
         license: "Apache-2.0",
         languages: "多语言",
         recommended: false,
         hf_url: "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
-        modelscope_url: "https://modelscope.cn/models/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/master/qwen2.5-3b-instruct-q4_k_m.gguf",
+        modelscope_url: "https://www.modelscope.cn/models/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/master/qwen2.5-3b-instruct-q4_k_m.gguf",
     },
 ];
 
@@ -289,17 +280,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn catalog_has_three_qwen_entries() {
-        assert_eq!(CATALOG.len(), 3);
-        assert_eq!(CATALOG[0].id, "qwen2.5-0.5b");
-        assert_eq!(CATALOG[1].id, "qwen2.5-1.5b");
-        assert_eq!(CATALOG[2].id, "qwen2.5-3b");
+    fn catalog_has_one_translation_and_one_general_model() {
+        assert_eq!(CATALOG.len(), 2);
+        assert_eq!(CATALOG[0].id, "hy-mt2-1.8b");
+        assert_eq!(CATALOG[1].id, "qwen2.5-3b");
         let recommended: Vec<&str> = CATALOG
             .iter()
             .filter(|spec| spec.recommended)
             .map(|spec| spec.id)
             .collect();
-        assert_eq!(recommended, vec!["qwen2.5-1.5b"]);
+        assert_eq!(recommended, vec!["hy-mt2-1.8b"]);
     }
 
     #[test]
@@ -308,28 +298,34 @@ mod tests {
         for spec in CATALOG.iter() {
             assert!(spec.size_bytes > 400_000_000);
             assert!(spec.filename.ends_with(".gguf"));
-            assert_eq!(spec.license, "Apache-2.0");
+            assert!(!spec.license.is_empty());
             assert!(!spec.languages.is_empty());
             assert!(spec
-                .hf_url
-                .starts_with("https://huggingface.co/Qwen/Qwen2.5-"));
-            assert!(spec
                 .modelscope_url
-                .starts_with("https://modelscope.cn/models/Qwen/Qwen2.5-"));
-            assert!(spec.hf_url.ends_with(spec.filename));
+                .starts_with("https://www.modelscope.cn/models/"));
             assert!(spec.modelscope_url.ends_with(spec.filename));
-            assert!(spec.hf_url.contains("/resolve/main/"));
             assert!(spec.modelscope_url.contains("/resolve/master/"));
+            // Empty HF URL means ModelScope is the only source.
+            if !spec.hf_url.is_empty() {
+                assert!(spec.hf_url.starts_with("https://huggingface.co/"));
+                assert!(spec.hf_url.ends_with(spec.filename));
+                assert!(spec.hf_url.contains("/resolve/main/"));
+            }
             assert!(!filenames.contains(&spec.filename));
             filenames.push(spec.filename);
         }
-        assert_eq!(CATALOG[0].size_bytes, 491_400_032);
-        assert_eq!(CATALOG[1].size_bytes, 1_117_320_736);
-        assert_eq!(CATALOG[2].size_bytes, 2_104_932_768);
+        assert_eq!(CATALOG[0].size_bytes, 1_133_080_448);
+        assert_eq!(CATALOG[1].size_bytes, 2_104_932_768);
+        // Hy-MT2 is only distributed through ModelScope.
+        assert!(CATALOG[0].hf_url.is_empty());
     }
 
     #[test]
     fn spec_lookup_matches_case_insensitively() {
+        assert_eq!(
+            spec_by_filename("Hy-MT2-1.8B-Q4_K_M.gguf").map(|spec| spec.id),
+            Some("hy-mt2-1.8b")
+        );
         assert_eq!(
             spec_by_filename("Qwen2.5-3B-Instruct-Q4_K_M.GGUF").map(|spec| spec.id),
             Some("qwen2.5-3b")
@@ -351,9 +347,9 @@ mod tests {
         assert_eq!(models.len(), 2);
         // Catalog models are listed before imported ones.
         assert_eq!(models[0].file, CATALOG[0].filename);
-        assert_eq!(models[0].catalog_id, "qwen2.5-0.5b");
+        assert_eq!(models[0].catalog_id, "hy-mt2-1.8b");
         assert_eq!(models[0].size_bytes, 8);
-        assert_eq!(models[0].name, "qwen2.5-0.5b-instruct-q4_k_m");
+        assert_eq!(models[0].name, "Hy-MT2-1.8B-Q4_K_M");
         assert!(models[0].modified_at > 0);
         assert_eq!(models[1].file, "my-custom-model.gguf");
         assert_eq!(models[1].catalog_id, "");
@@ -369,11 +365,10 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         fs::write(dir.path().join(CATALOG[1].filename), b"x").unwrap();
         let entries = catalog_entries(dir.path());
-        assert_eq!(entries.len(), 3);
+        assert_eq!(entries.len(), 2);
         assert!(entries[0].installed == false);
         assert!(entries[1].installed);
-        assert!(entries[2].installed == false);
-        assert_eq!(entries[1].id, "qwen2.5-1.5b");
+        assert_eq!(entries[1].id, "qwen2.5-3b");
         assert_eq!(entries[1].license, "Apache-2.0");
     }
 

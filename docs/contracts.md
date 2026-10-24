@@ -159,7 +159,7 @@ lingopick/
   },
   "models": [ {"file":"qwen2.5-1.5b-instruct-q4_k_m.gguf","name":"qwen2.5-1.5b-instruct-q4_k_m",
                "path":"...","sizeBytes":1117320736,"modifiedAt":1760000000000,"catalogId":"qwen2.5-1.5b"} ],
-  "catalog": [ {"id":"qwen2.5-1.5b","name":"Qwen2.5 1.5B Instruct","description":"...","filename":"...",
+  "catalog": [ {"id":"hy-mt2-1.8b","name":"腾讯混元 Hy-MT2 1.8B（翻译模型）","description":"...","filename":"...",
                 "sizeBytes":1117320736,"license":"Apache-2.0","languages":"多语言","recommended":true,"installed":false} ],
   "download": null,   // 或 DownloadProgress
   "picker": {"visible":false,"pinned":false},
@@ -224,14 +224,14 @@ impl EngineService {
   - 解释 system：`You are a knowledge assistant. Explain the user's text in Simplified Chinese, covering its meaning, background and key concepts, with short examples when helpful.`
   - 文本截断：翻译取前 `picker.maxChars`；总结/解释取前 8000 字符；自定义提示词归一化后最多 4000 字符。
 - 引擎下载：默认 URL `https://github.com/ggml-org/llama.cpp/releases/download/b11851/llama-b11851-bin-win-cpu-x64.zip`（23.1MB，已验证存在），可用 `LINGOPICK_LLAMA_URL` 覆盖；下载到 cache，zip 解压后把包含 `llama-server.exe` 的目录内容平铺到 `engine/`；进度事件 `app.emit("download-progress", ...)`。失败文案给出手动放置说明（解压到 engine 目录）。
-- 模型目录（已验证 URL）：
-  | id | 文件 | 大小 | 说明 |
-  | --- | --- | --- | --- |
-  | `qwen2.5-0.5b` | qwen2.5-0.5b-instruct-q4_k_m.gguf | 491,400,032 | 轻量（低配机器） |
-  | `qwen2.5-1.5b` | qwen2.5-1.5b-instruct-q4_k_m.gguf | 1,117,320,736 | 推荐 |
-  | `qwen2.5-3b` | qwen2.5-3b-instruct-q4_k_m.gguf | 2,104,932,768 | 质量优先 |
-  - HF：`https://huggingface.co/Qwen/Qwen2.5-<X>B-Instruct-GGUF/resolve/main/<file>`；ModelScope：`https://modelscope.cn/models/Qwen/Qwen2.5-<X>B-Instruct-GGUF/resolve/master/<file>`。
-  - 许可证均 Apache-2.0；`installed` = models 目录中存在同名文件。
+- 模型目录（两个模型，已验证 URL）：
+  | id | 名称 | 文件 | 大小 | 说明 |
+  | --- | --- | --- | --- | --- |
+  | `hy-mt2-1.8b` | 腾讯混元 Hy-MT2 1.8B（翻译模型） | Hy-MT2-1.8B-Q4_K_M.gguf | 1,133,080,448 | 翻译专用，推荐，仅 ModelScope |
+  | `qwen2.5-3b` | Qwen2.5 3B（通用模型） | qwen2.5-3b-instruct-q4_k_m.gguf | 2,104,932,768 | 通用：翻译/总结/解释 |
+  - Hy-MT2：`https://www.modelscope.cn/models/liaowenbin/Hy-MT2-1.8B-Q4_K_M-GGUF/resolve/master/Hy-MT2-1.8B-Q4_K_M.gguf`（无 HF 镜像，`hf_url` 为空时跳过）。
+  - Qwen2.5 3B：HF `https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf`；ModelScope `https://www.modelscope.cn/models/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/master/qwen2.5-3b-instruct-q4_k_m.gguf`。
+  - 下载按 `hf_url` → `modelscope_url` 顺序尝试，空 URL 跳过；许可证均 Apache-2.0；`installed` = models 目录中存在同名文件。
 - 单测：SSE 解析、URL 归一化、错误映射、catalog 完整性、模型文件名/大小常量；不联网（用 mock 服务的需标 ignored 或用本地 axum? 不允许新增依赖，直接单测纯函数）。
 
 ### 6.2 `selection.rs`（T2，可拆 `selection/*.rs`）
@@ -259,12 +259,13 @@ pub struct SelectionService {
 - UIA 取词（移植 spike 代码，见 `E:\document\workspace\AIProjects\lingopick-spike\src\main.rs`）：`CoInitializeEx(MTA)` + `CoCreateInstance(CLSID_CUIAutomation8)` + `IUIAutomation2::SetConnectionTimeout(1500)/SetTransactionTimeout(1000)`；`GetFocusedElement` → TextPattern → `GetSelection` → `GetText(8192)`；失败重试 2 次（间隔 150ms）；无 TextPattern 时用 `ElementFromPoint(mouse)` 向上找最多 6 层；**每次取词在独立线程执行，recv_timeout(1500ms) 看门狗，超时放弃该线程（不 join）并返回失败**。
 - 锚点：鼠标物理坐标（释放点）；`scale_factor` 用 `win32::monitor_scale_factor(anchor_x, anchor_y)`；`config` 来自 settings 的 skills/compact/defaultTargetLang；随后调用 `crate::windows::show_picker(&app, &payload)`，并更新 `last_selection`。
 - 外部点击隐藏：picker 可见且未固定时，全局左键按下若在 picker 窗口外 → `windows::hide_picker(&app)`；picker 内点击不隐藏。
+- 不打断用户操作：picker 是 **非激活窗口**（`focusable: false`，`WS_EX_NOACTIVATE`），显示时不抢前台焦点，因此 Delete / Ctrl+C / Ctrl+X 等按键仍作用于用户原来的应用。未固定时，收到任意键盘输入、鼠标滚轮、右键/中键 → `ActionRequest::DismissOnInput`，由动作线程自动隐藏工具栏；面板已固定时保持显示。
 - 隐藏时 `picker_hidden` 由 windows/main 层处理；本模块只负责判定。
 
 ### 6.3 `windows.rs` / `tray.rs` / `commands.rs` / `state.rs` / `main.rs`（T4）
 
 - `windows::show_settings(app)`：显示/聚焦 settings（最小化还原）。
-- `windows::show_picker(app, payload) -> bool`：按物理锚点 + 该显示器 scale 计算逻辑坐标，初始 440×56，`x = anchor/scale - 40`（限制工作区）、`y = anchor/scale + 12`，下方放不下翻到上方；clamp 到工作区；`show` + `set_focus`；`app.emit_to("picker","picker-data", payload)`；记录最近 payload 供 `picker_ready` 补发。
+- `windows::show_picker(app, payload) -> bool`：按物理锚点 + 该显示器 scale 计算逻辑坐标，初始 440×56，`x = anchor/scale - 40`（限制工作区）、`y = anchor/scale + 12`，下方放不下翻到上方；clamp 到工作区；`show`（**不调用 `set_focus`**，picker 窗口配置 `focusable: false`）；`app.emit_to("picker","picker-data", payload)`；记录最近 payload 供 `picker_ready` 补发。
 - `windows::resize_picker(app, w, h) -> Option<bounds>`：clamp 宽度 200–780、高度 40–620，保持左上/工作区内；设置 LogicalSize/Position 后返回最终 bounds；菜单/面板依赖此语义避免裁剪。
 - `windows::hide_picker(app)`：隐藏 + 清空 pinned + emit `picker-hidden`。
 - `is_picker_visible` / `picker_scale_factor`。
@@ -303,7 +304,7 @@ pub struct SelectionService {
 - 单窗口、原生标题栏、单页四张卡片（无侧栏/标签页）：**翻译服务**、**划词行为**、**应用与启动**、**关于**。
 - 翻译服务：
   - 分段控件「在线 API / 本地模型」立即保存 mode。
-  - 在线：预设下拉（DeepSeek/OpenAI/Moonshot/智谱/Ollama/LM Studio/自定义，切换填默认 baseUrl/model）、服务地址、API Key（password + 显示切换）、模型名下拉（[拉取模型] 通过 `list_online_models` 拉取 `/models`，并保留「自定义模型…」手填兜底）、[测试连接]（显示延迟/模型列表/错误）、状态徽标。
+  - 在线：预设下拉（DeepSeek/OpenAI/Moonshot/智谱/Ollama/LM Studio/自定义）、服务地址、API Key（password + 显示切换）、模型名下拉（[拉取模型] 通过 `list_online_models` 拉取 `/models`，并保留「自定义模型…」手填兜底）、[测试连接]（显示延迟/模型列表/错误）、状态徽标。切换预设必须清空上一个服务商的 API Key / 模型名与模型缓存，且**不再自动填充模型名**；已知预设只填服务地址。
   - 本地：引擎状态（未安装→[下载引擎]，显示进度/取消；已安装→版本状态）、模型下拉（已安装）、[下载模型]（弹目录列表：名称/大小/量化/协议/推荐标记/下载按钮+进度）、[导入 GGUF]、[启动]/[停止]、当前状态徽标与错误提示。
 - 划词行为：启用开关、快捷键录制框（按下组合键显示 `Ctrl+Shift+D`，Esc 取消）、技能开关 + 拖拽排序（无上下箭头）、技能提示词编辑（行内展开 textarea，默认填充系统默认英文提示词，支持重置默认；translate 支持 `{target}` 占位符）、紧凑模式、默认目标语言（auto 显示「自动识别」）、黑名单 chip 输入（回车添加/可删除）。
 - 应用与启动：开机自启（portable 不支持时置灰说明）、关闭窗口后驻留托盘、打开数据/模型/日志/引擎目录、退出程序。
@@ -317,7 +318,9 @@ pub struct SelectionService {
 - `cargo test`（设置、SSE、catalog、日志脱敏等纯函数）通过。
 - `cargo check` 无错误；`npx tauri build --debug --no-bundle` 产出 exe。
 - 启动 exe：静默启动、托盘出现、不弹窗口；`--show` 才显示设置；快捷键/拖选/双击选词在某应用触发 picker；picker 菜单/面板/固定可用（菜单不含服务状态与关闭项）。
-- 设置页：在线模型可按 `/models` 拉取并下拉选择；技能可拖拽排序；技能提示词可编辑与重置（默认英文）；默认目标语言显示「自动识别」。
+- picker 不干扰操作：弹出后前台窗口仍是原应用，Delete/Ctrl+C/Ctrl+X 正常生效；未固定时按任意键、滚轮、右键自动隐藏工具栏。
+- 设置页：在线模型可按 `/models` 拉取并下拉选择；切换服务商预设会清空上一预设的 Key/模型且不自动填模型名；技能可拖拽排序（设置窗口 `dragDropEnabled: false` 保证 Windows 上 HTML5 拖拽可用）；技能提示词可编辑与重置（默认英文）；默认目标语言显示「自动识别」。
+- 本地模型目录只提供 2 个模型：Hy-MT2 1.8B（翻译模型，ModelScope）与 Qwen2.5 3B（通用模型）。
 - 提示词生效：自定义提示词保存后，下一次翻译/总结/解释请求使用自定义 system prompt；空值回退系统默认。
 - 在线模式：填 mock/真实 OpenAI 兼容服务后「测试连接」成功；picker 翻译流式显示。
 - 本地模式：安装引擎 + 下载/导入 Qwen2.5 GGUF 后启动成功，翻译流式返回；总结/解释可用。

@@ -709,17 +709,20 @@ impl EngineService {
             spec.size_bytes,
         );
         let mut last_error: Option<EngineError> = None;
-        for (index, url) in [spec.hf_url, spec.modelscope_url].iter().enumerate() {
+        // A model may only be published on one mirror; empty URLs are skipped.
+        let urls: Vec<&str> = [spec.hf_url, spec.modelscope_url]
+            .into_iter()
+            .filter(|url| !url.is_empty())
+            .collect();
+        for (index, url) in urls.iter().enumerate() {
             if self.cancelled() {
                 let _ = std::fs::remove_file(&part);
                 reporter.cancelled();
                 return Err(cancelled_error());
             }
             if index > 0 {
-                self.logger.warn(&format!(
-                    "model download falling back to mirror: {}",
-                    spec.modelscope_url
-                ));
+                self.logger
+                    .warn(&format!("model download falling back to mirror: {url}"));
                 reporter.status("downloading");
             }
             self.logger
@@ -1394,14 +1397,14 @@ mod tests {
             .unwrap();
         let status = env.service.status();
         assert_eq!(status.local_model_file, models::CATALOG[1].filename);
-        assert_eq!(status.local_model_name, "qwen2.5-1.5b-instruct-q4_k_m");
+        assert_eq!(status.local_model_name, "qwen2.5-3b-instruct-q4_k_m");
         assert!(!status.ready);
         assert!(
             status.hint.contains("启动"),
             "expected start hint, got {}",
             status.hint
         );
-        assert_eq!(status.provider_label, "本地 · qwen2.5-1.5b-instruct-q4_k_m");
+        assert_eq!(status.provider_label, "本地 · qwen2.5-3b-instruct-q4_k_m");
     }
 
     #[test]
@@ -1422,7 +1425,7 @@ mod tests {
     fn installed_models_and_catalog_track_files() {
         let env = test_env();
         std::fs::write(
-            env.paths.models_dir.join(models::CATALOG[2].filename),
+            env.paths.models_dir.join(models::CATALOG[1].filename),
             b"gguf-data",
         )
         .unwrap();
@@ -1432,11 +1435,10 @@ mod tests {
         assert_eq!(installed[0].size_bytes, 9);
 
         let catalog = env.service.catalog();
-        assert_eq!(catalog.len(), 3);
+        assert_eq!(catalog.len(), 2);
         assert!(!catalog[0].installed);
-        assert!(!catalog[1].installed);
-        assert!(catalog[2].installed);
-        assert_eq!(catalog[2].filename, models::CATALOG[2].filename);
+        assert!(catalog[1].installed);
+        assert_eq!(catalog[1].filename, models::CATALOG[1].filename);
     }
 
     #[test]

@@ -112,11 +112,28 @@ fn on_event(inner: &Arc<Inner>, state: &mut HookState, event: Event) {
         EventType::MouseMove { x, y } => state.mouse = Some((x, y)),
         EventType::ButtonPress(Button::Left) => handle_left_press(inner, state),
         EventType::ButtonRelease(Button::Left) => handle_left_release(inner, state),
+        // Any other user input means the toolbar is in the way: hide it so the
+        // application under the cursor keeps receiving normal input.
+        EventType::ButtonPress(Button::Right) | EventType::ButtonPress(Button::Middle) => {
+            dismiss_picker_on_input(inner, "鼠标按键");
+        }
+        EventType::Wheel { .. } => dismiss_picker_on_input(inner, "滚轮"),
         _ => {}
     }
 }
 
+/// Hides an un-pinned toolbar when the user keeps typing/clicking/scrolling.
+/// The picker window is non-activating, so these events already go to the
+/// foreground application; the toolbar only steps out of the way.
+fn dismiss_picker_on_input(inner: &Arc<Inner>, reason: &'static str) {
+    if !inner.picker_visible.load(Ordering::Acquire) || inner.panel_pinned.load(Ordering::Acquire) {
+        return;
+    }
+    inner.send_action(ActionRequest::DismissOnInput { reason });
+}
+
 fn handle_key_press(inner: &Arc<Inner>, state: &mut HookState, key: Key) {
+    dismiss_picker_on_input(inner, "键盘操作");
     match key {
         Key::ControlLeft => state.ctrl_left = true,
         Key::ControlRight => state.ctrl_right = true,

@@ -36,7 +36,8 @@ const MAX_HEIGHT: f64 = 620.0;
 const ANCHOR_LEFT_OFFSET: f64 = 40.0;
 /// Vertical gap between selection and toolbar.
 const ANCHOR_GAP: f64 = 12.0;
-/// Ignore blur events right after showing: `show()` + `set_focus()` races.
+/// Ignore blur events right after showing (the window can briefly report blur
+/// while it is being shown without activating).
 const FOCUS_GUARD: Duration = Duration::from_millis(250);
 const EVENT_PICKER_DATA: &str = "picker-data";
 const EVENT_PICKER_HIDDEN: &str = "picker-hidden";
@@ -168,13 +169,15 @@ pub fn show_picker(app: &tauri::AppHandle, payload: &PickerPayload) -> bool {
     }
 
     // Resize/reposition while hidden, then show (avoids transient artifacts).
+    // The picker is configured as a non-activating window (`focusable: false`),
+    // so `show()` never steals keyboard focus from the application the user is
+    // working in. Do not call `set_focus()` here.
     let _ = window.set_size(PhysicalSize::new(width as u32, height as u32));
     let _ = window.set_position(PhysicalPosition::new(x, y));
     let was_visible = window.is_visible().unwrap_or(false);
     if !was_visible {
         let _ = window.show();
     }
-    let _ = window.set_focus();
 
     *lock(&LAST_SHOWN) = Some(Instant::now());
 
