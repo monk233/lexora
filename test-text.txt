@@ -1,3 +1,0 @@
-LingoPick selection capture live test.
-This sentence lives in another application.
-The catheter shall be inserted under sterile conditions.
