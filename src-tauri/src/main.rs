@@ -156,6 +156,7 @@ fn main() {
             commands::picker_copy,
             commands::picker_open_settings,
             commands::picker_translate,
+            commands::picker_polish,
             commands::picker_custom_skill,
             commands::picker_abort_translate,
             commands::picker_assist,
@@ -264,18 +265,12 @@ mod tests {
     fn show_flag_opens_settings() {
         assert!(wants_settings_window(&args(&["lexora.exe", "--show"])));
         assert!(wants_settings_window(&args(&["--show", "--autostart"])));
-        assert!(!wants_settings_window(&args(&[
-            "lexora.exe",
-            "--show-all"
-        ])));
+        assert!(!wants_settings_window(&args(&["lexora.exe", "--show-all"])));
     }
 
     #[test]
     fn autostart_flag_is_detected() {
-        assert!(is_autostart_launch(&args(&[
-            "lexora.exe",
-            "--autostart"
-        ])));
+        assert!(is_autostart_launch(&args(&["lexora.exe", "--autostart"])));
         assert!(!is_autostart_launch(&args(&["lexora.exe", "--show"])));
     }
 }

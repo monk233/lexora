@@ -8,7 +8,8 @@
 //!   Chinese error mapping;
 //! * [`llama`] — local `llama-server.exe` process manager + state machine;
 //! * [`models`] — GGUF catalog, directory scanning and file-name safety;
-//! * [`prompts`] — translation / summarize / explain prompt construction.
+//! * [`prompts`] — translation / summarize / explain / polish and custom-skill
+//!   prompt construction.
 //!
 //! Streaming downloads emit `download-progress` events roughly every 200 ms and
 //! can be cancelled with [`EngineService::cancel_download`].
@@ -446,6 +447,36 @@ impl EngineService {
             config.model,
             truncated.chars().count(),
             target
+        ));
+        openai::stream_chat(&self.http, &config, messages, config.header_timeout()).await
+    }
+
+    /// Streams a polish (rewriting) request. Uses the general model role like
+    /// summarize/explain; an empty `picker.prompts.polish` falls back to the
+    /// built-in English default.
+    pub async fn polish_stream(
+        &self,
+        text: &str,
+    ) -> Result<BoxStream<'static, Result<String, EngineError>>, EngineError> {
+        let settings = self.settings.get();
+        let cleaned = text.trim();
+        if cleaned.is_empty() {
+            return Err(EngineError::new(
+                "没有可润色的文本。",
+                "请先选中一段文字，然后再点击润色。",
+            ));
+        }
+        let truncated = prompts::truncate_chars(cleaned, settings.picker.max_chars as usize);
+        let (system, user) = prompts::polish_messages(&truncated, &settings.picker.prompts.polish);
+        let messages = vec![
+            json!({"role": "system", "content": system}),
+            json!({"role": "user", "content": user}),
+        ];
+        let config = self.chat_config(&settings, LocalRole::General).await?;
+        self.logger.info(&format!(
+            "polish stream start: provider={} chars={}",
+            if config.local { "local" } else { "online" },
+            truncated.chars().count()
         ));
         openai::stream_chat(&self.http, &config, messages, config.header_timeout()).await
     }
@@ -1632,6 +1663,32 @@ mod tests {
     }
 
     #[test]
+    fn empty_polish_input_is_rejected() {
+        let env = test_env();
+        let error = block_on(env.service.polish_stream("   "))
+            .err()
+            .expect("expected engine error");
+        assert!(
+            error.message.contains("没有可润色"),
+            "message: {}",
+            error.message
+        );
+        assert!(error.hint.contains("润色"), "hint: {}", error.hint);
+    }
+
+    #[test]
+    fn polish_online_requires_configuration() {
+        let env = test_env();
+        env.store
+            .update_json(json!({"provider": {"online": {"baseUrl": ""}}}))
+            .unwrap();
+        let error = block_on(env.service.polish_stream("hello"))
+            .err()
+            .expect("expected engine error");
+        assert!(error.message.contains("配置"), "message: {}", error.message);
+    }
+
+    #[test]
     fn custom_skill_must_exist_and_be_enabled() {
         let env = test_env();
         let error = block_on(
@@ -2040,10 +2097,7 @@ mod tests {
             );
 
             let summary = service
-                .assist(
-                    "summarize",
-                    "Lexora is a selection translator for Windows.",
-                )
+                .assist("summarize", "Lexora is a selection translator for Windows.")
                 .await
                 .expect("assist should succeed");
             eprintln!("smoke summary: {}", summary.trim());

@@ -250,21 +250,25 @@
 
               <div class="custom-skill-field">
                 <span class="custom-skill-label">图标</span>
+                <input class="input" id="custom-skill-icon-search" type="search"
+                       placeholder="搜索图标（英文 key，如 pen、book）"
+                       aria-label="搜索图标" autocomplete="off" spellcheck="false">
                 <div class="icon-grid" id="custom-skill-icons" role="radiogroup"
                      aria-label="技能图标"></div>
+                <p class="inline-hint" id="custom-skill-icon-empty" hidden>没有匹配的图标，换个关键词试试</p>
               </div>
 
               <div class="custom-skill-field">
                 <label class="custom-skill-label" for="custom-skill-name">名称</label>
                 <input class="input" id="custom-skill-name" type="text" maxlength="20"
-                       placeholder="例如：润色" autocomplete="off" spellcheck="false">
+                       placeholder="例如：提取关键词" autocomplete="off" spellcheck="false">
               </div>
 
               <div class="custom-skill-field">
                 <label class="custom-skill-label" for="custom-skill-prompt">提示词</label>
                 <textarea class="textarea" id="custom-skill-prompt" rows="6" maxlength="4000"
                           spellcheck="false"
-                          placeholder="例如：把下面的文本润色得更通顺，保持原意不变，只输出润色后的文本：&#10;{text}"></textarea>
+                          placeholder="例如：请从用户选中的文本中提取 5 个关键词，用逗号分隔输出：&#10;{text}"></textarea>
                 <p class="custom-skill-hint">
                   支持变量：<code>{text}</code> 选中文本、<code>{target}</code> / <code>{language}</code> 目标语言、<code>{program}</code> / <code>{app}</code> 当前应用
                 </p>
@@ -373,7 +377,7 @@
           <div class="danger-row">
             <div class="danger-text">
               <span class="danger-title">恢复默认设置</span>
-              <p class="danger-desc">重置所有选项（不删除已下载的模型与引擎）</p>
+              <p class="danger-desc">重置所有选项（不删除自定义技能、已下载的模型与引擎）</p>
             </div>
             <button type="button" class="btn btn-danger" id="reset-settings">恢复默认</button>
           </div>
@@ -439,6 +443,7 @@
   <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
 
   <script src="shared/constants.js"></script>
+  <script src="shared/skill-icons.js"></script>
   <script src="shared/tauri-api.js"></script>
   <script src="settings.js"></script>
 </body>

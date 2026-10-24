@@ -41,7 +41,7 @@ lexora/
 ├─ web/                         [T3]     静态前端（无打包器）
 │  ├─ index.html settings.css settings.js
 │  ├─ picker.html picker.css picker.js
-│  └─ shared/{constants.js,lang.js,markdown.js,tauri-api.js}
+│  └─ shared/{constants.js,skill-icons.js,lang.js,markdown.js,tauri-api.js}
 ├─ scripts/                     [T4]     fetch-llama.ps1 / build-portable.ps1（make_icons.py 归 Lead）
 ├─ .github/workflows/           [T4]     ci.yml / release.yml
 ├─ docs/                         [Lead]   契约、spike 报告、架构、用户/构建文档
@@ -64,25 +64,27 @@ lexora/
 
 ```jsonc
 {
-  "version": 1,
+  "version": 2,                              // v1 配置自动迁移：补 polish/search，保留 custom
   "picker": {
     "enabled": true,
-    "skills": ["translate","summarize","explain","read","copy","custom-mvmei8cru1n5"],
+    "skills": ["translate","summarize","explain","polish","read","copy","search","custom-mvmei8cru1n5"],
     "compact": false,
     "defaultTargetLang": "auto",          // auto + Hy-MT2 支持的 38 种语言（zh/en/zh-hant/yue/ja/…/ug）；auto 显示为「自动识别」
     "blacklist": [],                      // 进程名，可含 .exe
     "maxChars": 5000,
+    "searchEngine": "google",             // google | baidu | bing（搜索技能）
     "prompts": {                          // 空字符串 = 使用系统默认提示词
       "translate": "",
       "summarize": "",
-      "explain": ""
+      "explain": "",
+      "polish": ""
     },
     "customSkills": [                     // 用户自定义技能；prompt 必填
       {
         "id": "custom-mvmei8cru1n5",       // ^custom-[a-z0-9_-]{1,40}$，全局唯一
-        "label": "润色",                    // <=20 字符
-        "icon": "wand",                    // sparkles|wand|pen|book|globe|code|list|chat|lightbulb|quote|briefcase|star
-        "prompt": "你是中文润色助手。请润色以下文本：{text}"  // <=4000；支持 {text}/{target}/{language}/{program}/{app}
+        "label": "提取关键词",              // <=20 字符
+        "icon": "sparkles",                // 任意 Lucide key（^[a-z0-9-]{1,40}$，200 个可选）或旧 12 别名
+        "prompt": "请从用户选中的文本中提取 5 个关键词：{text}"  // <=4000；支持 {text}/{target}/{language}/{program}/{app}
       }
     ]
   },
@@ -108,7 +110,7 @@ lexora/
 | --- | --- | --- |
 | `get_state` | — | `StatePayload` |
 | `update_settings` | `{patch: object}` | `{state: StatePayload}`（失败 reject 字符串） |
-| `reset_settings` | — | `{state}` |
+| `reset_settings` | — | `{state}`（保留自定义技能定义与启用状态；其余恢复默认） |
 | `test_online` | `{baseUrl, apiKey, model, timeoutMs}` | `TestResult` |
 | `list_online_models` | `{baseUrl, apiKey}` | `{models: string[]}` |
 | `download_engine` | — | `{ok}`（进度走 `download-progress` 事件） |
@@ -135,6 +137,7 @@ lexora/
 | `picker_open_settings` | — | `{ok}` |
 | `picker_translate` | `{requestId, text, targetLang}` | `{ok, error?, hint?}`（随后 `translate-event` 流） |
 | `picker_custom_skill` | `{requestId, skillId, text, programName}` | `{ok, error?, hint?}`（随后 `translate-event` 流；target 取设置默认目标语言） |
+| `picker_polish` | `{requestId, text}` | `{ok, error?, hint?}`（随后 `translate-event` 流；内置润色技能） |
 | `picker_abort_translate` | `{requestId}` | `{ok}` |
 | `picker_assist` | `{action: "summarize"|"explain", text}` | `{ok, text?, error?, hint?}` |
 | `picker_status` | — | `{mode, ready, configured, providerLabel, localState, hint}` |
@@ -148,7 +151,7 @@ lexora/
 | `state-changed` | settings | `StatePayload` |
 | `download-progress` | settings | `DownloadProgress` |
 | `toast` | settings | `{type:"success"|"error"|"info", message}` |
-| `picker-data` | picker | `{text, programName, config:{skills,customSkills,compact,defaultTargetLang}}` |
+| `picker-data` | picker | `{text, programName, config:{skills,customSkills,compact,defaultTargetLang,searchEngine}}` |
 | `picker-hidden` | picker | `{}` |
 | `translate-event` | picker | `{requestId, type:"chunk"|"error"|"done", text?, message?}` |
 
@@ -185,7 +188,7 @@ lexora/
 
 ### 5.5 PickerData.config
 
-`{"skills":["translate","summarize","explain","read","copy","custom-xxx"],"customSkills":[{"id":"custom-xxx","label":"润色","icon":"wand"}],"compact":false,"defaultTargetLang":"auto"}`。customSkills 只下发已启用技能的元数据（不含 prompt）。
+`{"skills":["translate","summarize","explain","polish","read","copy","search","custom-xxx"],"customSkills":[{"id":"custom-xxx","label":"提取关键词","icon":"sparkles"}],"compact":false,"defaultTargetLang":"auto","searchEngine":"google"}`。customSkills 只下发已启用技能的元数据（不含 prompt）。
 
 ## 6. Rust 模块接口（已存骨架，按此实现）
 
@@ -207,6 +210,8 @@ impl EngineService {
       -> Result<BoxStream<'static, Result<String, EngineError>>, EngineError>;
   pub async fn assist(&self, action:&str, text:&str) -> Result<String, EngineError>;
   pub async fn custom_stream(&self, skill_id:&str, text:&str, target_lang:&str, program:&str)
+      -> Result<BoxStream<'static, Result<String, EngineError>>, EngineError>;
+  pub async fn polish_stream(&self, text:&str)
       -> Result<BoxStream<'static, Result<String, EngineError>>, EngineError>;
   pub async fn test_online(&self, base_url:&str, api_key:&str, model:&str, timeout_ms:u64) -> TestResult;
   pub async fn list_online_models(&self, base_url:&str, api_key:&str) -> Result<Vec<String>, EngineError>;
@@ -238,6 +243,7 @@ impl EngineService {
   - 解释 system：`You are a knowledge assistant. Explain the user's text in Simplified Chinese, covering its meaning, background and key concepts, with short examples when helpful.`
   - 文本截断：翻译取前 `picker.maxChars`；总结/解释取前 8000 字符；自定义提示词归一化后最多 4000 字符。
   - 自定义技能：从 `picker.customSkills` 按 id 查找（不存在/未启用返回明确错误），`prompts::render_custom_prompt` 把 `{text}`（选中文本）、`{target}`/`{language}`（目标语言英文名）、`{program}`/`{app}`（当前应用名，空为「未知应用」）替换进提示词；未知 `{...}` 原样保留；system 为渲染后的提示词，user 为选中文本；本地模型角色使用 General；流式事件与翻译一致。
+  - 内置润色：`prompts::polish_messages(text, custom)` 优先使用 `picker.prompts.polish`，空则用 `DEFAULT_POLISH_PROMPT`（英文）；截断 `picker.maxChars`；General 角色；流式事件与翻译一致。
 - 引擎下载：默认 URL `https://github.com/ggml-org/llama.cpp/releases/download/b11851/llama-b11851-bin-win-cpu-x64.zip`（23.1MB，已验证存在），可用 `LEXORA_LLAMA_URL` 覆盖；下载到 cache，zip 解压后把包含 `llama-server.exe` 的目录内容平铺到 `engine/`；进度事件 `app.emit("download-progress", ...)`。失败文案给出手动放置说明（解压到 engine 目录）。
 - 模型目录（两个模型，已验证 URL）：
   | id | 名称 | 文件 | 大小 | 说明 |
@@ -311,7 +317,9 @@ pub struct SelectionService {
 - API 层换成 `web/shared/tauri-api.js`：
   - 实现 `window.pickerAPI`：`ready/onData/onHidden/close/pin/resize/dragPanel/copy/openSettings/translate/abortTranslate/onTranslateEvent/assist/customSkill/status/disableInApp/disableTool` 映射到 §5.2 命令与 §5.3 事件（`listen` 返回 unlisten）。
   - 翻译：`invoke("picker_translate", {requestId,text,targetLang})` 返回错误时展示错误面板；`translate-event` 处理 chunk/error/done。
-  - 自定义技能：`invoke("picker_custom_skill", {requestId,skillId,text,programName})`，与翻译共用 `translate-event` 流与结果面板（Markdown、重试、复制、朗读）；面板标题为技能名，目标语言控件隐藏。工具栏技能按钮图标来自 `LP.SKILL_ICON_SVGS`（内置 id 或自定义 icon），未知元数据回退 label=id/icon=sparkles。
+  - 自定义技能：`invoke("picker_custom_skill", {requestId,skillId,text,programName})`，与翻译共用 `translate-event` 流与结果面板（Markdown、重试、复制、朗读）；面板标题为技能名，目标语言控件隐藏。工具栏技能按钮图标来自 `LP.skillIconSvg`（内置技能用 `LP.SKILL_MAP[id].icon`，自定义用 icon），未知元数据回退 label=id/icon=sparkles。
+  - 内置润色：`invoke("picker_polish", {requestId,text})`，与翻译共用流/面板（标题「润色」，语言控件隐藏）。
+  - 内置搜索：读取 config.searchEngine，按 `LP.SEARCH_ENGINE_MAP[value].url + encodeURIComponent(text)` 生成 URL，`invoke("open_external", {url})` 后用系统浏览器打开并 `picker_close` 隐藏工具栏；无文本 toast 提示。
   - 结果区渲染 Markdown（安全子集，HTML 先转义）：标题、粗体/斜体/删除线、行内代码、代码块、有序/无序列表、引用、分隔线、表格、http(s) 链接（链接点击经 `open_external` 打开，不在 webview 内导航）；流式输出按 rAF 合并重渲染，用户向上翻阅时不强制滚到底部。
   - 朗读：仅用 `window.speechSynthesis`（Windows 系统语音）；无语音时提示「系统未安装可用的语音包：Windows 设置 → 时间和语言 → 语音」。朗读中再次点击是「停止朗读」，必须静默恢复按钮态，不提示失败（忽略 `interrupted`/`canceled` 错误）。
   - 结果面板可通过标题栏空白处拖动整个工具窗口（`picker_drag_panel`，每次 mousemove 发送屏幕坐标差值的逻辑像素 delta）；按钮/语言下拉区域不触发拖动。
@@ -325,7 +333,7 @@ pub struct SelectionService {
   - 分段控件「在线 API / 本地模型」立即保存 mode。
   - 在线：预设下拉（DeepSeek/OpenAI/Moonshot/智谱/Ollama/LM Studio/自定义）、服务地址、API Key（password + 显示切换）、模型名下拉（[拉取模型] 通过 `list_online_models` 拉取 `/models`，并保留「自定义模型…」手填兜底）、[测试连接]（显示延迟/模型列表/错误）、状态徽标。切换预设必须清空上一个服务商的 API Key / 模型名与模型缓存，且**不再自动填充模型名**；已知预设只填服务地址。
   - 本地：引擎状态（未安装→[下载引擎]，显示进度/取消；已安装→版本状态）、已安装模型列表（显示名称、大小、角色徽标：翻译模型/通用模型/自定义模型；不再有模型下拉选择）、[下载模型]（弹目录列表：名称/大小/量化/协议/推荐标记/下载按钮+进度）、[导入 GGUF]、[启动]/[停止]、当前状态徽标与错误提示。启动时后端自动选择模型；停止后翻译/总结不会自动启动。
-- 划词行为：启用开关、技能开关 + 拖拽排序（无上下箭头）、每行显示技能图标（内置用技能 id 图标，自定义用自定义图标）、技能提示词编辑（行内展开 textarea，默认填充系统默认英文提示词，支持重置默认；translate 支持 `{target}` 占位符）、自定义技能管理（[添加技能] 打开内联表单：12 个候选图标、名称 ≤20、提示词必填 ≤4000、变量提示 `{text}/{target}/{language}/{program}/{app}`；支持编辑、删除二次确认）、紧凑模式、默认目标语言（auto 显示「自动识别」，共 38 种语言）、黑名单 chip 输入（回车添加/可删除）。快捷键功能已移除。
+- 划词行为：启用开关、技能开关 + 拖拽排序（无上下箭头）、每行显示技能图标（内置用 `LP.SKILL_MAP[id].icon`，自定义用自定义图标）、技能提示词编辑（行内展开 textarea，默认填充系统默认英文提示词，支持重置默认；translate 支持 `{target}` 占位符；支持 translate/summarize/explain/polish）、自定义技能管理（[添加技能] 打开内联表单：**200 个 Lucide 图标 + 名称搜索过滤**、名称 ≤20、提示词必填 ≤4000、变量提示 `{text}/{target}/{language}/{program}/{app}`；支持编辑、删除二次确认）、搜索配置（搜索行「配置」按钮展开 Google/百度/Bing，保存 `picker.searchEngine`）、紧凑模式、默认目标语言（auto 显示「自动识别」，共 38 种语言）、黑名单 chip 输入（回车添加/可删除）。快捷键功能已移除。恢复默认设置保留自定义技能与已下载模型/引擎。
 - 应用与启动：开机自启（portable 不支持时置灰说明）、关闭窗口后驻留托盘、打开数据/模型/日志/引擎目录、退出程序。
 - 关于：版本、Tauri/Rust 版本、MIT、GitHub 链接、引擎与模型状态。
 - 交互：改动即自动保存（文本 500ms 防抖），顶部短暂「已保存」；错误内联不弹模态；下载进度实时更新。
@@ -339,7 +347,10 @@ pub struct SelectionService {
 - 启动 exe：静默启动、托盘出现、不弹窗口；`--show` 才显示设置；拖选/双击/多击选词在某应用触发 picker；picker 菜单/面板/固定可用（菜单不含服务状态与关闭项）；全局快捷键已移除。
 - picker 不干扰操作：弹出后前台窗口仍是原应用，Delete/Ctrl+C/Ctrl+X 正常生效；未固定时按任意键、右键自动隐藏工具栏，但鼠标滚轮/触摸板滚动**不会**隐藏；结果面板可用标题栏拖动窗口位置；面板内长内容可滚动阅读；朗读中再次点击为停止且不报错。
 - Markdown：翻译/总结/解释结果按 Markdown 渲染（标题、列表、代码块、引用、表格、链接等），HTTPS 链接通过 `open_external` 打开；HTML 注入被转义。
-- 自定义技能：设置页新增/编辑/删除后，picker 工具栏立即出现对应按钮（图标+名称），点击后流式返回、面板标题为技能名；提示词变量在后端替换；空提示词/非法 id 被后端归一化丢弃；未启用技能被点击时返回明确错误。
+- 自定义技能：设置页新增/编辑/删除后，picker 工具栏立即出现对应按钮（图标+名称），点击后流式返回、面板标题为技能名；提示词变量在后端替换；空提示词/非法 id 被后端归一化丢弃；未启用技能被点击时返回明确错误；图标可从 200 个 Lucide 图标中选择（旧 12 key 兼容）。
+- 内置润色：工具栏「润色」流式返回 Markdown，默认英文提示词；设置页可编辑/重置；本地走 General 模型。
+- 内置搜索：工具栏「搜索」按 `picker.searchEngine` 打开系统浏览器搜索选中文本（Google/百度/Bing，URL 编码正确）；设置页可切换引擎。
+- 设置迁移/重置：version 1 旧配置升级后自动补上润色与搜索且保留 custom 技能；`reset_settings` 后自定义技能定义与启用状态仍在。
 - 设置页：在线模型可按 `/models` 拉取并下拉选择；切换服务商预设会清空上一预设的 Key/模型且不自动填模型名；技能可拖拽排序（设置窗口 `dragDropEnabled: false` 保证 Windows 上 HTML5 拖拽可用）；技能列表显示图标；自定义技能可增删改；技能提示词可编辑与重置（默认英文）；默认目标语言显示「自动识别」；不再有快捷键与本地模型下拉。
 - 本地模型目录只提供 2 个模型：Hy-MT2 1.8B（翻译模型，ModelScope）与 Qwen2.5 3B（通用模型）；无需手动选择，启动后按功能自动使用对应模型（切换模型会重新加载）。
 - 提示词生效：自定义提示词保存后，下一次翻译/总结/解释请求使用自定义 system prompt；空值回退系统默认。

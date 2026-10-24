@@ -2,16 +2,19 @@
  *
  * Receives the selected text + configuration from the Rust shell through
  * `window.pickerAPI` (see shared/tauri-api.js) and renders the skill toolbar
- * with the five built-in skills:
+ * with the seven built-in skills:
  *   translate        - streaming translation through the engine
  *   summarize/explain- one-shot assist through the engine
+ *   polish           - streaming rewrite through the engine
  *   read             - Windows system voices via speechSynthesis
  *   copy             - clipboard through the shell
+ *   search           - opens the selected text in the configured search engine
  *
- * `config.customSkills` adds user-defined skills: they reuse the translation
- * pipeline (`picker_custom_skill` streams through translate-event) with their
- * own id/label/icon. All skill icons come from the shared LP.SKILL_ICON_SVGS
- * table so the picker and the settings window share one icon set.
+ * Built-in labels/icons come from the shared LP.SKILL_MAP (icon values are icon
+ * keys such as "languages", not skill ids). `config.customSkills` adds
+ * user-defined skills: they reuse the translation pipeline
+ * (`picker_custom_skill` streams through translate-event) with their own
+ * id/label/icon. Skill icons live in shared/skill-icons.js (LP.skillIconSvg).
  *
  * Window sizing is driven from here: the Tauri window is transparent and has
  * no decorations, so the renderer reports the content size through
@@ -22,16 +25,26 @@
 
   var API = window.pickerAPI;
   var LP = window.LP || {};
-  var DEFAULT_SKILLS = ["translate", "summarize", "explain", "read", "copy"];
+  /* Shared LP.DEFAULT_SKILLS is the source of truth (seven built-ins); the
+   * local list only keeps the toolbar usable if the shared script failed. */
+  var FALLBACK_SKILLS = ["translate", "summarize", "explain", "polish", "read", "copy", "search"];
+  var DEFAULT_SKILLS =
+    LP && Array.isArray(LP.DEFAULT_SKILLS) && LP.DEFAULT_SKILLS.length
+      ? LP.DEFAULT_SKILLS.slice()
+      : FALLBACK_SKILLS.slice();
   var NO_VOICE_MESSAGE =
     "系统未安装可用的语音包：可在 Windows 设置 → 时间和语言 → 语音 中添加";
 
+  /* Label fallback only: LP.SKILL_MAP is the primary source for built-in
+   * labels/icons (see builtinSkillMeta). */
   var SKILL_LABELS = {
     translate: "翻译",
     summarize: "总结",
     explain: "解释",
+    polish: "润色",
     read: "朗读",
     copy: "复制",
+    search: "搜索",
   };
 
   /* Target languages come from the shared language table (shared/constants.js)
@@ -61,9 +74,10 @@
     }
   })();
 
-  /* Skill icons (translate/summarize/explain/read/copy and the custom-skill
-   * palette) live in shared/constants.js: LP.SKILL_ICON_SVGS / LP.skillIconSvg.
-   * Only the picker-only UI icons stay local. */
+  /* Skill icons (built-in ids and the 200-icon custom gallery) live in
+   * shared/skill-icons.js and are exposed through LP.skillIconSvg, keyed by
+   * icon names such as "languages" or "wand-sparkles" (never by skill id).
+   * Only picker-only UI icons stay local. */
   var ICONS = {
     more:
       '<svg class="icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"></circle><circle cx="12" cy="12" r="1.7"></circle><circle cx="19" cy="12" r="1.7"></circle></svg>',
@@ -87,14 +101,59 @@
       : "sparkles";
   }
 
-  /* Skill icons come from the shared table. The shared markup intentionally
-   * omits the sizing class, so it is injected here (picker.css sizes `.icon`). */
+  /* Resolve an icon key to SVG markup, injecting the sizing class the shared
+   * markup intentionally omits. Unknown keys fall back to the default custom
+   * icon (sparkles) and finally to the generic "more" placeholder. */
   function skillIconSvg(key) {
-    var svg = typeof LP.skillIconSvg === "function" ? String(LP.skillIconSvg(key) || "") : "";
+    var svg = "";
+    if (typeof LP.skillIconSvg === "function") {
+      svg = String(LP.skillIconSvg(key) || "");
+      if (!svg) {
+        svg = String(LP.skillIconSvg(defaultCustomIcon()) || "");
+      }
+    }
     if (!svg) {
       return ICONS.more;
     }
     return svg.replace("<svg ", '<svg class="icon" ');
+  }
+
+  /* Search engine configuration (search skill). The URL prefix table lives in
+   * shared/constants.js as LP.SEARCH_ENGINE_MAP; picker-data only sends the
+   * selected engine value. */
+  function defaultSearchEngine() {
+    var fallback =
+      typeof LP.DEFAULT_SEARCH_ENGINE === "string" && LP.DEFAULT_SEARCH_ENGINE
+        ? LP.DEFAULT_SEARCH_ENGINE
+        : "google";
+    return hasOwn(LP.SEARCH_ENGINE_MAP || {}, fallback) ? fallback : "google";
+  }
+
+  function normalizeSearchEngine(value) {
+    var code = String(value == null ? "" : value)
+      .trim()
+      .toLowerCase();
+    if (code && hasOwn(LP.SEARCH_ENGINE_MAP || {}, code)) {
+      return code;
+    }
+    return defaultSearchEngine();
+  }
+
+  /* Built-in skill metadata from the shared table. `icon` is an icon key (for
+   * example translate -> "languages"), never the skill id. */
+  function builtinSkillMeta(skill) {
+    var map = LP.SKILL_MAP || {};
+    var entry = hasOwn(map, skill) ? map[skill] : null;
+    return {
+      id: skill,
+      label: (entry && entry.label) || SKILL_LABELS[skill] || skill,
+      icon: (entry && entry.icon) || defaultCustomIcon(),
+      builtin: true,
+    };
+  }
+
+  function isBuiltinSkill(skill) {
+    return hasOwn(SKILL_LABELS, skill) || hasOwn(LP.SKILL_MAP || {}, skill);
   }
 
   var state = {
@@ -105,6 +164,7 @@
     customSkills: {},
     compact: false,
     defaultTargetLang: "auto",
+    searchEngine: defaultSearchEngine(),
     panelPinned: false,
     panelOpen: false,
     menuOpen: false,
@@ -388,12 +448,12 @@
 
   /* ---- Toolbar --------------------------------------------------------- */
 
-  /* Label + icon for one toolbar skill. Built-in ids keep their fixed labels;
-   * custom ids come from `config.customSkills`, unknown ids fall back to the
-   * id itself and the default sparkles icon. */
+  /* Label + icon for one toolbar skill. Built-in ids come from LP.SKILL_MAP
+   * (icon keys like "languages"); custom ids from `config.customSkills`;
+   * unknown ids fall back to the id itself and the default sparkles icon. */
   function skillMeta(skill) {
-    if (hasOwn(SKILL_LABELS, skill)) {
-      return { id: skill, label: SKILL_LABELS[skill], icon: skill, builtin: true };
+    if (isBuiltinSkill(skill)) {
+      return builtinSkillMeta(skill);
     }
     if (hasOwn(state.customSkills, skill)) {
       return state.customSkills[skill];
@@ -694,6 +754,9 @@
     if (kind === "custom") {
       return "自定义技能与翻译使用相同的服务，请检查在线 API 或本地模型状态后重试。";
     }
+    if (kind === "polish") {
+      return "润色与翻译使用相同的服务，请检查在线 API 或本地模型状态后重试。";
+    }
     if (kind === "assist") {
       return "总结与解释使用与翻译相同的服务，请检查在线 API 或本地模型状态。";
     }
@@ -763,6 +826,43 @@
     }
   }
 
+  /* Per-kind wording shared by the streaming panel (translate / polish /
+   * custom skill). */
+  function requestFailureTitle(request) {
+    if (request.kind === "custom") {
+      return (request.label || "自定义技能") + "失败";
+    }
+    if (request.kind === "polish") {
+      return "润色失败";
+    }
+    return "翻译失败";
+  }
+
+  function emptyResultMessage(request) {
+    if (request.kind === "custom") {
+      return "自定义技能没有返回结果（可能正在启动或服务不可用）。";
+    }
+    if (request.kind === "polish") {
+      return "润色服务没有返回结果（可能正在启动或引擎不可用）。";
+    }
+    return "翻译服务没有返回结果（可能正在启动或引擎不可用）。";
+  }
+
+  function retryRequest(request) {
+    if (!request) {
+      return;
+    }
+    if (request.kind === "custom" && request.skillId) {
+      startCustomSkill(request.skillId);
+      return;
+    }
+    if (request.kind === "polish") {
+      startPolish();
+      return;
+    }
+    translateSkill(panelTargetSelect.value);
+  }
+
   function finishTranslation(request) {
     if (!request || !request.active) {
       return;
@@ -774,12 +874,7 @@
     state.translating = false;
     removeLoadingRow(request);
     if (!String(request.raw || "").trim()) {
-      failTranslation(
-        request,
-        request.kind === "custom"
-          ? "自定义技能没有返回结果（可能正在启动或服务不可用）。"
-          : "翻译服务没有返回结果（可能正在启动或引擎不可用）。"
-      );
+      failTranslation(request, emptyResultMessage(request));
       return;
     }
     renderMarkdownInto(request.result, request.raw);
@@ -799,7 +894,7 @@
     }
     state.translating = false;
     removeLoadingRow(request);
-    var text = friendlyError(message || "翻译失败");
+    var text = friendlyError(message || requestFailureTitle(request));
     if (String(request.raw || "").trim()) {
       appendErrorNote(request.target, text);
       renderMarkdownInto(request.result, request.raw);
@@ -808,17 +903,16 @@
       resizePanelForContent();
       return;
     }
-    var custom = request.kind === "custom";
     renderErrorPanel(
-      custom && request.label ? request.label + "失败" : "翻译失败",
+      requestFailureTitle(request),
       text,
-      hint || hintForError(text, custom ? "custom" : "translate"),
+      hint ||
+        hintForError(
+          text,
+          request.kind === "custom" ? "custom" : request.kind === "polish" ? "polish" : "translate"
+        ),
       function () {
-        if (custom && request.skillId) {
-          startCustomSkill(request.skillId);
-          return;
-        }
-        translateSkill(panelTargetSelect.value);
+        retryRequest(request);
       }
     );
   }
@@ -863,10 +957,7 @@
       return;
     }
     if (event.type === "error") {
-      failTranslation(
-        request,
-        event.message || (request.kind === "custom" ? "处理失败" : "翻译失败")
-      );
+      failTranslation(request, event.message || requestFailureTitle(request));
     }
   }
 
@@ -921,6 +1012,65 @@
           failTranslation(
             request,
             (response && response.error) || "翻译服务没有响应",
+            (response && response.hint) || ""
+          );
+        }
+      },
+      function (error) {
+        failTranslation(request, String(error));
+      }
+    );
+  }
+
+  /* ---- Polish ---------------------------------------------------------- */
+
+  /* Streams the built-in polish skill through `picker_polish`. Events use the
+   * same translate-event channel as translation (chunk/error/done), so
+   * Markdown rendering, retry, copy/speak and the error panel are reused. */
+  function startPolish() {
+    openPanel("润色");
+    setPanelRetry(function () {
+      startPolish();
+    });
+
+    var target = el("div");
+    target.appendChild(sourceNode());
+    var loadingRow = loadingNode("正在润色…");
+    target.appendChild(loadingRow);
+    var result = el("div", "result-text markdown");
+    target.appendChild(result);
+    setBody(target);
+
+    var request = {
+      id: makeRequestId(),
+      kind: "polish",
+      target: target,
+      result: result,
+      raw: "",
+      renderPending: false,
+      loading: loadingRow,
+      active: true,
+      failed: false,
+      sawContent: false,
+    };
+    activeRequest = request;
+    state.translating = true;
+    resizePanelForContent();
+
+    if (!API || typeof API.polish !== "function") {
+      failTranslation(request, "当前版本不支持润色", "请更新应用后再试。");
+      return;
+    }
+
+    API.polish(request.id, state.text).then(
+      function (response) {
+        if (!request.active) {
+          return;
+        }
+        if (!response || !response.ok) {
+          failTranslation(
+            request,
+            (response && response.error) || "润色服务没有响应",
             (response && response.hint) || ""
           );
         }
@@ -992,6 +1142,42 @@
       },
       function (error) {
         failTranslation(request, String(error));
+      }
+    );
+  }
+
+  /* ---- Search ---------------------------------------------------------- */
+
+  /* Opens the selected text in the configured search engine. The URL prefix
+   * comes from the shared LP.SEARCH_ENGINE_MAP table; the engine value itself
+   * is a picker setting delivered through picker-data. */
+  function searchSkill() {
+    var text = String(state.text || "").trim();
+    if (!text) {
+      showToast("没有可搜索的文本");
+      return;
+    }
+    var engines = LP.SEARCH_ENGINE_MAP || {};
+    var engine = hasOwn(engines, state.searchEngine) ? engines[state.searchEngine] : null;
+    var prefix = engine && engine.url ? String(engine.url) : "";
+    if (!/^https?:\/\//i.test(prefix)) {
+      showToast("搜索失败：未配置搜索引擎");
+      return;
+    }
+    if (!API || typeof API.openExternal !== "function") {
+      showToast("搜索失败：当前版本不支持打开链接");
+      return;
+    }
+    API.openExternal(prefix + encodeURIComponent(text)).then(
+      function (response) {
+        if (response && response.ok === false) {
+          showToast("打开搜索失败：" + friendlyError(response.error || "未知错误"));
+          return;
+        }
+        API.close();
+      },
+      function (error) {
+        showToast("打开搜索失败：" + friendlyError(String(error)));
       }
     );
   }
@@ -1233,10 +1419,14 @@
       translateSkill();
     } else if (skill === "summarize" || skill === "explain") {
       assistSkill(skill);
+    } else if (skill === "polish") {
+      startPolish();
     } else if (skill === "read") {
       speak(state.text);
     } else if (skill === "copy") {
       copyToClipboard(state.text, "已复制选中文本", true);
+    } else if (skill === "search") {
+      searchSkill();
     } else if (skill) {
       // User-defined skill (or an unknown id from config.skills): the shell
       // reports a disabled/missing skill through the stream error event.
@@ -1273,8 +1463,8 @@
   window.addEventListener("blur", endPanelDrag);
   panelPin.addEventListener("click", togglePanelPinned);
   document.getElementById("panel-close").addEventListener("click", closePanel);
-  panelSpeak.innerHTML = skillIconSvg("read") + "<span>朗读</span>";
-  panelCopy.innerHTML = skillIconSvg("copy") + "<span>复制</span>";
+  panelSpeak.innerHTML = skillIconSvg(builtinSkillMeta("read").icon) + "<span>朗读</span>";
+  panelCopy.innerHTML = skillIconSvg(builtinSkillMeta("copy").icon) + "<span>复制</span>";
   panelRetry.innerHTML = ICONS.refresh + "<span>重试</span>";
   panelSpeak.addEventListener("click", function () {
     speak(state.panelSpeakText);
@@ -1323,6 +1513,7 @@
     state.text = String(data.text || "");
     state.programName = String(data.programName || "");
     state.defaultTargetLang = String(config.defaultTargetLang || "auto");
+    state.searchEngine = normalizeSearchEngine(config.searchEngine);
     state.targetLang = "";
     state.panelPinned = false;
     // Rebuild the custom-skill metadata every time: a disabled/removed skill

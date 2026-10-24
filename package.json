@@ -16,6 +16,7 @@
     "build": "tauri build --no-bundle",
     "build:debug": "tauri build --debug --no-bundle",
     "fetch:llama": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch-llama.ps1",
+    "icons:skills": "node scripts/make_skill_icons.mjs",
     "build:portable": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-portable.ps1"
   },
   "devDependencies": {

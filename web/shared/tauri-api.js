@@ -262,13 +262,14 @@
         version: 1,
         picker: {
           enabled: true,
-          skills: ["translate", "summarize", "explain", "read", "copy"],
+          skills: ["translate", "summarize", "explain", "polish", "read", "copy", "search"],
           compact: compactToolbar,
           defaultTargetLang: "auto",
           blacklist: ["vscode.exe"],
           maxChars: 5000,
-          prompts: { translate: "", summarize: "", explain: "" },
+          prompts: { translate: "", summarize: "", explain: "", polish: "" },
           customSkills: [],
+          searchEngine: "google",
         },
         provider: {
           mode: "online",
@@ -337,6 +338,8 @@
           "You are a concise Chinese writing assistant. Summarize the user's text in Simplified Chinese and list the key points accurately, without adding anything that is not in the source.",
         explain:
           "You are a knowledge assistant. Explain the user's text in Simplified Chinese, covering its meaning, background and key concepts, with short examples when helpful.",
+        polish:
+          "You are a professional editor. Polish the user's text so it reads naturally and fluently while keeping the original meaning. Output only the polished text, without explanations, quotes, or the source text.",
       },
     };
     refreshMockDerived();
@@ -386,7 +389,7 @@
   function normalizeMockSettings() {
     var settings = mockStore.settings;
     var picker = settings.picker;
-    var known = ["translate", "summarize", "explain", "read", "copy"];
+    var known = ["translate", "summarize", "explain", "polish", "read", "copy", "search"];
     var customSkills = [];
     (Array.isArray(picker.customSkills) ? picker.customSkills : []).forEach(function (entry) {
       if (!entry || customSkills.length >= 20) {
@@ -448,10 +451,15 @@
     });
     picker.blacklist = blacklist;
     picker.maxChars = Math.min(20000, Math.max(100, Number(picker.maxChars) || 5000));
+    var searchEngines = ["google", "baidu", "bing"];
+    picker.searchEngine =
+      searchEngines.indexOf(String(picker.searchEngine || "")) >= 0
+        ? String(picker.searchEngine)
+        : "google";
     var promptStore =
       picker.prompts && typeof picker.prompts === "object" ? picker.prompts : {};
     picker.prompts = {};
-    ["translate", "summarize", "explain"].forEach(function (id) {
+    ["translate", "summarize", "explain", "polish"].forEach(function (id) {
       picker.prompts[id] = String(promptStore[id] || "").trim().slice(0, 4000);
     });
     if (settings.provider.mode !== "local") {
@@ -588,6 +596,7 @@
           customSkills: customSkills,
           compact: !!picker.compact,
           defaultTargetLang: picker.defaultTargetLang || "auto",
+          searchEngine: picker.searchEngine || "google",
         },
       });
     }
@@ -752,6 +761,19 @@
           "zh"
         );
         return { ok: true };
+      case "picker_polish":
+        if (!String(args.text || "").trim()) {
+          return { ok: false, error: "没有可润色的文本" };
+        }
+        startMockTranslate(
+          String(args.requestId || ""),
+          String(args.text || ""),
+          "zh"
+        );
+        return { ok: true };
+      case "open_external":
+        console.info("[mock] 打开外部链接：", String(args.url || ""));
+        return { ok: true };
       case "picker_abort_translate":
         cancelMockTranslate(String(args.requestId || ""));
         return { ok: true };
@@ -809,10 +831,16 @@
       case "reset_settings": {
         var portable = mockStore.app.portable;
         var installed = mockStore.models.slice();
+        var keptCustomSkills = (mockStore.settings.picker.customSkills || []).slice();
+        var keptCustomEnabled = (mockStore.settings.picker.skills || []).filter(function (id) {
+          return String(id).indexOf("custom-") === 0;
+        });
         initMockStore();
         mockStore.app.portable = portable;
         mockStore.models = installed;
         mockStore.loginItem.supported = !portable;
+        mockStore.settings.picker.customSkills = keptCustomSkills;
+        mockStore.settings.picker.skills = mockStore.settings.picker.skills.concat(keptCustomEnabled);
         normalizeMockSettings();
         mockPublishState();
         return { state: clone(mockStore) };
@@ -1120,6 +1148,17 @@
         text: String(text == null ? "" : text),
         programName: String(programName == null ? "" : programName),
       });
+    },
+    /* Streams the built-in 润色 skill through the same translate-event channel. */
+    polish: function (requestId, text) {
+      return safeInvoke("picker_polish", {
+        requestId: String(requestId == null ? "" : requestId),
+        text: String(text == null ? "" : text),
+      });
+    },
+    /* Opens an https URL in the system browser (search skill). */
+    openExternal: function (url) {
+      return safeInvoke("open_external", { url: String(url == null ? "" : url) });
     },
     status: function () {
       return safeInvoke("picker_status", {});

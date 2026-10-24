@@ -10,25 +10,28 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-pub const SKILLS: [&str; 5] = ["translate", "summarize", "explain", "read", "copy"];
-/// Icon keys a custom skill may reference. The picker UI mirrors this list in
-/// `web/shared/constants.js` (`LP.CUSTOM_SKILL_ICON_KEYS`).
-pub const CUSTOM_SKILL_ICONS: [&str; 12] = [
-    "sparkles",
-    "wand",
-    "pen",
-    "book",
-    "globe",
-    "code",
-    "list",
-    "chat",
-    "lightbulb",
-    "quote",
-    "briefcase",
-    "star",
+/// Version of the on-disk settings schema. Bumped whenever defaults or fields
+/// change so [`Settings::normalize`] can migrate an older file in place.
+pub const SETTINGS_VERSION: u32 = 2;
+/// Built-in picker skills, in their canonical toolbar order.
+pub const SKILLS: [&str; 7] = [
+    "translate",
+    "summarize",
+    "explain",
+    "polish",
+    "read",
+    "copy",
+    "search",
 ];
-/// Icon used when a custom skill has an unknown or empty icon.
+/// Icon used when a custom skill has an unknown or empty icon. Valid icon keys
+/// match `^[a-z0-9-]{1,40}$`; the picker maps a key it has no artwork for back
+/// to this default.
 pub const CUSTOM_SKILL_DEFAULT_ICON: &str = "sparkles";
+/// Search engines accepted by `picker.searchEngine`; the picker's search
+/// skill opens the search URL of the configured engine.
+pub const SEARCH_ENGINES: [&str; 3] = ["google", "baidu", "bing"];
+/// Engine used when `picker.searchEngine` is unknown or empty.
+pub const DEFAULT_SEARCH_ENGINE: &str = "google";
 /// Label used when a custom skill has an empty label.
 const CUSTOM_SKILL_DEFAULT_LABEL: &str = "自定义技能";
 /// Hard cap so a corrupted settings file cannot bloat the picker forever.
@@ -36,6 +39,7 @@ const CUSTOM_SKILL_MAX: usize = 20;
 /// Labels are short button captions; ids must stay stable for the UI.
 const CUSTOM_SKILL_LABEL_MAX_CHARS: usize = 20;
 const CUSTOM_SKILL_ID_MAX_CHARS: usize = 40;
+const CUSTOM_SKILL_ICON_MAX_CHARS: usize = 40;
 /// Languages supported by the Hy-MT2 translation model (33 languages plus
 /// Chinese variants and minority languages). `auto` asks the shell to resolve
 /// the target from the source text.
@@ -66,6 +70,8 @@ pub struct PickerSettings {
     pub default_target_lang: String,
     pub blacklist: Vec<String>,
     pub max_chars: u32,
+    /// One of [`SEARCH_ENGINES`]; used by the built-in `search` skill.
+    pub search_engine: String,
     #[serde(default)]
     pub prompts: PromptSettings,
     #[serde(default)]
@@ -82,7 +88,8 @@ pub struct CustomSkill {
     pub id: String,
     /// Button caption, visible in the picker toolbar.
     pub label: String,
-    /// One of [`CUSTOM_SKILL_ICONS`]; unknown keys fall back to `sparkles`.
+    /// Icon key matching `^[a-z0-9-]{1,40}$`; unknown keys fall back to
+    /// [`CUSTOM_SKILL_DEFAULT_ICON`].
     pub icon: String,
     /// Model instruction; supports `{text}` `{target}` `{language}`
     /// `{program}` `{app}` placeholders.
@@ -108,6 +115,7 @@ pub struct PromptSettings {
     pub translate: String,
     pub summarize: String,
     pub explain: String,
+    pub polish: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -150,7 +158,7 @@ pub struct AppSettings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            version: 1,
+            version: SETTINGS_VERSION,
             picker: PickerSettings::default(),
             provider: ProviderSettings::default(),
             app: AppSettings::default(),
@@ -167,6 +175,7 @@ impl Default for PickerSettings {
             default_target_lang: "auto".to_string(),
             blacklist: Vec::new(),
             max_chars: MAX_SELECTION_CHARS,
+            search_engine: DEFAULT_SEARCH_ENGINE.to_string(),
             prompts: PromptSettings::default(),
             custom_skills: Vec::new(),
         }
@@ -179,6 +188,7 @@ impl Default for PromptSettings {
             translate: String::new(),
             summarize: String::new(),
             explain: String::new(),
+            polish: String::new(),
         }
     }
 }
@@ -240,7 +250,23 @@ impl Settings {
 
     /// Clamps every field into a sane range and drops unknown skills/languages.
     pub fn normalize(mut self) -> Self {
-        self.version = 1;
+        // Migrate older files before validating. Version 1 shipped only the
+        // five original built-in skills; version 2 adds `polish` and `search`.
+        // They are appended after the existing entries so enabled custom ids
+        // keep their original position in the toolbar.
+        if self.version < SETTINGS_VERSION {
+            let existing: Vec<String> = self
+                .picker
+                .skills
+                .iter()
+                .map(|skill| skill.trim().to_ascii_lowercase())
+                .collect();
+            for skill in ["polish", "search"] {
+                if !existing.iter().any(|current| current == skill) {
+                    self.picker.skills.push(skill.to_string());
+                }
+            }
+        }
 
         // Custom skills are validated first: `picker.skills` may reference one
         // of their ids, and only validated ids may stay enabled.
@@ -264,7 +290,7 @@ impl Settings {
             }
             let icon = {
                 let icon = skill.icon.trim().to_ascii_lowercase();
-                if CUSTOM_SKILL_ICONS.contains(&icon.as_str()) {
+                if is_valid_custom_skill_icon(&icon) {
                     icon
                 } else {
                     CUSTOM_SKILL_DEFAULT_ICON.to_string()
@@ -322,11 +348,20 @@ impl Settings {
         }
         self.picker.blacklist = blacklist;
         self.picker.max_chars = self.picker.max_chars.clamp(100, 20_000);
+        self.picker.search_engine = {
+            let value = self.picker.search_engine.trim().to_ascii_lowercase();
+            if SEARCH_ENGINES.contains(&value.as_str()) {
+                value
+            } else {
+                DEFAULT_SEARCH_ENGINE.to_string()
+            }
+        };
         // Custom prompts are user-editable text: trim and cap them so a pasted
         // document cannot bloat settings.json or every request.
         self.picker.prompts.translate = truncate(&self.picker.prompts.translate, PROMPT_MAX_CHARS);
         self.picker.prompts.summarize = truncate(&self.picker.prompts.summarize, PROMPT_MAX_CHARS);
         self.picker.prompts.explain = truncate(&self.picker.prompts.explain, PROMPT_MAX_CHARS);
+        self.picker.prompts.polish = truncate(&self.picker.prompts.polish, PROMPT_MAX_CHARS);
 
         self.provider.mode = if self.provider.mode == "local" {
             "local".to_string()
@@ -351,6 +386,7 @@ impl Settings {
         if !["system", "light", "dark"].contains(&self.app.theme.as_str()) {
             self.app.theme = "system".to_string();
         }
+        self.version = SETTINGS_VERSION;
         self
     }
 }
@@ -373,6 +409,18 @@ pub fn is_valid_custom_skill_id(id: &str) -> bool {
             character.is_ascii_lowercase()
                 || character.is_ascii_digit()
                 || matches!(character, '_' | '-')
+        })
+}
+
+/// `true` for icon keys: 1–40 characters from `[a-z0-9-]`. The picker maps an
+/// unknown-but-valid key to its default artwork, so users are not limited to
+/// the built-in icon set.
+pub fn is_valid_custom_skill_icon(icon: &str) -> bool {
+    let count = icon.chars().count();
+    count >= 1
+        && count <= CUSTOM_SKILL_ICON_MAX_CHARS
+        && icon.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
         })
 }
 
@@ -431,8 +479,25 @@ impl SettingsStore {
         Ok(next)
     }
 
+    /// Restores every setting to its default **except** custom skill
+    /// definitions: a reset must not silently delete a user's own skills or
+    /// disable the ones they had enabled. Previously enabled custom ids are
+    /// re-appended after the built-in defaults.
     pub fn reset(&self) -> Settings {
-        let next = Settings::default().normalize();
+        let old = self.get();
+        let mut next = Settings::default().normalize();
+        next.picker.custom_skills = old.picker.custom_skills;
+        for skill in &old.picker.skills {
+            let id = skill.trim().to_ascii_lowercase();
+            let is_known_custom = next
+                .picker
+                .custom_skills
+                .iter()
+                .any(|custom| custom.id == id);
+            if is_known_custom && !next.picker.skills.contains(&id) {
+                next.picker.skills.push(id);
+            }
+        }
         let _ = self.persist(&next);
         if let Ok(mut guard) = self.inner.write() {
             *guard = next.clone();
@@ -525,7 +590,12 @@ mod tests {
     #[test]
     fn defaults_are_normalized() {
         let settings = Settings::default().normalize();
-        assert_eq!(settings.picker.skills.len(), 5);
+        assert_eq!(settings.version, SETTINGS_VERSION);
+        assert_eq!(settings.version, 2);
+        let expected: Vec<String> = SKILLS.iter().map(|skill| skill.to_string()).collect();
+        assert_eq!(settings.picker.skills, expected);
+        assert_eq!(settings.picker.skills.len(), 7);
+        assert_eq!(settings.picker.search_engine, "google");
         assert_eq!(settings.provider.mode, "online");
         assert!(settings.app.close_to_tray);
     }
@@ -584,8 +654,10 @@ mod tests {
         let value = serde_json::to_value(settings).unwrap();
         assert_eq!(
             value["picker"]["prompts"],
-            json!({ "translate": "", "summarize": "", "explain": "" })
+            json!({ "translate": "", "summarize": "", "explain": "", "polish": "" })
         );
+        assert_eq!(value["picker"]["searchEngine"], "google");
+        assert_eq!(value["version"], SETTINGS_VERSION);
     }
 
     #[test]
@@ -598,7 +670,8 @@ mod tests {
                     "prompts": {
                         "translate": format!("  {too_long}  "),
                         "summarize": "  用一句话总结  ",
-                        "explain": ""
+                        "explain": "",
+                        "polish": "  润色得更自然  "
                     }
                 }
             }))
@@ -610,6 +683,7 @@ mod tests {
         assert!(!updated.picker.prompts.translate.starts_with(' '));
         assert_eq!(updated.picker.prompts.summarize, "用一句话总结");
         assert_eq!(updated.picker.prompts.explain, "");
+        assert_eq!(updated.picker.prompts.polish, "润色得更自然");
         let reloaded = SettingsStore::load(dir.path().join("settings.json"));
         assert_eq!(
             reloaded.get().picker.prompts.translate.chars().count(),
@@ -724,7 +798,9 @@ mod tests {
             skills[0].label.chars().count(),
             CUSTOM_SKILL_LABEL_MAX_CHARS
         );
-        assert_eq!(skills[0].icon, CUSTOM_SKILL_DEFAULT_ICON);
+        // Any key matching `^[a-z0-9-]{1,40}$` is kept, even outside the
+        // built-in icon set.
+        assert_eq!(skills[0].icon, "dragon");
         assert_eq!(skills[0].prompt, "Translate {text} into {target}.");
 
         assert_eq!(skills[1].id, "custom-defaults");
@@ -848,5 +924,193 @@ mod tests {
         assert_eq!(settings.picker.custom_skills.len(), 1);
         assert_eq!(settings.picker.custom_skills[0].id, "custom-json");
         assert_eq!(settings.picker.custom_skills[0].icon, "lightbulb");
+    }
+
+    #[test]
+    fn version_one_settings_migrate_on_load() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("settings.json");
+        std::fs::write(
+            &file,
+            r#"{
+                "version": 1,
+                "picker": {
+                    "skills": ["translate", "summarize", "explain", "read", "copy", "custom-abc"],
+                    "customSkills": [{
+                        "id": "custom-abc",
+                        "label": "缩写",
+                        "icon": "rocket",
+                        "prompt": "Summarize: {text}"
+                    }]
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let store = SettingsStore::load(file);
+        let settings = store.get();
+        assert_eq!(settings.version, SETTINGS_VERSION);
+        // The new built-ins are appended after the old entries; the enabled
+        // custom skill keeps its position and is not lost.
+        assert_eq!(
+            settings.picker.skills,
+            vec![
+                "translate",
+                "summarize",
+                "explain",
+                "read",
+                "copy",
+                "custom-abc",
+                "polish",
+                "search"
+            ]
+        );
+        assert_eq!(settings.picker.custom_skills.len(), 1);
+        assert_eq!(settings.picker.custom_skills[0].icon, "rocket");
+        // The migrated settings are persisted back to disk.
+        let reloaded = SettingsStore::load(dir.path().join("settings.json"));
+        assert_eq!(reloaded.get(), settings);
+    }
+
+    #[test]
+    fn migration_skips_skills_that_already_exist() {
+        let mut settings = Settings::default();
+        settings.version = 1;
+        settings.picker.skills = vec![
+            "translate".to_string(),
+            "polish".to_string(),
+            "custom-x".to_string(),
+        ];
+        settings.picker.custom_skills = vec![CustomSkill {
+            id: "custom-x".to_string(),
+            label: "自定义".to_string(),
+            icon: "star".to_string(),
+            prompt: "prompt".to_string(),
+        }];
+
+        let migrated = settings.normalize();
+        assert_eq!(migrated.version, SETTINGS_VERSION);
+        assert_eq!(
+            migrated.picker.skills,
+            vec!["translate", "polish", "custom-x", "search"]
+        );
+        // Idempotent: a second pass changes nothing.
+        assert_eq!(migrated.clone().normalize(), migrated);
+    }
+
+    #[test]
+    fn search_engine_falls_back_to_google() {
+        for (input, expected) in [
+            ("google", "google"),
+            ("baidu", "baidu"),
+            ("BING", "bing"),
+            ("duckduckgo", "google"),
+            ("", "google"),
+        ] {
+            let mut settings = Settings::default();
+            settings.picker.search_engine = input.to_string();
+            assert_eq!(
+                settings.normalize().picker.search_engine,
+                expected,
+                "wrong engine for {input:?}"
+            );
+        }
+        let mut settings = Settings::default();
+        settings.picker.search_engine = "baidu".to_string();
+        let value = serde_json::to_value(&settings).unwrap();
+        assert_eq!(value["picker"]["searchEngine"], "baidu");
+        let parsed: Settings = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.picker.search_engine, "baidu");
+    }
+
+    #[test]
+    fn custom_skill_icons_follow_the_generic_rule() {
+        fn normalize_icon(icon: &str) -> String {
+            let mut settings = Settings::default();
+            settings.picker.custom_skills = vec![CustomSkill {
+                id: "custom-icon".to_string(),
+                label: "图标".to_string(),
+                icon: icon.to_string(),
+                prompt: "prompt".to_string(),
+            }];
+            settings.normalize().picker.custom_skills[0].icon.clone()
+        }
+
+        // Any key matching `^[a-z0-9-]{1,40}$` is kept, not only the 12
+        // built-in icon names.
+        assert_eq!(normalize_icon("rocket"), "rocket");
+        assert_eq!(normalize_icon("badge-check"), "badge-check");
+        assert_eq!(normalize_icon(" Rocket "), "rocket");
+        let longest = "a".repeat(CUSTOM_SKILL_ICON_MAX_CHARS);
+        assert_eq!(normalize_icon(&longest), longest);
+        // Empty or invalid keys fall back to the default icon.
+        for invalid in [
+            "",
+            "   ",
+            "rocket_ship",
+            "rocket ship",
+            "图标",
+            "Rocket.Ship",
+        ] {
+            assert_eq!(
+                normalize_icon(invalid),
+                CUSTOM_SKILL_DEFAULT_ICON,
+                "wrong fallback for {invalid:?}"
+            );
+        }
+        let too_long = "a".repeat(CUSTOM_SKILL_ICON_MAX_CHARS + 1);
+        assert_eq!(normalize_icon(&too_long), CUSTOM_SKILL_DEFAULT_ICON);
+    }
+
+    #[test]
+    fn reset_keeps_custom_skills_and_their_enabled_state() {
+        let (store, dir) = store();
+        store
+            .update_json(json!({
+                "picker": {
+                    "skills": ["translate", "custom-keep"],
+                    "customSkills": [
+                        {
+                            "id": "custom-keep",
+                            "label": "保留技能",
+                            "icon": "rocket",
+                            "prompt": "Explain {text}"
+                        },
+                        {
+                            "id": "custom-off",
+                            "label": "未启用技能",
+                            "icon": "star",
+                            "prompt": "Summarize {text}"
+                        }
+                    ],
+                    "compact": true,
+                    "blacklist": ["WeChat"],
+                    "searchEngine": "baidu",
+                    "prompts": { "polish": "润色得更自然" }
+                },
+                "provider": { "online": { "model": "gpt-4o-mini" } }
+            }))
+            .unwrap();
+
+        let reset = store.reset();
+        assert_eq!(reset.version, SETTINGS_VERSION);
+        // Custom skill definitions survive the reset...
+        assert_eq!(reset.picker.custom_skills.len(), 2);
+        assert_eq!(reset.picker.custom_skills[0].id, "custom-keep");
+        assert_eq!(reset.picker.custom_skills[1].id, "custom-off");
+        // ...and so does the enabled state, appended after the built-ins.
+        let mut expected: Vec<String> = SKILLS.iter().map(|skill| skill.to_string()).collect();
+        expected.push("custom-keep".to_string());
+        assert_eq!(reset.picker.skills, expected);
+        assert!(!reset.picker.skills.contains(&"custom-off".to_string()));
+        // Everything else goes back to defaults.
+        assert!(!reset.picker.compact);
+        assert!(reset.picker.blacklist.is_empty());
+        assert_eq!(reset.picker.search_engine, DEFAULT_SEARCH_ENGINE);
+        assert_eq!(reset.picker.prompts.polish, "");
+        assert_eq!(reset.provider.online.model, "deepseek-chat");
+        // The reset state is persisted, not only kept in memory.
+        let reloaded = SettingsStore::load(dir.path().join("settings.json"));
+        assert_eq!(reloaded.get(), reset);
     }
 }

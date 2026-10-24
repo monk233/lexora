@@ -1209,15 +1209,28 @@ textarea {
 }
 
 .icon-grid {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  height: 216px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.icon-grid:empty {
+  display: none;
 }
 
 .icon-option {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex: 0 0 auto;
   width: 36px;
   height: 36px;
   padding: 0;
@@ -1248,6 +1261,65 @@ textarea {
 .icon-option:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 1px;
+}
+
+/* ---- Search engine config ----------------------------------------------- */
+
+.search-engine-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.search-engine-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  min-width: 132px;
+  padding: 8px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.search-engine-option:hover {
+  border-color: var(--text-faint);
+  background: var(--surface-hover);
+}
+
+.search-engine-option.is-selected {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.search-engine-option:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+.search-engine-name {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.search-engine-url {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.search-engine-option.is-selected .search-engine-name {
+  color: var(--primary);
+}
+
+/* `.skill-prompt-hint` grows inside the prompt panel; here it must hug the
+ * options instead of stretching the panel vertically. */
+.search-engine-panel .skill-prompt-hint {
+  flex: 0 1 auto;
 }
 
 /* ---- Chips -------------------------------------------------------------- */
@@ -1470,6 +1542,7 @@ textarea {
   .progress-fill,
   .textarea,
   .icon-option,
+  .search-engine-option,
   .skill-item {
     transition: none;
   }

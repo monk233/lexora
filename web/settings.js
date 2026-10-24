@@ -13,10 +13,27 @@
   var API = window.settingsAPI;
   var LP = window.LP || {};
 
-  var SKILL_IDS = ["translate", "summarize", "explain", "read", "copy"];
+  /* Built-in skill ids come from shared metadata so newly added built-ins
+   * (polish/search) need no frontend change. Fallbacks keep the page usable
+   * when the cached shared script is stale. */
+  var SKILL_IDS = (
+    LP.DEFAULT_SKILLS && LP.DEFAULT_SKILLS.length
+      ? LP.DEFAULT_SKILLS
+      : ["translate", "summarize", "explain", "polish", "read", "copy", "search"]
+  ).slice();
   var DEFAULT_SKILLS = SKILL_IDS.slice();
-  /* Skills that expose an editable prompt (read/copy have no model call). */
-  var PROMPT_SKILLS = ["translate", "summarize", "explain"];
+  /* Built-in skills that expose an editable prompt (read/copy/search have no
+   * model call). */
+  var PROMPT_SKILLS = (
+    LP.PROMPT_SKILLS && LP.PROMPT_SKILLS.length
+      ? LP.PROMPT_SKILLS
+      : ["translate", "summarize", "explain", "polish"]
+  ).slice();
+  var SEARCH_ENGINES = LP.SEARCH_ENGINES || [
+    { value: "google", label: "Google" },
+    { value: "baidu", label: "百度" },
+    { value: "bing", label: "Bing" },
+  ];
   var CUSTOM_MODEL_VALUE = "__custom__";
 
   var state = null;
@@ -44,6 +61,12 @@
   /* Skill id currently being dragged in the toolbar-order list. */
   var dragSkillId = "";
 
+  /* Search-engine config panel (search skill) open state. */
+  var searchPanelOpen = false;
+
+  /* Icon picker search query (filters LP.CUSTOM_SKILL_ICON_KEYS by key). */
+  var iconSearchQuery = "";
+
   /* Custom skill editor: open flag, edited id ("" means a new skill) and the
    * in-progress draft. The draft survives `state-changed` refreshes so a
    * background update never wipes what the user is typing. */
@@ -51,19 +74,25 @@
   var customEditingId = "";
   var customDraft = null;
 
+  /* Friendly names for the legacy/common icon keys (unknown keys show as-is). */
   var CUSTOM_ICON_LABELS = {
     sparkles: "灵感",
-    wand: "魔法",
-    pen: "书写",
-    book: "阅读",
-    globe: "语言",
+    "wand-sparkles": "润色",
+    languages: "语言",
+    "pen-line": "书写",
+    "book-open": "阅读",
+    earth: "全球",
     code: "代码",
-    list: "要点",
-    chat: "对话",
-    lightbulb: "解释",
+    list: "列表",
+    "message-circle": "对话",
+    lightbulb: "点子",
     quote: "引用",
     briefcase: "工作",
     star: "收藏",
+    search: "搜索",
+    "circle-help": "帮助",
+    "volume-2": "朗读",
+    copy: "复制",
   };
 
   var CUSTOM_ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -973,13 +1002,92 @@
     return null;
   }
 
+  /* Map legacy 12-icon keys through the shared alias table, then verify the
+   * key exists in the 200-icon gallery. Unknown keys fall back to sparkles. */
   function validCustomIcon(icon) {
-    var keys = LP.CUSTOM_SKILL_ICON_KEYS || [];
     var key = String(icon || "");
-    if (keys.indexOf(key) >= 0) {
-      return key;
+    var aliases = LP.LEGACY_SKILL_ICON_ALIASES || {};
+    if (Object.prototype.hasOwnProperty.call(aliases, key)) {
+      key = String(aliases[key] || "");
     }
-    return LP.CUSTOM_SKILL_DEFAULT_ICON || "sparkles";
+    var keys = LP.CUSTOM_SKILL_ICON_KEYS || [];
+    if (!key || (keys.length && keys.indexOf(key) < 0)) {
+      return LP.CUSTOM_SKILL_DEFAULT_ICON || "sparkles";
+    }
+    return key;
+  }
+
+  function builtinSkillIconKey(id) {
+    var meta = LP.SKILL_MAP && LP.SKILL_MAP[id];
+    return (meta && meta.icon) || id;
+  }
+
+  function currentSearchEngine() {
+    var picker = state && state.settings && state.settings.picker;
+    var value = String((picker && picker.searchEngine) || "");
+    for (var index = 0; index < SEARCH_ENGINES.length; index += 1) {
+      if (SEARCH_ENGINES[index].value === value) {
+        return value;
+      }
+    }
+    return LP.DEFAULT_SEARCH_ENGINE || "google";
+  }
+
+  function searchEnginePanel() {
+    var panel = el("div", "skill-prompt search-engine-panel");
+    panel.id = "search-engine-panel";
+    var current = currentSearchEngine();
+    var group = el("div", "search-engine-list");
+    group.setAttribute("role", "radiogroup");
+    group.setAttribute("aria-label", "搜索引擎");
+    SEARCH_ENGINES.forEach(function (engine) {
+      var selected = engine.value === current;
+      var button = el(
+        "button",
+        "search-engine-option" + (selected ? " is-selected" : "")
+      );
+      button.type = "button";
+      button.setAttribute("data-search-engine", engine.value);
+      button.setAttribute("role", "radio");
+      button.setAttribute("aria-checked", selected ? "true" : "false");
+      button.setAttribute("aria-label", "使用" + engine.label + "搜索");
+      button.appendChild(el("span", "search-engine-name", engine.label));
+      if (engine.url) {
+        var host = String(engine.url)
+          .replace(/^https?:\/\//, "")
+          .split("/")[0];
+        button.appendChild(el("span", "search-engine-url", host));
+      }
+      group.appendChild(button);
+    });
+    panel.appendChild(group);
+    panel.appendChild(
+      el(
+        "p",
+        "skill-prompt-hint",
+        "搜索技能会在所选搜索引擎中打开选中的文本；选择后立即保存"
+      )
+    );
+    return panel;
+  }
+
+  function toggleSearchPanel() {
+    searchPanelOpen = !searchPanelOpen;
+    renderSkills(true);
+  }
+
+  function selectSearchEngine(value) {
+    var next = String(value || "");
+    var valid = false;
+    SEARCH_ENGINES.forEach(function (engine) {
+      if (engine.value === next) {
+        valid = true;
+      }
+    });
+    if (!valid) {
+      next = LP.DEFAULT_SEARCH_ENGINE || "google";
+    }
+    save({ picker: { searchEngine: next } });
   }
 
   function knownSkillIds() {
@@ -1033,7 +1141,9 @@
         var custom = customMap[id];
         var detail = custom
           ? custom.label + "\u0003" + custom.icon + "\u0003" + custom.prompt
-          : "";
+          : id === "search"
+            ? "search:" + currentSearchEngine()
+            : "";
         return id + ":" + (enabled.indexOf(id) >= 0 ? 1 : 0) + ":" + detail;
       })
       .join("\u0001");
@@ -1078,7 +1188,9 @@
 
     var icon = el("span", "skill-icon");
     icon.setAttribute("aria-hidden", "true");
-    icon.innerHTML = LP.skillIconSvg(custom ? custom.icon : id);
+    icon.innerHTML = LP.skillIconSvg(
+      custom ? custom.icon : builtinSkillIconKey(id)
+    );
     line.appendChild(icon);
 
     var main = el("div", "skill-main");
@@ -1123,6 +1235,19 @@
       editButton.innerHTML =
         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>';
       line.appendChild(editButton);
+    } else if (id === "search") {
+      var configButton = el("button", "skill-edit");
+      configButton.type = "button";
+      configButton.setAttribute("data-search-config", "1");
+      configButton.setAttribute("aria-label", "配置搜索");
+      configButton.setAttribute(
+        "aria-expanded",
+        searchPanelOpen ? "true" : "false"
+      );
+      configButton.title = "配置搜索";
+      configButton.innerHTML =
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h10"></path><path d="M4 17h6"></path><path d="M18 7v10"></path><circle cx="16" cy="7" r="2"></circle><circle cx="12" cy="17" r="2"></circle></svg>';
+      line.appendChild(configButton);
     }
 
     var toggle = el("label", "switch");
@@ -1142,6 +1267,8 @@
 
     if (!custom && PROMPT_SKILLS.indexOf(id) >= 0 && promptExpanded[id]) {
       row.appendChild(skillPromptPanel(id, meta));
+    } else if (!custom && id === "search" && searchPanelOpen) {
+      row.appendChild(searchEnginePanel());
     }
     return row;
   }
@@ -1328,34 +1455,65 @@
     }
   }
 
-  function renderCustomIconGrid() {
+  function filteredIconKeys() {
+    var keys = LP.CUSTOM_SKILL_ICON_KEYS || [];
+    var query = String(iconSearchQuery || "")
+      .trim()
+      .toLowerCase();
+    if (!query) {
+      return keys.slice();
+    }
+    return keys.filter(function (key) {
+      return String(key).toLowerCase().indexOf(query) >= 0;
+    });
+  }
+
+  /* Keep the highlighted icon inside the scrollable gallery viewport. */
+  function scrollSelectedIconIntoView(grid) {
+    var node = grid && grid.querySelector(".icon-option.is-selected");
+    if (!node || !grid.clientHeight) {
+      return;
+    }
+    grid.scrollTop = Math.max(
+      0,
+      node.offsetTop - grid.clientHeight / 2 + node.offsetHeight / 2
+    );
+  }
+
+  function renderCustomIconGrid(ensureSelectedVisible) {
     var grid = byId("custom-skill-icons");
     if (!grid) {
       return;
     }
-    var keys = LP.CUSTOM_SKILL_ICON_KEYS || [];
+    var keys = filteredIconKeys();
     var selected = validCustomIcon(customDraft ? customDraft.icon : "");
-    var signature = keys.join("\u0001") + "\u0002" + selected;
-    if (grid.getAttribute("data-signature") === signature) {
-      return;
+    var empty = byId("custom-skill-icon-empty");
+    if (empty) {
+      setHidden(empty, keys.length > 0);
     }
-    grid.setAttribute("data-signature", signature);
-    grid.innerHTML = "";
-    keys.forEach(function (key) {
-      var button = el(
-        "button",
-        "icon-option" + (key === selected ? " is-selected" : "")
-      );
-      button.type = "button";
-      button.setAttribute("data-icon-key", key);
-      button.setAttribute("role", "radio");
-      button.setAttribute("aria-checked", key === selected ? "true" : "false");
-      var label = CUSTOM_ICON_LABELS[key] || key;
-      button.setAttribute("aria-label", "图标：" + label);
-      button.title = label;
-      button.innerHTML = LP.skillIconSvg(key);
-      grid.appendChild(button);
-    });
+    var signature = keys.join("\u0001") + "\u0002" + selected;
+    if (grid.getAttribute("data-signature") !== signature) {
+      grid.setAttribute("data-signature", signature);
+      grid.innerHTML = "";
+      keys.forEach(function (key) {
+        var button = el(
+          "button",
+          "icon-option" + (key === selected ? " is-selected" : "")
+        );
+        button.type = "button";
+        button.setAttribute("data-icon-key", key);
+        button.setAttribute("role", "radio");
+        button.setAttribute("aria-checked", key === selected ? "true" : "false");
+        var label = CUSTOM_ICON_LABELS[key] || key;
+        button.setAttribute("aria-label", "图标：" + label);
+        button.title = key;
+        button.innerHTML = LP.skillIconSvg(key);
+        grid.appendChild(button);
+      });
+    }
+    if (ensureSelectedVisible) {
+      scrollSelectedIconIntoView(grid);
+    }
   }
 
   /* `syncFields` is only true while opening the editor: state refreshes must
@@ -1388,7 +1546,7 @@
         byId("custom-skill-prompt"),
         customDraft ? customDraft.prompt : ""
       );
-      renderCustomIconGrid();
+      renderCustomIconGrid(true);
     }
   }
 
@@ -1407,6 +1565,8 @@
       label: custom ? custom.label : "",
       prompt: custom ? custom.prompt : "",
     };
+    iconSearchQuery = "";
+    assignFieldValue(byId("custom-skill-icon-search"), "");
     hideInlineError(byId("custom-skill-error"));
     disarmSkillDelete(byId("delete-custom-skill"));
     renderCustomSkillEditor(true);
@@ -2213,6 +2373,16 @@
         resetPromptValue(promptReset.getAttribute("data-prompt-reset"));
         return;
       }
+      var searchConfig = target.closest("[data-search-config]");
+      if (searchConfig) {
+        toggleSearchPanel();
+        return;
+      }
+      var engineOption = target.closest("[data-search-engine]");
+      if (engineOption) {
+        selectSearchEngine(engineOption.getAttribute("data-search-engine"));
+        return;
+      }
       var customEdit = target.closest("[data-custom-edit]");
       if (customEdit) {
         openCustomEditor(customEdit.getAttribute("data-custom-edit"));
@@ -2238,6 +2408,18 @@
       var button = event.target.closest && event.target.closest("[data-icon-key]");
       if (button) {
         chooseCustomIcon(button.getAttribute("data-icon-key"));
+      }
+    });
+    byId("custom-skill-icon-search").addEventListener("input", function () {
+      iconSearchQuery = this.value;
+      renderCustomIconGrid(true);
+    });
+    byId("custom-skill-icon-search").addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && this.value) {
+        event.stopPropagation();
+        this.value = "";
+        iconSearchQuery = "";
+        renderCustomIconGrid(true);
       }
     });
     byId("custom-skill-name").addEventListener("input", function () {

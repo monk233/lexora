@@ -21,6 +21,8 @@ pub const DEFAULT_SUMMARIZE_PROMPT: &str = "You are a concise Chinese writing as
 
 pub const DEFAULT_EXPLAIN_PROMPT: &str = "You are a knowledge assistant. Explain the user's text in Simplified Chinese, covering its meaning, background and key concepts, with short examples when helpful.";
 
+pub const DEFAULT_POLISH_PROMPT: &str = "You are a professional editor. Polish the user's text so it reads naturally and fluently while keeping the original meaning. Output only the polished text, without explanations, quotes, or the source text.";
+
 /// Maps a language code to the English name used inside prompts. Covers the
 /// languages supported by Hy-MT2 (33 languages plus Chinese variants and
 /// minority languages).
@@ -165,6 +167,18 @@ pub fn assist_messages(
     Ok((system.to_string(), text.to_string()))
 }
 
+/// Builds the chat messages for a `polish` request. A non-empty `custom_prompt`
+/// replaces [`DEFAULT_POLISH_PROMPT`] completely.
+pub fn polish_messages(text: &str, custom_prompt: &str) -> (String, String) {
+    let custom_prompt = custom_prompt.trim();
+    let system = if custom_prompt.is_empty() {
+        DEFAULT_POLISH_PROMPT
+    } else {
+        custom_prompt
+    };
+    (system.to_string(), text.to_string())
+}
+
 /// Placeholder used in prompts when the source application is unknown.
 pub const UNKNOWN_PROGRAM_NAME: &str = "未知应用";
 
@@ -230,6 +244,7 @@ pub fn default_prompts() -> serde_json::Value {
         "translate": DEFAULT_TRANSLATE_PROMPT,
         "summarize": DEFAULT_SUMMARIZE_PROMPT,
         "explain": DEFAULT_EXPLAIN_PROMPT,
+        "polish": DEFAULT_POLISH_PROMPT,
     })
 }
 
@@ -311,6 +326,8 @@ mod tests {
         assert!(DEFAULT_SUMMARIZE_PROMPT.contains("Simplified Chinese"));
         assert!(DEFAULT_EXPLAIN_PROMPT.starts_with("You are"));
         assert!(DEFAULT_EXPLAIN_PROMPT.contains("Simplified Chinese"));
+        assert!(DEFAULT_POLISH_PROMPT.starts_with("You are"));
+        assert!(DEFAULT_POLISH_PROMPT.contains("professional editor"));
 
         let (system, user) = translate_messages("hello", "zh", "");
         assert_eq!(
@@ -323,6 +340,8 @@ mod tests {
         assert_eq!(summarize, DEFAULT_SUMMARIZE_PROMPT);
         let (explain, _) = assist_messages("explain", "text", "").unwrap();
         assert_eq!(explain, DEFAULT_EXPLAIN_PROMPT);
+        let (polish, _) = polish_messages("text", "");
+        assert_eq!(polish, DEFAULT_POLISH_PROMPT);
     }
 
     #[test]
@@ -331,7 +350,19 @@ mod tests {
         assert_eq!(defaults["translate"], DEFAULT_TRANSLATE_PROMPT);
         assert_eq!(defaults["summarize"], DEFAULT_SUMMARIZE_PROMPT);
         assert_eq!(defaults["explain"], DEFAULT_EXPLAIN_PROMPT);
-        assert_eq!(defaults.as_object().unwrap().len(), 3);
+        assert_eq!(defaults["polish"], DEFAULT_POLISH_PROMPT);
+        assert_eq!(defaults.as_object().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn polish_messages_use_default_or_custom_prompt() {
+        let (system, user) = polish_messages("  hello  ", "");
+        assert_eq!(system, DEFAULT_POLISH_PROMPT);
+        assert_eq!(user, "  hello  ");
+
+        let (system, user) = polish_messages("hello", "  Make it formal.  ");
+        assert_eq!(system, "Make it formal.");
+        assert_eq!(user, "hello");
     }
 
     #[test]

@@ -594,6 +594,79 @@ pub fn picker_translate(
     json!({ "ok": true })
 }
 
+/// Streams a polish (rewriting) request. Same event contract as
+/// [`picker_translate`]: all chunks, errors and the final `done` event are
+/// pushed through the picker's `translate-event` channel.
+#[tauri::command]
+pub fn picker_polish(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    request_id: String,
+    text: String,
+) -> Value {
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return json!({
+            "ok": false,
+            "error": "没有可润色的文本。",
+            "hint": "请先选中一段文字，然后再点击润色。",
+        });
+    }
+
+    // Only one stream at a time: abort the previous request.
+    state.abort_translate();
+
+    let engine = state.engine.clone();
+    let task_app = app.clone();
+    let rid = request_id.clone();
+    let handle = tauri::async_runtime::spawn(async move {
+        let emit = |payload: Value| {
+            let _ = task_app.emit_to(crate::windows::PICKER_LABEL, "translate-event", payload);
+        };
+
+        match engine.polish_stream(&text).await {
+            Ok(mut stream) => {
+                while let Some(item) = stream.next().await {
+                    match item {
+                        Ok(chunk) => {
+                            if chunk.is_empty() {
+                                continue;
+                            }
+                            emit(json!({
+                                "requestId": rid.clone(),
+                                "type": "chunk",
+                                "text": chunk,
+                            }));
+                        }
+                        Err(error) => {
+                            emit(json!({
+                                "requestId": rid.clone(),
+                                "type": "error",
+                                "message": error.message,
+                            }));
+                            return;
+                        }
+                    }
+                }
+                emit(json!({
+                    "requestId": rid.clone(),
+                    "type": "done",
+                }));
+            }
+            Err(error) => {
+                emit(json!({
+                    "requestId": rid.clone(),
+                    "type": "error",
+                    "message": error.message,
+                }));
+            }
+        }
+    });
+
+    *lock(&state.translate_task) = Some(TranslateTask { request_id, handle });
+    json!({ "ok": true })
+}
+
 /// Streams a user-defined skill (`picker.customSkills`) through the same
 /// `translate-event` channel as [`picker_translate`]: chunk/error/done events
 /// carry the same payload shape, so the picker UI reuses one renderer.

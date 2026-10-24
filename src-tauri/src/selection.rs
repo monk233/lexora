@@ -488,6 +488,8 @@ fn config_from_settings(settings: &Settings) -> WorkerConfig {
             "skills": &settings.picker.skills,
             "compact": settings.picker.compact,
             "defaultTargetLang": &settings.picker.default_target_lang,
+            // Search engine used by the built-in `search` skill.
+            "searchEngine": &settings.picker.search_engine,
             // Only enabled custom skills are sent to the picker; the full
             // definition (including the prompt) stays in settings.
             "customSkills": enabled_custom_skill_metadata(settings),
@@ -651,9 +653,19 @@ mod tests {
         let config = config_from_settings(&settings);
         assert_eq!(config.picker_config["compact"], true);
         assert_eq!(config.picker_config["defaultTargetLang"], "zh");
+        assert_eq!(config.picker_config["searchEngine"], "google");
         assert_eq!(config.picker_config["skills"][0], "translate");
         assert_eq!(config.picker_config["skills"][1], "copy");
         assert_eq!(config.picker_config["customSkills"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn picker_config_forwards_the_configured_search_engine() {
+        let mut settings = Settings::default();
+        settings.picker.search_engine = "bing".to_string();
+
+        let config = config_from_settings(&settings);
+        assert_eq!(config.picker_config["searchEngine"], "bing");
     }
 
     #[test]
