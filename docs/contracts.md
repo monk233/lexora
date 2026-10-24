@@ -9,7 +9,7 @@
 - 完整保留划词体验：拖动选词自动弹出工具栏；翻译（流式）、总结、解释、朗读、复制；结果面板（固定/关闭/目标语言/重试）；菜单（本应用禁用、设置、禁用工具、关闭）；快捷键；应用黑名单；技能配置/排序；紧凑模式；多屏 DPI 定位；面板按内容缩放。
 - 双模式翻译：**在线**（任意 OpenAI 兼容 `/v1/chat/completions`，含 Ollama/LM Studio）与**本地**（内置 llama.cpp 引擎 = 按需下载，自管理 `llama-server.exe` + 用户下载/导入 GGUF）。
 - 系统托盘后台运行、单实例、可选开机自启；关闭设置窗口进托盘。
-- 免安装：`tauri build --no-bundle` 产出的单 exe（约 5–10MB）+ 可下载引擎/模型；发布 zip。
+- 免安装：`tauri build --no-bundle` 产出的单 exe（约 5–10MB）+ 可下载引擎/模型；发布资产直接是 exe（不再打 zip）。
 - 无 Python / WebView2 安装包依赖（Win10 现代版本自带）。
 - 原 enterprise-ai-translator 仓库保持不动。
 
@@ -80,7 +80,7 @@ lingopick/
                 "timeoutMs": 60000, "temperature": 0.2, "maxTokens": 1024 },
     "local": { "modelFile": "", "contextSize": 4096, "threads": 0, "gpuLayers": 0, "autoStart": true }
   },
-  "app": { "closeToTray": true, "startAtLogin": false, "theme": "system", "firstRunDone": false }
+  "app": { "closeToTray": true, "startAtLogin": false, "theme": "system" }
 }
 ```
 
@@ -258,9 +258,9 @@ pub struct SelectionService {
 - tray 菜单：显示设置、启用划词（勾选，更新 settings）、本地引擎状态（未启动可「启动本地模型」）、退出。
 - 主窗口（settings）关闭：`app.closeToTray=true` 则隐藏，否则退出（关闭事件在 main.rs 处理）。
 - `picker` 窗口：blur 时若未 pinned 则隐藏；close 请求一律 prevent。
-- 首次运行打开设置窗口；`--show` 参数强制显示；其余启动进托盘。
+- 静默启动：双击 exe、开机自启都只在托盘挂载，不打开任何窗口；仅 `--show` 参数显式显示设置窗口。
 - 应用退出：停 llama-server、停钩子、注销托盘。
-- 单实例：第二次启动聚焦设置窗口。
+- 单实例：第二次启动保持静默（不打开窗口）；第二次启动带 `--show` 时才显示设置窗口。
 - 开机自启：`tauri-plugin-autostart`；portable（`PORTABLE_EXECUTABLE_DIR`）时 `supported=false`。
 - 命令实现 §5.1/5.2；`update_settings` 后广播 `state-changed`、热更新 selection、刷新托盘。
 - 翻译流：`picker_translate` 中 abort 旧任务，`spawn` 任务消费 `engine.translate_stream`，逐块 `emit_to("picker","translate-event", {requestId,type:"chunk",text})`，结束 `done`，错误 `error+message`；`picker_abort_translate` abort。
@@ -269,9 +269,10 @@ pub struct SelectionService {
 ### 6.4 脚本/CI（T4）
 
 - `scripts/fetch-llama.ps1`：下载/解压引擎到 `src-tauri/../data/engine`（dev 用）或指定目录；支持 `-FromDir <已有llama.cpp目录>`；SHA 不校验但校验 zip 大小/解压后存在 llama-server.exe。
-- `scripts/build-portable.ps1`：`npx tauri build --no-bundle` → 取 `src-tauri/target/release/lingopick.exe`；可选 `-WithEngine` 把引擎 zip 一起放入包内；产出 `dist/LingoPick-<version>-win-x64.zip`（含 exe、README-PORTABLE.txt、可选 engine/）。
+- `scripts/build-portable.ps1`：`npx tauri build --no-bundle` → 取 `src-tauri/target/release/lingopick.exe`；复制为 `dist/LingoPick-<version>-win-x64.exe`（单个 exe，不压缩、不打 zip；支持 `-SkipBuild`）。
+- `scripts/release-notes.ps1`：从 `CHANGELOG.md` 对应版本小节生成排版化 Release 正文（缺失时退化为按 conventional-commit 分组的 git 提交列表）；`-OutputPath` 写出 Markdown。
 - `.github/workflows/ci.yml`：push/PR：windows-latest，setup node 22 + Rust stable，`npm ci`（无 lock 则 npm install），`cargo test`，`tauri build --no-bundle`（不下载大模型）。
-- `release.yml`：tag `v*` 触发，构建并上传 zip 到 GitHub Release。
+- `release.yml`：tag `v*` 触发；校验 tag 与 `tauri.conf.json` 版本一致，构建单 exe、生成 release notes、上传 exe 到 GitHub Release。
 
 ## 7. 前端规范（T3）
 
@@ -301,7 +302,7 @@ pub struct SelectionService {
 
 - `cargo test`（设置、SSE、catalog、日志脱敏等纯函数）通过。
 - `cargo check` 无错误；`npx tauri build --debug --no-bundle` 产出 exe。
-- 启动 exe：托盘出现；首次运行弹设置；快捷键/拖选在某应用触发 picker；picker 菜单/面板/固定/关闭可用。
+- 启动 exe：静默启动、托盘出现、不弹窗口；`--show` 才显示设置；快捷键/拖选在某应用触发 picker；picker 菜单/面板/固定/关闭可用。
 - 在线模式：填 mock/真实 OpenAI 兼容服务后「测试连接」成功；picker 翻译流式显示。
 - 本地模式：安装引擎 + 下载/导入 Qwen2.5 GGUF 后启动成功，翻译流式返回；总结/解释可用。
-- 构建 release：`scripts/build-portable.ps1` 产出免安装 zip；解压运行，托盘后台运行，数据写入 exe 同级 data/。
+- 构建 release：`scripts/build-portable.ps1` 产出单个 `dist/LingoPick-<version>-win-x64.exe`；双击运行后静默驻留托盘，数据写入 exe 同级 data/；Release 正文由 `scripts/release-notes.ps1` 生成排版化 changelog。

@@ -292,7 +292,6 @@
           closeToTray: true,
           startAtLogin: false,
           theme: "system",
-          firstRunDone: true,
         },
       },
       engine: {

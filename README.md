@@ -20,8 +20,8 @@
 - **两种翻译引擎**
   - 在线：任意 OpenAI 兼容接口（DeepSeek / OpenAI / Moonshot / 智谱 / Ollama / LM Studio / 自建服务），支持测试连接与模型列表。
   - 离线：应用内一键下载 llama.cpp 引擎，配合 Qwen2.5 GGUF 模型完全本地推理，断网可用。
-- **轻量免安装**：单个 exe（约 9MB），解压即用，不需要管理员权限，默认不写注册表（仅在你主动开启「开机自启」时写入一条启动项）；引擎与模型按需下载，数据默认保存在 exe 同级 `data/`。
-- **后台常驻**：系统托盘运行、关闭窗口进托盘、单实例、可选开机自启；全局快捷键 `Ctrl+Shift+D` 也可唤起。
+- **轻量免安装**：单个 exe（约 9MB），下载后双击即用，不需要管理员权限，默认不写注册表（仅在你主动开启「开机自启」时写入一条启动项）；引擎与模型按需下载，数据默认保存在 exe 同级 `data/`。
+- **后台常驻**：双击启动后静默驻留系统托盘，不弹窗、不占任务栏；关闭设置窗口回到托盘、单实例、可选开机自启；全局快捷键 `Ctrl+Shift+D` 也可唤起。
 - **可配置**：启用/禁用、快捷键、技能显示与排序、紧凑模式、应用黑名单（在微信/IDE 等不想触发的应用里禁用）、开机自启。
 - **隐私**：默认不收集任何数据；只有使用在线模式时，选中的文本才会发送到你配置的服务地址。
 
@@ -29,9 +29,9 @@
 
 ### 1. 下载与启动
 
-从 [Releases](https://github.com/monk233/lingopick/releases) 下载 `LingoPick-<version>-win-x64.zip`，解压到任意目录，双击 `lingopick.exe`。
+从 [Releases](https://github.com/monk233/lingopick/releases) 下载 `LingoPick-<version>-win-x64.exe`，放到任意可写目录后双击运行。
 
-- 首次启动会打开设置页。关闭设置页后程序驻留在系统托盘。
+- 双击后**静默启动**：不弹窗口，直接在系统托盘后台运行。右键托盘图标（或双击托盘图标）打开设置完成配置。
 - 支持 Windows 10/11（需要系统自带 WebView2 Runtime，新版 Windows 默认已安装）。
 
 ### 2. 配置翻译服务
@@ -68,7 +68,7 @@
 ```powershell
 npm install
 npx tauri build --no-bundle     # 产出 src-tauri/target/release/lingopick.exe
-.\scripts\build-portable.ps1    # 产出 dist/LingoPick-<version>-win-x64.zip
+.\scripts\build-portable.ps1    # 产出 dist/LingoPick-<version>-win-x64.exe
 ```
 
 开发调试：

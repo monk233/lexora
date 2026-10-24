@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### Changed
+
+- 启动逻辑改为静默后台：双击 exe、开机自启、二次启动都只在系统托盘挂载，不再自动弹出设置窗口；需要窗口时通过托盘菜单/双击托盘图标打开，或用 `--show` 参数显式启动。
+- 自动构建产物改为单个 exe：Release 直接上传 `LingoPick-<version>-win-x64.exe`，不再打包 zip；`scripts/build-portable.ps1` 只产出这一份 exe。
+- Release 正文改为读取本文件对应版本小节生成排版化 changelog，不再只放一个 Full Changelog 链接；新增 `scripts/release-notes.ps1`，并在打 tag 时校验版本号一致性。
+
+### Removed
+
+- 设置项 `app.firstRunDone`（静默启动后不再需要首次运行标记）。
+
+## [0.1.0] - 2026-10-24
+
 ### Added
 
 - 划词工具栏：翻译（流式）、总结、解释、朗读、复制；结果面板固定/目标语言/重试；更多菜单（本应用禁用、设置、禁用工具、关闭）。

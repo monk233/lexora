@@ -15,9 +15,6 @@ data/
 # Local UI preview / screenshots
 .tmp-ui/
 
-# Script staging output
-LingoPick-PORTABLE.txt
-
 .DS_Store
 Thumbs.db
 .vscode/

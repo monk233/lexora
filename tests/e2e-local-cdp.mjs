@@ -45,7 +45,7 @@ writeFileSync(
         online: { preset: "custom", baseUrl: "", apiKey: "", model: "", timeoutMs: 60000, temperature: 0.2, maxTokens: 512 },
         local: { modelFile, contextSize: 4096, threads: 0, gpuLayers: 0, autoStart: false },
       },
-      app: { closeToTray: true, startAtLogin: false, theme: "light", firstRunDone: true },
+      app: { closeToTray: true, startAtLogin: false, theme: "light" },
     },
     null,
     2

@@ -38,26 +38,26 @@ $env:LINGOPICK_MODEL_DIR = "E:\path\to\models"      # 含 *.gguf
 
 然后在设置中选择本地模式、选择模型并启动。也可用 `scripts/fetch-llama.ps1 -FromDir <目录>` 复制现成引擎。
 
-## 构建发布包（免安装）
+## 构建发布包（免安装单文件）
 
 ```powershell
 .\scripts\build-portable.ps1
 ```
 
-产物：`dist\LingoPick-<version>-win-x64.zip`，包含：
+产物：`dist\LingoPick-<version>-win-x64.exe`（release 单文件，约 5–10MB）。
 
-- `lingopick.exe`（release，约 5–10MB）
-- `LingoPick-PORTABLE.txt`（便携版使用说明）
-- 可选 `engine/`（`-WithEngine` 参数）
+- 不再打包 zip：发布资产就是这一个 exe，用户下载后双击即用。
+- 数据写入 exe 同级 `data/`（settings.json、models、engine、logs、cache）。
+- 引擎与 GGUF 模型由应用内按需下载，因此无法塞进单文件 exe。
 
-用户解压即用，数据写入 exe 同级 `data/`。
-
-也可以只产 exe：
+也可以只构建不复制：
 
 ```powershell
 npx tauri build --no-bundle
 # → src-tauri\target\release\lingopick.exe
 ```
+
+`scripts/build-portable.ps1` 支持 `-SkipBuild` 复用已有 `target\release` 产物。
 
 ## 引擎与模型下载
 
@@ -77,9 +77,15 @@ cargo test
 ## 发布流程（维护者）
 
 1. 更新 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 中的版本号。
-2. 更新 `CHANGELOG.md`。
-3. 打 tag：`git tag v0.1.0 && git push origin v0.1.0`。
-4. GitHub Actions（`.github/workflows/release.yml`）自动构建并上传 zip 到 Release。
+2. 在 `CHANGELOG.md` 中把 `[Unreleased]` 内容整理成 `## [<version>] - YYYY-MM-DD` 小节（Keep a Changelog 风格）。Release 正文由这个小节生成；如果没有该小节，会退化为按 conventional-commit 类型分组的提交列表。
+3. 提交后打 tag：`git tag v<version> && git push origin v<version>`。tag 必须与 `tauri.conf.json` 的版本一致，否则 Release workflow 会直接失败。
+4. GitHub Actions（`.github/workflows/release.yml`）自动构建单 exe、生成 release notes 并上传到 Release。
+
+本地可以先预览 release 正文：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release-notes.ps1 -Version <version>
+```
 
 ## 常见问题
 

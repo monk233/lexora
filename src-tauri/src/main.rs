@@ -33,13 +33,20 @@ use state::AppState;
 fn main() {
     let app = tauri::Builder::default()
         // The single-instance plugin must be registered before any other plugin.
+        // A second launch never opens a window on its own (a plain double-click
+        // stays silent); pass `--show` to explicitly bring settings up.
         .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            let force_show = wants_settings_window(&args);
+            let autostart_launch = is_autostart_launch(&args);
             if let Some(state) = app.try_state::<Arc<AppState>>() {
                 state.log.info(&format!(
-                    "second instance launched: args={args:?} cwd={cwd:?}; focusing settings"
+                    "second instance launched: args={args:?} cwd={cwd:?}; \
+                     force_show={force_show} autostart={autostart_launch}"
                 ));
             }
-            windows::show_settings(app);
+            if force_show {
+                windows::show_settings(app);
+            }
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -71,27 +78,19 @@ fn main() {
             state.selection.start(app.handle().clone());
             sync_autostart(&state);
 
-            let first_run = !state.settings.get().app.first_run_done;
-            if first_run {
-                if let Err(error) = state
-                    .settings
-                    .update_json(serde_json::json!({ "app": { "firstRunDone": true } }))
-                {
-                    log.warn(&format!("failed to persist firstRunDone: {error}"));
-                }
-            }
-
             let args: Vec<String> = std::env::args().collect();
-            let force_show = args.iter().any(|argument| argument == "--show");
-            let autostart_launch = args.iter().any(|argument| argument == "--autostart");
+            let force_show = wants_settings_window(&args);
+            let autostart_launch = is_autostart_launch(&args);
 
+            // Silent start: a launch only mounts the tray (and picker) and
+            // never opens a window. `--show` is an explicit opt-in used by
+            // developers, tests and shortcuts.
             log.info(&format!(
-                "startup mode: first_run={first_run} force_show={force_show} autostart={autostart_launch}"
+                "startup mode: force_show={force_show} autostart={autostart_launch}; \
+                 starting silently in tray"
             ));
-            if first_run || force_show {
+            if force_show {
                 windows::show_settings(app.handle());
-            } else {
-                log.info("starting in tray; settings window stays hidden");
             }
             Ok(())
         })
@@ -229,4 +228,52 @@ fn cleanup(app: &AppHandle) {
             .warn("local engine stop timed out; it will be terminated with this process");
     }
     state.log.info("shutdown: cleanup finished");
+}
+
+/// The settings window is only shown on an explicit `--show` launch. A plain
+/// double-click (and a start-at-login run) stays silent in the tray.
+fn wants_settings_window(args: &[String]) -> bool {
+    args.iter().any(|argument| argument == "--show")
+}
+
+/// Start-at-login launches pass `--autostart` (written by `autostart.rs`).
+fn is_autostart_launch(args: &[String]) -> bool {
+    args.iter().any(|argument| argument == "--autostart")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_autostart_launch, wants_settings_window};
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn double_click_launch_stays_silent() {
+        assert!(!wants_settings_window(&args(&["lingopick.exe"])));
+        assert!(!wants_settings_window(&args(&[
+            "lingopick.exe",
+            "--autostart"
+        ])));
+    }
+
+    #[test]
+    fn show_flag_opens_settings() {
+        assert!(wants_settings_window(&args(&["lingopick.exe", "--show"])));
+        assert!(wants_settings_window(&args(&["--show", "--autostart"])));
+        assert!(!wants_settings_window(&args(&[
+            "lingopick.exe",
+            "--show-all"
+        ])));
+    }
+
+    #[test]
+    fn autostart_flag_is_detected() {
+        assert!(is_autostart_launch(&args(&[
+            "lingopick.exe",
+            "--autostart"
+        ])));
+        assert!(!is_autostart_launch(&args(&["lingopick.exe", "--show"])));
+    }
 }

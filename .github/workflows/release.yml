@@ -4,7 +4,6 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
 
 permissions:
   contents: write
@@ -14,13 +13,17 @@ env:
 
 jobs:
   portable:
-    name: Build portable Windows zip
+    name: Build portable exe and publish release
     runs-on: windows-latest
     timeout-minutes: 90
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Full history + tags: the release notes fallback groups commits since
+          # the previous tag.
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -47,7 +50,23 @@ jobs:
         working-directory: src-tauri
         run: cargo test
 
-      - name: Build portable zip
+      - name: Resolve version
+        id: meta
+        shell: pwsh
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          $version = [string](Get-Content src-tauri/tauri.conf.json -Raw -Encoding UTF8 | ConvertFrom-Json).version
+          $version = $version.Trim()
+          if ([string]::IsNullOrWhiteSpace($version)) { throw 'tauri.conf.json 缺少 version 字段' }
+          $expectedTag = "v$version"
+          if ($env:REF_NAME -ne $expectedTag) {
+            throw "tag $($env:REF_NAME) 与 tauri.conf.json 版本 $expectedTag 不一致：请先更新版本号（package.json、Cargo.toml、tauri.conf.json）再打 tag。"
+          }
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$version"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "tag=$expectedTag"
+
+      - name: Build portable exe
         shell: pwsh
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-portable.ps1
 
@@ -55,19 +74,31 @@ jobs:
         shell: pwsh
         run: Get-ChildItem dist | Format-Table Name, Length
 
-      - name: Upload zip to GitHub Release
+      - name: Generate release notes
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release-notes.ps1 -Version "${{ steps.meta.outputs.version }}" -OutputPath dist/RELEASE_NOTES.md
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Show release notes
+        shell: pwsh
+        run: Get-Content dist/RELEASE_NOTES.md -Raw -Encoding UTF8
+
+      - name: Upload exe to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.zip
+          name: LingoPick ${{ steps.meta.outputs.version }}
+          tag_name: ${{ steps.meta.outputs.tag }}
+          body_path: dist/RELEASE_NOTES.md
+          files: dist/*.exe
           fail_on_unmatched_files: true
-          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: lingopick-portable
-          path: dist/*.zip
+          name: lingopick-portable-exe
+          path: dist/*.exe
           if-no-files-found: error
           retention-days: 14

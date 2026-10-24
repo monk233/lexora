@@ -72,7 +72,6 @@ pub struct AppSettings {
     pub close_to_tray: bool,
     pub start_at_login: bool,
     pub theme: String,
-    pub first_run_done: bool,
 }
 
 impl Default for Settings {
@@ -142,7 +141,6 @@ impl Default for AppSettings {
             close_to_tray: true,
             start_at_login: false,
             theme: "system".to_string(),
-            first_run_done: false,
         }
     }
 }
@@ -369,7 +367,7 @@ mod tests {
         let settings = Settings::default().normalize();
         assert_eq!(settings.picker.skills.len(), 5);
         assert_eq!(settings.provider.mode, "online");
-        assert!(!settings.app.first_run_done);
+        assert!(settings.app.close_to_tray);
     }
 
     #[test]

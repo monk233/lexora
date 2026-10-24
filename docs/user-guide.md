@@ -4,11 +4,11 @@
 
 LingoPick 是免安装应用：
 
-1. 从 [Releases](https://github.com/monk233/lingopick/releases) 下载 `LingoPick-<version>-win-x64.zip`。
-2. 解压到任意目录（建议不在 `Program Files` 等受限目录下，否则数据会写入 `%APPDATA%`）。
-3. 双击 `lingopick.exe`。
+1. 从 [Releases](https://github.com/monk233/lingopick/releases) 下载 `LingoPick-<version>-win-x64.exe`。
+2. 放到任意可写目录（建议不在 `Program Files` 等受限目录下，否则数据会写入 `%APPDATA%`）。
+3. 双击 `LingoPick-<version>-win-x64.exe`。
 
-首次启动会打开设置窗口；配置完成后关闭窗口，程序继续在系统托盘后台运行。右键/双击托盘图标可重新打开设置。要完全退出，使用设置页「退出程序」或托盘菜单「退出」。
+双击后**静默启动**，不弹窗口，程序直接在系统托盘后台运行。右键托盘图标（或双击托盘图标）选择「显示设置」完成配置；配置完成后关闭设置窗口，程序继续驻留托盘。要完全退出，使用设置页「退出程序」或托盘菜单「退出」。再次双击 exe 也只会在后台启动，不会重复打开窗口。
 
 > Windows 11 默认把新托盘图标收进「^」溢出区，可拖动到任务栏常驻。
 
