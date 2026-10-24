@@ -1,0 +1,47 @@
+[package]
+name = "lingopick"
+version = "0.1.0"
+description = "LingoPick desktop shell: selection translator for Windows"
+edition = "2021"
+rust-version = "1.77"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-opener = "2"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+winreg = "0.55"
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+futures-util = "0.3"
+rdev = "0.5"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_System_Threading",
+  "Win32_System_Com",
+  "Win32_UI_Accessibility",
+  "UI_UIAutomation",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_HiDpi",
+  "Win32_System_DataExchange",
+  "Win32_System_Memory",
+  "Win32_Graphics_Gdi"
+] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

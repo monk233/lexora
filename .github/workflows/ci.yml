@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  windows:
+    name: Windows build & test
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+          cache-on-failure: true
+
+      - name: Install npm dependencies
+        shell: pwsh
+        run: |
+          if (Test-Path package-lock.json) { npm ci } else { npm install }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Cargo check
+        working-directory: src-tauri
+        run: cargo check --all-targets
+
+      - name: Cargo test
+        working-directory: src-tauri
+        run: cargo test
+
+      - name: Build debug executable (no bundle)
+        run: npx tauri build --debug --no-bundle
+
+      - name: Upload debug executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: lingopick-debug-exe
+          path: src-tauri/target/debug/lingopick.exe
+          if-no-files-found: error
+          retention-days: 7

@@ -1,0 +1,23 @@
+# Rust / Tauri build artifacts
+src-tauri/target/
+src-tauri/gen/
+node_modules/
+dist/
+*.log
+*.tmp
+*.part
+
+# Runtime data (dev mode uses <repo>/data)
+data/
+.e2e-data/
+.e2e-*/
+
+# Local UI preview / screenshots
+.tmp-ui/
+
+# Script staging output
+LingoPick-PORTABLE.txt
+
+.DS_Store
+Thumbs.db
+.vscode/

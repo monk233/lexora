@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src ipc: http://ipc.localhost">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LingoPick 设置</title>
+  <link rel="stylesheet" href="settings.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32" role="presentation">
+            <rect width="32" height="32" rx="8" fill="currentColor"></rect>
+            <text x="16" y="21.5" text-anchor="middle" font-size="15" font-weight="600" fill="#ffffff">译</text>
+          </svg>
+        </span>
+        <div class="brand-text">
+          <span class="brand-title">LingoPick</span>
+          <span class="brand-sub">划词翻译 · 设置</span>
+        </div>
+      </div>
+      <div class="save-status" id="save-status" data-state="idle" role="status" aria-live="polite">
+        <span class="save-dot" aria-hidden="true"></span>
+        <span id="save-status-text">所有更改自动保存</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="page">
+    <!-- ============================ 翻译服务 ============================ -->
+    <section class="card" aria-labelledby="card-provider-title">
+      <div class="card-head">
+        <div class="card-head-text">
+          <h2 id="card-provider-title">翻译服务</h2>
+          <p>选择在线 OpenAI 兼容 API 或内置本地模型，修改后立即生效。</p>
+        </div>
+        <span class="badge" id="provider-badge" data-tone="muted">读取中…</span>
+      </div>
+      <div class="card-body">
+        <div class="segmented" role="tablist" aria-label="翻译服务模式">
+          <button type="button" class="segment" id="mode-online" data-mode="online" role="tab" aria-selected="true">在线 API</button>
+          <button type="button" class="segment" id="mode-local" data-mode="local" role="tab" aria-selected="false">本地模型</button>
+        </div>
+
+        <!-- 在线 API -->
+        <div class="mode-panel" id="provider-online">
+          <div class="field">
+            <div class="field-label">
+              <label for="online-preset">服务商预设</label>
+              <p class="field-hint" id="online-preset-hint">切换预设会自动填入服务地址与推荐模型</p>
+            </div>
+            <div class="field-control">
+              <select class="select" id="online-preset"></select>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="field-label">
+              <label for="online-base-url">服务地址</label>
+              <p class="field-hint">OpenAI 兼容接口根地址，例如 https://api.deepseek.com/v1</p>
+            </div>
+            <div class="field-control">
+              <input class="input" id="online-base-url" type="url" spellcheck="false"
+                     placeholder="https://api.example.com/v1" autocomplete="off">
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="field-label">
+              <label for="online-api-key">API Key</label>
+              <p class="field-hint">仅保存在本机设置文件中，不会上传</p>
+            </div>
+            <div class="field-control">
+              <div class="input-group">
+                <input class="input" id="online-api-key" type="password" spellcheck="false"
+                       placeholder="sk-..." autocomplete="off">
+                <button type="button" class="btn btn-icon" id="api-key-toggle"
+                        aria-pressed="false" title="显示 API Key" aria-label="显示 API Key">
+                  <svg class="icon-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                       stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"></path>
+                    <circle cx="12" cy="12" r="3"></circle>
+                  </svg>
+                  <svg class="icon-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                       stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M3 3l18 18"></path>
+                    <path d="M10.6 6.1A9.9 9.9 0 0 1 12 6c6 0 9.5 6 9.5 6a17.6 17.6 0 0 1-3.3 4"></path>
+                    <path d="M6.4 7.8A17 17 0 0 0 2.5 12S6 18 12 18a9.7 9.7 0 0 0 4-.9"></path>
+                    <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"></path>
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="field-label">
+              <label for="online-model">模型名</label>
+              <p class="field-hint">例如 deepseek-chat、gpt-4o-mini、qwen2.5:1.5b</p>
+            </div>
+            <div class="field-control">
+              <input class="input" id="online-model" type="text" spellcheck="false"
+                     placeholder="deepseek-chat" autocomplete="off">
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="field-label">
+              <span class="field-name">连接状态</span>
+              <p class="field-hint">向服务地址发送一次最小请求，验证地址、Key 与模型名</p>
+            </div>
+            <div class="field-control">
+              <div class="inline-actions">
+                <button type="button" class="btn" id="test-connection">测试连接</button>
+                <span class="badge" id="test-badge" data-tone="muted" hidden></span>
+              </div>
+              <p class="inline-error" id="test-error" hidden></p>
+            </div>
+          </div>
+        </div>
+
+        <!-- 本地模型 -->
+        <div class="mode-panel" id="provider-local" hidden>
+          <div class="engine-row">
+            <div class="engine-info">
+              <span class="status-dot" id="engine-dot" data-tone="muted"></span>
+              <div class="engine-text">
+                <span class="engine-title" id="engine-title">正在读取引擎状态…</span>
+                <span class="engine-sub" id="engine-sub"></span>
+              </div>
+            </div>
+            <div class="inline-actions" id="engine-actions">
+              <button type="button" class="btn" id="download-engine" hidden>下载引擎</button>
+              <button type="button" class="btn btn-ghost" id="cancel-engine-download" hidden>取消</button>
+            </div>
+          </div>
+          <div class="progress" id="engine-progress" hidden>
+            <div class="progress-track"><div class="progress-fill" id="engine-progress-fill"></div></div>
+            <span class="progress-text" id="engine-progress-text"></span>
+          </div>
+
+          <div class="field">
+            <div class="field-label">
+              <label for="local-model">本地模型</label>
+              <p class="field-hint">已下载或导入的 GGUF 模型</p>
+            </div>
+            <div class="field-control">
+              <div class="inline-actions inline-actions-grow">
+                <select class="select" id="local-model"></select>
+                <button type="button" class="btn" id="toggle-catalog" aria-expanded="false">下载模型</button>
+                <button type="button" class="btn" id="import-model">导入 GGUF</button>
+              </div>
+              <p class="inline-hint" id="local-model-hint" hidden></p>
+            </div>
+          </div>
+
+          <div class="catalog" id="catalog" hidden>
+            <div class="catalog-head">
+              <span class="catalog-title">模型目录</span>
+              <span class="catalog-sub">来自内置目录，下载后即可在本地模式使用</span>
+            </div>
+            <ul class="catalog-list" id="catalog-list"></ul>
+          </div>
+
+          <div class="field">
+            <div class="field-label">
+              <span class="field-name">运行状态</span>
+              <p class="field-hint">本地模式需要先启动 llama.cpp 引擎服务</p>
+            </div>
+            <div class="field-control">
+              <div class="inline-actions">
+                <span class="badge" id="local-state-badge" data-tone="muted">未启动</span>
+                <button type="button" class="btn btn-primary" id="start-local">启动</button>
+                <button type="button" class="btn" id="stop-local" hidden>停止</button>
+              </div>
+              <p class="inline-error" id="local-error" hidden></p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================ 划词行为 ============================ -->
+    <section class="card" aria-labelledby="card-picker-title">
+      <div class="card-head">
+        <div class="card-head-text">
+          <h2 id="card-picker-title">划词行为</h2>
+          <p>设置划词触发方式、工具栏技能与默认目标语言。</p>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="field">
+          <div class="field-label">
+            <span class="field-name">启用划词工具</span>
+            <p class="field-hint">关闭后拖选文本不再弹出工具栏，快捷键也不再触发</p>
+          </div>
+          <div class="field-control">
+            <label class="switch">
+              <input type="checkbox" id="picker-enabled">
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="field-label">
+            <span class="field-name">快捷键</span>
+            <p class="field-hint">选中文本后按下组合键触发；点击重新录制，Esc 取消</p>
+          </div>
+          <div class="field-control">
+            <button type="button" class="shortcut-input" id="shortcut-input" aria-label="录制快捷键">
+              <span id="shortcut-value">Ctrl+Shift+D</span>
+              <span class="shortcut-edit" id="shortcut-edit">点击修改</span>
+            </button>
+            <p class="inline-hint" id="shortcut-hint" hidden></p>
+          </div>
+        </div>
+
+        <div class="field field-stack">
+          <div class="field-label">
+            <span class="field-name">工具栏技能</span>
+            <p class="field-hint">勾选要显示在工具栏的技能，使用箭头调整顺序</p>
+          </div>
+          <div class="field-control">
+            <ul class="skill-list" id="skill-list"></ul>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="field-label">
+            <span class="field-name">紧凑模式</span>
+            <p class="field-hint">工具栏只显示图标，不显示文字</p>
+          </div>
+          <div class="field-control">
+            <label class="switch">
+              <input type="checkbox" id="picker-compact">
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="field-label">
+            <label for="default-target-lang">默认目标语言</label>
+            <p class="field-hint">「自动」按原文判断：中文译为英文，其他语言译为中文</p>
+          </div>
+          <div class="field-control">
+            <select class="select" id="default-target-lang"></select>
+          </div>
+        </div>
+
+        <div class="field field-stack">
+          <div class="field-label">
+            <label for="blacklist-input">应用黑名单</label>
+            <p class="field-hint">这些应用中不触发划词；输入进程名后回车添加，可含 .exe</p>
+          </div>
+          <div class="field-control">
+            <div class="chips" id="blacklist-chips"></div>
+            <input class="input" id="blacklist-input" type="text" spellcheck="false"
+                   placeholder="例如 WeChat.exe，回车添加" autocomplete="off">
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================ 应用与启动 ========================== -->
+    <section class="card" aria-labelledby="card-app-title">
+      <div class="card-head">
+        <div class="card-head-text">
+          <h2 id="card-app-title">应用与启动</h2>
+          <p>控制开机自启、托盘驻留与本地数据目录。</p>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="field">
+          <div class="field-label">
+            <span class="field-name">开机自启</span>
+            <p class="field-hint" id="start-at-login-hint">登录 Windows 后在托盘中静默启动</p>
+          </div>
+          <div class="field-control">
+            <label class="switch">
+              <input type="checkbox" id="start-at-login">
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+            </label>
+            <p class="inline-hint" id="start-at-login-note" hidden></p>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="field-label">
+            <span class="field-name">关闭窗口后驻留托盘</span>
+            <p class="field-hint">关闭设置窗口时继续在托盘后台运行，划词保持可用</p>
+          </div>
+          <div class="field-control">
+            <label class="switch">
+              <input type="checkbox" id="close-to-tray">
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="field field-stack">
+          <div class="field-label">
+            <span class="field-name">数据与目录</span>
+            <p class="field-hint">设置、模型、引擎与日志都保存在本机</p>
+          </div>
+          <div class="field-control">
+            <div class="dir-grid">
+              <button type="button" class="btn" data-open-dir="data">数据目录</button>
+              <button type="button" class="btn" data-open-dir="models">模型目录</button>
+              <button type="button" class="btn" data-open-dir="logs">日志目录</button>
+              <button type="button" class="btn" data-open-dir="engine">引擎目录</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="danger-zone">
+          <div class="danger-row">
+            <div class="danger-text">
+              <span class="danger-title">恢复默认设置</span>
+              <p class="danger-desc">重置所有选项（不删除已下载的模型与引擎）</p>
+            </div>
+            <button type="button" class="btn btn-danger" id="reset-settings">恢复默认</button>
+          </div>
+          <div class="danger-row">
+            <div class="danger-text">
+              <span class="danger-title">退出 LingoPick</span>
+              <p class="danger-desc">退出后划词、快捷键与托盘后台全部停止</p>
+            </div>
+            <button type="button" class="btn btn-danger" id="quit-app">退出程序</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================== 关于 ============================== -->
+    <section class="card" aria-labelledby="card-about-title">
+      <div class="card-head">
+        <div class="card-head-text">
+          <h2 id="card-about-title">关于</h2>
+          <p>版本信息、数据位置与开源许可。</p>
+        </div>
+      </div>
+      <div class="card-body">
+        <dl class="about-grid">
+          <div>
+            <dt>版本</dt>
+            <dd id="about-version">—</dd>
+          </div>
+          <div>
+            <dt>平台</dt>
+            <dd id="about-platform">—</dd>
+          </div>
+          <div>
+            <dt>许可证</dt>
+            <dd id="about-license">MIT</dd>
+          </div>
+          <div>
+            <dt>翻译引擎</dt>
+            <dd id="about-engine">—</dd>
+          </div>
+          <div class="about-wide">
+            <dt>数据目录</dt>
+            <dd>
+              <code id="about-data-dir">—</code>
+              <button type="button" class="btn" id="open-data-dir">打开</button>
+            </dd>
+          </div>
+          <div class="about-wide">
+            <dt>本地模型</dt>
+            <dd id="about-models">—</dd>
+          </div>
+        </dl>
+        <div class="about-links">
+          <button type="button" class="btn" id="open-repo">GitHub 仓库</button>
+          <span class="about-url">github.com/monk233/lingopick</span>
+          <span class="about-sep" aria-hidden="true">·</span>
+          <span class="about-url">MIT License</span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+  <script src="shared/constants.js"></script>
+  <script src="shared/tauri-api.js"></script>
+  <script src="settings.js"></script>
+</body>
+</html>

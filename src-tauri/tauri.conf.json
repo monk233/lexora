@@ -1,0 +1,68 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "LingoPick",
+  "version": "0.1.0",
+  "identifier": "io.github.monk233.lingopick",
+  "build": {
+    "frontendDist": "../web"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "settings",
+        "title": "LingoPick 设置",
+        "url": "index.html",
+        "width": 980,
+        "height": 780,
+        "minWidth": 820,
+        "minHeight": 620,
+        "resizable": true,
+        "decorations": true,
+        "center": true,
+        "visible": false,
+        "focus": true,
+        "skipTaskbar": false
+      },
+      {
+        "label": "picker",
+        "title": "LingoPick",
+        "url": "picker.html",
+        "width": 440,
+        "height": 56,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "visible": false,
+        "focus": false,
+        "center": false,
+        "maximizable": false,
+        "minimizable": false,
+        "closable": false,
+        "backgroundColor": "#00000000"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

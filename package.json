@@ -1,0 +1,24 @@
+{
+  "name": "lingopick",
+  "version": "0.1.0",
+  "private": true,
+  "description": "LingoPick — 轻量划词翻译工具：选中任意文本即可翻译、总结、解释、朗读；支持在线 OpenAI 兼容 API 与本地 GGUF 离线模型。",
+  "license": "MIT",
+  "author": "LingoPick contributors",
+  "homepage": "https://github.com/monk233/lingopick",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/monk233/lingopick.git"
+  },
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build --no-bundle",
+    "build:debug": "tauri build --debug --no-bundle",
+    "fetch:llama": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch-llama.ps1",
+    "build:portable": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-portable.ps1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.4"
+  }
+}
