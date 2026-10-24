@@ -256,8 +256,8 @@ impl EngineService {
   | `hy-mt2-1.8b` | 腾讯混元 Hy-MT2 1.8B（翻译模型） | Hy-MT2-1.8B-Q4_K_M.gguf | 1,133,080,448 | 翻译专用，推荐，仅 ModelScope |
   | `qwen2.5-3b` | Qwen2.5 3B（通用模型） | qwen2.5-3b-instruct-q4_k_m.gguf | 2,104,932,768 | 通用：翻译/总结/解释 |
   - Hy-MT2：`https://www.modelscope.cn/models/liaowenbin/Hy-MT2-1.8B-Q4_K_M-GGUF/resolve/master/Hy-MT2-1.8B-Q4_K_M.gguf`（无 HF 镜像，`hf_url` 为空时跳过）。
-  - Qwen2.5 3B：HF `https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf`；ModelScope `https://www.modelscope.cn/models/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/master/qwen2.5-3b-instruct-q4_k_m.gguf`。
-  - 下载按 `hf_url` → `modelscope_url` 顺序尝试，空 URL 跳过；许可证均 Apache-2.0；`installed` = models 目录中存在同名文件。
+  - Qwen2.5 3B：ModelScope（优先）`https://www.modelscope.cn/models/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/master/qwen2.5-3b-instruct-q4_k_m.gguf`；HF（回退）`https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf`。
+  - 下载按 `modelscope_url` → `hf_url` 顺序尝试（ModelScope 优先），空 URL 跳过；许可证均 Apache-2.0；`installed` = models 目录中存在同名文件。
 - 单测：SSE 解析、URL 归一化、错误映射、catalog 完整性、模型文件名/大小常量；不联网（用 mock 服务的需标 ignored 或用本地 axum? 不允许新增依赖，直接单测纯函数）。
 
 ### 6.2 `selection.rs`（T2，可拆 `selection/*.rs`）

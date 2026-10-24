@@ -62,7 +62,7 @@ npx tauri build --no-bundle
 ## 引擎与模型下载
 
 - 引擎：首次在设置页点「下载引擎」，从 llama.cpp GitHub Releases 下载 `llama-b11851-bin-win-cpu-x64.zip`（约 23MB）并解压到数据目录。
-- 模型：设置页内置 Qwen2.5 GGUF 目录（HF / ModelScope 双源），也可「导入 GGUF」选择本地文件。
+- 模型：设置页内置 Qwen2.5 GGUF 目录（ModelScope 优先，Hugging Face 回退），也可「导入 GGUF」选择本地文件。
 - 完全离线环境：把 `llama-server.exe` 及其 DLL 手动放到 `<data>/engine/`，GGUF 放到 `<data>/models/`，再在设置页选择模型即可。
 
 ## 测试

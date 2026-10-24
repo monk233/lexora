@@ -28,8 +28,9 @@ pub struct ModelSpec {
 }
 
 /// The two local models offered by Lexora: one translation-specialised
-/// (Hy-MT2) and one general-purpose (Qwen2.5 3B). `hf_url` may be empty when the
-/// model is only distributed through ModelScope.
+/// (Hy-MT2) and one general-purpose (Qwen2.5 3B). Downloads try
+/// `modelscope_url` first and fall back to `hf_url`; `hf_url` may be empty when
+/// the model is only distributed through ModelScope.
 pub const CATALOG: [ModelSpec; 2] = [
     ModelSpec {
         id: "hy-mt2-1.8b",
@@ -69,6 +70,15 @@ pub const MAX_IMPORT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 pub fn spec_by_id(id: &str) -> Option<&'static ModelSpec> {
     let wanted = id.trim();
     CATALOG.iter().find(|spec| spec.id == wanted)
+}
+
+/// Download mirrors for a model in priority order: ModelScope first, then
+/// Hugging Face. Empty URLs (mirror not published) are skipped.
+pub fn download_urls(spec: &ModelSpec) -> Vec<&'static str> {
+    [spec.modelscope_url, spec.hf_url]
+        .into_iter()
+        .filter(|url| !url.is_empty())
+        .collect()
 }
 
 pub fn spec_by_filename(filename: &str) -> Option<&'static ModelSpec> {
@@ -323,6 +333,17 @@ mod tests {
         assert_eq!(CATALOG[1].size_bytes, 2_104_932_768);
         // Hy-MT2 is only distributed through ModelScope.
         assert!(CATALOG[0].hf_url.is_empty());
+    }
+
+    #[test]
+    fn download_mirrors_prefer_modelscope_then_huggingface() {
+        let hy = download_urls(&CATALOG[0]);
+        assert_eq!(hy, vec![CATALOG[0].modelscope_url]);
+
+        let qwen = download_urls(&CATALOG[1]);
+        assert_eq!(qwen, vec![CATALOG[1].modelscope_url, CATALOG[1].hf_url]);
+        assert!(qwen[0].starts_with("https://www.modelscope.cn/"));
+        assert!(qwen[1].starts_with("https://huggingface.co/"));
     }
 
     #[test]
