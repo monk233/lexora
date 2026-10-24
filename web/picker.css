@@ -293,6 +293,27 @@ body {
   border-bottom: 1px solid var(--border);
   background: var(--surface-muted);
   user-select: none;
+  /* The empty area of the header drags the whole picker window. */
+  cursor: move;
+}
+
+/* Header controls keep their usual pointer affordance. */
+.panel-head button,
+.panel-head select,
+.panel-head .icon-btn,
+.panel-head .panel-target-lang {
+  cursor: pointer;
+}
+
+/* Dragging the panel head moves the window through the shell. */
+body.is-dragging-panel,
+body.is-dragging-panel * {
+  cursor: move !important;
+  user-select: none !important;
+}
+
+.panel.is-dragging-panel {
+  box-shadow: 0 4px 14px -4px rgba(15, 23, 42, 0.24);
 }
 
 .panel-head-title {

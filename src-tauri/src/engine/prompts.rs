@@ -21,17 +21,49 @@ pub const DEFAULT_SUMMARIZE_PROMPT: &str = "You are a concise Chinese writing as
 
 pub const DEFAULT_EXPLAIN_PROMPT: &str = "You are a knowledge assistant. Explain the user's text in Simplified Chinese, covering its meaning, background and key concepts, with short examples when helpful.";
 
-/// Maps a language code to the English name used inside prompts.
+/// Maps a language code to the English name used inside prompts. Covers the
+/// languages supported by Hy-MT2 (33 languages plus Chinese variants and
+/// minority languages).
 pub fn language_name(code: &str) -> String {
     match code.trim().to_ascii_lowercase().as_str() {
         "zh" | "zh-cn" | "zh-hans" => "Simplified Chinese".to_string(),
+        "zh-hant" | "zh-tw" | "zh-hk" => "Traditional Chinese".to_string(),
+        "yue" => "Cantonese".to_string(),
         "en" | "en-us" | "en-gb" => "English".to_string(),
         "ja" => "Japanese".to_string(),
-        "de" => "German".to_string(),
-        "fr" => "French".to_string(),
-        "es" => "Spanish".to_string(),
-        "ru" => "Russian".to_string(),
         "ko" => "Korean".to_string(),
+        "fr" => "French".to_string(),
+        "de" => "German".to_string(),
+        "es" => "Spanish".to_string(),
+        "pt" => "Portuguese".to_string(),
+        "ru" => "Russian".to_string(),
+        "ar" => "Arabic".to_string(),
+        "it" => "Italian".to_string(),
+        "nl" => "Dutch".to_string(),
+        "pl" => "Polish".to_string(),
+        "tr" => "Turkish".to_string(),
+        "th" => "Thai".to_string(),
+        "vi" => "Vietnamese".to_string(),
+        "id" => "Indonesian".to_string(),
+        "ms" => "Malay".to_string(),
+        "tl" => "Filipino".to_string(),
+        "hi" => "Hindi".to_string(),
+        "bn" => "Bengali".to_string(),
+        "ta" => "Tamil".to_string(),
+        "te" => "Telugu".to_string(),
+        "mr" => "Marathi".to_string(),
+        "gu" => "Gujarati".to_string(),
+        "ur" => "Urdu".to_string(),
+        "fa" => "Persian".to_string(),
+        "he" => "Hebrew".to_string(),
+        "uk" => "Ukrainian".to_string(),
+        "cs" => "Czech".to_string(),
+        "km" => "Khmer".to_string(),
+        "my" => "Burmese".to_string(),
+        "bo" => "Tibetan".to_string(),
+        "kk" => "Kazakh".to_string(),
+        "mn" => "Mongolian".to_string(),
+        "ug" => "Uyghur".to_string(),
         // Unknown codes are handed to the model as-is; it usually understands
         // BCP-47 tags and this keeps custom targets working without a schema
         // change.
@@ -163,6 +195,22 @@ mod tests {
         assert_eq!(language_name("ZH"), "Simplified Chinese");
         assert_eq!(language_name("自定义"), "自定义");
         assert_eq!(language_name(""), "Simplified Chinese");
+    }
+
+    #[test]
+    fn language_names_cover_every_supported_target() {
+        for code in crate::settings::TARGET_LANGS {
+            if code == "auto" {
+                continue;
+            }
+            let name = language_name(code);
+            assert!(!name.is_empty(), "empty name for {code}");
+            assert_ne!(name, code, "code {code} should map to an English name");
+        }
+        assert_eq!(language_name("zh-hant"), "Traditional Chinese");
+        assert_eq!(language_name("yue"), "Cantonese");
+        assert_eq!(language_name("pt"), "Portuguese");
+        assert_eq!(language_name("ug"), "Uyghur");
     }
 
     #[test]

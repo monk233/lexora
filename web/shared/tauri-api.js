@@ -237,12 +237,12 @@
     var engineInstalled = !/[?&]engine=0(?:&|$)/.test(query);
     var compactToolbar = /[?&]compact=1(?:&|$)/.test(query);
     var installedModel = {
-      file: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
-      name: "qwen2.5-1.5b-instruct-q4_k_m",
-      path: "C:\\Users\\Preview\\AppData\\Roaming\\LingoPick\\models\\qwen2.5-1.5b-instruct-q4_k_m.gguf",
-      sizeBytes: 1117320736,
+      file: "Hy-MT2-1.8B-Q4_K_M.gguf",
+      name: "Hy-MT2-1.8B-Q4_K_M",
+      path: "C:\\Users\\Preview\\AppData\\Roaming\\LingoPick\\models\\Hy-MT2-1.8B-Q4_K_M.gguf",
+      sizeBytes: 1133080448,
       modifiedAt: Date.now() - 86400000,
-      catalogId: "qwen2.5-1.5b",
+      catalogId: "hy-mt2-1.8b",
     };
 
     mockStore = {
@@ -262,7 +262,6 @@
         version: 1,
         picker: {
           enabled: true,
-          shortcut: "Ctrl+Shift+D",
           skills: ["translate", "summarize", "explain", "read", "copy"],
           compact: compactToolbar,
           defaultTargetLang: "auto",
@@ -282,7 +281,6 @@
             maxTokens: 1024,
           },
           local: {
-            modelFile: installedModel.file,
             contextSize: 4096,
             threads: 0,
             gpuLayers: 0,
@@ -302,35 +300,26 @@
         providerLabel: "在线 · deepseek-chat",
         onlineConfigured: true,
         localState: "stopped",
-        localModelFile: installedModel.file,
-        localModelName: "qwen2.5-1.5b-instruct-q4_k_m",
+        localModelFile: "",
+        localModelName: "",
         localError: "",
         engineAvailable: engineInstalled,
       },
       models: [installedModel],
       catalog: [
         mockCatalogEntry(
-          "qwen2.5-0.5b",
-          "Qwen2.5 0.5B Instruct",
-          "轻量模型，低配机器可流畅运行",
-          "qwen2.5-0.5b-instruct-q4_k_m.gguf",
-          491400032,
-          false,
-          false
-        ),
-        mockCatalogEntry(
-          "qwen2.5-1.5b",
-          "Qwen2.5 1.5B Instruct",
-          "推荐：翻译与总结的质量/速度平衡",
-          "qwen2.5-1.5b-instruct-q4_k_m.gguf",
-          1117320736,
+          "hy-mt2-1.8b",
+          "腾讯混元 Hy-MT2 1.8B（翻译模型）",
+          "翻译专用：混元 Hy-MT2 1.8B Q4_K_M，速度快，适合中英及多语互译",
+          "Hy-MT2-1.8B-Q4_K_M.gguf",
+          1133080448,
           true,
           true
         ),
         mockCatalogEntry(
           "qwen2.5-3b",
-          "Qwen2.5 3B Instruct",
-          "质量优先，需要更多内存",
+          "Qwen2.5 3B（通用模型）",
+          "通用模型：翻译、总结、解释都能用；适合内存 16GB 以上的电脑",
           "qwen2.5-3b-instruct-q4_k_m.gguf",
           2104932768,
           false,
@@ -364,24 +353,25 @@
     );
     engine.providerLabel =
       engine.mode === "local"
-        ? "本地模型"
+        ? engine.localState === "ready" && engine.localModelName
+          ? "本地 · " + engine.localModelName
+          : "本地模型"
         : "在线 · " + String(online.model || "").trim();
-    engine.localModelFile = String(local.modelFile || "");
-    engine.localModelName = "";
-    mockStore.models.forEach(function (model) {
-      if (model.file === engine.localModelFile) {
-        engine.localModelName = model.name;
-      }
-    });
     engine.ready =
       engine.mode === "local"
         ? engine.localState === "ready"
         : engine.onlineConfigured;
-    engine.hint = engine.ready
-      ? ""
-      : engine.mode === "local"
-        ? "本地引擎未启动"
-        : "请填写在线服务地址与模型名";
+    if (engine.ready) {
+      engine.hint = "";
+    } else if (engine.mode === "local") {
+      engine.hint = !engine.engineAvailable
+        ? "尚未安装 llama.cpp 引擎"
+        : !mockStore.models.length
+          ? "尚未安装本地模型"
+          : "本地模型未启动";
+    } else {
+      engine.hint = "请填写在线服务地址与模型名";
+    }
 
     mockStore.loginItem.supported = !mockStore.app.portable;
     mockStore.loginItem.enabled = !!settings.app.startAtLogin;
@@ -390,7 +380,6 @@
       mockStore.loginItem.enabled = false;
     }
     mockStore.download = mockDownloads ? mockDownloads.progress : null;
-    settings.provider.local.modelFile = engine.localModelFile;
   }
 
   function normalizeMockSettings() {
@@ -405,7 +394,13 @@
       }
     });
     picker.skills = skills.length ? skills : known.slice();
-    var languages = ["auto", "zh", "en", "ja", "de", "fr", "es", "ru", "ko"];
+    var languageValues =
+      window.LP && Array.isArray(window.LP.LANGUAGES)
+        ? window.LP.LANGUAGES.map(function (entry) {
+            return entry.value;
+          })
+        : ["zh", "en", "ja", "de", "fr", "es", "ru", "ko"];
+    var languages = ["auto"].concat(languageValues);
     if (languages.indexOf(String(picker.defaultTargetLang)) < 0) {
       picker.defaultTargetLang = "auto";
     }
@@ -433,14 +428,6 @@
     });
     if (settings.provider.mode !== "local") {
       settings.provider.mode = "online";
-    }
-    if (
-      settings.provider.local.modelFile &&
-      !mockStore.models.some(function (model) {
-        return model.file === settings.provider.local.modelFile;
-      })
-    ) {
-      settings.provider.local.modelFile = "";
     }
     mockStore.picker.pinned = false;
   }
@@ -639,7 +626,6 @@
                   catalogId: entry.id,
                 });
               }
-              mockStore.settings.provider.local.modelFile = entry.filename;
             }
             mockPublishState();
             mockEmit("toast", {
@@ -695,6 +681,8 @@
       case "picker_pin":
         mockStore.picker.pinned = !!args.pinned;
         return { ok: true, pinned: !!args.pinned };
+      case "picker_drag_panel":
+        return { ok: true };
       case "picker_resize":
         return {
           x: 0,
@@ -862,7 +850,6 @@
                 catalogId: "",
               });
             }
-            mockStore.settings.provider.local.modelFile = filename;
             mockPublishState();
             mockEmit("toast", {
               type: "success",
@@ -881,8 +868,10 @@
             item.installed = false;
           }
         });
-        if (mockStore.settings.provider.local.modelFile === file) {
-          mockStore.settings.provider.local.modelFile = "";
+        if (mockStore.engine.localModelFile === file) {
+          mockStore.engine.localState = "stopped";
+          mockStore.engine.localModelFile = "";
+          mockStore.engine.localModelName = "";
         }
         mockPublishState();
         return { ok: true };
@@ -926,18 +915,24 @@
         hint: "请先在「翻译服务 → 本地模型」中下载引擎。",
       };
     }
-    if (!mockStore.settings.provider.local.modelFile) {
+    if (!mockStore.models.length) {
       return {
         ok: false,
-        error: "尚未选择本地模型",
+        error: "尚未安装本地模型",
         hint: "请先下载或导入 GGUF 模型。",
       };
     }
     if (mockStore.engine.localState === "ready") {
       return { ok: true };
     }
+    var preferred =
+      mockStore.models.filter(function (model) {
+        return model.catalogId === "hy-mt2-1.8b";
+      })[0] || mockStore.models[0];
     mockStore.engine.localState = "starting";
     mockStore.engine.localError = "";
+    mockStore.engine.localModelFile = preferred.file;
+    mockStore.engine.localModelName = preferred.name;
     mockPublishState();
     return new Promise(function (resolve) {
       window.setTimeout(function () {
@@ -952,6 +947,8 @@
   function mockStopLocal() {
     mockStore.engine.localState = "stopped";
     mockStore.engine.localError = "";
+    mockStore.engine.localModelFile = "";
+    mockStore.engine.localModelName = "";
     mockPublishState();
     return { ok: true };
   }
@@ -1071,6 +1068,13 @@
     },
     status: function () {
       return safeInvoke("picker_status", {});
+    },
+    /* Moves the picker window by a logical-pixel delta (panel header drag). */
+    dragPanel: function (dx, dy) {
+      return safeInvoke("picker_drag_panel", {
+        dx: Number(dx) || 0,
+        dy: Number(dy) || 0,
+      });
     },
     disableInApp: function (programName) {
       return safeInvoke("picker_disable_in_app", {

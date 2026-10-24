@@ -26,7 +26,6 @@
   var textTimers = {};
   var textFields = [];
   var catalogOpen = false;
-  var recording = null;
   var localBusy = false;
   var loginBusy = false;
 
@@ -561,16 +560,37 @@
     });
   }
 
-  function emptyOption(label) {
-    var option = document.createElement("option");
-    option.value = "";
-    option.textContent = label;
-    return option;
+  /* Built-in catalog ids map to the runtime role; imports count as custom. */
+  function modelRole(catalogId) {
+    if (catalogId === "hy-mt2-1.8b") {
+      return { label: "翻译模型", builtin: true };
+    }
+    if (catalogId === "qwen2.5-3b") {
+      return { label: "通用模型", builtin: true };
+    }
+    return { label: "自定义模型", builtin: false };
+  }
+
+  function localModelRow(model) {
+    var role = modelRole(model.catalogId);
+    var row = el("div", "model-card");
+    row.setAttribute("data-file", model.file || "");
+    var main = el("div", "model-card-main");
+    main.appendChild(
+      el("span", "model-card-name", model.name || model.file || "未命名模型")
+    );
+    var meta = el("div", "model-card-meta");
+    meta.appendChild(
+      el("span", "meta-pill" + (role.builtin ? " is-accent" : ""), role.label)
+    );
+    meta.appendChild(el("span", "meta-pill", LP.formatBytes(model.sizeBytes)));
+    main.appendChild(meta);
+    row.appendChild(main);
+    return row;
   }
 
   function renderLocal() {
     var engine = state.engine || {};
-    var settings = state.settings.provider.local || {};
     var download = state.download;
     var engineDownload =
       download && download.kind === "engine" ? download : null;
@@ -595,39 +615,34 @@
 
     renderEngineProgress(engineDownload);
 
-    var models = state.models || [];
-    var modelSelect = byId("local-model");
-    if (modelSelect) {
+    var models = Array.isArray(state.models) ? state.models : [];
+    var list = byId("local-models");
+    if (list) {
       var signature = models
         .map(function (model) {
-          return model.file;
+          return [
+            model.file,
+            model.name,
+            model.catalogId,
+            model.sizeBytes,
+          ].join("\u0001");
         })
-        .join("|");
-      if (modelSelect.getAttribute("data-signature") !== signature) {
-        modelSelect.setAttribute("data-signature", signature);
-        modelSelect.innerHTML = "";
-        if (!models.length) {
-          modelSelect.appendChild(emptyOption("未安装本地模型"));
-        } else {
-          modelSelect.appendChild(emptyOption("未选择模型"));
-          models.forEach(function (model) {
-            var option = document.createElement("option");
-            option.value = model.file;
-            option.textContent =
-              model.name + "（" + LP.formatBytes(model.sizeBytes) + "）";
-            modelSelect.appendChild(option);
-          });
-        }
+        .join("\u0002");
+      if (list.getAttribute("data-signature") !== signature) {
+        list.setAttribute("data-signature", signature);
+        list.innerHTML = "";
+        models.forEach(function (model) {
+          list.appendChild(localModelRow(model));
+        });
       }
-      setSelectValue(modelSelect, settings.modelFile || "");
     }
 
-    var modelHint = byId("local-model-hint");
+    var modelHint = byId("local-models-hint");
     if (modelHint) {
       if (!models.length) {
         modelHint.hidden = false;
         modelHint.textContent =
-          "还没有本地模型：展开「模型目录」下载，或点击「导入 GGUF」选择本机文件。";
+          "还没有本地模型：展开「模型目录」下载（翻译推荐 Hy-MT2，通用推荐 Qwen2.5 3B），或点击「导入 GGUF」选择本机文件。";
       } else {
         modelHint.hidden = true;
       }
@@ -701,9 +716,29 @@
       stopButton.disabled = localBusy;
     }
 
+    var hintNode = byId("local-state-hint");
+    if (hintNode) {
+      var modelName = String(engine.localModelName || "").trim();
+      if (localState === "ready") {
+        hintNode.textContent = modelName ? "当前模型：" + modelName : "模型已加载";
+      } else if (localState === "starting") {
+        hintNode.textContent = modelName
+          ? "正在加载模型：" + modelName
+          : "正在加载模型…";
+      } else {
+        hintNode.textContent =
+          "本地模型未启动时翻译/总结不会自动启动，请点击「启动」";
+      }
+      hintNode.hidden = false;
+    }
+
     var errorNode = byId("local-error");
-    if (errorNode && engine.localError) {
-      showInlineError(errorNode, engine.localError);
+    if (errorNode) {
+      if (engine.localError) {
+        showInlineError(errorNode, engine.localError);
+      } else {
+        hideInlineError(errorNode);
+      }
     }
   }
 
@@ -870,13 +905,6 @@
     var picker = state.settings.picker || {};
     setChecked(byId("picker-enabled"), picker.enabled !== false);
     setChecked(byId("picker-compact"), picker.compact === true);
-    if (!recording) {
-      var shortcut = picker.shortcut || "Ctrl+Shift+D";
-      var valueNode = byId("shortcut-value");
-      if (valueNode && valueNode.textContent !== shortcut) {
-        valueNode.textContent = shortcut;
-      }
-    }
     setSelectValue(byId("default-target-lang"), picker.defaultTargetLang || "auto");
     renderSkills();
     renderBlacklist();
@@ -1586,101 +1614,6 @@
     save({ picker: { blacklist: list } });
   }
 
-  /* ---- Shortcut recorder ----------------------------------------------- */
-
-  function shortcutModifiers(event) {
-    var parts = [];
-    if (event.ctrlKey) {
-      parts.push("Ctrl");
-    }
-    if (event.altKey) {
-      parts.push("Alt");
-    }
-    if (event.shiftKey) {
-      parts.push("Shift");
-    }
-    return parts;
-  }
-
-  function shortcutKey(event) {
-    var code = String(event.code || "");
-    var match = /^Key([A-Z])$/.exec(code);
-    if (match) {
-      return match[1];
-    }
-    match = /^Digit([0-9])$/.exec(code);
-    if (match) {
-      return match[1];
-    }
-    match = /^F([1-9]|1[0-2])$/.exec(code);
-    if (match) {
-      return "F" + match[1];
-    }
-    return "";
-  }
-
-  function startRecording() {
-    if (recording) {
-      return;
-    }
-    recording = { previous: state.settings.picker.shortcut || "Ctrl+Shift+D" };
-    byId("shortcut-input").classList.add("is-recording");
-    byId("shortcut-value").textContent = "请按下组合键…";
-    byId("shortcut-edit").textContent = "Esc 取消";
-    hideInlineError(byId("shortcut-hint"));
-    document.addEventListener("keydown", onRecordingKeydown, true);
-  }
-
-  function stopRecording(cancelled) {
-    if (!recording) {
-      return;
-    }
-    var previous = recording.previous;
-    recording = null;
-    document.removeEventListener("keydown", onRecordingKeydown, true);
-    byId("shortcut-input").classList.remove("is-recording");
-    byId("shortcut-edit").textContent = "点击修改";
-    if (cancelled) {
-      byId("shortcut-value").textContent = previous;
-    }
-  }
-
-  function onRecordingKeydown(event) {
-    if (!recording) {
-      return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-    if (event.key === "Escape") {
-      stopRecording(true);
-      return;
-    }
-    var modifiers = shortcutModifiers(event);
-    var key = shortcutKey(event);
-    if (!key) {
-      var preview = modifiers.length
-        ? modifiers.join("+") + " + …"
-        : "请按下组合键…";
-      byId("shortcut-value").textContent = preview;
-      if (modifiers.length) {
-        hideInlineError(byId("shortcut-hint"));
-      }
-      return;
-    }
-    if (!modifiers.length) {
-      showInlineError(
-        byId("shortcut-hint"),
-        "快捷键至少需要 Ctrl、Alt 或 Shift 中的一个"
-      );
-      return;
-    }
-    var value = modifiers.concat([key]).join("+");
-    stopRecording(false);
-    byId("shortcut-value").textContent = value;
-    hideInlineError(byId("shortcut-hint"));
-    save({ picker: { shortcut: value } });
-  }
-
   /* ---- Danger actions -------------------------------------------------- */
 
   function armDanger(button, armedLabel, action) {
@@ -1806,10 +1739,6 @@
     byId("import-model").addEventListener("click", importModel);
     byId("start-local").addEventListener("click", startLocal);
     byId("stop-local").addEventListener("click", stopLocal);
-    byId("local-model").addEventListener("change", function (event) {
-      hideInlineError(byId("local-error"));
-      save({ provider: { local: { modelFile: event.target.value } } });
-    });
     byId("catalog-list").addEventListener("click", function (event) {
       var downloadButton =
         event.target.closest && event.target.closest("[data-catalog-download]");
@@ -1836,27 +1765,6 @@
     byId("default-target-lang").addEventListener("change", function (event) {
       save({ picker: { defaultTargetLang: event.target.value } });
     });
-    byId("shortcut-input").addEventListener("click", function () {
-      if (recording) {
-        stopRecording(true);
-      } else {
-        startRecording();
-      }
-    });
-    document.addEventListener(
-      "mousedown",
-      function (event) {
-        if (!recording) {
-          return;
-        }
-        var box = byId("shortcut-input");
-        if (box && box.contains(event.target)) {
-          return;
-        }
-        stopRecording(true);
-      },
-      true
-    );
     byId("skill-list").addEventListener("change", function (event) {
       var input = event.target;
       var id = input && input.getAttribute("data-skill-toggle");

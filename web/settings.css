@@ -714,6 +714,50 @@ textarea {
   text-align: right;
 }
 
+/* ---- Installed local models -------------------------------------------- */
+
+.local-models {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.local-models:empty {
+  display: none;
+}
+
+.model-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.model-card-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.model-card-name {
+  font-size: 12.5px;
+  font-weight: 550;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.model-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+}
+
 /* ---- Catalog ------------------------------------------------------------ */
 
 .catalog {
@@ -853,52 +897,6 @@ textarea {
   color: var(--text-muted);
   font-size: 11.5px;
   line-height: 1.5;
-}
-
-/* ---- Shortcut recorder -------------------------------------------------- */
-
-.shortcut-input {
-  display: inline-flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  align-self: flex-start;
-  min-width: 230px;
-  height: 34px;
-  padding: 0 12px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-control);
-  background: var(--surface);
-  color: var(--text);
-  font-size: 13px;
-  cursor: pointer;
-  transition: border-color 120ms ease, box-shadow 120ms ease;
-}
-
-.shortcut-input:hover {
-  border-color: var(--text-faint);
-}
-
-.shortcut-input:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 1px;
-}
-
-.shortcut-input.is-recording {
-  border-color: var(--primary);
-  box-shadow: 0 0 0 3px var(--primary-ring);
-  color: var(--primary);
-  font-weight: 600;
-}
-
-.shortcut-edit {
-  color: var(--text-faint);
-  font-size: 11.5px;
-  font-weight: 400;
-}
-
-.shortcut-input.is-recording .shortcut-edit {
-  color: var(--primary);
 }
 
 /* ---- Skill list --------------------------------------------------------- */
@@ -1295,7 +1293,6 @@ textarea {
   .switch-track,
   .switch-thumb,
   .progress-fill,
-  .shortcut-input,
   .textarea,
   .skill-item {
     transition: none;

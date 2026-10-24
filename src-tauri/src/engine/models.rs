@@ -57,6 +57,11 @@ pub const CATALOG: [ModelSpec; 2] = [
     },
 ];
 
+/// Catalog id of the translation-specialised model (Hy-MT2 1.8B).
+pub const TRANSLATION_MODEL_ID: &str = "hy-mt2-1.8b";
+/// Catalog id of the general-purpose model (Qwen2.5 3B).
+pub const GENERAL_MODEL_ID: &str = "qwen2.5-3b";
+
 /// Files larger than this are rejected on import (the FLINT const keeps the
 /// comparison lossless on 32-bit builds; LingoPick ships 64-bit only).
 pub const MAX_IMPORT_BYTES: u64 = 4 * 1024 * 1024 * 1024;

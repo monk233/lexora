@@ -84,7 +84,7 @@ fn main() {
 
             // Silent start: a launch only mounts the tray (and picker) and
             // never opens a window. `--show` is an explicit opt-in used by
-            // developers, tests and shortcuts.
+            // developers and tests.
             log.info(&format!(
                 "startup mode: force_show={force_show} autostart={autostart_launch}; \
                  starting silently in tray"
@@ -152,6 +152,7 @@ fn main() {
             commands::picker_close,
             commands::picker_pin,
             commands::picker_resize,
+            commands::picker_drag_panel,
             commands::picker_copy,
             commands::picker_open_settings,
             commands::picker_translate,

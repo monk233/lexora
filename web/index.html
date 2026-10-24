@@ -152,16 +152,16 @@
 
           <div class="field">
             <div class="field-label">
-              <label for="local-model">本地模型</label>
-              <p class="field-hint">已下载或导入的 GGUF 模型</p>
+              <span class="field-name">本地模型</span>
+              <p class="field-hint">启动后按功能自动选择：翻译用 Hy-MT2 1.8B，总结/解释用 Qwen2.5 3B</p>
             </div>
             <div class="field-control">
-              <div class="inline-actions inline-actions-grow">
-                <select class="select" id="local-model"></select>
+              <div class="local-models" id="local-models"></div>
+              <p class="inline-hint" id="local-models-hint" hidden></p>
+              <div class="inline-actions">
                 <button type="button" class="btn" id="toggle-catalog" aria-expanded="false">下载模型</button>
                 <button type="button" class="btn" id="import-model">导入 GGUF</button>
               </div>
-              <p class="inline-hint" id="local-model-hint" hidden></p>
             </div>
           </div>
 
@@ -176,7 +176,7 @@
           <div class="field">
             <div class="field-label">
               <span class="field-name">运行状态</span>
-              <p class="field-hint">本地模式需要先启动 llama.cpp 引擎服务</p>
+              <p class="field-hint">本地模式需要先启动 llama.cpp 引擎服务，运行时按功能自动选择模型</p>
             </div>
             <div class="field-control">
               <div class="inline-actions">
@@ -184,6 +184,7 @@
                 <button type="button" class="btn btn-primary" id="start-local">启动</button>
                 <button type="button" class="btn" id="stop-local" hidden>停止</button>
               </div>
+              <p class="inline-hint" id="local-state-hint" hidden></p>
               <p class="inline-error" id="local-error" hidden></p>
             </div>
           </div>
@@ -203,27 +204,13 @@
         <div class="field">
           <div class="field-label">
             <span class="field-name">启用划词工具</span>
-            <p class="field-hint">关闭后拖选文本不再弹出工具栏，快捷键也不再触发</p>
+            <p class="field-hint">关闭后拖选文本不再弹出工具栏</p>
           </div>
           <div class="field-control">
             <label class="switch">
               <input type="checkbox" id="picker-enabled">
               <span class="switch-track"><span class="switch-thumb"></span></span>
             </label>
-          </div>
-        </div>
-
-        <div class="field">
-          <div class="field-label">
-            <span class="field-name">快捷键</span>
-            <p class="field-hint">选中文本后按下组合键触发；点击重新录制，Esc 取消</p>
-          </div>
-          <div class="field-control">
-            <button type="button" class="shortcut-input" id="shortcut-input" aria-label="录制快捷键">
-              <span id="shortcut-value">Ctrl+Shift+D</span>
-              <span class="shortcut-edit" id="shortcut-edit">点击修改</span>
-            </button>
-            <p class="inline-hint" id="shortcut-hint" hidden></p>
           </div>
         </div>
 
@@ -336,7 +323,7 @@
           <div class="danger-row">
             <div class="danger-text">
               <span class="danger-title">退出 LingoPick</span>
-              <p class="danger-desc">退出后划词、快捷键与托盘后台全部停止</p>
+              <p class="danger-desc">退出后划词与托盘后台全部停止</p>
             </div>
             <button type="button" class="btn btn-danger" id="quit-app">退出程序</button>
           </div>

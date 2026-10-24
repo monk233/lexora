@@ -2,11 +2,10 @@
 /**
  * Local-mode end-to-end check through the WebView2 DevTools protocol.
  *
- * Requires a llama.cpp engine and a GGUF model on this machine, e.g.:
+ * Requires a llama.cpp engine and at least one GGUF model in the model dir, e.g.:
  *
  *   $env:LINGOPICK_LLAMA_DIR = "E:\...\enterprise-ai-translator\vendor\llama"
  *   $env:LINGOPICK_MODEL_DIR = "E:\...\enterprise-ai-translator\models"
- *   $env:LINGOPICK_E2E_MODEL = "qwen2.5-3b-instruct-q4_k_m.gguf"
  *   node tests/e2e-local-cdp.mjs
  *
  * The app is started with a temporary data directory; it never touches the real
@@ -24,7 +23,6 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const exe = path.join(root, "src-tauri", "target", "debug", "lingopick.exe");
 const engineDir = process.env.LINGOPICK_LLAMA_DIR || "";
 const modelDir = process.env.LINGOPICK_MODEL_DIR || "";
-const modelFile = process.env.LINGOPICK_E2E_MODEL || "qwen2.5-3b-instruct-q4_k_m.gguf";
 const debugPort = 9334;
 
 if (!engineDir || !modelDir) {
@@ -39,11 +37,11 @@ writeFileSync(
   JSON.stringify(
     {
       version: 1,
-      picker: { enabled: true, shortcut: "Ctrl+Shift+D", skills: ["translate", "summarize", "explain", "read", "copy"], compact: false, defaultTargetLang: "auto", blacklist: [], maxChars: 5000 },
+      picker: { enabled: true, skills: ["translate", "summarize", "explain", "read", "copy"], compact: false, defaultTargetLang: "auto", blacklist: [], maxChars: 5000 },
       provider: {
         mode: "local",
         online: { preset: "custom", baseUrl: "", apiKey: "", model: "", timeoutMs: 60000, temperature: 0.2, maxTokens: 512 },
-        local: { modelFile, contextSize: 4096, threads: 0, gpuLayers: 0, autoStart: false },
+        local: { contextSize: 4096, threads: 0, gpuLayers: 0, autoStart: false },
       },
       app: { closeToTray: true, startAtLogin: false, theme: "light" },
     },

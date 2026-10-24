@@ -13,7 +13,7 @@ lingopick.exe
 │   ├─ Tauri 命令（翻译、设置、模型下载、窗口控制）
 │   └─ 异步任务：reqwest 流式翻译、llama-server 启停、下载
 ├─ 输入钩子线程（rdev）
-│   └─ 鼠标拖动/快捷键/外部点击判断 → channel
+│   └─ 鼠标拖动/多击/外部点击判断 → channel
 ├─ 取词线程（每次请求一个，可抛弃）
 │   └─ Windows UI Automation(COM) 读取选中文本，1.5s 看门狗
 └─ llama-server.exe（本地模式，子进程）
@@ -32,7 +32,7 @@ lingopick.exe
 | `paths.rs` | 便携数据目录解析（exe 同级 `data/` 优先，回退 `%APPDATA%`） |
 | `logger.rs` | 滚动文件日志，API Key 脱敏 |
 | `win32.rs` | Win32 FFI：光标、显示器工作区、DPI |
-| `selection.rs` | `rdev` 全局钩子、快捷键解析、拖选判定、触发取词、外部点击隐藏 |
+| `selection.rs` | `rdev` 全局钩子、拖选/多击判定、触发取词、外部点击与键盘操作隐藏 |
 | `selection/uia.rs` | 原生 UI Automation COM 取词（`CUIAutomation8` + 超时 + 重试） |
 | `engine.rs` | 引擎门面：在线/本地路由、状态、模型/引擎下载 |
 | `engine/openai.rs` | OpenAI 兼容 `/chat/completions` SSE 流式客户端 |
@@ -42,8 +42,8 @@ lingopick.exe
 
 ## 取词数据流
 
-1. 用户拖动选中文本（或按 `Ctrl+Shift+D`）。
-2. `rdev` 钩子判断「位移 ≥ 6px 的左键抬起」或快捷键，向取词通道投递请求（回调内只做轻量判断）。
+1. 用户拖动选中文本，或双击/三击选中单词/段落。
+2. `rdev` 钩子判断「位移 ≥ 6px 的左键抬起」或多击（同一位置、间隔 ≤ 双击时间），向取词通道投递请求（回调内只做轻量判断）。
 3. 过滤：功能开关、自身进程、黑名单、同文本 400ms 去重。
 4. 独立线程创建 UIA COM 客户端（连接/事务超时 1.5s/1s），读取焦点元素的 TextPattern 选区；失败重试 2 次；主线程 `recv_timeout(1.5s)` 看门狗，超时放弃。
 5. 得到文本 + 鼠标物理坐标 + 显示器 scale，调用 `windows::show_picker`：用 `PhysicalPosition` 定位并 clamp 到工作区，展示 picker 窗口，推送 `picker-data` 事件。

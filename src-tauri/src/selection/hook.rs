@@ -12,29 +12,18 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rdev::{listen, Button, Event, EventType, Key};
+use rdev::{listen, Button, Event, EventType};
 
-use super::shortcut::{self, ShortcutKey};
 use super::{ActionRequest, Inner, TriggerSource};
 
 /// Minimum physical drag distance for a mouse gesture to count as a selection.
 const DRAG_THRESHOLD_PX: f64 = 6.0;
-/// Guards against a sticky key / duplicate KeyPress sequence.
-const HOTKEY_COOLDOWN: Duration = Duration::from_millis(250);
 
 /// State tracked between events of the single hook callback.
 #[derive(Default)]
 struct HookState {
-    ctrl_left: bool,
-    ctrl_right: bool,
-    shift_left: bool,
-    shift_right: bool,
-    alt_left: bool,
-    alt_right: bool,
     mouse: Option<(f64, f64)>,
     press_origin: Option<(f64, f64)>,
-    down_key: Option<ShortcutKey>,
-    last_hotkey: Option<Instant>,
     clicks: ClickChain,
 }
 
@@ -107,8 +96,9 @@ fn run(inner: Arc<Inner>) {
 
 fn on_event(inner: &Arc<Inner>, state: &mut HookState, event: Event) {
     match event.event_type {
-        EventType::KeyPress(key) => handle_key_press(inner, state, key),
-        EventType::KeyRelease(key) => handle_key_release(state, key),
+        // The global shortcut was removed: keyboard input only dismisses the
+        // toolbar and always continues to reach the foreground application.
+        EventType::KeyPress(_) => dismiss_picker_on_input(inner, "键盘操作"),
         EventType::MouseMove { x, y } => state.mouse = Some((x, y)),
         EventType::ButtonPress(Button::Left) => handle_left_press(inner, state),
         EventType::ButtonRelease(Button::Left) => handle_left_release(inner, state),
@@ -130,68 +120,6 @@ fn dismiss_picker_on_input(inner: &Arc<Inner>, reason: &'static str) {
         return;
     }
     inner.send_action(ActionRequest::DismissOnInput { reason });
-}
-
-fn handle_key_press(inner: &Arc<Inner>, state: &mut HookState, key: Key) {
-    dismiss_picker_on_input(inner, "键盘操作");
-    match key {
-        Key::ControlLeft => state.ctrl_left = true,
-        Key::ControlRight => state.ctrl_right = true,
-        Key::ShiftLeft => state.shift_left = true,
-        Key::ShiftRight => state.shift_right = true,
-        Key::Alt => state.alt_left = true,
-        Key::AltGr => state.alt_right = true,
-        _ => {}
-    }
-
-    let Some(spec) = inner.shortcut() else {
-        return;
-    };
-    let Some(pressed) = shortcut::key_from_rdev(key) else {
-        return;
-    };
-    if pressed != spec.key {
-        return;
-    }
-    // Auto-repeat emits repeated KeyPress events; only the first one counts.
-    if state.down_key == Some(pressed) {
-        return;
-    }
-    state.down_key = Some(pressed);
-
-    if !inner.enabled.load(Ordering::Acquire) {
-        return;
-    }
-    let ctrl = state.ctrl_left || state.ctrl_right;
-    let shift = state.shift_left || state.shift_right;
-    let alt = state.alt_left || state.alt_right;
-    if !spec.matches(ctrl, shift, alt, pressed) {
-        return;
-    }
-    if let Some(last) = state.last_hotkey {
-        if last.elapsed() < HOTKEY_COOLDOWN {
-            return;
-        }
-    }
-    state.last_hotkey = Some(Instant::now());
-    inner.send_capture(TriggerSource::Hotkey, None);
-}
-
-fn handle_key_release(state: &mut HookState, key: Key) {
-    match key {
-        Key::ControlLeft => state.ctrl_left = false,
-        Key::ControlRight => state.ctrl_right = false,
-        Key::ShiftLeft => state.shift_left = false,
-        Key::ShiftRight => state.shift_right = false,
-        Key::Alt => state.alt_left = false,
-        Key::AltGr => state.alt_right = false,
-        _ => {}
-    }
-    if let Some(released) = shortcut::key_from_rdev(key) {
-        if state.down_key == Some(released) {
-            state.down_key = None;
-        }
-    }
 }
 
 fn handle_left_press(inner: &Arc<Inner>, state: &mut HookState) {

@@ -334,12 +334,6 @@ pub async fn import_model(
 
     match state.engine.import_model(path).await {
         Ok(model) => {
-            let settings = state.settings.get();
-            if settings.provider.local.model_file.trim().is_empty() {
-                let _ = state.settings.update_json(json!({
-                    "provider": { "local": { "modelFile": model.file } }
-                }));
-            }
             toast(&app, "success", format!("模型已导入：{}", model.name));
             notify_changed(&app);
             Ok(json!({ "ok": true, "model": model }))
@@ -356,18 +350,6 @@ pub async fn import_model(
 pub fn remove_model(app: AppHandle, state: State<'_, Arc<AppState>>, file: String) -> Value {
     match state.engine.remove_model(&file) {
         Ok(()) => {
-            // Clear the selection when the removed model was the active one.
-            let settings = state.settings.get();
-            if settings
-                .provider
-                .local
-                .model_file
-                .eq_ignore_ascii_case(file.trim())
-            {
-                let _ = state
-                    .settings
-                    .update_json(json!({ "provider": { "local": { "modelFile": "" } } }));
-            }
             notify_changed(&app);
             json!({ "ok": true })
         }
@@ -516,6 +498,15 @@ pub fn picker_resize(app: AppHandle, width: Option<f64>, height: Option<f64>) ->
     crate::windows::resize_picker(&app, width.unwrap_or(440.0), height.unwrap_or(56.0))
 }
 
+/// Moves the picker window by a logical-pixel delta (dragging the result panel).
+#[tauri::command]
+pub fn picker_drag_panel(app: AppHandle, dx: f64, dy: f64) -> Value {
+    match crate::windows::move_picker_by(&app, dx, dy) {
+        Some((x, y)) => json!({ "ok": true, "x": x, "y": y }),
+        None => json!({ "ok": false }),
+    }
+}
+
 #[tauri::command]
 pub async fn picker_copy(app: AppHandle, text: String) -> Result<Value, String> {
     match app.clipboard().write_text(text) {
@@ -651,7 +642,7 @@ pub fn picker_status(state: State<'_, Arc<AppState>>) -> Value {
     let settings = state.settings.get();
     let status = state.engine.status();
     let configured = if settings.is_local_mode() {
-        status.engine_available && !status.local_model_file.trim().is_empty()
+        status.engine_available
     } else {
         status.online_configured
     };

@@ -29,6 +29,33 @@
     copy: "复制",
   };
 
+  /* Target languages come from the shared language table (shared/constants.js)
+   * so the picker dropdown stays in sync with the settings window. The fallback
+   * list keeps the panel usable when the shared script failed to load. */
+  var FALLBACK_TARGET_LANG = "zh";
+  var LANGUAGE_VALUES = {};
+  var LANGUAGE_LIST = [];
+  (function buildLanguageTable() {
+    var source = LP && Array.isArray(LP.LANGUAGES) ? LP.LANGUAGES : [];
+    source.forEach(function (language) {
+      var value = String((language && language.value) || "")
+        .trim()
+        .toLowerCase();
+      if (!value || LANGUAGE_VALUES[value]) {
+        return;
+      }
+      LANGUAGE_VALUES[value] = true;
+      LANGUAGE_LIST.push({
+        value: value,
+        label: String((language && language.label) || value),
+      });
+    });
+    if (!LANGUAGE_LIST.length) {
+      LANGUAGE_LIST.push({ value: FALLBACK_TARGET_LANG, label: "中文" });
+      LANGUAGE_VALUES[FALLBACK_TARGET_LANG] = true;
+    }
+  })();
+
   var ICONS = {
     translate:
       '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h9"></path><path d="M7.5 3v2"></path><path d="M4.5 9.4c1.3 2.4 3.1 4 5.4 5"></path><path d="M11.5 5c-.5 3-2.3 5.4-5.2 7.1"></path><path d="m12.6 20 3.6-8.6 3.6 8.6"></path><path d="M13.9 17h4.6"></path></svg>',
@@ -71,11 +98,15 @@
 
   /* The translation currently streaming into the panel. */
   var activeRequest = null;
-  var speech = { utterance: null, loading: false };
+  /* `cancelRequested` marks an intentional stop: speechSynthesis.cancel()
+   * reports the cancelled utterance through `onerror`, and that must never
+   * surface as a "speech failed" toast. */
+  var speech = { utterance: null, loading: false, cancelRequested: false };
 
   var pickerEl = document.getElementById("picker");
   var toolbar = document.getElementById("toolbar");
   var panel = document.getElementById("panel");
+  var panelHead = document.getElementById("panel-head");
   var panelTitle = document.getElementById("panel-title");
   var panelLangControl = document.getElementById("panel-lang-control");
   var panelTargetSelect = document.getElementById("panel-target-lang");
@@ -156,11 +187,40 @@
 
   /* ---- Panel head ------------------------------------------------------ */
 
+  function normalizeTargetLang(code) {
+    var value = String(code == null ? "" : code)
+      .trim()
+      .toLowerCase();
+    return LANGUAGE_VALUES[value] ? value : FALLBACK_TARGET_LANG;
+  }
+
+  /* Fill the target-language dropdown from the shared language table. */
+  function populateTargetLanguages() {
+    if (!panelTargetSelect) {
+      return;
+    }
+    panelTargetSelect.innerHTML = "";
+    LANGUAGE_LIST.forEach(function (language) {
+      var option = document.createElement("option");
+      option.value = language.value;
+      option.textContent = language.label;
+      panelTargetSelect.appendChild(option);
+    });
+    panelTargetSelect.value = FALLBACK_TARGET_LANG;
+  }
+
   function setPanelLanguage(targetLang) {
-    state.panelLang = targetLang || "";
-    panelLangControl.hidden = !state.panelLang;
-    if (state.panelLang && panelTargetSelect.value !== state.panelLang) {
-      panelTargetSelect.value = state.panelLang;
+    var code = String(targetLang || "").trim();
+    if (!code) {
+      state.panelLang = "";
+      panelLangControl.hidden = true;
+      return;
+    }
+    var normalized = normalizeTargetLang(code);
+    state.panelLang = normalized;
+    panelLangControl.hidden = false;
+    if (panelTargetSelect.value !== normalized) {
+      panelTargetSelect.value = normalized;
     }
   }
 
@@ -186,6 +246,123 @@
     panelPin.setAttribute("aria-pressed", state.panelPinned ? "true" : "false");
     panelPin.setAttribute("aria-label", label);
     panelPin.title = label;
+  }
+
+  /* ---- Drag the whole picker window by the panel head ------------------- */
+
+  /* Interactive header elements keep their normal behaviour; the rest of the
+   * head acts as a window drag handle. */
+  var PANEL_DRAG_EXCLUDE = "button, select, input, textarea, a, label, [contenteditable]";
+
+  var panelDrag = {
+    active: false,
+    session: 0,
+    lastX: 0,
+    lastY: 0,
+    pendingX: 0,
+    pendingY: 0,
+    frame: 0,
+  };
+
+  function isDragExcludedTarget(target) {
+    var node = target;
+    if (node && node.nodeType !== 1) {
+      node = node.parentElement;
+    }
+    if (!node || typeof node.closest !== "function") {
+      return true;
+    }
+    return !!node.closest(PANEL_DRAG_EXCLUDE);
+  }
+
+  /* Batches mousemove deltas into one shell call per animation frame. */
+  function flushPanelDrag() {
+    panelDrag.frame = 0;
+    var dx = panelDrag.pendingX;
+    var dy = panelDrag.pendingY;
+    panelDrag.pendingX = 0;
+    panelDrag.pendingY = 0;
+    if (!dx && !dy) {
+      return;
+    }
+    if (!API || typeof API.dragPanel !== "function") {
+      endPanelDrag();
+      return;
+    }
+    var session = panelDrag.session;
+    var result = API.dragPanel(dx, dy);
+    // If the shell rejects the drag (e.g. the command is unavailable), stop the
+    // drag instead of leaving the window in the "dragging" cursor state.
+    if (result && typeof result.then === "function") {
+      result.then(function (response) {
+        var rejected =
+          response && response.ok === false && panelDrag.active && panelDrag.session === session;
+        if (rejected) {
+          endPanelDrag();
+        }
+      });
+    }
+  }
+
+  function queuePanelDrag(dx, dy) {
+    panelDrag.pendingX += dx;
+    panelDrag.pendingY += dy;
+    if (!panelDrag.frame) {
+      panelDrag.frame = window.requestAnimationFrame(flushPanelDrag);
+    }
+  }
+
+  function beginPanelDrag(event) {
+    if (!state.panelOpen || event.button !== 0) {
+      return;
+    }
+    if (isDragExcludedTarget(event.target)) {
+      return;
+    }
+    panelDrag.active = true;
+    panelDrag.session += 1;
+    panelDrag.lastX = Number(event.screenX) || 0;
+    panelDrag.lastY = Number(event.screenY) || 0;
+    panelDrag.pendingX = 0;
+    panelDrag.pendingY = 0;
+    panel.classList.add("is-dragging-panel");
+    document.body.classList.add("is-dragging-panel");
+    // No text selection / native drag while the window follows the cursor.
+    event.preventDefault();
+  }
+
+  function endPanelDrag() {
+    if (!panelDrag.active) {
+      return;
+    }
+    panelDrag.active = false;
+    if (panelDrag.frame) {
+      window.cancelAnimationFrame(panelDrag.frame);
+      panelDrag.frame = 0;
+    }
+    flushPanelDrag();
+    panel.classList.remove("is-dragging-panel");
+    document.body.classList.remove("is-dragging-panel");
+  }
+
+  function handlePanelDragMove(event) {
+    if (!panelDrag.active) {
+      return;
+    }
+    if (!state.panelOpen || event.buttons === 0) {
+      endPanelDrag();
+      return;
+    }
+    var x = Number(event.screenX) || 0;
+    var y = Number(event.screenY) || 0;
+    var dx = x - panelDrag.lastX;
+    var dy = y - panelDrag.lastY;
+    if (!dx && !dy) {
+      return;
+    }
+    panelDrag.lastX = x;
+    panelDrag.lastY = y;
+    queuePanelDrag(dx, dy);
   }
 
   /* ---- Toolbar --------------------------------------------------------- */
@@ -589,13 +766,14 @@
     openPanel("翻译");
     var configured =
       state.defaultTargetLang && state.defaultTargetLang !== "auto"
-        ? state.defaultTargetLang
+        ? normalizeTargetLang(state.defaultTargetLang)
         : "";
-    var targetLang =
+    var resolved =
       targetOverride ||
       state.targetLang ||
       configured ||
-      (LP.resolveTargetLang ? LP.resolveTargetLang(state.text, "auto") : "zh");
+      (LP.resolveTargetLang ? LP.resolveTargetLang(state.text, "auto") : FALLBACK_TARGET_LANG);
+    var targetLang = normalizeTargetLang(resolved);
     state.targetLang = targetLang;
     setPanelLanguage(targetLang);
     setPanelRetry(function () {
@@ -705,7 +883,28 @@
     panelSpeak.classList.toggle("is-active", active);
   }
 
+  function clearSpeechState(utterance) {
+    if (speech.utterance !== utterance) {
+      return;
+    }
+    speech.utterance = null;
+    if (state.speaking) {
+      state.speaking = false;
+      syncSpeakUi();
+    }
+  }
+
+  /* Intentional stop (second click on 朗读, panel close, new selection...):
+   * never report a failure, just restore the idle UI. `speechSynthesis.cancel()`
+   * still fires `onerror` on the cancelled utterance - the flags below make
+   * that path silent. */
   function stopSpeech() {
+    var utterance = speech.utterance;
+    if (utterance) {
+      utterance.__lingopickCancelled = true;
+    }
+    speech.utterance = null;
+    speech.cancelRequested = true;
     var synth = window.speechSynthesis;
     if (synth) {
       try {
@@ -714,7 +913,6 @@
         /* ignore */
       }
     }
-    speech.utterance = null;
     if (state.speaking) {
       state.speaking = false;
       syncSpeakUi();
@@ -802,20 +1000,25 @@
       }
       utterance.rate = 1.0;
       utterance.onend = function () {
-        if (speech.utterance === utterance) {
-          speech.utterance = null;
-          state.speaking = false;
-          syncSpeakUi();
+        clearSpeechState(utterance);
+      };
+      utterance.onerror = function (event) {
+        var wasCurrent = speech.utterance === utterance;
+        var cancelled =
+          !!utterance.__lingopickCancelled ||
+          speech.cancelRequested ||
+          (event &&
+            (event.error === "interrupted" ||
+              event.error === "canceled" ||
+              event.error === "cancelled"));
+        clearSpeechState(utterance);
+        // A user stop or a replaced utterance ends silently; only a genuine
+        // failure of the utterance we started is worth reporting.
+        if (wasCurrent && !cancelled) {
+          showToast("朗读失败，请检查 Windows 的语音设置");
         }
       };
-      utterance.onerror = function () {
-        if (speech.utterance === utterance) {
-          speech.utterance = null;
-          state.speaking = false;
-          syncSpeakUi();
-        }
-        showToast("朗读失败，请检查 Windows 的语音设置");
-      };
+      speech.cancelRequested = false;
       speech.utterance = utterance;
       state.speaking = true;
       syncSpeakUi();
@@ -823,9 +1026,7 @@
         synth.cancel();
         synth.speak(utterance);
       } catch (error) {
-        speech.utterance = null;
-        state.speaking = false;
-        syncSpeakUi();
+        clearSpeechState(utterance);
         showToast("朗读失败，请检查 Windows 的语音设置");
       }
     });
@@ -883,6 +1084,10 @@
       translateSkill(panelTargetSelect.value);
     }
   });
+  panelHead.addEventListener("mousedown", beginPanelDrag);
+  document.addEventListener("mousemove", handlePanelDragMove);
+  document.addEventListener("mouseup", endPanelDrag);
+  window.addEventListener("blur", endPanelDrag);
   panelPin.addEventListener("click", togglePanelPinned);
   document.getElementById("panel-close").addEventListener("click", closePanel);
   panelSpeak.innerHTML = ICONS.read + "<span>朗读</span>";
@@ -943,6 +1148,7 @@
 
   syncPanelPin();
   syncPanelFoot();
+  populateTargetLanguages();
   renderToolbar();
   // DOM is ready: tell the shell the renderer can receive picker-data now.
   API.ready();

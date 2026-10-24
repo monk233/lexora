@@ -297,6 +297,44 @@ pub fn resize_picker(app: &tauri::AppHandle, width: f64, height: f64) -> Option<
     }))
 }
 
+/// Moves the picker window by a logical-pixel delta (panel header drag) and
+/// clamps it inside the work area. Returns the new logical top-left position.
+pub fn move_picker_by(app: &tauri::AppHandle, dx: f64, dy: f64) -> Option<(f64, f64)> {
+    let window = app.get_webview_window(PICKER_LABEL)?;
+    if !window.is_visible().unwrap_or(false) {
+        return None;
+    }
+    let scale = window
+        .scale_factor()
+        .ok()
+        .filter(|scale| scale.is_finite() && *scale > 0.1)
+        .unwrap_or(1.0);
+    let current = window.outer_position().ok()?;
+    let size = window.outer_size().ok()?;
+    let mut x = current.x + (dx * scale).round() as i32;
+    let mut y = current.y + (dy * scale).round() as i32;
+
+    let work = win32::work_area_physical(
+        current.x + size.width as i32 / 2,
+        current.y + size.height as i32 / 2,
+    );
+    let max_x = work.right - size.width as i32;
+    x = if max_x >= work.left {
+        x.clamp(work.left, max_x)
+    } else {
+        work.left
+    };
+    let max_y = work.bottom - size.height as i32;
+    y = if max_y >= work.top {
+        y.clamp(work.top, max_y)
+    } else {
+        work.top
+    };
+
+    let _ = window.set_position(PhysicalPosition::new(x, y));
+    Some((x as f64 / scale, y as f64 / scale))
+}
+
 /// Clamps a renderer-provided dimension; `NaN`/infinite fall back to `base`.
 fn clamp_dimension(value: f64, min: f64, max: f64, base: f64) -> f64 {
     if !value.is_finite() || value <= 0.0 {

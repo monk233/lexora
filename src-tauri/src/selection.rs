@@ -17,7 +17,6 @@
 //! own events.
 
 mod hook;
-mod shortcut;
 mod uia;
 mod win;
 
@@ -31,9 +30,7 @@ use serde::Serialize;
 use tauri::Manager;
 
 use crate::logger::Logger;
-use crate::settings::{Settings, SettingsStore, DEFAULT_SHORTCUT};
-
-use shortcut::ShortcutSpec;
+use crate::settings::{Settings, SettingsStore};
 
 /// Window label of the toolbar, see `tauri.conf.json`.
 const PICKER_LABEL: &str = "picker";
@@ -64,7 +61,6 @@ enum TriggerSource {
     Mouse,
     /// Multi-click (double/triple click) selection, not a drag.
     Click,
-    Hotkey,
 }
 
 impl TriggerSource {
@@ -72,7 +68,6 @@ impl TriggerSource {
         match self {
             TriggerSource::Mouse => "鼠标拖选",
             TriggerSource::Click => "鼠标多击选词",
-            TriggerSource::Hotkey => "快捷键",
         }
     }
 }
@@ -124,7 +119,6 @@ struct Inner {
     capture_tx: Mutex<Option<Sender<CaptureRequest>>>,
     action_tx: Mutex<Option<Sender<ActionRequest>>>,
     enabled: AtomicBool,
-    shortcut: Mutex<Option<ShortcutSpec>>,
     worker_config: Mutex<WorkerConfig>,
     picker_visible: AtomicBool,
     panel_pinned: AtomicBool,
@@ -136,10 +130,6 @@ struct Inner {
 }
 
 impl Inner {
-    fn shortcut(&self) -> Option<ShortcutSpec> {
-        *lock(&self.shortcut)
-    }
-
     fn config(&self) -> WorkerConfig {
         lock(&self.worker_config).clone()
     }
@@ -216,7 +206,6 @@ impl SelectionService {
             capture_tx: Mutex::new(None),
             action_tx: Mutex::new(None),
             enabled: AtomicBool::new(true),
-            shortcut: Mutex::new(None),
             worker_config: Mutex::new(WorkerConfig::default()),
             picker_visible: AtomicBool::new(false),
             panel_pinned: AtomicBool::new(false),
@@ -274,30 +263,13 @@ impl SelectionService {
     pub fn apply_settings(&self, settings: &Settings) {
         let picker = &settings.picker;
         self.inner.enabled.store(picker.enabled, Ordering::Release);
-
-        let mut parsed = shortcut::parse_shortcut(&picker.shortcut);
-        if parsed.is_none() {
-            parsed = shortcut::parse_shortcut(DEFAULT_SHORTCUT);
-            self.inner.logger.warn(&format!(
-                "快捷键 {:?} 无效，已回退为默认值 {}",
-                picker.shortcut, DEFAULT_SHORTCUT
-            ));
-        }
-        *lock(&self.inner.shortcut) = parsed;
         *lock(&self.inner.worker_config) = config_from_settings(settings);
 
         self.inner.logger.info(&format!(
-            "划词设置已应用：启用={}，快捷键={}，黑名单={} 项",
+            "划词设置已应用：启用={}，黑名单={} 项",
             picker.enabled,
-            picker.shortcut,
             picker.blacklist.len()
         ));
-    }
-
-    /// Capture whatever is selected in the foreground application right now.
-    /// Used by tray/commands; identical to pressing the configured hotkey.
-    pub fn trigger_from_hotkey(&self) {
-        self.inner.send_capture(TriggerSource::Hotkey, None);
     }
 
     /// State pushed by the picker window so outside clicks can be detected.
@@ -645,7 +617,6 @@ mod tests {
     fn trigger_sources_have_log_labels() {
         assert_eq!(TriggerSource::Mouse.label(), "鼠标拖选");
         assert_eq!(TriggerSource::Click.label(), "鼠标多击选词");
-        assert_eq!(TriggerSource::Hotkey.label(), "快捷键");
     }
 
     #[test]

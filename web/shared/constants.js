@@ -55,15 +55,48 @@
 
   /* ---- Languages ------------------------------------------------------- */
 
+  /* Languages supported by the Hy-MT2 translation model (33 languages plus
+   * Chinese variants and minority languages, see the official model card).
+   * Common targets first for a short dropdown. */
   LP.LANGUAGES = [
     { value: "zh", label: "中文" },
-    { value: "en", label: "英文" },
+    { value: "en", label: "英语" },
+    { value: "zh-hant", label: "繁体中文" },
+    { value: "yue", label: "粤语" },
     { value: "ja", label: "日语" },
-    { value: "de", label: "德语" },
-    { value: "fr", label: "法语" },
-    { value: "es", label: "西班牙语" },
-    { value: "ru", label: "俄语" },
     { value: "ko", label: "韩语" },
+    { value: "fr", label: "法语" },
+    { value: "de", label: "德语" },
+    { value: "es", label: "西班牙语" },
+    { value: "pt", label: "葡萄牙语" },
+    { value: "ru", label: "俄语" },
+    { value: "ar", label: "阿拉伯语" },
+    { value: "it", label: "意大利语" },
+    { value: "nl", label: "荷兰语" },
+    { value: "pl", label: "波兰语" },
+    { value: "tr", label: "土耳其语" },
+    { value: "th", label: "泰语" },
+    { value: "vi", label: "越南语" },
+    { value: "id", label: "印尼语" },
+    { value: "ms", label: "马来语" },
+    { value: "tl", label: "菲律宾语" },
+    { value: "hi", label: "印地语" },
+    { value: "bn", label: "孟加拉语" },
+    { value: "ta", label: "泰米尔语" },
+    { value: "te", label: "泰卢固语" },
+    { value: "mr", label: "马拉地语" },
+    { value: "gu", label: "古吉拉特语" },
+    { value: "ur", label: "乌尔都语" },
+    { value: "fa", label: "波斯语" },
+    { value: "he", label: "希伯来语" },
+    { value: "uk", label: "乌克兰语" },
+    { value: "cs", label: "捷克语" },
+    { value: "km", label: "高棉语" },
+    { value: "my", label: "缅甸语" },
+    { value: "bo", label: "藏语" },
+    { value: "kk", label: "哈萨克语" },
+    { value: "mn", label: "蒙古语" },
+    { value: "ug", label: "维吾尔语" },
   ];
 
   LP.LANG_LABELS = {};

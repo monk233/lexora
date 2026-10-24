@@ -11,8 +11,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 pub const SKILLS: [&str; 5] = ["translate", "summarize", "explain", "read", "copy"];
-pub const TARGET_LANGS: [&str; 9] = ["auto", "zh", "en", "ja", "de", "fr", "es", "ru", "ko"];
-pub const DEFAULT_SHORTCUT: &str = "Ctrl+Shift+D";
+/// Languages supported by the Hy-MT2 translation model (33 languages plus
+/// Chinese variants and minority languages). `auto` asks the shell to resolve
+/// the target from the source text.
+pub const TARGET_LANGS: [&str; 39] = [
+    "auto", "zh", "en", "zh-hant", "yue", "ja", "ko", "fr", "de", "es", "pt", "ru", "ar", "it",
+    "nl", "pl", "tr", "th", "vi", "id", "ms", "tl", "hi", "bn", "ta", "te", "mr", "gu", "ur", "fa",
+    "he", "uk", "cs", "km", "my", "bo", "kk", "mn", "ug",
+];
 pub const MAX_SELECTION_CHARS: u32 = 5000;
 /// Maximum length of a single custom prompt (characters, not bytes).
 const PROMPT_MAX_CHARS: usize = 4_000;
@@ -30,7 +36,6 @@ pub struct Settings {
 #[serde(default, rename_all = "camelCase")]
 pub struct PickerSettings {
     pub enabled: bool,
-    pub shortcut: String,
     pub skills: Vec<String>,
     pub compact: bool,
     pub default_target_lang: String,
@@ -73,7 +78,6 @@ pub struct OnlineSettings {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct LocalSettings {
-    pub model_file: String,
     pub context_size: u32,
     pub threads: u32,
     pub gpu_layers: u32,
@@ -103,7 +107,6 @@ impl Default for PickerSettings {
     fn default() -> Self {
         Self {
             enabled: true,
-            shortcut: DEFAULT_SHORTCUT.to_string(),
             skills: SKILLS.iter().map(|skill| skill.to_string()).collect(),
             compact: false,
             default_target_lang: "auto".to_string(),
@@ -151,7 +154,6 @@ impl Default for OnlineSettings {
 impl Default for LocalSettings {
     fn default() -> Self {
         Self {
-            model_file: String::new(),
             context_size: 4096,
             threads: 0,
             gpu_layers: 0,
@@ -184,11 +186,6 @@ impl Settings {
     pub fn normalize(mut self) -> Self {
         self.version = 1;
 
-        self.picker.shortcut = truncate(&self.picker.shortcut, 120);
-        if self.picker.shortcut.trim().is_empty() {
-            self.picker.shortcut = DEFAULT_SHORTCUT.to_string();
-        }
-        self.picker.shortcut = self.picker.shortcut.replace("CommandOrControl", "Ctrl");
         let mut skills: Vec<String> = Vec::new();
         for skill in &self.picker.skills {
             let skill = skill.trim().to_ascii_lowercase();
@@ -249,8 +246,6 @@ impl Settings {
         self.provider.online.temperature = self.provider.online.temperature.clamp(0.0, 1.0);
         self.provider.online.max_tokens = self.provider.online.max_tokens.clamp(64, 8192);
 
-        self.provider.local.model_file =
-            truncate(&self.provider.local.model_file, 260).replace(['\\', '/'], "");
         self.provider.local.context_size = self.provider.local.context_size.clamp(1024, 32_768);
         self.provider.local.threads = self.provider.local.threads.min(128);
         self.provider.local.gpu_layers = self.provider.local.gpu_layers.min(200);
@@ -390,6 +385,26 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let store = SettingsStore::load(dir.path().join("settings.json"));
         (store, dir)
+    }
+
+    #[test]
+    fn all_supported_target_languages_are_accepted() {
+        let mut languages = Vec::new();
+        for code in TARGET_LANGS {
+            let mut settings = Settings::default();
+            settings.picker.default_target_lang = code.to_string();
+            let normalized = settings.normalize();
+            assert_eq!(normalized.picker.default_target_lang, code);
+            if code != "auto" {
+                languages.push(code);
+            }
+        }
+        // Hy-MT2 supports 38 translation languages (33 + Chinese variants and
+        // minority languages); auto is the extra default option.
+        assert_eq!(languages.len(), 38);
+        assert!(TARGET_LANGS.contains(&"zh-hant"));
+        assert!(TARGET_LANGS.contains(&"yue"));
+        assert!(TARGET_LANGS.contains(&"ug"));
     }
 
     #[test]

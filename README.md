@@ -16,13 +16,13 @@
 
 ## 特性
 
-- **完整划词体验**：拖动选词、双击单词/三击段落自动弹出工具栏；流式翻译（目标语言可切换）；总结；解释；系统语音朗读；复制；结果面板可固定到桌面；按内容自适应大小；多显示器 DPI 适配。
+- **完整划词体验**：拖动选词、双击单词/三击段落自动弹出工具栏；流式翻译（38 种目标语言可切换）；总结；解释；系统语音朗读（再次点击停止）；复制；结果面板可固定到桌面、可拖动位置；按内容自适应大小；多显示器 DPI 适配。
 - **两种翻译引擎**
   - 在线：任意 OpenAI 兼容接口（DeepSeek / OpenAI / Moonshot / 智谱 / Ollama / LM Studio / 自建服务），模型列表可从 `/models` 一键拉取后下拉选择，支持测试连接。
-  - 离线：应用内一键下载 llama.cpp 引擎，配合本地 GGUF 模型完全本地推理，断网可用；提供腾讯混元 Hy-MT2 1.8B（翻译专用，推荐）与 Qwen2.5 3B（通用）两个模型。
+  - 离线：应用内一键下载 llama.cpp 引擎，配合本地 GGUF 模型完全本地推理，断网可用；提供腾讯混元 Hy-MT2 1.8B（翻译专用，推荐）与 Qwen2.5 3B（通用）两个模型，启动后按功能自动选择，无需手动选模型。
 - **轻量免安装**：单个 exe（约 9MB），下载后双击即用，不需要管理员权限，默认不写注册表（仅在你主动开启「开机自启」时写入一条启动项）；引擎与模型按需下载，数据默认保存在 exe 同级 `data/`。
-- **后台常驻**：双击启动后静默驻留系统托盘，不弹窗、不占任务栏；关闭设置窗口回到托盘、单实例、可选开机自启；全局快捷键 `Ctrl+Shift+D` 也可唤起。
-- **可配置**：启用/禁用、快捷键、技能拖拽排序、技能提示词自定义与重置、紧凑模式、应用黑名单（在微信/IDE 等不想触发的应用里禁用）、开机自启。
+- **后台常驻**：双击启动后静默驻留系统托盘，不弹窗、不占任务栏；关闭设置窗口回到托盘、单实例、可选开机自启。
+- **可配置**：启用/禁用、技能拖拽排序、技能提示词自定义与重置、紧凑模式、应用黑名单（在微信/IDE 等不想触发的应用里禁用）、开机自启。
 - **隐私**：默认不收集任何数据；只有使用在线模式时，选中的文本才会发送到你配置的服务地址。
 
 ## 快速开始
@@ -52,7 +52,7 @@
 | 朗读 | 用 Windows 系统语音朗读 |
 | 复制 | 复制选中文本 |
 
-也可用 `Ctrl+Shift+D` 对当前选区直接唤起。点击「⋯」菜单可临时在某个应用中禁用、打开设置或禁用划词工具。
+也可在「⋯」菜单中临时在某个应用中禁用、打开设置或禁用划词工具。
 
 ## 常见问题
 
@@ -110,7 +110,7 @@ Tauri v2 + Rust（窗口/托盘/全局输入钩子/Windows UI Automation 取词�
 **LingoPick** is a lightweight, portable Windows selection translator built with Tauri v2. Select text anywhere, and a small floating toolbar appears next to the cursor with **translate / summarize / explain / read aloud / copy** actions.
 
 - Online mode works with any OpenAI-compatible endpoint; offline mode runs locally with llama.cpp + GGUF models (downloaded on demand).
-- Single portable exe (~10MB), silent tray startup on double-click, optional start-at-login, global hotkey `Ctrl+Shift+D`. Releases ship the exe directly (no zip).
+- Single portable exe (~10MB), silent tray startup on double-click, optional start-at-login. Releases ship the exe directly (no zip).
 - Online model dropdown fed by the provider's `/models` endpoint (with a custom-name fallback), drag-to-reorder toolbar skills, and editable per-skill system prompts (English defaults, one-click reset).
 - Source-level docs: [architecture](docs/architecture.md) · [building](docs/building.md) · [contract](docs/contracts.md).
 

@@ -259,9 +259,20 @@ pub struct EngineService {
     logger: Logger,
     http: reqwest::Client,
     local: llama::LocalServer,
+    /// True after the user clicked "启动" and until they click "停止". While it
+    /// is false a request never starts the local server on its own.
+    local_desired: AtomicBool,
     download: Mutex<DownloadState>,
     /// Serializes downloads (only one at a time, per the UI contract).
     download_lock: tokio::sync::Mutex<()>,
+}
+
+/// Which model role a request needs. Hy-MT2 is translation-specialised while
+/// Qwen2.5 3B handles summarization/explanation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalRole {
+    Translate,
+    General,
 }
 
 impl EngineService {
@@ -278,6 +289,7 @@ impl EngineService {
             logger,
             http,
             local: llama::LocalServer::new(),
+            local_desired: AtomicBool::new(false),
             download: Mutex::new(DownloadState::default()),
             download_lock: tokio::sync::Mutex::new(()),
         }
@@ -288,19 +300,13 @@ impl EngineService {
     pub fn status(&self) -> EngineStatus {
         let settings = self.settings.get();
         let local = self.local.snapshot();
-        let model_file = settings.provider.local.model_file.clone();
         let engine_available = self.paths.engine_installed();
         let online_configured = settings.online_configured();
+        let installed = models::scan_models(&self.paths.models_dir);
+        let has_models = !installed.is_empty();
 
-        let local_model_name = if model_file.trim().is_empty() {
-            local.model_name.clone()
-        } else {
-            models::scan_models(&self.paths.models_dir)
-                .into_iter()
-                .find(|model| model.file.eq_ignore_ascii_case(model_file.trim()))
-                .map(|model| model.name)
-                .unwrap_or_else(|| models::model_display_name(&model_file))
-        };
+        let local_model_file = local.model_file.clone();
+        let local_model_name = local.model_name.clone();
 
         let (ready, hint) = if settings.is_local_mode() {
             match local.state {
@@ -324,24 +330,16 @@ impl EngineService {
                             "本地引擎尚未安装。请在「设置 → 本地模型」中下载 llama.cpp 引擎，或切换到在线模式。"
                                 .to_string(),
                         )
-                    } else if model_file.trim().is_empty() {
+                    } else if !has_models {
                         (
                             false,
-                            "尚未选择本地模型。请先下载或导入 GGUF 模型，并在下拉框中选择。"
+                            "尚未安装本地模型。请下载 Hy-MT2（翻译）或 Qwen2.5 3B（通用），也可以导入 GGUF 文件。"
                                 .to_string(),
-                        )
-                    } else if !self.paths.models_dir.join(model_file.trim()).is_file() {
-                        (
-                            false,
-                            format!(
-                                "本地模型文件不存在：{}。请重新下载或导入。",
-                                model_file.trim()
-                            ),
                         )
                     } else {
                         (
                             false,
-                            "本地模型尚未启动。可点击「启动」，或直接翻译（会自动启动）。"
+                            "本地模型未启动。点击「启动」后即可使用，翻译/总结不会自动启动本地模型。"
                                 .to_string(),
                         )
                     }
@@ -376,11 +374,46 @@ impl EngineService {
             provider_label,
             online_configured,
             local_state: local.state.as_str().to_string(),
-            local_model_file: model_file,
+            local_model_file,
             local_model_name,
             local_error: local.error,
             engine_available,
         }
+    }
+
+    /// Installed GGUF models, catalog entries first.
+    fn installed_local_models(&self) -> Vec<ModelInfo> {
+        models::scan_models(&self.paths.models_dir)
+    }
+
+    /// Resolves which installed model to use for a role. Preferred catalog model
+    /// wins; any imported GGUF is used as a fallback so importing one model is
+    /// enough to use the local engine.
+    fn model_for_role(&self, role: LocalRole) -> Option<String> {
+        let installed = self.installed_local_models();
+        if installed.is_empty() {
+            return None;
+        }
+        let preferred: [&str; 2] = match role {
+            LocalRole::Translate => [models::TRANSLATION_MODEL_ID, models::GENERAL_MODEL_ID],
+            LocalRole::General => [models::GENERAL_MODEL_ID, models::TRANSLATION_MODEL_ID],
+        };
+        for id in preferred {
+            if let Some(spec) = models::spec_by_id(id) {
+                if installed
+                    .iter()
+                    .any(|model| model.file.eq_ignore_ascii_case(spec.filename))
+                {
+                    return Some(spec.filename.to_string());
+                }
+            }
+        }
+        installed.first().map(|model| model.file.clone())
+    }
+
+    /// Model started by the settings "启动" button: translation-preferred.
+    fn default_local_model(&self) -> Option<String> {
+        self.model_for_role(LocalRole::Translate)
     }
 
     // -- translation -------------------------------------------------------- //
@@ -406,7 +439,7 @@ impl EngineService {
             json!({"role": "system", "content": system}),
             json!({"role": "user", "content": user}),
         ];
-        let config = self.chat_config(&settings).await?;
+        let config = self.chat_config(&settings, LocalRole::Translate).await?;
         self.logger.info(&format!(
             "translate stream start: provider={} model={} chars={} target={}",
             if config.local { "local" } else { "online" },
@@ -437,7 +470,7 @@ impl EngineService {
             json!({"role": "system", "content": system}),
             json!({"role": "user", "content": user}),
         ];
-        let config = self.chat_config(&settings).await?;
+        let config = self.chat_config(&settings, LocalRole::General).await?;
         let max_tokens = settings.provider.online.max_tokens.clamp(256, 1024);
         let timeout = Duration::from_millis(config.timeout_ms.clamp(5_000, 300_000));
         self.logger.info(&format!(
@@ -459,12 +492,31 @@ impl EngineService {
         result
     }
 
-    /// Resolves the endpoint used for translation/assist; starts the local
-    /// server on demand when the provider mode is `local`.
-    async fn chat_config(&self, settings: &Settings) -> Result<openai::OnlineConfig, EngineError> {
+    /// Resolves the endpoint used for translation / assist. In local mode the
+    /// user must have started the engine explicitly ("启动"); the model is then
+    /// picked by role and swapped automatically when necessary.
+    async fn chat_config(
+        &self,
+        settings: &Settings,
+        role: LocalRole,
+    ) -> Result<openai::OnlineConfig, EngineError> {
         if settings.is_local_mode() {
-            self.start_local().await?;
-            self.local_config(settings)
+            if !self.local_desired.load(Ordering::Acquire) {
+                return Err(EngineError::new(
+                    "本地模型未启动。",
+                    "请在「设置 → 翻译服务 → 本地模型」点击「启动」，或切换到在线 API。",
+                ));
+            }
+            let Some(model_file) = self.model_for_role(role) else {
+                return Err(EngineError::new(
+                    "尚未安装本地模型。",
+                    "请在「设置 → 本地模型」下载 Hy-MT2（翻译）或 Qwen2.5 3B（通用），也可以导入 GGUF 文件。",
+                ));
+            };
+            self.local
+                .ensure_model(&self.paths, settings, &model_file, &self.http, &self.logger)
+                .await?;
+            self.local_config(settings, &model_file)
         } else {
             let config = self.online_config(settings);
             if !config.is_configured() {
@@ -494,25 +546,21 @@ impl EngineService {
         }
     }
 
-    fn local_config(&self, settings: &Settings) -> Result<openai::OnlineConfig, EngineError> {
+    fn local_config(
+        &self,
+        settings: &Settings,
+        model_file: &str,
+    ) -> Result<openai::OnlineConfig, EngineError> {
         let base_url = self.local.base_url().ok_or_else(|| {
             EngineError::new(
                 "本地引擎尚未就绪。",
                 "请先在「设置 → 本地模型」中启动本地模型，然后重试。",
             )
         })?;
-        let model = {
-            let file = settings.provider.local.model_file.trim();
-            if file.is_empty() {
-                "local".to_string()
-            } else {
-                models::model_display_name(file)
-            }
-        };
         Ok(openai::OnlineConfig {
             base_url,
             api_key: String::new(),
-            model,
+            model: models::model_display_name(model_file),
             timeout_ms: LOCAL_HEADER_TIMEOUT_MS,
             temperature: settings.provider.online.temperature,
             max_tokens: settings.provider.online.max_tokens,
@@ -1000,13 +1048,31 @@ impl EngineService {
 
     pub async fn start_local(&self) -> Result<(), EngineError> {
         let settings = self.settings.get();
-        self.local
-            .ensure_ready(&self.paths, &settings, &self.http, &self.logger)
-            .await
-            .map(|_| ())
+        let Some(model_file) = self.default_local_model() else {
+            return Err(EngineError::new(
+                "尚未安装本地模型。",
+                "请先在「设置 → 本地模型」下载 Hy-MT2（翻译）或 Qwen2.5 3B（通用），也可以导入 GGUF 文件。",
+            ));
+        };
+        self.local_desired.store(true, Ordering::Release);
+        let result = self
+            .local
+            .ensure_model(
+                &self.paths,
+                &settings,
+                &model_file,
+                &self.http,
+                &self.logger,
+            )
+            .await;
+        if result.is_err() {
+            self.local_desired.store(false, Ordering::Release);
+        }
+        result.map(|_| ())
     }
 
     pub async fn stop_local(&self) -> Result<(), EngineError> {
+        self.local_desired.store(false, Ordering::Release);
         self.local.stop(Some(&self.logger));
         Ok(())
     }
@@ -1387,38 +1453,67 @@ mod tests {
             status.hint
         );
 
+        // Installing a model is enough; no model selection is persisted.
         std::fs::write(
             env.paths.models_dir.join(models::CATALOG[1].filename),
             b"fake",
         )
         .unwrap();
-        env.store
-            .update_json(json!({"provider": {"local": {"modelFile": models::CATALOG[1].filename}}}))
-            .unwrap();
         let status = env.service.status();
-        assert_eq!(status.local_model_file, models::CATALOG[1].filename);
-        assert_eq!(status.local_model_name, "qwen2.5-3b-instruct-q4_k_m");
+        assert!(status.local_model_file.is_empty());
+        assert!(status.local_model_name.is_empty());
         assert!(!status.ready);
         assert!(
             status.hint.contains("启动"),
             "expected start hint, got {}",
             status.hint
         );
-        assert_eq!(status.provider_label, "本地 · qwen2.5-3b-instruct-q4_k_m");
+        assert_eq!(status.provider_label, "本地模型");
+        assert_eq!(
+            env.service.model_for_role(LocalRole::Translate),
+            Some(models::CATALOG[1].filename.to_string())
+        );
+        assert_eq!(
+            env.service.model_for_role(LocalRole::General),
+            Some(models::CATALOG[1].filename.to_string())
+        );
     }
 
     #[test]
-    fn local_mode_reports_missing_model_file() {
+    fn local_mode_without_models_reports_download_hint() {
         let env = test_env();
         std::fs::write(env.paths.llama_binary(), b"stub").unwrap();
         env.store
-            .update_json(
-                json!({"provider": {"mode": "local", "local": {"modelFile": "missing.gguf"}}}),
-            )
+            .update_json(json!({"provider": {"mode": "local"}}))
             .unwrap();
         let status = env.service.status();
         assert!(!status.ready);
-        assert!(status.hint.contains("不存在"), "hint: {}", status.hint);
+        assert!(
+            status.hint.contains("下载") || status.hint.contains("导入"),
+            "hint: {}",
+            status.hint
+        );
+        assert!(env.service.default_local_model().is_none());
+    }
+
+    #[test]
+    fn model_roles_prefer_their_catalog_model() {
+        let env = test_env();
+        for spec in models::CATALOG.iter() {
+            std::fs::write(env.paths.models_dir.join(spec.filename), b"fake").unwrap();
+        }
+        assert_eq!(
+            env.service.model_for_role(LocalRole::Translate),
+            Some(models::CATALOG[0].filename.to_string())
+        );
+        assert_eq!(
+            env.service.model_for_role(LocalRole::General),
+            Some(models::CATALOG[1].filename.to_string())
+        );
+        assert_eq!(
+            env.service.default_local_model(),
+            Some(models::CATALOG[0].filename.to_string())
+        );
     }
 
     #[test]
@@ -1473,28 +1568,56 @@ mod tests {
     }
 
     #[test]
-    fn local_translation_without_engine_fails_with_hint() {
+    fn local_translation_requires_explicit_start() {
         let env = test_env();
+        std::fs::write(env.paths.llama_binary(), b"stub").unwrap();
+        std::fs::write(
+            env.paths.models_dir.join(models::CATALOG[0].filename),
+            b"fake",
+        )
+        .unwrap();
         env.store
             .update_json(json!({"provider": {"mode": "local"}}))
             .unwrap();
+        // Translation must never auto-start the local engine (issue: after the
+        // user pressed 停止 a request started it again).
         let error = block_on(env.service.translate_stream("hello", "zh"))
             .err()
             .expect("expected engine error");
-        assert!(error.message.contains("引擎"), "message: {}", error.message);
-        assert!(error.hint.contains("下载"));
+        assert!(
+            error.message.contains("未启动"),
+            "message: {}",
+            error.message
+        );
+        assert!(error.hint.contains("启动"));
     }
 
     #[test]
-    fn local_translation_without_model_fails_with_hint() {
+    fn start_local_without_engine_reports_download_hint() {
+        let env = test_env();
+        std::fs::write(
+            env.paths.models_dir.join(models::CATALOG[0].filename),
+            b"fake",
+        )
+        .unwrap();
+        env.store
+            .update_json(json!({"provider": {"mode": "local"}}))
+            .unwrap();
+        let error = block_on(env.service.start_local()).unwrap_err();
+        assert!(error.message.contains("引擎"), "message: {}", error.message);
+        assert!(error.hint.contains("下载"));
+        // A failed start leaves the engine in the stopped state.
+        assert_eq!(env.service.status().local_state, "stopped");
+    }
+
+    #[test]
+    fn start_local_without_models_reports_install_hint() {
         let env = test_env();
         std::fs::write(env.paths.llama_binary(), b"stub").unwrap();
         env.store
             .update_json(json!({"provider": {"mode": "local"}}))
             .unwrap();
-        let error = block_on(env.service.translate_stream("hello", "zh"))
-            .err()
-            .expect("expected engine error");
+        let error = block_on(env.service.start_local()).unwrap_err();
         assert!(error.message.contains("模型"), "message: {}", error.message);
         assert!(error.hint.contains("下载") || error.hint.contains("导入"));
     }
@@ -1722,8 +1845,6 @@ mod tests {
             eprintln!("skip: LINGOPICK_MODEL_DIR is not set");
             return;
         };
-        let model_file = std::env::var("LINGOPICK_SMOKE_MODEL")
-            .unwrap_or_else(|_| "qwen2.5-3b-instruct-q4_k_m.gguf".to_string());
         let dir = TempDir::new().unwrap();
         let data = dir.path().to_path_buf();
         let paths = AppPaths {
@@ -1740,7 +1861,7 @@ mod tests {
             .update_json(json!({
                 "provider": {
                     "mode": "local",
-                    "local": {"modelFile": model_file, "contextSize": 2048, "threads": 4}
+                    "local": {"contextSize": 2048, "threads": 4}
                 }
             }))
             .unwrap();
