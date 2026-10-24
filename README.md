@@ -7,6 +7,8 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4)](docs/user-guide.md)
 [![Tauri](https://img.shields.io/badge/Tauri-v2-24c5b9)](https://tauri.app)
+[![CI](https://github.com/monk233/lingopick/actions/workflows/ci.yml/badge.svg)](https://github.com/monk233/lingopick/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/monk233/lingopick?label=release)](https://github.com/monk233/lingopick/releases)
 
 <!-- 截图：发布前替换为真实截图 -->
 ![划词翻译](docs/images/picker.png)
