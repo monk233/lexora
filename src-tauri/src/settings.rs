@@ -144,7 +144,13 @@ pub struct LocalSettings {
     pub context_size: u32,
     pub threads: u32,
     pub gpu_layers: u32,
+    /// Legacy field kept for backwards-compatible settings files (no longer
+    /// drives anything; the "remember last run" behavior uses `keep_running`).
     pub auto_start: bool,
+    /// True while the local engine was started by the user. Persisted so the
+    /// next app launch can restore the engine instead of asking the user to
+    /// press 启动 again. Cleared by an explicit 停止 (but not by app exit).
+    pub keep_running: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -224,6 +230,7 @@ impl Default for LocalSettings {
             threads: 0,
             gpu_layers: 0,
             auto_start: true,
+            keep_running: false,
         }
     }
 }
@@ -585,6 +592,22 @@ mod tests {
         assert!(TARGET_LANGS.contains(&"zh-hant"));
         assert!(TARGET_LANGS.contains(&"yue"));
         assert!(TARGET_LANGS.contains(&"ug"));
+    }
+
+    #[test]
+    fn local_keep_running_defaults_false_and_roundtrips() {
+        let settings = Settings::default().normalize();
+        assert!(!settings.provider.local.keep_running);
+        let value = serde_json::to_value(&settings).unwrap();
+        assert_eq!(value["provider"]["local"]["keepRunning"], false);
+        let loaded: Settings = serde_json::from_value(value).unwrap();
+        assert!(!loaded.provider.local.keep_running);
+        let (store, _dir) = store();
+        let updated = store
+            .update_json(json!({"provider": {"local": {"keepRunning": true}}}))
+            .unwrap();
+        assert!(updated.provider.local.keep_running);
+        assert!(store.get().provider.local.keep_running);
     }
 
     #[test]

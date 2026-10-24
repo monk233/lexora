@@ -78,6 +78,7 @@ fn main() {
 
             state.selection.start(app.handle().clone());
             sync_autostart(&state);
+            restore_local_engine(app.handle(), &state);
 
             let args: Vec<String> = std::env::args().collect();
             let force_show = wants_settings_window(&args);
@@ -205,6 +206,60 @@ fn sync_autostart(state: &AppState) {
     }
 }
 
+/// Restores the local llama.cpp engine when it was running in the previous
+/// session (`provider.local.keepRunning`). Runs in the background so a slow
+/// model load never delays window creation; failures are only logged (a silent
+/// startup must not pop an error box).
+fn restore_local_engine(app: &AppHandle, state: &Arc<AppState>) {
+    let settings = state.settings.get();
+    if !should_restore_local(settings.provider.local.keep_running) {
+        return;
+    }
+    if !state.engine.engine_installed() {
+        state
+            .log
+            .info("local engine restore skipped: llama.cpp engine is not installed");
+        return;
+    }
+    if state.engine.installed_models().is_empty() {
+        state
+            .log
+            .info("local engine restore skipped: no local model installed");
+        return;
+    }
+    state
+        .log
+        .info("restoring local engine from the previous session");
+    let engine = state.engine.clone();
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        match engine.start_local().await {
+            Ok(()) => {
+                if let Some(state) = app.try_state::<Arc<AppState>>() {
+                    state
+                        .log
+                        .info("local engine restored; last running state remembered");
+                    crate::tray::refresh(&app);
+                    commands::broadcast_state(&app, &state);
+                }
+            }
+            Err(error) => {
+                if let Some(state) = app.try_state::<Arc<AppState>>() {
+                    state.log.warn(&format!(
+                        "local engine restore failed: {} ({})",
+                        error.message, error.hint
+                    ));
+                }
+            }
+        }
+    });
+}
+
+/// Pure gate for [`restore_local_engine`] (kept testable without an app).
+fn should_restore_local(keep_running: bool) -> bool {
+    keep_running
+}
+
 /// Stops the local llama.cpp server and drops UI state before the process exits.
 /// Idempotent: both `ExitRequested` and `Exit` call it.
 fn cleanup(app: &AppHandle) {
@@ -220,12 +275,13 @@ fn cleanup(app: &AppHandle) {
     state.abort_translate();
     state.selection.set_picker_visible(false);
 
-    // `stop_local` completes synchronously (process kill), so spawn + a short
-    // wait is enough and cannot deadlock the main thread.
+    // `shutdown_local` completes synchronously (process kill) and deliberately
+    // keeps `local.keepRunning` so the next launch restores the engine; spawn +
+    // a short wait is enough and cannot deadlock the main thread.
     let engine = state.engine.clone();
     let (sender, receiver) = std::sync::mpsc::channel::<()>();
     tauri::async_runtime::spawn(async move {
-        let _ = engine.stop_local().await;
+        engine.shutdown_local();
         let _ = sender.send(());
     });
     if receiver.recv_timeout(Duration::from_millis(1500)).is_err() {
@@ -249,10 +305,16 @@ fn is_autostart_launch(args: &[String]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_autostart_launch, wants_settings_window};
+    use super::{is_autostart_launch, should_restore_local, wants_settings_window};
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn local_engine_restore_follows_the_last_running_state() {
+        assert!(!should_restore_local(false));
+        assert!(should_restore_local(true));
     }
 
     #[test]

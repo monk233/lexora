@@ -1154,6 +1154,10 @@ impl EngineService {
             .await;
         if result.is_err() {
             self.local_desired.store(false, Ordering::Release);
+        } else {
+            // Remember the user's explicit start so the next launch can restore
+            // the engine (see `main::restore_local_engine`).
+            self.set_keep_running(true);
         }
         result.map(|_| ())
     }
@@ -1161,7 +1165,25 @@ impl EngineService {
     pub async fn stop_local(&self) -> Result<(), EngineError> {
         self.local_desired.store(false, Ordering::Release);
         self.local.stop(Some(&self.logger));
+        self.set_keep_running(false);
         Ok(())
+    }
+
+    /// App shutdown: kill llama-server without forgetting that the user had
+    /// started it, so a restart can restore the previous running state.
+    pub fn shutdown_local(&self) {
+        self.local_desired.store(false, Ordering::Release);
+        self.local.stop(Some(&self.logger));
+    }
+
+    /// Persists `provider.local.keepRunning` (best effort; a read-only config
+    /// must never break engine start/stop).
+    fn set_keep_running(&self, keep_running: bool) {
+        let patch = json!({ "provider": { "local": { "keepRunning": keep_running } } });
+        if let Err(error) = self.settings.update_json(patch) {
+            self.logger
+                .warn(&format!("failed to persist local keepRunning: {error}"));
+        }
     }
 
     // -- paths / settings --------------------------------------------------- //
@@ -1806,6 +1828,7 @@ mod tests {
         assert!(error.hint.contains("下载"));
         // A failed start leaves the engine in the stopped state.
         assert_eq!(env.service.status().local_state, "stopped");
+        assert!(!env.store.get().provider.local.keep_running);
     }
 
     #[test]
@@ -1972,6 +1995,7 @@ mod tests {
         block_on(env.service.stop_local()).unwrap();
         block_on(env.service.stop_local()).unwrap();
         assert_eq!(env.service.status().local_state, "stopped");
+        assert!(!env.store.get().provider.local.keep_running);
     }
 
     #[test]
