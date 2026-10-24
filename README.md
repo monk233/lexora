@@ -109,7 +109,7 @@ Tauri v2 + Rust（窗口/托盘/全局输入钩子/Windows UI Automation 取词�
 **LingoPick** is a lightweight, portable Windows selection translator built with Tauri v2. Select text anywhere, and a small floating toolbar appears next to the cursor with **translate / summarize / explain / read aloud / copy** actions.
 
 - Online mode works with any OpenAI-compatible endpoint; offline mode runs locally with llama.cpp + GGUF models (downloaded on demand).
-- Single portable exe (~10MB), system tray, optional start-at-login, global hotkey `Ctrl+Shift+D`.
+- Single portable exe (~10MB), silent tray startup on double-click, optional start-at-login, global hotkey `Ctrl+Shift+D`. Releases ship the exe directly (no zip).
 - Source-level docs: [architecture](docs/architecture.md) · [building](docs/building.md) · [contract](docs/contracts.md).
 
 Build from source on Windows with Node.js ≥ 20, Rust, and VS Build Tools:
