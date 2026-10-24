@@ -878,11 +878,8 @@ impl EngineService {
             spec.size_bytes,
         );
         let mut last_error: Option<EngineError> = None;
-        // A model may only be published on one mirror; empty URLs are skipped.
-        let urls: Vec<&str> = [spec.hf_url, spec.modelscope_url]
-            .into_iter()
-            .filter(|url| !url.is_empty())
-            .collect();
+        // ModelScope first (mainland-friendly), Hugging Face as fallback.
+        let urls = models::download_urls(&spec);
         for (index, url) in urls.iter().enumerate() {
             if self.cancelled() {
                 let _ = std::fs::remove_file(&part);
