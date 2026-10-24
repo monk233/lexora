@@ -40,7 +40,11 @@ Lexora 取自拉丁词根 *lex*（语言、文字）与 *aura*（光晕、氛围
 - **更新无感**：关于页一键检查更新，自动下载新版本、替换当前 exe 并重启；免安装单文件场景也能原地升级，`data/` 目录不受影响。
 
 <p align="center">
-  <img src="docs/images/picker.png" alt="Lexora 划词工具栏" width="640">
+  <img src="docs/images/picker2.png" alt="Lexora 划词工具栏1" width="640">
+</p>
+
+<p align="center">
+  <img src="docs/images/picker1.png" alt="Lexora 划词工具栏2" width="640">
 </p>
 
 <p align="center">
