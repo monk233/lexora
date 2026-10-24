@@ -211,7 +211,7 @@
         </div>
       </div>
       <div class="card-body">
-        <div class="field">
+        <div class="field field-switch">
           <div class="field-label">
             <span class="field-name">启用划词工具</span>
             <p class="field-hint">关闭后拖选文本不再弹出工具栏</p>
@@ -219,6 +219,19 @@
           <div class="field-control">
             <label class="switch">
               <input type="checkbox" id="picker-enabled">
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="field field-switch">
+          <div class="field-label">
+            <span class="field-name">紧凑模式</span>
+            <p class="field-hint">工具栏只显示图标，不显示文字</p>
+          </div>
+          <div class="field-control">
+            <label class="switch">
+              <input type="checkbox" id="picker-compact">
               <span class="switch-track"><span class="switch-thumb"></span></span>
             </label>
           </div>
@@ -291,19 +304,6 @@
                 <button type="button" class="btn btn-danger" id="delete-custom-skill" hidden>删除</button>
               </div>
             </div>
-          </div>
-        </div>
-
-        <div class="field">
-          <div class="field-label">
-            <span class="field-name">紧凑模式</span>
-            <p class="field-hint">工具栏只显示图标，不显示文字</p>
-          </div>
-          <div class="field-control">
-            <label class="switch">
-              <input type="checkbox" id="picker-compact">
-              <span class="switch-track"><span class="switch-thumb"></span></span>
-            </label>
           </div>
         </div>
 
@@ -439,6 +439,46 @@
             <dd id="about-models">—</dd>
           </div>
         </dl>
+
+        <div class="update-block">
+          <div class="update-head">
+            <div class="update-head-text">
+              <span class="update-title">检查更新</span>
+              <p class="update-hint" id="update-current-hint">当前版本 — · 自动下载并替换当前 exe，更新后自动重启</p>
+            </div>
+            <button type="button" class="btn" id="check-update">检查更新</button>
+          </div>
+
+          <div class="update-status" id="update-status" data-state="idle" hidden>
+            <p class="update-message" id="update-message"></p>
+
+            <div class="update-notes" id="update-notes" hidden>
+              <p class="update-notes-text is-clamped" id="update-notes-text"></p>
+              <button type="button" class="btn btn-ghost update-notes-toggle"
+                      id="toggle-update-notes" hidden>展开全部</button>
+            </div>
+
+            <div class="update-meta" id="update-meta" hidden>
+              <span class="meta-pill" id="update-time"></span>
+              <span class="meta-pill" id="update-size"></span>
+            </div>
+
+            <div class="progress update-progress" id="update-progress" hidden>
+              <div class="progress-track">
+                <div class="progress-fill" id="update-progress-fill"></div>
+              </div>
+              <span class="progress-text" id="update-progress-text"></span>
+            </div>
+
+            <div class="update-actions" id="update-actions" hidden>
+              <button type="button" class="btn btn-primary" id="install-update">下载并更新</button>
+              <button type="button" class="btn" id="dismiss-update">稍后</button>
+            </div>
+
+            <p class="inline-error" id="update-error" hidden></p>
+          </div>
+        </div>
+
         <div class="about-links">
           <button type="button" class="btn" id="open-repo">GitHub 仓库</button>
           <span class="about-url">github.com/monk233/lexora</span>

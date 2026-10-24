@@ -98,7 +98,7 @@ lexora/
 }
 ```
 
-规则：归一化永不失败；非法值回退默认。运行时环境变量覆盖：`LEXORA_API_KEY`（覆盖 apiKey）、`LEXORA_LLAMA_URL`（引擎下载地址覆盖）。
+规则：归一化永不失败；非法值回退默认。运行时环境变量覆盖：`LEXORA_API_KEY`（覆盖 apiKey）、`LEXORA_LLAMA_URL`（引擎下载地址覆盖）、`LEXORA_UPDATE_API`（自更新 Release API 覆盖，仅测试用；覆盖时允许本地 http）。
 
 ## 5. 前端 ↔ Rust 契约（T3/T4 共同遵守）
 
@@ -123,6 +123,8 @@ lexora/
 | `open_external` | `{url: string}` | `{ok}`（仅 https） |
 | `set_start_at_login` | `{enabled: boolean}` | `{ok, error?}` |
 | `quit_app` | — | — |
+| `check_update` | — | `{ok, currentVersion, latestVersion, hasUpdate, assetName, assetUrl, notes, publishedAt, sizeBytes, error?, hint?}` |
+| `install_update` | — | `{ok, version, error?, hint?}`（下载并替换当前 exe，约 1s 后应用退出并由助手脚本重启新版本） |
 
 ### 5.2 划词窗口命令
 
@@ -150,6 +152,7 @@ lexora/
 | --- | --- | --- |
 | `state-changed` | settings | `StatePayload` |
 | `download-progress` | settings | `DownloadProgress` |
+| `update-progress` | settings | `{status:"downloading"\|"ready", received, total, percent}` |
 | `toast` | settings | `{type:"success"|"error"|"info", message}` |
 | `picker-data` | picker | `{text, programName, config:{skills,customSkills,compact,defaultTargetLang,searchEngine}}` |
 | `picker-hidden` | picker | `{}` |
@@ -301,7 +304,15 @@ pub struct SelectionService {
 - 翻译流：`picker_translate` 中 abort 旧任务，`spawn` 任务消费 `engine.translate_stream`，逐块 `emit_to("picker","translate-event", {requestId,type:"chunk",text})`，结束 `done`，错误 `error+message`；`picker_abort_translate` abort。
 - 下载进度：把 `app.emit("download-progress", progress)` 传进 engine（engine 的 download 接口已收 AppHandle）。
 
-### 6.4 脚本/CI（T4）
+### 6.4 `updater.rs`（自更新，Windows）
+
+- 默认查询 `https://api.github.com/repos/monk233/lexora/releases/latest`（`User-Agent: Lexora/<版本>`，30s 超时）；测试可用环境变量 `LEXORA_UPDATE_API` 覆盖为本地 mock（覆盖时允许 http，仅本地测试使用）。
+- `UpdateInfo { currentVersion, latestVersion, hasUpdate, assetName, assetUrl, notes, publishedAt, sizeBytes }`（camelCase 序列化）；`version_is_newer` 按数字段比较，忽略 `v` 前缀与 prerelease/build。
+- 资产选择：Release assets 中名称以 `Lexora-` 开头、含 `win-x64`、以 `.exe` 结尾的第一个；无资产时报错。
+- `install_update`：重新 check → 校验 https（覆盖模式除外）→ 校验当前 exe 目录可写 → 流式下载到同目录临时文件（emit `update-progress`）→ 校验 MZ 头与大小 >1MB → 生成 `%TEMP%\lexora-update-*.ps1`（UTF-8 BOM，等待当前 pid 退出、把当前 exe 改名 `.old`、移动新 exe 到原路径、`Start-Process ... --show`，失败回滚并写 `update-error.log`）→ 隐藏窗口 spawn PowerShell → emit `ready` → 约 1.2s 后 `app.exit(0)`。
+- 仅替换 exe，不动 exe 同级 `data/`；路径含空格/中文由脚本单引号转义处理。
+
+### 6.5 脚本/CI（T4）
 
 - `scripts/fetch-llama.ps1`：下载/解压引擎到 `src-tauri/../data/engine`（dev 用）或指定目录；支持 `-FromDir <已有llama.cpp目录>`；SHA 不校验但校验 zip 大小/解压后存在 llama-server.exe。
 - `scripts/build-portable.ps1`：`npx tauri build --no-bundle` → 取 `src-tauri/target/release/lexora.exe`；复制为 `dist/Lexora-<version>-win-x64.exe`（单个 exe，不压缩、不打 zip；支持 `-SkipBuild`）。
@@ -335,15 +346,17 @@ pub struct SelectionService {
   - 分段控件「在线 API / 本地模型」立即保存 mode。
   - 在线：预设下拉（DeepSeek/OpenAI/Moonshot/智谱/Ollama/LM Studio/自定义）、服务地址、API Key（password + 显示切换）、模型名下拉（[拉取模型] 通过 `list_online_models` 拉取 `/models`，并保留「自定义模型…」手填兜底）、[测试连接]（显示延迟/模型列表/错误）、状态徽标。切换预设必须清空上一个服务商的 API Key / 模型名与模型缓存，且**不再自动填充模型名**；已知预设只填服务地址。
   - 本地：引擎状态（未安装→[下载引擎]，显示进度/取消；已安装→版本状态）、已安装模型列表（显示名称、大小、角色徽标：翻译模型/通用模型/自定义模型；不再有模型下拉选择）、[下载模型]（弹目录列表：名称/大小/量化/协议/推荐标记/下载按钮+进度）、[导入 GGUF]、[启动]/[停止]、当前状态徽标与错误提示。启动时后端自动选择模型；停止后翻译/总结不会自动启动。
-- 划词行为：启用开关、技能开关 + 拖拽排序（无上下箭头）、每行显示技能图标（内置用 `LP.SKILL_MAP[id].icon`，自定义用自定义图标）、技能提示词编辑（行内展开 textarea，默认填充系统默认英文提示词，支持重置默认；translate 支持 `{target}` 占位符；支持 translate/summarize/explain/polish）、自定义技能管理（[添加技能] 打开内联表单：**图标选择器默认紧凑显示当前图标预览 +「更换图标」，点击展开 200 个 Lucide 图标 + 名称搜索过滤**；名称 ≤20、提示词必填 ≤4000、变量提示 `{text}/{target}/{language}/{program}/{app}`；支持编辑、删除二次确认）、搜索配置（搜索行「配置」按钮展开 Google/百度/Bing，保存 `picker.searchEngine`）、紧凑模式、默认目标语言（auto 显示「自动识别」，共 38 种语言）、黑名单 chip 输入（回车添加/可删除）。快捷键功能已移除。恢复默认设置保留自定义技能与已下载模型/引擎。
+- 划词行为：启用开关、紧凑模式开关（紧跟启用开关、右对齐）、技能开关 + 拖拽排序（无上下箭头）、每行显示技能图标（内置用 `LP.SKILL_MAP[id].icon`，自定义用自定义图标）、技能提示词编辑（行内展开 textarea，默认填充系统默认英文提示词，支持重置默认；translate 支持 `{target}` 占位符；支持 translate/summarize/explain/polish）、自定义技能管理（[添加技能] 打开内联表单：**图标选择器默认紧凑显示当前图标预览 +「更换图标」，点击展开 200 个 Lucide 图标 + 名称搜索过滤**；名称 ≤20、提示词必填 ≤4000、变量提示 `{text}/{target}/{language}/{program}/{app}`；支持编辑、删除二次确认）、搜索配置（搜索行「配置」按钮展开 Google/百度/Bing，保存 `picker.searchEngine`）、默认目标语言（auto 显示「自动识别」，共 38 种语言）、黑名单 chip 输入（回车添加/可删除）。快捷键功能已移除。恢复默认设置保留自定义技能与已下载模型/引擎。
 - 应用与启动：开机自启（portable 不支持时置灰说明）、关闭窗口后驻留托盘、打开数据/模型/日志/引擎目录、退出程序。
 - 关于：版本、Tauri/Rust 版本、MIT、GitHub 链接、引擎与模型状态。
+- 关于 → 检查更新：按钮调用 `check_update`；有新版本时展示版本号/更新说明（截断）/大小/发布时间，并提供「下载并更新」「稍后」；下载中显示进度条（`update-progress`），完成后提示「应用即将重启」；失败展示可操作错误与 hint。更新过程替换当前 exe 并自动重启（`--show` 打开设置）。
 - 交互：改动即自动保存（文本 500ms 防抖），顶部短暂「已保存」；错误内联不弹模态；下载进度实时更新。
 - 视觉：系统字体栈 `Segoe UI`/`Microsoft YaHei UI`；背景 `#f6f7f9`，卡片白 + 1px `#e5e7eb` 边框 + 12px 圆角；主色 `#4f46e5`；支持 `prefers-color-scheme: dark`；控件高 32–36px；不用渐变/大阴影。
 - 安全：HTML 带 CSP（`default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'`），无内联脚本；外链经 `open_external`。
 
 ## 8. 验收
 
+- 自动更新：mock Release（新版本 + exe 资产）下「检查更新」显示新版本信息；「下载并更新」下载到同目录临时文件、替换当前 exe 并自动重启新版本；当前版本目录不可写、下载无效、无 win-x64 资产时给出可操作错误。
 - `cargo test`（设置、SSE、catalog、日志脱敏等纯函数）通过。
 - `cargo check` 无错误；`npx tauri build --debug --no-bundle` 产出 exe。
 - 启动 exe：静默启动、托盘出现、不弹窗口；`--show` 才显示设置；拖选/双击/多击选词在某应用触发 picker；picker 菜单/面板/固定可用（菜单不含服务状态与关闭项）；全局快捷键已移除。

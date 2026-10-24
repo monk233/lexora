@@ -845,6 +845,35 @@
         mockPublishState();
         return { state: clone(mockStore) };
       }
+      case "check_update": {
+        return {
+          ok: true,
+          currentVersion: "0.1.0",
+          latestVersion: "0.1.1",
+          hasUpdate: true,
+          assetName: "Lexora-0.1.1-win-x64.exe",
+          assetUrl: "https://github.com/monk233/lexora/releases/download/v0.1.1/Lexora-0.1.1-win-x64.exe",
+          notes: "浏览器预览模式：这里显示新版本的更新说明。\\n\\n- 修复若干问题\\n- 改进技能面板",
+          publishedAt: "2026-10-24T12:00:00Z",
+          sizeBytes: 9500000,
+        };
+      }
+      case "install_update": {
+        return new Promise(function (resolve) {
+          window.setTimeout(function () {
+            mockEmit("update-progress", { status: "downloading", received: 2800000, total: 9500000, percent: 30 });
+          }, 250);
+          window.setTimeout(function () {
+            mockEmit("update-progress", { status: "downloading", received: 6600000, total: 9500000, percent: 70 });
+          }, 650);
+          window.setTimeout(function () {
+            mockEmit("update-progress", { status: "ready", received: 9500000, total: 9500000, percent: 100 });
+          }, 1000);
+          window.setTimeout(function () {
+            resolve({ ok: true, version: "0.1.1" });
+          }, 1200);
+        });
+      }
 
       /* ---- settings: online provider ---- */
       case "test_online": {
@@ -1277,6 +1306,19 @@
     },
     setStartAtLogin: function (enabled) {
       return safeInvoke("set_start_at_login", { enabled: !!enabled });
+    },
+    checkUpdate: function () {
+      return safeInvoke("check_update", {});
+    },
+    installUpdate: function () {
+      return safeInvoke("install_update", {});
+    },
+    onUpdateProgress: function (callback) {
+      return subscribe("update-progress", function (payload) {
+        if (typeof callback === "function") {
+          callback(payload);
+        }
+      });
     },
     quit: function () {
       return invokeQuiet("quit_app", {}, { ok: true });

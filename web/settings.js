@@ -77,6 +77,17 @@
   var customEditingId = "";
   var customDraft = null;
 
+  /* About-page updater: idle|checking|latest|available|downloading|ready|error. */
+  var updateState = "idle";
+  var updateInfo = null;
+  var updateErrorTitle = "";
+  var updateErrorText = "";
+  var updateErrorHint = "";
+  var updateProgressPercent = 0;
+  var updateNotesExpanded = false;
+  var updateChecking = false;
+  var updateInstalling = false;
+
   /* Friendly names for the legacy/common icon keys (unknown keys show as-is). */
   var CUSTOM_ICON_LABELS = {
     sparkles: "灵感",
@@ -1982,6 +1993,348 @@
     byId("about-models").textContent = models.length
       ? models.length + " 个本地模型 · " + (engine.localModelName || models[0].name)
       : "未安装本地模型";
+    renderUpdateVersionHint();
+  }
+
+  /* ---- Update checker -------------------------------------------------- */
+
+  function updateCurrentVersion() {
+    return (state && state.app && state.app.version) || "";
+  }
+
+  function renderUpdateVersionHint() {
+    var hint = byId("update-current-hint");
+    if (!hint) {
+      return;
+    }
+    var version = updateCurrentVersion();
+    hint.textContent =
+      (version ? "当前版本 v" + version : "当前版本 —") +
+      " · 自动下载并替换当前 exe，更新后自动重启";
+  }
+
+  function formatUpdateTime(value) {
+    if (!value) {
+      return "";
+    }
+    var date = new Date(value);
+    if (isNaN(date.getTime())) {
+      return String(value);
+    }
+    function pad(number) {
+      return number < 10 ? "0" + number : String(number);
+    }
+    return (
+      date.getFullYear() +
+      "-" +
+      pad(date.getMonth() + 1) +
+      "-" +
+      pad(date.getDate()) +
+      " " +
+      pad(date.getHours()) +
+      ":" +
+      pad(date.getMinutes())
+    );
+  }
+
+  function updateNotesText() {
+    var info = updateInfo || {};
+    var notes = typeof info.notes === "string" ? info.notes : "";
+    notes = notes.replace(/\r\n/g, "\n");
+    /* Some release payloads (and the browser-preview mock) double-encode line
+     * breaks as literal "\n"; decode them only when the text has no real
+     * newlines so normal multi-line notes stay untouched. */
+    if (notes.indexOf("\n") < 0 && notes.indexOf("\\n") >= 0) {
+      notes = notes.replace(/\\r\\n|\\n|\\r/g, "\n");
+    }
+    return notes.trim();
+  }
+
+  /* Notes are rendered as plain text (whitespace preserved), clamped to ~200
+   * characters with an explicit expand/collapse toggle. */
+  function renderUpdateNotes() {
+    var wrap = byId("update-notes");
+    var textNode = byId("update-notes-text");
+    var toggle = byId("toggle-update-notes");
+    if (!wrap || !textNode) {
+      return;
+    }
+    var notes = updateNotesText();
+    if (!notes) {
+      setHidden(wrap, true);
+      return;
+    }
+    setHidden(wrap, false);
+    var limit = 200;
+    var clamped = notes.length > limit;
+    textNode.textContent =
+      clamped && !updateNotesExpanded ? notes.slice(0, limit) + "…" : notes;
+    if (clamped && !updateNotesExpanded) {
+      textNode.classList.add("is-clamped");
+    } else {
+      textNode.classList.remove("is-clamped");
+    }
+    if (toggle) {
+      setHidden(toggle, !clamped);
+      toggle.textContent = updateNotesExpanded ? "收起" : "展开全部";
+    }
+  }
+
+  function renderUpdateProgress() {
+    var fill = byId("update-progress-fill");
+    var text = byId("update-progress-text");
+    var percent = Number(updateProgressPercent);
+    if (!isFinite(percent) || percent < 0) {
+      percent = 0;
+    }
+    if (percent > 100) {
+      percent = 100;
+    }
+    percent = Math.round(percent);
+    if (fill) {
+      fill.style.width = percent + "%";
+    }
+    if (text) {
+      text.textContent = percent + "%";
+    }
+  }
+
+  function renderUpdate() {
+    var status = byId("update-status");
+    if (!status) {
+      return;
+    }
+    var stateName = updateState || "idle";
+    status.setAttribute("data-state", stateName);
+    setHidden(status, stateName === "idle");
+
+    var message = byId("update-message");
+    var checkButton = byId("check-update");
+    setHidden(message, stateName === "idle");
+    setHidden(byId("update-notes"), true);
+    setHidden(byId("update-meta"), true);
+    setHidden(byId("update-actions"), true);
+    setHidden(byId("update-progress"), true);
+    hideInlineError(byId("update-error"));
+    if (checkButton) {
+      checkButton.disabled = false;
+      checkButton.textContent = "检查更新";
+    }
+    if (stateName === "idle") {
+      return;
+    }
+
+    if (stateName === "checking") {
+      message.textContent = "正在检查更新…";
+      if (checkButton) {
+        checkButton.disabled = true;
+        checkButton.textContent = "检查中…";
+      }
+      return;
+    }
+    if (stateName === "latest") {
+      var latest = (updateInfo && updateInfo.latestVersion) || updateCurrentVersion();
+      message.textContent = latest ? "已是最新版本 v" + latest : "已是最新版本";
+      if (checkButton) {
+        checkButton.textContent = "重新检查";
+      }
+      return;
+    }
+    if (stateName === "available") {
+      var info = updateInfo || {};
+      var targetVersion = info.latestVersion || "";
+      var currentVersion = info.currentVersion || updateCurrentVersion();
+      message.textContent =
+        "发现新版本" +
+        (targetVersion ? " v" + targetVersion : "") +
+        (currentVersion ? "（当前 v" + currentVersion + "）" : "");
+      renderUpdateNotes();
+      var timeNode = byId("update-time");
+      var sizeNode = byId("update-size");
+      var meta = byId("update-meta");
+      var timeText = formatUpdateTime(info.publishedAt);
+      var sizeText = info.sizeBytes ? LP.formatBytes(info.sizeBytes) : "";
+      if (timeNode) {
+        timeNode.textContent = timeText;
+        setHidden(timeNode, !timeText);
+      }
+      if (sizeNode) {
+        sizeNode.textContent = sizeText;
+        setHidden(sizeNode, !sizeText);
+      }
+      if (meta) {
+        meta.title = info.assetName || "";
+        setHidden(meta, !timeText && !sizeText);
+      }
+      setHidden(byId("update-actions"), false);
+      if (checkButton) {
+        checkButton.textContent = "重新检查";
+      }
+      return;
+    }
+    if (stateName === "downloading") {
+      message.textContent = "正在下载更新…";
+      setHidden(byId("update-progress"), false);
+      renderUpdateProgress();
+      if (checkButton) {
+        checkButton.disabled = true;
+        checkButton.textContent = "更新中…";
+      }
+      return;
+    }
+    if (stateName === "ready") {
+      message.textContent = "更新已就绪，应用即将重启…";
+      setHidden(byId("update-progress"), false);
+      renderUpdateProgress();
+      if (checkButton) {
+        checkButton.disabled = true;
+        checkButton.textContent = "即将重启…";
+      }
+      return;
+    }
+
+    /* error */
+    message.textContent = updateErrorTitle || "检查更新失败";
+    showInlineError(
+      byId("update-error"),
+      updateErrorText || "未知错误",
+      updateErrorHint || ""
+    );
+    if (checkButton) {
+      checkButton.textContent = "重新检查";
+    }
+  }
+
+  function handleUpdateProgress(progress) {
+    if (!progress || typeof progress !== "object") {
+      return;
+    }
+    if (
+      updateState !== "downloading" &&
+      updateState !== "ready" &&
+      !updateInstalling
+    ) {
+      return;
+    }
+    var percent = Number(progress.percent);
+    if (!isFinite(percent) && Number(progress.total) > 0) {
+      percent = (Number(progress.received) / Number(progress.total)) * 100;
+    }
+    if (isFinite(percent)) {
+      updateProgressPercent = percent;
+    }
+    if (progress.status === "ready") {
+      updateState = "ready";
+      updateProgressPercent = 100;
+    } else if (progress.status === "downloading") {
+      updateState = "downloading";
+    } else {
+      return;
+    }
+    renderUpdate();
+  }
+
+  function checkForUpdates() {
+    if (!API || typeof API.checkUpdate !== "function") {
+      toast("当前版本不支持检查更新", "error");
+      return;
+    }
+    if (updateChecking || updateInstalling) {
+      return;
+    }
+    if (updateState === "downloading" || updateState === "ready") {
+      return;
+    }
+    updateChecking = true;
+    updateInfo = null;
+    updateErrorTitle = "";
+    updateErrorText = "";
+    updateErrorHint = "";
+    updateNotesExpanded = false;
+    updateState = "checking";
+    renderUpdate();
+    API.checkUpdate().then(
+      function (result) {
+        updateChecking = false;
+        if (!result || result.ok === false) {
+          updateState = "error";
+          updateErrorTitle = "检查更新失败";
+          updateErrorText = (result && result.error) || "未知错误";
+          updateErrorHint = (result && result.hint) || "";
+          renderUpdate();
+          return;
+        }
+        updateInfo = result;
+        updateNotesExpanded = false;
+        updateState = result.hasUpdate ? "available" : "latest";
+        renderUpdate();
+      },
+      function (error) {
+        updateChecking = false;
+        updateState = "error";
+        updateErrorTitle = "检查更新失败";
+        updateErrorText = String(error || "未知错误");
+        updateErrorHint = "";
+        renderUpdate();
+      }
+    );
+  }
+
+  function installAppUpdate() {
+    if (!API || typeof API.installUpdate !== "function") {
+      toast("当前版本不支持安装更新", "error");
+      return;
+    }
+    if (updateInstalling || updateState === "downloading" || updateState === "ready") {
+      return;
+    }
+    updateInstalling = true;
+    updateProgressPercent = 0;
+    updateErrorTitle = "";
+    updateErrorText = "";
+    updateErrorHint = "";
+    updateState = "downloading";
+    renderUpdate();
+    API.installUpdate().then(
+      function (result) {
+        updateInstalling = false;
+        if (!result || result.ok === false) {
+          updateState = "error";
+          updateErrorTitle = "下载更新失败";
+          updateErrorText = (result && result.error) || "未知错误";
+          updateErrorHint = (result && result.hint) || "";
+          renderUpdate();
+          return;
+        }
+        updateProgressPercent = 100;
+        updateState = "ready";
+        renderUpdate();
+        toast("更新已就绪，应用即将重启", "success");
+      },
+      function (error) {
+        updateInstalling = false;
+        updateState = "error";
+        updateErrorTitle = "下载更新失败";
+        updateErrorText = String(error || "未知错误");
+        updateErrorHint = "";
+        renderUpdate();
+      }
+    );
+  }
+
+  function dismissUpdate() {
+    if (updateState === "downloading" || updateState === "ready") {
+      return;
+    }
+    updateState = "idle";
+    updateInfo = null;
+    updateNotesExpanded = false;
+    renderUpdate();
+  }
+
+  function toggleUpdateNotes() {
+    updateNotesExpanded = !updateNotesExpanded;
+    renderUpdateNotes();
   }
 
   /* ---- Actions --------------------------------------------------------- */
@@ -2585,6 +2938,10 @@
     byId("open-repo").addEventListener("click", function () {
       openExternal((state && state.app && state.app.repoUrl) || LP.REPO_URL);
     });
+    byId("check-update").addEventListener("click", checkForUpdates);
+    byId("install-update").addEventListener("click", installAppUpdate);
+    byId("dismiss-update").addEventListener("click", dismissUpdate);
+    byId("toggle-update-notes").addEventListener("click", toggleUpdateNotes);
     byId("reset-settings").addEventListener("click", function () {
       armDanger(byId("reset-settings"), "确认恢复默认", resetSettings);
     });
@@ -2665,6 +3022,12 @@
     API.onState(handleStateChanged);
     API.onDownloadProgress(handleDownloadProgress);
     API.onToast(handleToast);
+    /* Progress is only emitted while installing; subscribing once is enough
+     * for the lifetime of the settings window. */
+    if (typeof API.onUpdateProgress === "function") {
+      API.onUpdateProgress(handleUpdateProgress);
+    }
+    renderUpdate();
 
     API.getState().then(function (result) {
       if (!result.ok) {

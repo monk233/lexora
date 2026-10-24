@@ -470,6 +470,58 @@ pub fn quit_app(app: AppHandle) {
 }
 
 // ---------------------------------------------------------------------------
+// Update commands (§5.1)
+// ---------------------------------------------------------------------------
+
+/// Serializes [`crate::updater::UpdateInfo`] and adds the command-level `ok`
+/// flag. The About page consumes `currentVersion` / `latestVersion` etc.
+fn update_info_payload(info: crate::updater::UpdateInfo) -> Value {
+    match serde_json::to_value(&info) {
+        Ok(mut value) => {
+            if let Some(object) = value.as_object_mut() {
+                object.insert("ok".to_string(), json!(true));
+            }
+            value
+        }
+        Err(error) => json!({
+            "ok": false,
+            "error": "更新信息序列化失败。",
+            "hint": format!("请重启程序后重试（{error}）。"),
+        }),
+    }
+}
+
+/// Checks GitHub for a newer release (About page "检查更新").
+#[tauri::command]
+pub async fn check_update() -> Value {
+    match crate::updater::check_update().await {
+        Ok(info) => update_info_payload(info),
+        Err(error) => json!({
+            "ok": false,
+            "error": error.message,
+            "hint": error.hint,
+        }),
+    }
+}
+
+/// Downloads and schedules the new portable exe. Progress is pushed to the
+/// settings window as `update-progress`; the app exits right after this returns.
+#[tauri::command]
+pub async fn install_update(app: AppHandle) -> Value {
+    match crate::updater::install_update(&app).await {
+        Ok(info) => json!({
+            "ok": true,
+            "version": info.latest_version,
+        }),
+        Err(error) => json!({
+            "ok": false,
+            "error": error.message,
+            "hint": error.hint,
+        }),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Picker window commands (§5.2)
 // ---------------------------------------------------------------------------
 

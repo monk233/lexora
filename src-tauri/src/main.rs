@@ -19,6 +19,7 @@ mod selection;
 mod settings;
 mod state;
 mod tray;
+mod updater;
 mod win32;
 mod windows;
 
@@ -148,6 +149,8 @@ fn main() {
             commands::open_external,
             commands::set_start_at_login,
             commands::quit_app,
+            commands::check_update,
+            commands::install_update,
             commands::picker_ready,
             commands::picker_close,
             commands::picker_pin,

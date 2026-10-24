@@ -26,6 +26,7 @@ lexora.exe
 | `main.rs` | Tauri Builder、插件、窗口事件、生命周期、退出清理 |
 | `commands.rs` | 全部 `invoke` 命令；组装 `StatePayload` 广播前端 |
 | `windows.rs` | picker/settings 窗口几何（物理坐标 clamp）、显示/隐藏、pending payload |
+| `updater.rs` | 检查 GitHub Release、下载并替换 exe、助手脚本重启（自更新） |
 | `tray.rs` | 托盘图标与菜单（显示设置、启用划词、本地引擎启停、退出） |
 | `state.rs` | `AppState`：paths、logger、settings store、engine、selection、翻译任务句柄 |
 | `settings.rs` | 设置 schema、归一化、原子持久化（`settings.json`） |

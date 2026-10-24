@@ -299,6 +299,21 @@ textarea {
   padding-top: 0;
 }
 
+/* Switch rows: label block centers against the switch and the switch hugs the
+ * right edge of the control column. */
+.field-switch {
+  align-items: center;
+}
+
+.field-switch .field-label {
+  padding-top: 0;
+}
+
+.field-switch .field-control {
+  align-items: flex-end;
+  justify-content: center;
+}
+
 .inline-actions {
   display: flex;
   align-items: center;
@@ -1517,6 +1532,126 @@ textarea {
   font-family: "Cascadia Mono", "Consolas", monospace;
   font-size: 11.5px;
   word-break: break-all;
+}
+
+/* ---- About: update checker --------------------------------------------- */
+
+.update-block {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.update-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+}
+
+.update-head-text {
+  min-width: 0;
+}
+
+.update-title {
+  display: block;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 550;
+}
+
+.update-hint {
+  margin: 3px 0 0;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.update-status {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-muted);
+}
+
+.update-status[data-state="available"] {
+  border-color: var(--primary);
+}
+
+.update-status[data-state="error"] {
+  border-color: var(--danger-border);
+}
+
+.update-message {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 550;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.update-status[data-state="available"] .update-message {
+  color: var(--primary);
+}
+
+.update-status[data-state="error"] .update-message {
+  color: var(--danger);
+}
+
+.update-notes-text {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-line;
+  word-break: break-word;
+}
+
+.update-notes-text.is-clamped {
+  max-height: 84px;
+  overflow: hidden;
+}
+
+.update-notes-toggle {
+  height: 26px;
+  margin-top: 4px;
+  padding: 0 8px;
+  font-size: 11.5px;
+}
+
+.update-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.update-meta .meta-pill {
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.update-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.update-progress {
+  padding: 0;
+}
+
+.update-progress .progress-track {
+  height: 6px;
+}
+
+.update-progress .progress-text {
+  min-width: 52px;
 }
 
 .about-links {
