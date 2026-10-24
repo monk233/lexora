@@ -537,6 +537,40 @@ impl EngineService {
         openai::stream_chat(&self.http, &config, messages, config.header_timeout()).await
     }
 
+    pub async fn assist_stream(
+        &self,
+        action: &str,
+        text: &str,
+    ) -> Result<BoxStream<'static, Result<String, EngineError>>, EngineError> {
+        let settings = self.settings.get();
+        let cleaned = text.trim();
+        if cleaned.is_empty() {
+            return Err(EngineError::new(
+                "没有可处理的文本。",
+                "请先选中一段文字，然后再点击总结或解释。",
+            ));
+        }
+        let truncated = prompts::truncate_chars(cleaned, prompts::ASSIST_MAX_CHARS);
+        let custom_prompt = match action.trim().to_ascii_lowercase().as_str() {
+            "summarize" | "summary" | "总结" => settings.picker.prompts.summarize.as_str(),
+            "explain" | "解释" => settings.picker.prompts.explain.as_str(),
+            _ => "",
+        };
+        let (system, user) = prompts::assist_messages(action, &truncated, custom_prompt)?;
+        let messages = vec![
+            json!({"role": "system", "content": system}),
+            json!({"role": "user", "content": user}),
+        ];
+        let config = self.chat_config(&settings, LocalRole::General).await?;
+        self.logger.info(&format!(
+            "assist stream start: action={} provider={} chars={}",
+            action,
+            if config.local { "local" } else { "online" },
+            truncated.chars().count()
+        ));
+        openai::stream_chat(&self.http, &config, messages, config.header_timeout()).await
+    }
+
     pub async fn assist(&self, action: &str, text: &str) -> Result<String, EngineError> {
         let settings = self.settings.get();
         let cleaned = text.trim();

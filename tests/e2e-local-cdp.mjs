@@ -195,12 +195,27 @@ async function main() {
     })()`, 150000);
     check("local streaming translation", translation && translation.ok === true, `chunks=${translation && translation.chunks} text=${String(translation && translation.text).slice(0, 60)}`);
 
-    const assist = await picker.evaluate(
-      "window.__TAURI__.core.invoke('picker_assist', {action:'summarize', text:'Lexora is a portable selection translator for Windows. It supports online and offline models.'})",
-      150000
-    );
-    check("local assist", assist && assist.ok === true && typeof assist.text === "string" && assist.text.length > 0, String(assist && assist.text).slice(0, 60));
-
+    const assist = await picker.evaluate(`(async () => {
+      const { core, event } = window.__TAURI__;
+      const requestId = 'e2e-local-assist-' + Date.now();
+      let text = '';
+      let chunks = 0;
+      let failure = '';
+      const finished = new Promise((resolve) => {
+        const unlisten = event.listen('translate-event', (e) => {
+          const payload = e.payload || {};
+          if (payload.requestId !== requestId) return;
+          if (payload.type === 'chunk') { text += payload.text || ''; chunks += 1; }
+          if (payload.type === 'error') { failure = payload.message || 'error'; unlisten(); resolve(); }
+          if (payload.type === 'done') { unlisten(); resolve(); }
+        });
+      });
+      const start = await core.invoke('picker_assist', { requestId, action: 'summarize', text: 'Lexora is a portable selection translator for Windows. It supports online and offline models.' });
+      if (!start || start.ok !== true) return { ok: false, error: (start && start.error) || 'start failed' };
+      await Promise.race([finished, new Promise((r) => setTimeout(r, 120000))]);
+      return { ok: !failure && text.length > 0 && !text.includes('[MOCK]'), text, chunks, failure };
+    })()`, 150000);
+    check("local assist streaming", assist && assist.ok === true, `chunks=${assist && assist.chunks} text=${String(assist && assist.text).slice(0, 60)}`);
     const stopped = await settings.evaluate("window.__TAURI__.core.invoke('stop_local').then(r => r, e => ({ok:false, error:String(e)}))");
     check("stop_local", stopped && stopped.ok === true, JSON.stringify(stopped).slice(0, 120));
   } catch (error) {

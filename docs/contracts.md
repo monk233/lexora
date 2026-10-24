@@ -141,7 +141,7 @@ lexora/
 | `picker_custom_skill` | `{requestId, skillId, text, programName}` | `{ok, error?, hint?}`（随后 `translate-event` 流；target 取设置默认目标语言） |
 | `picker_polish` | `{requestId, text}` | `{ok, error?, hint?}`（随后 `translate-event` 流；内置润色技能） |
 | `picker_abort_translate` | `{requestId}` | `{ok}` |
-| `picker_assist` | `{action: "summarize"|"explain", text}` | `{ok, text?, error?, hint?}` |
+| `picker_assist` | `{requestId, action: "summarize"|"explain", text}` | `{ok, error?, hint?}`（随后 `translate-event` 流；总结/解释不再一次性返回） |
 | `picker_status` | — | `{mode, ready, configured, providerLabel, localState, hint}` |
 | `picker_disable_in_app` | `{programName}` | `{ok, error?}` |
 | `picker_disable_tool` | — | `{ok, error?}` |
@@ -211,7 +211,8 @@ impl EngineService {
   pub fn status(&self) -> EngineStatus;
   pub async fn translate_stream(&self, text:&str, target_lang:&str)
       -> Result<BoxStream<'static, Result<String, EngineError>>, EngineError>;
-  pub async fn assist(&self, action:&str, text:&str) -> Result<String, EngineError>;
+  pub async fn assist_stream(&self, action:&str, text:&str)
+      -> Result<BoxStream<'static, Result<String, EngineError>>, EngineError>;
   pub async fn custom_stream(&self, skill_id:&str, text:&str, target_lang:&str, program:&str)
       -> Result<BoxStream<'static, Result<String, EngineError>>, EngineError>;
   pub async fn polish_stream(&self, text:&str)
@@ -357,12 +358,14 @@ pub struct SelectionService {
 
 ## 8. 验收
 
+
 - 自动更新：mock Release（新版本 + exe 资产）下「检查更新」显示新版本信息；「下载并更新」下载到同目录临时文件、替换当前 exe 并自动重启新版本；当前版本目录不可写、下载无效、无 win-x64 资产时给出可操作错误。
 - `cargo test`（设置、SSE、catalog、日志脱敏等纯函数）通过。
 - `cargo check` 无错误；`npx tauri build --debug --no-bundle` 产出 exe。
 - 启动 exe：静默启动、托盘出现、不弹窗口；`--show` 才显示设置；拖选/双击/多击选词在某应用触发 picker；picker 菜单/面板/固定可用（菜单不含服务状态与关闭项）；全局快捷键已移除。
 - picker 不干扰操作：弹出后前台窗口仍是原应用，Delete/Ctrl+C/Ctrl+X 正常生效；未固定时按任意键、右键自动隐藏工具栏，但鼠标滚轮/触摸板滚动**不会**隐藏；结果面板可用标题栏拖动窗口位置；面板内长内容可滚动阅读；朗读中再次点击为停止且不报错。
 - Markdown：翻译/总结/解释结果按 Markdown 渲染（标题、列表、代码块、引用、表格、链接等），HTTPS 链接通过 `open_external` 打开；HTML 注入被转义。
+- AI 输出统一流式：翻译、总结、解释、润色、自定义技能都通过 `translate-event` 增量渲染（不是等完整结果后一次性显示）。
 - 自定义技能：设置页新增/编辑/删除后，picker 工具栏立即出现对应按钮（图标+名称），点击后流式返回、面板标题为技能名；提示词变量在后端替换；空提示词/非法 id 被后端归一化丢弃；未启用技能被点击时返回明确错误；图标可从 200 个 Lucide 图标中选择（旧 12 key 兼容）。
 - 内置润色：工具栏「润色」流式返回 Markdown，默认英文提示词；设置页可编辑/重置；本地走 General 模型。
 - 内置搜索：工具栏「搜索」按 `picker.searchEngine` 打开系统浏览器搜索选中文本（Google/百度/Bing，URL 编码正确）；设置页可切换引擎。

@@ -4,7 +4,7 @@
  * `window.pickerAPI` (see shared/tauri-api.js) and renders the skill toolbar
  * with the seven built-in skills:
  *   translate        - streaming translation through the engine
- *   summarize/explain- one-shot assist through the engine
+ *   summarize/explain- streaming assist through the engine
  *   polish           - streaming rewrite through the engine
  *   read             - Windows system voices via speechSynthesis
  *   copy             - clipboard through the shell
@@ -957,6 +957,9 @@
     if (request.kind === "polish") {
       return "润色失败";
     }
+    if (request.kind === "assist") {
+      return (request.label || "处理") + "失败";
+    }
     return "翻译失败";
   }
 
@@ -966,6 +969,9 @@
     }
     if (request.kind === "polish") {
       return "润色服务没有返回结果（可能正在启动或引擎不可用）。";
+    }
+    if (request.kind === "assist") {
+      return (request.label || "处理") + "服务没有返回结果（可能正在启动或引擎不可用）。";
     }
     return "翻译服务没有返回结果（可能正在启动或引擎不可用）。";
   }
@@ -980,6 +986,10 @@
     }
     if (request.kind === "polish") {
       startPolish();
+      return;
+    }
+    if (request.kind === "assist") {
+      assistSkill(request.action);
       return;
     }
     translateSkill(panelTargetSelect.value);
@@ -1031,7 +1041,13 @@
       hint ||
         hintForError(
           text,
-          request.kind === "custom" ? "custom" : request.kind === "polish" ? "polish" : "translate"
+          request.kind === "custom"
+            ? "custom"
+            : request.kind === "polish"
+              ? "polish"
+              : request.kind === "assist"
+                ? "assist"
+                : "translate"
         ),
       function () {
         retryRequest(request);
@@ -1306,57 +1322,66 @@
 
   /* ---- Summarize / explain -------------------------------------------- */
 
+  /* Streams the built-in summarize/explain skills through `picker_assist`.
+   * Same translate-event channel as translation/polish → Markdown, retry,
+   * copy/speak and the error panel are shared. */
   function assistSkill(action) {
     var label = action === "summarize" ? "总结" : "解释";
+    var loadingText = action === "summarize" ? "正在总结…" : "正在解释…";
     openPanel(label);
     setPanelLanguage("");
     setPanelRetry(function () {
       assistSkill(action);
     });
-    var body = el("div");
-    body.appendChild(sourceNode());
-    body.appendChild(loadingNode(action === "summarize" ? "正在总结…" : "正在解释…"));
-    setBody(body);
+
+    var target = el("div");
+    target.appendChild(sourceNode());
+    var loadingRow = loadingNode(loadingText);
+    target.appendChild(loadingRow);
+    var result = el("div", "result-text markdown");
+    target.appendChild(result);
+    setBody(target);
+
+    var request = {
+      id: makeRequestId(),
+      kind: "assist",
+      action: action,
+      label: label,
+      target: target,
+      result: result,
+      raw: "",
+      renderPending: false,
+      loading: loadingRow,
+      active: true,
+      failed: false,
+      sawContent: false,
+    };
+    activeRequest = request;
+    state.translating = true;
     resizePanelForContent();
 
-    API.assist(action, state.text).then(function (response) {
-      if (!state.panelOpen) {
-        return;
+    if (!API || typeof API.assist !== "function") {
+      failTranslation(request, "当前版本不支持" + label, "请更新应用后再试。");
+      return;
+    }
+
+    API.assist(request.id, action, state.text).then(
+      function (response) {
+        if (!request.active) {
+          return;
+        }
+        if (!response || !response.ok) {
+          failTranslation(
+            request,
+            (response && response.error) || label + "服务没有响应",
+            (response && response.hint) || ""
+          );
+        }
+      },
+      function (error) {
+        failTranslation(request, String(error));
       }
-      if (!response || !response.ok) {
-        var message = friendlyError((response && response.error) || label + "失败");
-        renderErrorPanel(
-          label + "失败",
-          message,
-          (response && response.hint) || hintForError(message, "assist"),
-          function () {
-            assistSkill(action);
-          }
-        );
-        return;
-      }
-      var resultText = String(response.text || "").trim();
-      if (!resultText) {
-        renderErrorPanel(
-          label + "失败",
-          label + "服务没有返回内容。",
-          hintForError("", "assist"),
-          function () {
-            assistSkill(action);
-          }
-        );
-        return;
-      }
-      var wrap = el("div");
-      wrap.appendChild(sourceNode());
-      var resultNode = el("div", "result-text markdown");
-      renderMarkdownInto(resultNode, resultText);
-      wrap.appendChild(resultNode);
-      setBody(wrap);
-      setPanelSpeakText(plainFromMarkdown(resultText));
-      setPanelCopyText(plainFromMarkdown(resultText));
-      resizePanelForContent();
-    });
+    );
   }
 
   /* ---- Speech (Windows system voices only) ----------------------------- */

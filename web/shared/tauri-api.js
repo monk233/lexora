@@ -488,13 +488,6 @@
     ko: "번역은 한 언어로 된 텍스트의 의미를 다른 언어로 표현하는 일이며, 문화 사이의 다리 역할을 합니다.",
   };
 
-  var MOCK_ASSIST = {
-    summarize:
-      "这是浏览器预览模式返回的演示摘要。\n\n1. 翻译需要在目标语言中完整传达原文含义。\n2. 术语与语气应保持一致。\n3. 跨文化语境需要适当调整表达方式。",
-    explain:
-      "这段文字给出的是「翻译」的定义：翻译不只是逐词替换，而是把原文的意思、语气和语境用目标语言重新表达出来，让另一种语言的读者获得相同的理解。",
-  };
-
   function mockTranslationText(text, targetLang) {
     var language = String(targetLang || "").toLowerCase();
     var fallback =
@@ -778,20 +771,12 @@
         cancelMockTranslate(String(args.requestId || ""));
         return { ok: true };
       case "picker_assist": {
-        var action = String(args.action || "");
-        var label = action === "summarize" ? "总结" : "解释";
-        return new Promise(function (resolve) {
-          window.setTimeout(function () {
-            resolve({
-              ok: true,
-              text:
-                (MOCK_ASSIST[action] || "浏览器预览模式没有该技能的演示数据。") +
-                "\n\n（" +
-                label +
-                " · 演示数据）",
-            });
-          }, 520);
-        });
+        var assistRequestId = String(args.requestId || "");
+        if (!assistRequestId) {
+          return { ok: false, error: "缺少请求 ID" };
+        }
+        startMockTranslate(assistRequestId, String(args.text || ""), "zh");
+        return { ok: true };
       }
       case "picker_status":
         return {
@@ -1163,8 +1148,9 @@
         }
       });
     },
-    assist: function (action, text) {
+    assist: function (requestId, action, text) {
       return safeInvoke("picker_assist", {
+        requestId: String(requestId == null ? "" : requestId),
         action: String(action == null ? "" : action),
         text: String(text == null ? "" : text),
       });

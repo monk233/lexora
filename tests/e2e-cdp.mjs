@@ -190,10 +190,27 @@ async function main() {
     })()`);
     check("picker_translate streaming", streaming && streaming.ok === true, `chunks=${streaming && streaming.chunkCount} text=${String(streaming && streaming.text).slice(0, 40)}`);
 
-    const assist = await picker.evaluate(
-      "window.__TAURI__.core.invoke('picker_assist', {action:'summarize', text:'Lexora is a portable selection translator for Windows.'})"
-    );
-    check("picker_assist", assist && assist.ok === true && typeof assist.text === "string", `text=${String(assist && assist.text).slice(0, 40)}`);
+    const assist = await picker.evaluate(`(async () => {
+      const { core, event } = window.__TAURI__;
+      const requestId = 'e2e-assist-' + Date.now();
+      let text = '';
+      let chunks = 0;
+      let failure = '';
+      const done = new Promise((resolve) => {
+        const unlisten = event.listen('translate-event', (e) => {
+          const payload = e.payload || {};
+          if (payload.requestId !== requestId) return;
+          if (payload.type === 'chunk') { text += payload.text || ''; chunks += 1; }
+          if (payload.type === 'error') { failure = payload.message || 'error'; unlisten(); resolve(); }
+          if (payload.type === 'done') { unlisten(); resolve(); }
+        });
+      });
+      const start = await core.invoke('picker_assist', { requestId, action: 'summarize', text: 'Lexora is a portable selection translator for Windows.' });
+      if (!start || start.ok !== true) return { ok: false, error: (start && start.error) || 'start failed' };
+      await Promise.race([done, new Promise((r) => setTimeout(r, 15000))]);
+      return { ok: !failure && text.length > 0, text, chunks, failure };
+    })()`);
+    check("picker_assist streaming", assist && assist.ok === true, `chunks=${assist && assist.chunks} text=${String(assist && assist.text).slice(0, 40)}`);
   } catch (error) {
     check("e2e harness", false, error.message);
   } finally {

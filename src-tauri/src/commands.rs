@@ -816,32 +816,82 @@ pub fn picker_abort_translate(state: State<'_, Arc<AppState>>, request_id: Strin
     json!({ "ok": true })
 }
 
+/// Streams a summarize/explain request through the same `translate-event`
+/// channel as translation. Returns immediately; chunks/errors/done are emitted
+/// to the picker window so every AI result in the UI is rendered as a stream.
 #[tauri::command]
-pub async fn picker_assist(
+pub fn picker_assist(
+    app: AppHandle,
     state: State<'_, Arc<AppState>>,
+    request_id: String,
     action: String,
     text: String,
-) -> Result<Value, String> {
+) -> Value {
     let action = action.trim().to_ascii_lowercase();
     if action != "summarize" && action != "explain" {
-        return Ok(json!({ "ok": false, "error": "不支持的操作。" }));
+        return json!({ "ok": false, "error": "不支持的操作。" });
     }
     let text = text.trim().to_string();
     if text.is_empty() {
-        return Ok(json!({
+        return json!({
             "ok": false,
             "error": "没有可处理的文本。",
             "hint": "请先选中一段文字。",
-        }));
+        });
     }
-    Ok(match state.engine.assist(&action, &text).await {
-        Ok(result) => json!({ "ok": true, "text": result }),
-        Err(error) => json!({
-            "ok": false,
-            "error": error.message,
-            "hint": error.hint,
-        }),
-    })
+
+    // Only one stream at a time: abort the previous request.
+    state.abort_translate();
+
+    let engine = state.engine.clone();
+    let task_app = app.clone();
+    let rid = request_id.clone();
+    let handle = tauri::async_runtime::spawn(async move {
+        let emit = |payload: Value| {
+            let _ = task_app.emit_to(crate::windows::PICKER_LABEL, "translate-event", payload);
+        };
+
+        match engine.assist_stream(&action, &text).await {
+            Ok(mut stream) => {
+                while let Some(item) = stream.next().await {
+                    match item {
+                        Ok(chunk) => {
+                            if chunk.is_empty() {
+                                continue;
+                            }
+                            emit(json!({
+                                "requestId": rid.clone(),
+                                "type": "chunk",
+                                "text": chunk,
+                            }));
+                        }
+                        Err(error) => {
+                            emit(json!({
+                                "requestId": rid.clone(),
+                                "type": "error",
+                                "message": error.message,
+                            }));
+                            return;
+                        }
+                    }
+                }
+                emit(json!({
+                    "requestId": rid.clone(),
+                    "type": "done",
+                }));
+            }
+            Err(error) => {
+                emit(json!({
+                    "requestId": rid.clone(),
+                    "type": "error",
+                    "message": error.message,
+                }));
+            }
+        }
+    });
+
+    *lock(&state.translate_task) = Some(TranslateTask { request_id, handle });
+    json!({ "ok": true })
 }
 
 #[tauri::command]
