@@ -198,8 +198,7 @@ fn parse_release(release: &Value, current_version: &str) -> Result<UpdateInfo, U
         ));
     }
     let latest_version = normalize_tag(tag);
-    let asset = release_asset(release.get("assets"))
-        .ok_or_else(|| UpdateError::new("最新版本没有可用的 Windows 安装包。", releases_hint()))?;
+    let has_update = version_is_newer(&latest_version, current_version);
     let notes: String = release
         .get("body")
         .and_then(Value::as_str)
@@ -214,15 +213,25 @@ fn parse_release(release: &Value, current_version: &str) -> Result<UpdateInfo, U
         .unwrap_or("")
         .trim()
         .to_string();
+    // Only a newer version needs a downloadable asset. Older releases may have
+    // been published before the portable exe naming existed, so a plain
+    // "already up to date" answer must not fail because of their assets.
+    let asset = if has_update {
+        Some(release_asset(release.get("assets")).ok_or_else(|| {
+            UpdateError::new("最新版本没有可用的 Windows 安装包。", releases_hint())
+        })?)
+    } else {
+        None
+    };
     Ok(UpdateInfo {
         current_version: current_version.trim().to_string(),
         latest_version: latest_version.clone(),
-        has_update: version_is_newer(&latest_version, current_version),
-        asset_name: asset.name,
-        asset_url: asset.url,
+        has_update,
+        asset_name: asset.as_ref().map(|a| a.name.clone()).unwrap_or_default(),
+        asset_url: asset.as_ref().map(|a| a.url.clone()).unwrap_or_default(),
         notes,
         published_at,
-        size_bytes: asset.size,
+        size_bytes: asset.as_ref().map(|a| a.size).unwrap_or(0),
     })
 }
 
@@ -807,6 +816,36 @@ mod tests {
         assert!(!parse_release(&release, "0.2.0").unwrap().has_update);
         assert!(!parse_release(&release, "0.3.0").unwrap().has_update);
         assert!(parse_release(&release, "0.1.9").unwrap().has_update);
+    }
+
+    #[test]
+    fn parse_release_already_latest_tolerates_missing_asset() {
+        // The historical v0.1.0 release only has a zip asset; being up to date
+        // must still report "no update" instead of an asset error.
+        let release = json!({
+            "tag_name": "v0.1.0",
+            "body": "",
+            "published_at": "2026-10-24T12:00:00Z",
+            "assets": [windows_asset(
+                "LingoPick-0.1.0-win-x64.zip",
+                "https://example.com/LingoPick-0.1.0-win-x64.zip",
+                5_000_000
+            )],
+        });
+        let info = parse_release(&release, "0.1.0").unwrap();
+        assert!(!info.has_update);
+        assert_eq!(info.asset_name, "");
+        assert_eq!(info.asset_url, "");
+        assert_eq!(info.size_bytes, 0);
+
+        let no_assets = json!({
+            "tag_name": "v0.1.0",
+            "body": "",
+            "published_at": "2026-10-24T12:00:00Z",
+            "assets": [],
+        });
+        let info = parse_release(&no_assets, "0.1.0").unwrap();
+        assert!(!info.has_update);
     }
 
     #[test]
