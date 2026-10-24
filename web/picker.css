@@ -232,6 +232,24 @@ body {
   height: 15px;
 }
 
+/* Overflowed skills (rendered above the configuration items). Their icons come
+ * from the shared skill icon table, same as the toolbar. */
+.menu-skill-item .menu-item-icon {
+  color: var(--text-muted);
+}
+
+.menu-skill-item:hover:not(:disabled) .menu-item-icon {
+  color: var(--primary);
+}
+
+/* Separator between the overflow skill list and the picker configuration. */
+.menu-divider {
+  flex: 0 0 auto;
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+
 .menu-item-text {
   display: flex;
   flex-direction: column;

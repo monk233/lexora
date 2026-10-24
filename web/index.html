@@ -250,12 +250,21 @@
 
               <div class="custom-skill-field">
                 <span class="custom-skill-label">图标</span>
-                <input class="input" id="custom-skill-icon-search" type="search"
-                       placeholder="搜索图标（英文 key，如 pen、book）"
-                       aria-label="搜索图标" autocomplete="off" spellcheck="false">
-                <div class="icon-grid" id="custom-skill-icons" role="radiogroup"
-                     aria-label="技能图标"></div>
-                <p class="inline-hint" id="custom-skill-icon-empty" hidden>没有匹配的图标，换个关键词试试</p>
+                <div class="custom-skill-icon-row">
+                  <span class="custom-skill-icon-preview" id="custom-skill-icon-preview"
+                        aria-hidden="true"></span>
+                  <span class="custom-skill-icon-current" id="custom-skill-icon-current">sparkles</span>
+                  <button type="button" class="btn" id="toggle-icon-picker"
+                          aria-expanded="false" aria-controls="custom-skill-icon-panel">更换图标</button>
+                </div>
+                <div class="custom-skill-icon-panel" id="custom-skill-icon-panel" hidden>
+                  <input class="input" id="custom-skill-icon-search" type="search"
+                         placeholder="搜索图标（英文 key，如 pen、book）"
+                         aria-label="搜索图标" autocomplete="off" spellcheck="false">
+                  <div class="icon-grid" id="custom-skill-icons" role="radiogroup"
+                       aria-label="技能图标"></div>
+                  <p class="inline-hint" id="custom-skill-icon-empty" hidden>没有匹配的图标，换个关键词试试</p>
+                </div>
               </div>
 
               <div class="custom-skill-field">

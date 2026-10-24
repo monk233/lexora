@@ -67,6 +67,9 @@
   /* Icon picker search query (filters LP.CUSTOM_SKILL_ICON_KEYS by key). */
   var iconSearchQuery = "";
 
+  /* Whether the compact icon picker panel is expanded inside the editor. */
+  var iconPickerOpen = false;
+
   /* Custom skill editor: open flag, edited id ("" means a new skill) and the
    * in-progress draft. The draft survives `state-changed` refreshes so a
    * background update never wipes what the user is typing. */
@@ -1480,6 +1483,47 @@
     );
   }
 
+  function renderIconPreview() {
+    var key = validCustomIcon(customDraft ? customDraft.icon : "");
+    var preview = byId("custom-skill-icon-preview");
+    if (preview) {
+      preview.innerHTML = LP.skillIconSvg(key);
+    }
+    var current = byId("custom-skill-icon-current");
+    if (current) {
+      var friendly = CUSTOM_ICON_LABELS[key] || "";
+      current.textContent = key;
+      current.title = friendly ? key + "（" + friendly + "）" : key;
+    }
+  }
+
+  /* Expand/collapse the compact icon gallery. Search state is reset on every
+   * open so it always starts from the full 200-icon list. */
+  function setIconPickerOpen(open) {
+    iconPickerOpen = !!open;
+    var panel = byId("custom-skill-icon-panel");
+    setHidden(panel, !customEditorOpen || !iconPickerOpen);
+    var toggle = byId("toggle-icon-picker");
+    if (toggle) {
+      toggle.setAttribute("aria-expanded", iconPickerOpen ? "true" : "false");
+      toggle.textContent = iconPickerOpen ? "收起图标" : "更换图标";
+    }
+    if (!iconPickerOpen) {
+      return;
+    }
+    iconSearchQuery = "";
+    assignFieldValue(byId("custom-skill-icon-search"), "");
+    renderCustomIconGrid(true);
+    var searchInput = byId("custom-skill-icon-search");
+    if (searchInput && searchInput.focus) {
+      searchInput.focus();
+    }
+  }
+
+  function toggleIconPicker() {
+    setIconPickerOpen(!iconPickerOpen);
+  }
+
   function renderCustomIconGrid(ensureSelectedVisible) {
     var grid = byId("custom-skill-icons");
     if (!grid) {
@@ -1537,6 +1581,16 @@
       title.textContent = customEditingId ? "编辑技能" : "新增技能";
     }
     setHidden(byId("delete-custom-skill"), !customEditingId);
+    renderIconPreview();
+    setHidden(byId("custom-skill-icon-panel"), !iconPickerOpen);
+    var iconToggle = byId("toggle-icon-picker");
+    if (iconToggle) {
+      iconToggle.setAttribute(
+        "aria-expanded",
+        iconPickerOpen ? "true" : "false"
+      );
+      iconToggle.textContent = iconPickerOpen ? "收起图标" : "更换图标";
+    }
     if (syncFields) {
       assignFieldValue(
         byId("custom-skill-name"),
@@ -1546,7 +1600,9 @@
         byId("custom-skill-prompt"),
         customDraft ? customDraft.prompt : ""
       );
-      renderCustomIconGrid(true);
+      if (iconPickerOpen) {
+        renderCustomIconGrid(true);
+      }
     }
   }
 
@@ -1567,6 +1623,7 @@
     };
     iconSearchQuery = "";
     assignFieldValue(byId("custom-skill-icon-search"), "");
+    iconPickerOpen = false;
     hideInlineError(byId("custom-skill-error"));
     disarmSkillDelete(byId("delete-custom-skill"));
     renderCustomSkillEditor(true);
@@ -1585,6 +1642,8 @@
     customEditorOpen = false;
     customEditingId = "";
     customDraft = null;
+    iconPickerOpen = false;
+    setHidden(byId("custom-skill-icon-panel"), true);
     disarmSkillDelete(byId("delete-custom-skill"));
     hideInlineError(byId("custom-skill-error"));
     renderCustomSkillEditor(false);
@@ -1596,7 +1655,8 @@
       return;
     }
     customDraft.icon = validCustomIcon(key);
-    renderCustomIconGrid();
+    renderIconPreview();
+    setIconPickerOpen(false);
   }
 
   function generateCustomSkillId(existing) {
@@ -2404,6 +2464,7 @@
     byId("add-custom-skill").addEventListener("click", function () {
       openCustomEditor("");
     });
+    byId("toggle-icon-picker").addEventListener("click", toggleIconPicker);
     byId("custom-skill-icons").addEventListener("click", function (event) {
       var button = event.target.closest && event.target.closest("[data-icon-key]");
       if (button) {
@@ -2437,6 +2498,10 @@
     byId("custom-skill-editor").addEventListener("keydown", function (event) {
       if (event.key === "Escape") {
         event.preventDefault();
+        if (iconPickerOpen) {
+          setIconPickerOpen(false);
+          return;
+        }
         closeCustomEditor();
         return;
       }

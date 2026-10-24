@@ -35,6 +35,15 @@
   var NO_VOICE_MESSAGE =
     "系统未安装可用的语音包：可在 Windows 设置 → 时间和语言 → 语音 中添加";
 
+  /* Toolbar overflow budget (CSS/logical px). Skills that no longer fit are
+   * moved into the "more" menu instead of widening (and clipping) the window.
+   * MORE_RESERVED_WIDTH covers the divider + more button (~54px), the two flex
+   * gaps around them and the transparent padding resizeToolbar adds. */
+  var MAX_TOOLBAR_WIDTH = 560;
+  var COMPACT_MAX_TOOLBAR_WIDTH = 420;
+  var MORE_RESERVED_WIDTH = 62;
+  var TOOLBAR_BUTTON_GAP = 2;
+
   /* Label fallback only: LP.SKILL_MAP is the primary source for built-in
    * labels/icons (see builtinSkillMeta). */
   var SKILL_LABELS = {
@@ -160,6 +169,9 @@
     text: "",
     programName: "",
     skills: DEFAULT_SKILLS.slice(),
+    /* Skills moved out of the toolbar because they do not fit (in toolbar
+     * order); the "more" menu renders them as skill items. */
+    overflowSkills: [],
     /* id -> {id, label, icon} for the custom skills enabled in settings. */
     customSkills: {},
     compact: false,
@@ -229,6 +241,10 @@
 
   /* ---- Window sizing --------------------------------------------------- */
 
+  function maxToolbarWidth() {
+    return state.compact ? COMPACT_MAX_TOOLBAR_WIDTH : MAX_TOOLBAR_WIDTH;
+  }
+
   function resizeToolbar() {
     // Never shrink while a menu or the result panel is open: the window must
     // stay large enough for the visible content (this was the clipped-menu bug).
@@ -237,8 +253,10 @@
     }
     var rect = toolbar.getBoundingClientRect();
     // Window = card + transparent padding (2px each side); keep it snug so the
-    // transparent area around the card stays minimal.
-    API.resize(Math.ceil(rect.width + 4), Math.ceil(rect.height + 4));
+    // transparent area around the card stays minimal. Skills are already
+    // capped to the toolbar budget, so this clamp is only a safety net.
+    var width = Math.min(Math.ceil(rect.width + 4), maxToolbarWidth());
+    API.resize(width, Math.ceil(rect.height + 4));
   }
 
   function scheduleToolbarResize() {
@@ -479,9 +497,41 @@
   function renderToolbar() {
     toolbar.innerHTML = "";
     toolbar.classList.toggle("compact", state.compact);
-    state.skills.forEach(function (skill) {
-      toolbar.appendChild(skillButton(skill));
+    var budget = maxToolbarWidth() - MORE_RESERVED_WIDTH;
+    var buttons = state.skills.map(function (skill) {
+      return skillButton(skill);
     });
+
+    // Measure unconstrained: max-content width with no viewport cap. Reading
+    // rect widths forces the layout so buttons keep their natural size while
+    // the window itself is still small.
+    toolbar.style.visibility = "hidden";
+    toolbar.style.maxWidth = "none";
+    buttons.forEach(function (button) {
+      toolbar.appendChild(button);
+    });
+    // Keep the first skills that fit in toolbar order; everything after the
+    // first overflow moves to the "more" menu as a contiguous block. Raw
+    // fractional widths are used so rounding does not push a button that
+    // actually fits (e.g. the last one) into the menu.
+    var used = 0;
+    var cutoff = buttons.length;
+    for (var index = 0; index < buttons.length; index += 1) {
+      var buttonWidth = buttons[index].getBoundingClientRect().width;
+      var next = used + (index ? TOOLBAR_BUTTON_GAP : 0) + buttonWidth;
+      if (next > budget) {
+        cutoff = index;
+        break;
+      }
+      used = next;
+    }
+    state.overflowSkills = state.skills.slice(cutoff);
+    for (var overflowIndex = cutoff; overflowIndex < buttons.length; overflowIndex += 1) {
+      toolbar.removeChild(buttons[overflowIndex]);
+    }
+    toolbar.style.maxWidth = "";
+    toolbar.style.visibility = "";
+
     toolbar.appendChild(el("span", "divider"));
     var more = el("button", "tool-btn more-btn");
     more.type = "button";
@@ -526,6 +576,34 @@
     return item;
   }
 
+  /* Skill entry in the overflow part of the "more" menu. Icons come from the
+   * shared icon table (same as the toolbar); the label is written through
+   * textContent so a custom skill name can never inject markup. */
+  function menuSkillItem(skill) {
+    var meta = skillMeta(skill);
+    var item = el("button", "menu-item menu-skill-item");
+    item.type = "button";
+    item.setAttribute("role", "menuitem");
+    item.setAttribute("data-skill", skill);
+    var icon = el("span", "menu-item-icon");
+    icon.innerHTML = skillIconSvg(meta.icon);
+    var text = el("span", "menu-item-text");
+    text.appendChild(el("span", "menu-item-label", meta.label));
+    item.appendChild(icon);
+    item.appendChild(text);
+    item.addEventListener("click", function () {
+      closeMenu();
+      runSkill(skill);
+    });
+    return item;
+  }
+
+  function menuDivider() {
+    var divider = el("div", "menu-divider");
+    divider.setAttribute("role", "separator");
+    return divider;
+  }
+
   function closeMenu() {
     if (menu.hidden) {
       return;
@@ -565,6 +643,14 @@
       return;
     }
     menu.innerHTML = "";
+    // Overflowed skills first (toolbar order), then a separator, then the
+    // picker configuration items. No overflow = the menu is unchanged.
+    if (state.overflowSkills.length) {
+      state.overflowSkills.forEach(function (skill) {
+        menu.appendChild(menuSkillItem(skill));
+      });
+      menu.appendChild(menuDivider());
+    }
     var appName = state.programName || "";
 
     menu.appendChild(

@@ -314,6 +314,8 @@ pub struct SelectionService {
 ### 7.1 picker（复刻现有 UI）
 - 从 `enterprise-ai-translator/electron/picker.html|picker.css|picker.js` 复制并改造：保留白主题工具栏、图标+文字、更多菜单、结果面板（标题/固定/关闭/语言选择）、loading 原文、流式译文、面板脚（朗读/复制/重试）、错误面板、toast、Escape 层级、面板固定、内容自适应。
 - 更多菜单只保留「在此应用中禁用」「划词设置…」「禁用划词工具」三项；不显示翻译服务状态块，也没有「关闭」项。
+- 技能过多溢出时，溢出技能按顺序列在菜单顶部（技能项），其后用一条分隔线与「在此应用中禁用 / 划词设置… / 禁用划词工具」配置项隔开；菜单高度超出时可滚动。
+- 工具栏宽度上限：普通模式 560px、compact 420px；超出宽度的技能收进更多菜单，避免窗口被屏幕边缘裁切。
 - API 层换成 `web/shared/tauri-api.js`：
   - 实现 `window.pickerAPI`：`ready/onData/onHidden/close/pin/resize/dragPanel/copy/openSettings/translate/abortTranslate/onTranslateEvent/assist/customSkill/status/disableInApp/disableTool` 映射到 §5.2 命令与 §5.3 事件（`listen` 返回 unlisten）。
   - 翻译：`invoke("picker_translate", {requestId,text,targetLang})` 返回错误时展示错误面板；`translate-event` 处理 chunk/error/done。
@@ -333,7 +335,7 @@ pub struct SelectionService {
   - 分段控件「在线 API / 本地模型」立即保存 mode。
   - 在线：预设下拉（DeepSeek/OpenAI/Moonshot/智谱/Ollama/LM Studio/自定义）、服务地址、API Key（password + 显示切换）、模型名下拉（[拉取模型] 通过 `list_online_models` 拉取 `/models`，并保留「自定义模型…」手填兜底）、[测试连接]（显示延迟/模型列表/错误）、状态徽标。切换预设必须清空上一个服务商的 API Key / 模型名与模型缓存，且**不再自动填充模型名**；已知预设只填服务地址。
   - 本地：引擎状态（未安装→[下载引擎]，显示进度/取消；已安装→版本状态）、已安装模型列表（显示名称、大小、角色徽标：翻译模型/通用模型/自定义模型；不再有模型下拉选择）、[下载模型]（弹目录列表：名称/大小/量化/协议/推荐标记/下载按钮+进度）、[导入 GGUF]、[启动]/[停止]、当前状态徽标与错误提示。启动时后端自动选择模型；停止后翻译/总结不会自动启动。
-- 划词行为：启用开关、技能开关 + 拖拽排序（无上下箭头）、每行显示技能图标（内置用 `LP.SKILL_MAP[id].icon`，自定义用自定义图标）、技能提示词编辑（行内展开 textarea，默认填充系统默认英文提示词，支持重置默认；translate 支持 `{target}` 占位符；支持 translate/summarize/explain/polish）、自定义技能管理（[添加技能] 打开内联表单：**200 个 Lucide 图标 + 名称搜索过滤**、名称 ≤20、提示词必填 ≤4000、变量提示 `{text}/{target}/{language}/{program}/{app}`；支持编辑、删除二次确认）、搜索配置（搜索行「配置」按钮展开 Google/百度/Bing，保存 `picker.searchEngine`）、紧凑模式、默认目标语言（auto 显示「自动识别」，共 38 种语言）、黑名单 chip 输入（回车添加/可删除）。快捷键功能已移除。恢复默认设置保留自定义技能与已下载模型/引擎。
+- 划词行为：启用开关、技能开关 + 拖拽排序（无上下箭头）、每行显示技能图标（内置用 `LP.SKILL_MAP[id].icon`，自定义用自定义图标）、技能提示词编辑（行内展开 textarea，默认填充系统默认英文提示词，支持重置默认；translate 支持 `{target}` 占位符；支持 translate/summarize/explain/polish）、自定义技能管理（[添加技能] 打开内联表单：**图标选择器默认紧凑显示当前图标预览 +「更换图标」，点击展开 200 个 Lucide 图标 + 名称搜索过滤**；名称 ≤20、提示词必填 ≤4000、变量提示 `{text}/{target}/{language}/{program}/{app}`；支持编辑、删除二次确认）、搜索配置（搜索行「配置」按钮展开 Google/百度/Bing，保存 `picker.searchEngine`）、紧凑模式、默认目标语言（auto 显示「自动识别」，共 38 种语言）、黑名单 chip 输入（回车添加/可删除）。快捷键功能已移除。恢复默认设置保留自定义技能与已下载模型/引擎。
 - 应用与启动：开机自启（portable 不支持时置灰说明）、关闭窗口后驻留托盘、打开数据/模型/日志/引擎目录、退出程序。
 - 关于：版本、Tauri/Rust 版本、MIT、GitHub 链接、引擎与模型状态。
 - 交互：改动即自动保存（文本 500ms 防抖），顶部短暂「已保存」；错误内联不弹模态；下载进度实时更新。

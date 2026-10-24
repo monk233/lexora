@@ -1144,9 +1144,9 @@ textarea {
 .custom-skill-editor {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
   margin-top: 4px;
-  padding: 14px;
+  padding: 12px 14px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--surface-muted);
@@ -1208,12 +1208,75 @@ textarea {
   margin-left: auto;
 }
 
+/* ---- Icon preview + expandable picker ----------------------------------- */
+
+.custom-skill-icon-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.custom-skill-icon-preview {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-muted);
+}
+
+.custom-skill-icon-preview svg {
+  width: 20px;
+  height: 20px;
+}
+
+.custom-skill-icon-current {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#toggle-icon-picker {
+  flex: 0 0 auto;
+  height: 36px;
+  min-width: 88px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+.custom-skill-icon-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 2px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.custom-skill-icon-panel .icon-grid {
+  max-height: 200px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
 .icon-grid {
   position: relative;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  height: 216px;
+  max-height: 200px;
   padding: 6px;
   border: 1px solid var(--border);
   border-radius: 8px;
