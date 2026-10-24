@@ -100,7 +100,7 @@ impl Runtime {
 /// Process manager for the bundled llama.cpp server.
 pub struct LocalServer {
     runtime: Mutex<Runtime>,
-    /// Serializes `ensure_ready` so two translations cannot race a spawn.
+    /// Serializes `ensure_model` so two requests cannot race a spawn.
     start_lock: tokio::sync::Mutex<()>,
 }
 
@@ -155,18 +155,29 @@ impl LocalServer {
             && runtime.model_file.eq_ignore_ascii_case(model_file.trim())
     }
 
-    /// Starts (or reuses) the server and returns the base URL.
-    pub async fn ensure_ready(
+    /// Starts (or reuses) the server for `model_file` and returns the base URL.
+    /// A different running model is stopped first (role-based model switching).
+    pub async fn ensure_model(
         &self,
         paths: &AppPaths,
         settings: &Settings,
+        model_file: &str,
         http: &reqwest::Client,
         logger: &Logger,
     ) -> Result<String, EngineError> {
         let _guard = self.start_lock.lock().await;
+        let model_file = model_file.trim().to_string();
+        if model_file.is_empty() {
+            return Err(EngineError::new(
+                "尚未安装本地模型。",
+                "请先在「设置 → 本地模型」下载 Hy-MT2 或 Qwen2.5 3B，也可以导入 GGUF 文件。",
+            ));
+        }
 
         let snapshot = self.snapshot();
-        if snapshot.state == LocalState::Ready {
+        if snapshot.state == LocalState::Ready
+            && snapshot.model_file.eq_ignore_ascii_case(&model_file)
+        {
             if let Some(url) = self.base_url() {
                 return Ok(url);
             }
@@ -180,14 +191,6 @@ impl LocalServer {
             ));
         }
 
-        let local = &settings.provider.local;
-        let model_file = local.model_file.trim().to_string();
-        if model_file.is_empty() {
-            return Err(EngineError::new(
-                "尚未选择本地模型。",
-                "请先下载或导入 GGUF 模型，并在「本地模型」下拉框中选择一个。",
-            ));
-        }
         let model_path = paths.models_dir.join(&model_file);
         if !model_path.is_file() {
             return Err(EngineError::new(
@@ -196,9 +199,18 @@ impl LocalServer {
             ));
         }
 
+        if !snapshot.model_file.is_empty() && !snapshot.model_file.eq_ignore_ascii_case(&model_file)
+        {
+            logger.info(&format!(
+                "switching local model: {} -> {model_file}",
+                snapshot.model_file
+            ));
+        }
+
         // Drop a stale process (crashed, errored, or another model) first.
         self.stop(Some(logger));
 
+        let local = &settings.provider.local;
         let port = free_port()?;
         let context_size = local.context_size.clamp(1024, 32_768);
         let threads = resolve_threads(local.threads);

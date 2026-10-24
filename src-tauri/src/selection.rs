@@ -17,7 +17,6 @@
 //! own events.
 
 mod hook;
-mod shortcut;
 mod uia;
 mod win;
 
@@ -31,9 +30,7 @@ use serde::Serialize;
 use tauri::Manager;
 
 use crate::logger::Logger;
-use crate::settings::{Settings, SettingsStore, DEFAULT_SHORTCUT};
-
-use shortcut::ShortcutSpec;
+use crate::settings::{Settings, SettingsStore};
 
 /// Window label of the toolbar, see `tauri.conf.json`.
 const PICKER_LABEL: &str = "picker";
@@ -62,14 +59,15 @@ pub struct PickerPayload {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TriggerSource {
     Mouse,
-    Hotkey,
+    /// Multi-click (double/triple click) selection, not a drag.
+    Click,
 }
 
 impl TriggerSource {
     fn label(self) -> &'static str {
         match self {
             TriggerSource::Mouse => "鼠标拖选",
-            TriggerSource::Hotkey => "快捷键",
+            TriggerSource::Click => "鼠标多击选词",
         }
     }
 }
@@ -86,6 +84,10 @@ struct CaptureRequest {
 enum ActionRequest {
     /// Left button pressed outside of the picker: hide it unless pinned.
     OutsideClick { x: i32, y: i32 },
+    /// The user pressed a key / scrolled / clicked another button while the
+    /// toolbar was visible: the toolbar is an auxiliary overlay and must not
+    /// get in the way of normal work, so it disappears.
+    DismissOnInput { reason: &'static str },
 }
 
 /// Settings-derived data used by the capture worker. Replaced atomically on
@@ -111,13 +113,12 @@ impl Default for WorkerConfig {
 struct Inner {
     logger: Logger,
     own_pid: u32,
-    /// Normalized image name of this executable, e.g. `lingopick`.
+    /// Normalized image name of this executable, e.g. `lexora`.
     own_program: String,
     app: OnceLock<tauri::AppHandle>,
     capture_tx: Mutex<Option<Sender<CaptureRequest>>>,
     action_tx: Mutex<Option<Sender<ActionRequest>>>,
     enabled: AtomicBool,
-    shortcut: Mutex<Option<ShortcutSpec>>,
     worker_config: Mutex<WorkerConfig>,
     picker_visible: AtomicBool,
     panel_pinned: AtomicBool,
@@ -129,10 +130,6 @@ struct Inner {
 }
 
 impl Inner {
-    fn shortcut(&self) -> Option<ShortcutSpec> {
-        *lock(&self.shortcut)
-    }
-
     fn config(&self) -> WorkerConfig {
         lock(&self.worker_config).clone()
     }
@@ -209,7 +206,6 @@ impl SelectionService {
             capture_tx: Mutex::new(None),
             action_tx: Mutex::new(None),
             enabled: AtomicBool::new(true),
-            shortcut: Mutex::new(None),
             worker_config: Mutex::new(WorkerConfig::default()),
             picker_visible: AtomicBool::new(false),
             panel_pinned: AtomicBool::new(false),
@@ -239,7 +235,7 @@ impl SelectionService {
 
         let capture_inner = self.inner.clone();
         if let Err(error) = thread::Builder::new()
-            .name("lingopick-capture".to_string())
+            .name("lexora-capture".to_string())
             .spawn(move || capture_worker(capture_inner, capture_rx))
         {
             self.inner
@@ -249,7 +245,7 @@ impl SelectionService {
 
         let action_inner = self.inner.clone();
         if let Err(error) = thread::Builder::new()
-            .name("lingopick-picker-action".to_string())
+            .name("lexora-picker-action".to_string())
             .spawn(move || action_worker(action_inner, action_rx))
         {
             self.inner
@@ -267,30 +263,13 @@ impl SelectionService {
     pub fn apply_settings(&self, settings: &Settings) {
         let picker = &settings.picker;
         self.inner.enabled.store(picker.enabled, Ordering::Release);
-
-        let mut parsed = shortcut::parse_shortcut(&picker.shortcut);
-        if parsed.is_none() {
-            parsed = shortcut::parse_shortcut(DEFAULT_SHORTCUT);
-            self.inner.logger.warn(&format!(
-                "快捷键 {:?} 无效，已回退为默认值 {}",
-                picker.shortcut, DEFAULT_SHORTCUT
-            ));
-        }
-        *lock(&self.inner.shortcut) = parsed;
         *lock(&self.inner.worker_config) = config_from_settings(settings);
 
         self.inner.logger.info(&format!(
-            "划词设置已应用：启用={}，快捷键={}，黑名单={} 项",
+            "划词设置已应用：启用={}，黑名单={} 项",
             picker.enabled,
-            picker.shortcut,
             picker.blacklist.len()
         ));
-    }
-
-    /// Capture whatever is selected in the foreground application right now.
-    /// Used by tray/commands; identical to pressing the configured hotkey.
-    pub fn trigger_from_hotkey(&self) {
-        self.inner.send_capture(TriggerSource::Hotkey, None);
     }
 
     /// State pushed by the picker window so outside clicks can be detected.
@@ -418,36 +397,64 @@ fn process_capture(inner: &Arc<Inner>, request: &CaptureRequest) -> Result<(), S
 }
 
 fn action_worker(inner: Arc<Inner>, receiver: Receiver<ActionRequest>) {
-    while let Ok(ActionRequest::OutsideClick { x, y }) = receiver.recv() {
-        if inner.panel_pinned.load(Ordering::Acquire) {
-            continue;
+    while let Ok(request) = receiver.recv() {
+        match request {
+            ActionRequest::OutsideClick { x, y } => {
+                if inner.panel_pinned.load(Ordering::Acquire) {
+                    continue;
+                }
+                let Some(app) = inner.app.get() else {
+                    continue;
+                };
+                let Some(window) = app.get_webview_window(PICKER_LABEL) else {
+                    inner.picker_visible.store(false, Ordering::Release);
+                    continue;
+                };
+                // The authoritative visibility check: `set_picker_visible` may lag
+                // behind a hide performed by the window/main layer.
+                if !window.is_visible().unwrap_or(false) {
+                    inner.picker_visible.store(false, Ordering::Release);
+                    continue;
+                }
+                let (Ok(position), Ok(size)) = (window.outer_position(), window.outer_size())
+                else {
+                    continue;
+                };
+                // Positions from Tauri are physical pixels, like the hook coordinates.
+                let inside = x >= position.x
+                    && x < position.x + size.width as i32
+                    && y >= position.y
+                    && y < position.y + size.height as i32;
+                if inside {
+                    continue;
+                }
+                crate::windows::hide_picker(app);
+                inner.picker_visible.store(false, Ordering::Release);
+            }
+            ActionRequest::DismissOnInput { reason } => {
+                if inner.panel_pinned.load(Ordering::Acquire) {
+                    continue;
+                }
+                // A keypress that arrived right before a fresh capture (e.g. the
+                // modifier of the hotkey that re-opened the toolbar) must not
+                // immediately hide the new toolbar.
+                if crate::windows::show_guard_active() {
+                    continue;
+                }
+                let Some(app) = inner.app.get() else {
+                    continue;
+                };
+                if !crate::windows::is_picker_visible(app) {
+                    inner.picker_visible.store(false, Ordering::Release);
+                    continue;
+                }
+                crate::windows::hide_picker(app);
+                inner.picker_visible.store(false, Ordering::Release);
+                inner
+                    .logger
+                    .info(&format!("用户操作（{reason}），picker 已自动隐藏"));
+            }
         }
-        let Some(app) = inner.app.get() else {
-            continue;
-        };
-        let Some(window) = app.get_webview_window(PICKER_LABEL) else {
-            inner.picker_visible.store(false, Ordering::Release);
-            continue;
-        };
-        // The authoritative visibility check: `set_picker_visible` may lag
-        // behind a hide performed by the window/main layer.
-        if !window.is_visible().unwrap_or(false) {
-            inner.picker_visible.store(false, Ordering::Release);
-            continue;
-        }
-        let (Ok(position), Ok(size)) = (window.outer_position(), window.outer_size()) else {
-            continue;
-        };
-        // Positions from Tauri are physical pixels, like the hook coordinates.
-        let inside = x >= position.x
-            && x < position.x + size.width as i32
-            && y >= position.y
-            && y < position.y + size.height as i32;
-        if inside {
-            continue;
-        }
-        crate::windows::hide_picker(app);
-        inner.picker_visible.store(false, Ordering::Release);
     }
 }
 
@@ -481,8 +488,32 @@ fn config_from_settings(settings: &Settings) -> WorkerConfig {
             "skills": &settings.picker.skills,
             "compact": settings.picker.compact,
             "defaultTargetLang": &settings.picker.default_target_lang,
+            // Search engine used by the built-in `search` skill.
+            "searchEngine": &settings.picker.search_engine,
+            // Only enabled custom skills are sent to the picker; the full
+            // definition (including the prompt) stays in settings.
+            "customSkills": enabled_custom_skill_metadata(settings),
         }),
     }
+}
+
+/// Metadata (`{id,label,icon}`) of the custom skills enabled in
+/// `picker.skills`, in their stored order. Prompts are never exposed here: the
+/// picker only needs them to render the toolbar and dispatch the command.
+fn enabled_custom_skill_metadata(settings: &Settings) -> Vec<serde_json::Value> {
+    settings
+        .picker
+        .custom_skills
+        .iter()
+        .filter(|skill| settings.picker.skills.iter().any(|id| id == &skill.id))
+        .map(|skill| {
+            serde_json::json!({
+                "id": skill.id,
+                "label": skill.label,
+                "icon": skill.icon,
+            })
+        })
+        .collect()
 }
 
 /// Lower-cases a process name and strips a trailing `.exe` so `Chrome.EXE`,
@@ -569,10 +600,10 @@ mod tests {
 
     #[test]
     fn own_program_is_ignored() {
-        assert!(is_own_program("LingoPick.EXE", "lingopick"));
-        assert!(is_own_program("lingopick", "lingopick.exe"));
-        assert!(!is_own_program("chrome.exe", "lingopick"));
-        assert!(!is_own_program("", "lingopick"));
+        assert!(is_own_program("Lexora.EXE", "lexora"));
+        assert!(is_own_program("lexora", "lexora.exe"));
+        assert!(!is_own_program("chrome.exe", "lexora"));
+        assert!(!is_own_program("", "lexora"));
         assert!(!is_own_program("", ""));
     }
 
@@ -607,6 +638,12 @@ mod tests {
     }
 
     #[test]
+    fn trigger_sources_have_log_labels() {
+        assert_eq!(TriggerSource::Mouse.label(), "鼠标拖选");
+        assert_eq!(TriggerSource::Click.label(), "鼠标多击选词");
+    }
+
+    #[test]
     fn picker_config_matches_contract() {
         let mut settings = Settings::default();
         settings.picker.compact = true;
@@ -616,7 +653,49 @@ mod tests {
         let config = config_from_settings(&settings);
         assert_eq!(config.picker_config["compact"], true);
         assert_eq!(config.picker_config["defaultTargetLang"], "zh");
+        assert_eq!(config.picker_config["searchEngine"], "google");
         assert_eq!(config.picker_config["skills"][0], "translate");
         assert_eq!(config.picker_config["skills"][1], "copy");
+        assert_eq!(config.picker_config["customSkills"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn picker_config_forwards_the_configured_search_engine() {
+        let mut settings = Settings::default();
+        settings.picker.search_engine = "bing".to_string();
+
+        let config = config_from_settings(&settings);
+        assert_eq!(config.picker_config["searchEngine"], "bing");
+    }
+
+    #[test]
+    fn picker_config_exposes_only_enabled_custom_skills() {
+        let mut settings = Settings::default();
+        settings.picker.skills = vec!["translate".to_string(), "custom-enabled".to_string()];
+        settings.picker.custom_skills = vec![
+            crate::settings::CustomSkill {
+                id: "custom-disabled".to_string(),
+                label: "未启用".to_string(),
+                icon: "star".to_string(),
+                prompt: "disabled {text}".to_string(),
+            },
+            crate::settings::CustomSkill {
+                id: "custom-enabled".to_string(),
+                label: "已启用".to_string(),
+                icon: "wand".to_string(),
+                prompt: "Explain {text} for {program} in {target}".to_string(),
+            },
+        ];
+
+        let config = config_from_settings(&settings);
+        let custom = config.picker_config["customSkills"]
+            .as_array()
+            .expect("customSkills must be an array");
+        assert_eq!(custom.len(), 1, "customSkills: {custom:?}");
+        assert_eq!(custom[0]["id"], "custom-enabled");
+        assert_eq!(custom[0]["label"], "已启用");
+        assert_eq!(custom[0]["icon"], "wand");
+        // Prompts stay in settings; the picker never receives them.
+        assert!(custom[0].get("prompt").is_none());
     }
 }

@@ -2,11 +2,10 @@
 /**
  * Local-mode end-to-end check through the WebView2 DevTools protocol.
  *
- * Requires a llama.cpp engine and a GGUF model on this machine, e.g.:
+ * Requires a llama.cpp engine and at least one GGUF model in the model dir, e.g.:
  *
- *   $env:LINGOPICK_LLAMA_DIR = "E:\...\enterprise-ai-translator\vendor\llama"
- *   $env:LINGOPICK_MODEL_DIR = "E:\...\enterprise-ai-translator\models"
- *   $env:LINGOPICK_E2E_MODEL = "qwen2.5-3b-instruct-q4_k_m.gguf"
+ *   $env:LEXORA_LLAMA_DIR = "E:\...\enterprise-ai-translator\vendor\llama"
+ *   $env:LEXORA_MODEL_DIR = "E:\...\enterprise-ai-translator\models"
  *   node tests/e2e-local-cdp.mjs
  *
  * The app is started with a temporary data directory; it never touches the real
@@ -21,31 +20,30 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const exe = path.join(root, "src-tauri", "target", "debug", "lingopick.exe");
-const engineDir = process.env.LINGOPICK_LLAMA_DIR || "";
-const modelDir = process.env.LINGOPICK_MODEL_DIR || "";
-const modelFile = process.env.LINGOPICK_E2E_MODEL || "qwen2.5-3b-instruct-q4_k_m.gguf";
+const exe = path.join(root, "src-tauri", "target", "debug", "lexora.exe");
+const engineDir = process.env.LEXORA_LLAMA_DIR || "";
+const modelDir = process.env.LEXORA_MODEL_DIR || "";
 const debugPort = 9334;
 
 if (!engineDir || !modelDir) {
-  console.error("Set LINGOPICK_LLAMA_DIR and LINGOPICK_MODEL_DIR first.");
+  console.error("Set LEXORA_LLAMA_DIR and LEXORA_MODEL_DIR first.");
   process.exit(2);
 }
 
-const dataDir = mkdtempSync(path.join(tmpdir(), "lingopick-e2e-local-"));
+const dataDir = mkdtempSync(path.join(tmpdir(), "lexora-e2e-local-"));
 mkdirSync(path.join(dataDir, "logs"), { recursive: true });
 writeFileSync(
   path.join(dataDir, "settings.json"),
   JSON.stringify(
     {
       version: 1,
-      picker: { enabled: true, shortcut: "Ctrl+Shift+D", skills: ["translate", "summarize", "explain", "read", "copy"], compact: false, defaultTargetLang: "auto", blacklist: [], maxChars: 5000 },
+      picker: { enabled: true, skills: ["translate", "summarize", "explain", "read", "copy"], compact: false, defaultTargetLang: "auto", blacklist: [], maxChars: 5000 },
       provider: {
         mode: "local",
         online: { preset: "custom", baseUrl: "", apiKey: "", model: "", timeoutMs: 60000, temperature: 0.2, maxTokens: 512 },
-        local: { modelFile, contextSize: 4096, threads: 0, gpuLayers: 0, autoStart: false },
+        local: { contextSize: 4096, threads: 0, gpuLayers: 0, autoStart: false },
       },
-      app: { closeToTray: true, startAtLogin: false, theme: "light", firstRunDone: true },
+      app: { closeToTray: true, startAtLogin: false, theme: "light" },
     },
     null,
     2
@@ -136,7 +134,7 @@ async function main() {
     cwd: root,
     env: {
       ...process.env,
-      LINGOPICK_DATA_DIR: dataDir,
+      LEXORA_DATA_DIR: dataDir,
       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort}`,
     },
     stdio: "ignore",
@@ -197,12 +195,27 @@ async function main() {
     })()`, 150000);
     check("local streaming translation", translation && translation.ok === true, `chunks=${translation && translation.chunks} text=${String(translation && translation.text).slice(0, 60)}`);
 
-    const assist = await picker.evaluate(
-      "window.__TAURI__.core.invoke('picker_assist', {action:'summarize', text:'LingoPick is a portable selection translator for Windows. It supports online and offline models.'})",
-      150000
-    );
-    check("local assist", assist && assist.ok === true && typeof assist.text === "string" && assist.text.length > 0, String(assist && assist.text).slice(0, 60));
-
+    const assist = await picker.evaluate(`(async () => {
+      const { core, event } = window.__TAURI__;
+      const requestId = 'e2e-local-assist-' + Date.now();
+      let text = '';
+      let chunks = 0;
+      let failure = '';
+      const finished = new Promise((resolve) => {
+        const unlisten = event.listen('translate-event', (e) => {
+          const payload = e.payload || {};
+          if (payload.requestId !== requestId) return;
+          if (payload.type === 'chunk') { text += payload.text || ''; chunks += 1; }
+          if (payload.type === 'error') { failure = payload.message || 'error'; unlisten(); resolve(); }
+          if (payload.type === 'done') { unlisten(); resolve(); }
+        });
+      });
+      const start = await core.invoke('picker_assist', { requestId, action: 'summarize', text: 'Lexora is a portable selection translator for Windows. It supports online and offline models.' });
+      if (!start || start.ok !== true) return { ok: false, error: (start && start.error) || 'start failed' };
+      await Promise.race([finished, new Promise((r) => setTimeout(r, 120000))]);
+      return { ok: !failure && text.length > 0 && !text.includes('[MOCK]'), text, chunks, failure };
+    })()`, 150000);
+    check("local assist streaming", assist && assist.ok === true, `chunks=${assist && assist.chunks} text=${String(assist && assist.text).slice(0, 60)}`);
     const stopped = await settings.evaluate("window.__TAURI__.core.invoke('stop_local').then(r => r, e => ({ok:false, error:String(e)}))");
     check("stop_local", stopped && stopped.ok === true, JSON.stringify(stopped).slice(0, 120));
   } catch (error) {

@@ -1,11 +1,11 @@
 # 架构说明
 
-LingoPick 是一个 Windows 桌面划词翻译工具，使用 Tauri v2 构建：Rust 负责系统集成与翻译，WebView2 渲染 UI，发布为免安装单 exe。
+Lexora 是一个 Windows 桌面划词翻译工具，使用 Tauri v2 构建：Rust 负责系统集成与翻译，WebView2 渲染 UI，发布为免安装单 exe。
 
 ## 进程与线程
 
 ```
-lingopick.exe
+lexora.exe
 ├─ 主线程 / Tauri runtime
 │   ├─ settings 窗口（WebView2，index.html）
 │   ├─ picker 窗口（WebView2，透明置顶，picker.html）
@@ -13,7 +13,7 @@ lingopick.exe
 │   ├─ Tauri 命令（翻译、设置、模型下载、窗口控制）
 │   └─ 异步任务：reqwest 流式翻译、llama-server 启停、下载
 ├─ 输入钩子线程（rdev）
-│   └─ 鼠标拖动/快捷键/外部点击判断 → channel
+│   └─ 鼠标拖动/多击/外部点击判断 → channel
 ├─ 取词线程（每次请求一个，可抛弃）
 │   └─ Windows UI Automation(COM) 读取选中文本，1.5s 看门狗
 └─ llama-server.exe（本地模式，子进程）
@@ -26,13 +26,14 @@ lingopick.exe
 | `main.rs` | Tauri Builder、插件、窗口事件、生命周期、退出清理 |
 | `commands.rs` | 全部 `invoke` 命令；组装 `StatePayload` 广播前端 |
 | `windows.rs` | picker/settings 窗口几何（物理坐标 clamp）、显示/隐藏、pending payload |
+| `updater.rs` | 检查 GitHub Release、下载并替换 exe、助手脚本重启（自更新） |
 | `tray.rs` | 托盘图标与菜单（显示设置、启用划词、本地引擎启停、退出） |
 | `state.rs` | `AppState`：paths、logger、settings store、engine、selection、翻译任务句柄 |
 | `settings.rs` | 设置 schema、归一化、原子持久化（`settings.json`） |
 | `paths.rs` | 便携数据目录解析（exe 同级 `data/` 优先，回退 `%APPDATA%`） |
 | `logger.rs` | 滚动文件日志，API Key 脱敏 |
 | `win32.rs` | Win32 FFI：光标、显示器工作区、DPI |
-| `selection.rs` | `rdev` 全局钩子、快捷键解析、拖选判定、触发取词、外部点击隐藏 |
+| `selection.rs` | `rdev` 全局钩子、拖选/多击判定、触发取词、外部点击与键盘操作隐藏 |
 | `selection/uia.rs` | 原生 UI Automation COM 取词（`CUIAutomation8` + 超时 + 重试） |
 | `engine.rs` | 引擎门面：在线/本地路由、状态、模型/引擎下载 |
 | `engine/openai.rs` | OpenAI 兼容 `/chat/completions` SSE 流式客户端 |
@@ -42,12 +43,12 @@ lingopick.exe
 
 ## 取词数据流
 
-1. 用户拖动选中文本（或按 `Ctrl+Shift+D`）。
-2. `rdev` 钩子判断「位移 ≥ 6px 的左键抬起」或快捷键，向取词通道投递请求（回调内只做轻量判断）。
+1. 用户拖动选中文本，或双击/三击选中单词/段落。
+2. `rdev` 钩子判断「位移 ≥ 6px 的左键抬起」或多击（同一位置、间隔 ≤ 双击时间），向取词通道投递请求（回调内只做轻量判断）。
 3. 过滤：功能开关、自身进程、黑名单、同文本 400ms 去重。
 4. 独立线程创建 UIA COM 客户端（连接/事务超时 1.5s/1s），读取焦点元素的 TextPattern 选区；失败重试 2 次；主线程 `recv_timeout(1.5s)` 看门狗，超时放弃。
 5. 得到文本 + 鼠标物理坐标 + 显示器 scale，调用 `windows::show_picker`：用 `PhysicalPosition` 定位并 clamp 到工作区，展示 picker 窗口，推送 `picker-data` 事件。
-6. 点击「更多」可临时禁用当前应用/工具、打开设置或关闭；点击外部自动隐藏（面板固定时除外）。
+6. 点击「更多」可临时禁用当前应用/工具、打开设置或关闭；点击外部自动隐藏（面板固定时除外）。鼠标滚轮/触摸板滚动不会隐藏工具栏，长结果可在面板内滚动阅读；结果按 Markdown 渲染（`web/shared/markdown.js`，HTML 先转义，链接经 `open_external` 打开）。
 
 ## 翻译数据流
 
@@ -70,7 +71,7 @@ picker.js → invoke("picker_translate", {requestId,text,targetLang})
 
 ## 设置与便携
 
-`settings.json` 与模型/引擎都放在数据目录（默认 exe 同级 `data/`），因此解压到 U 盘或任意目录都能独立使用。数据目录不可写时回退 `%APPDATA%\LingoPick`。
+`settings.json` 与模型/引擎都放在数据目录（默认 exe 同级 `data/`），因此解压到 U 盘或任意目录都能独立使用。数据目录不可写时回退 `%APPDATA%\Lexora`。
 
 ## 安全与隐私
 

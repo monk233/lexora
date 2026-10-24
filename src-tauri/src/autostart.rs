@@ -3,14 +3,14 @@
 //! The official autostart plugins write the raw executable path into
 //! `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, which breaks when the
 //! path contains spaces (common for portable installs such as
-//! `D:\Tools\Lingo Pick\lingopick.exe`). We write the value ourselves so the
+//! `D:\Tools\Lingo Pick\lexora.exe`). We write the value ourselves so the
 //! executable is always quoted.
 
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
 use winreg::RegKey;
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-const VALUE_NAME: &str = "LingoPick";
+const VALUE_NAME: &str = "Lexora";
 
 fn current_exe() -> Option<String> {
     std::env::current_exe()
@@ -18,7 +18,7 @@ fn current_exe() -> Option<String> {
         .map(|path| path.to_string_lossy().to_string())
 }
 
-/// Command line stored in the registry, e.g. `"C:\Tools\LingoPick\lingopick.exe" --autostart`.
+/// Command line stored in the registry, e.g. `"C:\Tools\Lexora\lexora.exe" --autostart`.
 pub fn command_line() -> Option<String> {
     current_exe().map(|exe| format!("\"{exe}\" --autostart"))
 }

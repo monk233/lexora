@@ -12,11 +12,11 @@ data/
 .e2e-data/
 .e2e-*/
 
+# e2e scratch input file
+test-text.txt
+
 # Local UI preview / screenshots
 .tmp-ui/
-
-# Script staging output
-LingoPick-PORTABLE.txt
 
 .DS_Store
 Thumbs.db

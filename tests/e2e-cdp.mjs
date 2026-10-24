@@ -3,10 +3,10 @@
  * End-to-end check through the WebView2 DevTools protocol.
  *
  * Prerequisites:
- *   - `npx tauri build --debug --no-bundle` produced src-tauri/target/debug/lingopick.exe
+ *   - `npx tauri build --debug --no-bundle` produced src-tauri/target/debug/lexora.exe
  *   - `node tests/mock-openai-server.js 8770` is already running
  *
- * The script starts LingoPick with a temporary data directory whose settings
+ * The script starts Lexora with a temporary data directory whose settings
  * point at the mock OpenAI server, then uses CDP `Runtime.evaluate` to invoke the
  * real Tauri commands (`test_online`, `picker_translate`, `picker_assist`) and
  * asserts on the results. It never touches the user's real data directory.
@@ -21,8 +21,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const exe = process.env.LINGOPICK_E2E_EXE || path.join(root, "src-tauri", "target", "debug", "lingopick.exe");
-const dataDir = mkdtempSync(path.join(tmpdir(), "lingopick-e2e-"));
+const exe = process.env.LEXORA_E2E_EXE || path.join(root, "src-tauri", "target", "debug", "lexora.exe");
+const dataDir = mkdtempSync(path.join(tmpdir(), "lexora-e2e-"));
 const debugPort = 9333;
 
 mkdirSync(path.join(dataDir, "logs"), { recursive: true });
@@ -32,13 +32,13 @@ writeFileSync(
   JSON.stringify(
     {
       version: 1,
-      picker: { enabled: true, shortcut: "Ctrl+Shift+D", skills: ["translate", "summarize", "explain", "read", "copy"], compact: false, defaultTargetLang: "auto", blacklist: [], maxChars: 5000 },
+      picker: { enabled: true, skills: ["translate", "summarize", "explain", "read", "copy"], compact: false, defaultTargetLang: "auto", blacklist: [], maxChars: 5000 },
       provider: {
         mode: "online",
         online: { preset: "custom", baseUrl: "http://127.0.0.1:8770/v1", apiKey: "test-key", model: "mock-qwen", timeoutMs: 20000, temperature: 0.2, maxTokens: 512 },
-        local: { modelFile: "", contextSize: 4096, threads: 0, gpuLayers: 0, autoStart: false },
+        local: { contextSize: 4096, threads: 0, gpuLayers: 0, autoStart: false },
       },
-      app: { closeToTray: true, startAtLogin: false, theme: "light", firstRunDone: true },
+      app: { closeToTray: true, startAtLogin: false, theme: "light" },
     },
     null,
     2
@@ -129,7 +129,7 @@ async function main() {
     cwd: root,
     env: {
       ...process.env,
-      LINGOPICK_DATA_DIR: dataDir,
+      LEXORA_DATA_DIR: dataDir,
       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort}`,
     },
     stdio: "ignore",
@@ -190,10 +190,27 @@ async function main() {
     })()`);
     check("picker_translate streaming", streaming && streaming.ok === true, `chunks=${streaming && streaming.chunkCount} text=${String(streaming && streaming.text).slice(0, 40)}`);
 
-    const assist = await picker.evaluate(
-      "window.__TAURI__.core.invoke('picker_assist', {action:'summarize', text:'LingoPick is a portable selection translator for Windows.'})"
-    );
-    check("picker_assist", assist && assist.ok === true && typeof assist.text === "string", `text=${String(assist && assist.text).slice(0, 40)}`);
+    const assist = await picker.evaluate(`(async () => {
+      const { core, event } = window.__TAURI__;
+      const requestId = 'e2e-assist-' + Date.now();
+      let text = '';
+      let chunks = 0;
+      let failure = '';
+      const done = new Promise((resolve) => {
+        const unlisten = event.listen('translate-event', (e) => {
+          const payload = e.payload || {};
+          if (payload.requestId !== requestId) return;
+          if (payload.type === 'chunk') { text += payload.text || ''; chunks += 1; }
+          if (payload.type === 'error') { failure = payload.message || 'error'; unlisten(); resolve(); }
+          if (payload.type === 'done') { unlisten(); resolve(); }
+        });
+      });
+      const start = await core.invoke('picker_assist', { requestId, action: 'summarize', text: 'Lexora is a portable selection translator for Windows.' });
+      if (!start || start.ok !== true) return { ok: false, error: (start && start.error) || 'start failed' };
+      await Promise.race([done, new Promise((r) => setTimeout(r, 15000))]);
+      return { ok: !failure && text.length > 0, text, chunks, failure };
+    })()`);
+    check("picker_assist streaming", assist && assist.ok === true, `chunks=${assist && assist.chunks} text=${String(assist && assist.text).slice(0, 40)}`);
   } catch (error) {
     check("e2e harness", false, error.message);
   } finally {

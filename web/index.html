@@ -5,7 +5,7 @@
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src ipc: http://ipc.localhost">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>LingoPick 设置</title>
+  <title>Lexora 设置</title>
   <link rel="stylesheet" href="settings.css">
 </head>
 <body>
@@ -14,13 +14,23 @@
       <div class="brand">
         <span class="brand-mark" aria-hidden="true">
           <svg viewBox="0 0 32 32" role="presentation">
-            <rect width="32" height="32" rx="8" fill="currentColor"></rect>
-            <text x="16" y="21.5" text-anchor="middle" font-size="15" font-weight="600" fill="#ffffff">译</text>
+            <defs>
+              <linearGradient id="lexoraBrandGradient" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#6366f1"></stop>
+                <stop offset="1" stop-color="#5b21b6"></stop>
+              </linearGradient>
+            </defs>
+            <rect width="32" height="32" rx="8" fill="url(#lexoraBrandGradient)"></rect>
+            <path d="M9.5 13.5v-4h4M18.5 9.5h4v4M22.5 18.5v4h-4M13.5 22.5h-4v-4"
+                  fill="none" stroke="#ffffff" stroke-width="2.4"
+                  stroke-linecap="round" stroke-linejoin="round"></path>
+            <path d="M16 12.4 19.6 16 16 19.6 12.4 16Z" fill="none"
+                  stroke="#ffffff" stroke-width="2.2" stroke-linejoin="round"></path>
           </svg>
         </span>
         <div class="brand-text">
-          <span class="brand-title">LingoPick</span>
-          <span class="brand-sub">划词翻译 · 设置</span>
+          <span class="brand-title">Lexora</span>
+          <span class="brand-sub">划词翻译与阅读助手 · 设置</span>
         </div>
       </div>
       <div class="save-status" id="save-status" data-state="idle" role="status" aria-live="polite">
@@ -51,7 +61,7 @@
           <div class="field">
             <div class="field-label">
               <label for="online-preset">服务商预设</label>
-              <p class="field-hint" id="online-preset-hint">切换预设会自动填入服务地址与推荐模型</p>
+              <p class="field-hint" id="online-preset-hint">切换预设会填入服务地址，并清空 API Key 与模型名</p>
             </div>
             <div class="field-control">
               <select class="select" id="online-preset"></select>
@@ -100,11 +110,18 @@
           <div class="field">
             <div class="field-label">
               <label for="online-model">模型名</label>
-              <p class="field-hint">例如 deepseek-chat、gpt-4o-mini、qwen2.5:1.5b</p>
+              <p class="field-hint">从服务端 /models 拉取；也可选「自定义模型…」手动填写</p>
             </div>
             <div class="field-control">
-              <input class="input" id="online-model" type="text" spellcheck="false"
-                     placeholder="deepseek-chat" autocomplete="off">
+              <div class="inline-actions inline-actions-grow">
+                <select class="select" id="online-model"></select>
+                <button type="button" class="btn" id="fetch-online-models">拉取模型</button>
+              </div>
+              <input class="input" id="online-model-custom" type="text" spellcheck="false"
+                     placeholder="deepseek-chat" autocomplete="off"
+                     aria-label="自定义模型名" hidden>
+              <p class="inline-hint" id="online-model-hint" hidden></p>
+              <p class="inline-error" id="online-model-error" hidden></p>
             </div>
           </div>
 
@@ -145,16 +162,16 @@
 
           <div class="field">
             <div class="field-label">
-              <label for="local-model">本地模型</label>
-              <p class="field-hint">已下载或导入的 GGUF 模型</p>
+              <span class="field-name">本地模型</span>
+              <p class="field-hint">启动后按功能自动选择：翻译用 Hy-MT2 1.8B，总结/解释用 Qwen2.5 3B</p>
             </div>
             <div class="field-control">
-              <div class="inline-actions inline-actions-grow">
-                <select class="select" id="local-model"></select>
+              <div class="local-models" id="local-models"></div>
+              <p class="inline-hint" id="local-models-hint" hidden></p>
+              <div class="inline-actions">
                 <button type="button" class="btn" id="toggle-catalog" aria-expanded="false">下载模型</button>
                 <button type="button" class="btn" id="import-model">导入 GGUF</button>
               </div>
-              <p class="inline-hint" id="local-model-hint" hidden></p>
             </div>
           </div>
 
@@ -169,7 +186,7 @@
           <div class="field">
             <div class="field-label">
               <span class="field-name">运行状态</span>
-              <p class="field-hint">本地模式需要先启动 llama.cpp 引擎服务</p>
+              <p class="field-hint">本地模式需要先启动 llama.cpp 引擎服务，运行时按功能自动选择模型</p>
             </div>
             <div class="field-control">
               <div class="inline-actions">
@@ -177,6 +194,7 @@
                 <button type="button" class="btn btn-primary" id="start-local">启动</button>
                 <button type="button" class="btn" id="stop-local" hidden>停止</button>
               </div>
+              <p class="inline-hint" id="local-state-hint" hidden></p>
               <p class="inline-error" id="local-error" hidden></p>
             </div>
           </div>
@@ -193,10 +211,10 @@
         </div>
       </div>
       <div class="card-body">
-        <div class="field">
+        <div class="field field-switch">
           <div class="field-label">
             <span class="field-name">启用划词工具</span>
-            <p class="field-hint">关闭后拖选文本不再弹出工具栏，快捷键也不再触发</p>
+            <p class="field-hint">关闭后拖选文本不再弹出工具栏</p>
           </div>
           <div class="field-control">
             <label class="switch">
@@ -206,31 +224,7 @@
           </div>
         </div>
 
-        <div class="field">
-          <div class="field-label">
-            <span class="field-name">快捷键</span>
-            <p class="field-hint">选中文本后按下组合键触发；点击重新录制，Esc 取消</p>
-          </div>
-          <div class="field-control">
-            <button type="button" class="shortcut-input" id="shortcut-input" aria-label="录制快捷键">
-              <span id="shortcut-value">Ctrl+Shift+D</span>
-              <span class="shortcut-edit" id="shortcut-edit">点击修改</span>
-            </button>
-            <p class="inline-hint" id="shortcut-hint" hidden></p>
-          </div>
-        </div>
-
-        <div class="field field-stack">
-          <div class="field-label">
-            <span class="field-name">工具栏技能</span>
-            <p class="field-hint">勾选要显示在工具栏的技能，使用箭头调整顺序</p>
-          </div>
-          <div class="field-control">
-            <ul class="skill-list" id="skill-list"></ul>
-          </div>
-        </div>
-
-        <div class="field">
+        <div class="field field-switch">
           <div class="field-label">
             <span class="field-name">紧凑模式</span>
             <p class="field-hint">工具栏只显示图标，不显示文字</p>
@@ -243,10 +237,80 @@
           </div>
         </div>
 
+        <div class="field field-stack">
+          <div class="field-label">
+            <span class="field-name">工具栏技能</span>
+            <p class="field-hint">勾选要显示在工具栏的技能，拖动调整顺序</p>
+          </div>
+          <div class="field-control">
+            <ul class="skill-list" id="skill-list"></ul>
+            <div class="skill-actions">
+              <button type="button" class="btn" id="add-custom-skill">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M12 5v14"></path>
+                  <path d="M5 12h14"></path>
+                </svg>
+                添加技能
+              </button>
+            </div>
+
+            <div class="custom-skill-editor" id="custom-skill-editor" hidden>
+              <div class="custom-skill-editor-head">
+                <span class="custom-skill-editor-title" id="custom-skill-editor-title">新增技能</span>
+                <span class="custom-skill-editor-sub">自定义技能会显示在工具栏中</span>
+              </div>
+
+              <div class="custom-skill-field">
+                <span class="custom-skill-label">图标</span>
+                <div class="custom-skill-icon-row">
+                  <span class="custom-skill-icon-preview" id="custom-skill-icon-preview"
+                        aria-hidden="true"></span>
+                  <span class="custom-skill-icon-current" id="custom-skill-icon-current">sparkles</span>
+                  <button type="button" class="btn" id="toggle-icon-picker"
+                          aria-expanded="false" aria-controls="custom-skill-icon-panel">更换图标</button>
+                </div>
+                <div class="custom-skill-icon-panel" id="custom-skill-icon-panel" hidden>
+                  <input class="input" id="custom-skill-icon-search" type="search"
+                         placeholder="搜索图标（英文 key，如 pen、book）"
+                         aria-label="搜索图标" autocomplete="off" spellcheck="false">
+                  <div class="icon-grid" id="custom-skill-icons" role="radiogroup"
+                       aria-label="技能图标"></div>
+                  <p class="inline-hint" id="custom-skill-icon-empty" hidden>没有匹配的图标，换个关键词试试</p>
+                </div>
+              </div>
+
+              <div class="custom-skill-field">
+                <label class="custom-skill-label" for="custom-skill-name">名称</label>
+                <input class="input" id="custom-skill-name" type="text" maxlength="20"
+                       placeholder="例如：提取关键词" autocomplete="off" spellcheck="false">
+              </div>
+
+              <div class="custom-skill-field">
+                <label class="custom-skill-label" for="custom-skill-prompt">提示词</label>
+                <textarea class="textarea" id="custom-skill-prompt" rows="6" maxlength="4000"
+                          spellcheck="false"
+                          placeholder="例如：请从用户选中的文本中提取 5 个关键词，用逗号分隔输出：&#10;{text}"></textarea>
+                <p class="custom-skill-hint">
+                  支持变量：<code>{text}</code> 选中文本、<code>{target}</code> / <code>{language}</code> 目标语言、<code>{program}</code> / <code>{app}</code> 当前应用
+                </p>
+              </div>
+
+              <p class="inline-error" id="custom-skill-error" hidden></p>
+
+              <div class="custom-skill-actions">
+                <button type="button" class="btn btn-primary" id="save-custom-skill">保存</button>
+                <button type="button" class="btn" id="cancel-custom-skill">取消</button>
+                <button type="button" class="btn btn-danger" id="delete-custom-skill" hidden>删除</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div class="field">
           <div class="field-label">
             <label for="default-target-lang">默认目标语言</label>
-            <p class="field-hint">「自动」按原文判断：中文译为英文，其他语言译为中文</p>
+            <p class="field-hint">「自动识别」按原文判断：中文译为英文，其他语言译为中文</p>
           </div>
           <div class="field-control">
             <select class="select" id="default-target-lang"></select>
@@ -276,7 +340,7 @@
         </div>
       </div>
       <div class="card-body">
-        <div class="field">
+        <div class="field field-switch">
           <div class="field-label">
             <span class="field-name">开机自启</span>
             <p class="field-hint" id="start-at-login-hint">登录 Windows 后在托盘中静默启动</p>
@@ -290,7 +354,7 @@
           </div>
         </div>
 
-        <div class="field">
+        <div class="field field-switch">
           <div class="field-label">
             <span class="field-name">关闭窗口后驻留托盘</span>
             <p class="field-hint">关闭设置窗口时继续在托盘后台运行，划词保持可用</p>
@@ -322,14 +386,14 @@
           <div class="danger-row">
             <div class="danger-text">
               <span class="danger-title">恢复默认设置</span>
-              <p class="danger-desc">重置所有选项（不删除已下载的模型与引擎）</p>
+              <p class="danger-desc">重置所有选项（不删除自定义技能、已下载的模型与引擎）</p>
             </div>
             <button type="button" class="btn btn-danger" id="reset-settings">恢复默认</button>
           </div>
           <div class="danger-row">
             <div class="danger-text">
-              <span class="danger-title">退出 LingoPick</span>
-              <p class="danger-desc">退出后划词、快捷键与托盘后台全部停止</p>
+              <span class="danger-title">退出 Lexora</span>
+              <p class="danger-desc">退出后划词与托盘后台全部停止</p>
             </div>
             <button type="button" class="btn btn-danger" id="quit-app">退出程序</button>
           </div>
@@ -375,9 +439,49 @@
             <dd id="about-models">—</dd>
           </div>
         </dl>
+
+        <div class="update-block">
+          <div class="update-head">
+            <div class="update-head-text">
+              <span class="update-title">检查更新</span>
+              <p class="update-hint" id="update-current-hint">当前版本 — · 自动下载并替换当前 exe，更新后自动重启</p>
+            </div>
+            <button type="button" class="btn" id="check-update">检查更新</button>
+          </div>
+
+          <div class="update-status" id="update-status" data-state="idle" hidden>
+            <p class="update-message" id="update-message"></p>
+
+            <div class="update-notes" id="update-notes" hidden>
+              <p class="update-notes-text is-clamped" id="update-notes-text"></p>
+              <button type="button" class="btn btn-ghost update-notes-toggle"
+                      id="toggle-update-notes" hidden>展开全部</button>
+            </div>
+
+            <div class="update-meta" id="update-meta" hidden>
+              <span class="meta-pill" id="update-time"></span>
+              <span class="meta-pill" id="update-size"></span>
+            </div>
+
+            <div class="progress update-progress" id="update-progress" hidden>
+              <div class="progress-track">
+                <div class="progress-fill" id="update-progress-fill"></div>
+              </div>
+              <span class="progress-text" id="update-progress-text"></span>
+            </div>
+
+            <div class="update-actions" id="update-actions" hidden>
+              <button type="button" class="btn btn-primary" id="install-update">下载并更新</button>
+              <button type="button" class="btn" id="dismiss-update">稍后</button>
+            </div>
+
+            <p class="inline-error" id="update-error" hidden></p>
+          </div>
+        </div>
+
         <div class="about-links">
           <button type="button" class="btn" id="open-repo">GitHub 仓库</button>
-          <span class="about-url">github.com/monk233/lingopick</span>
+          <span class="about-url">github.com/monk233/lexora</span>
           <span class="about-sep" aria-hidden="true">·</span>
           <span class="about-url">MIT License</span>
         </div>
@@ -388,6 +492,7 @@
   <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
 
   <script src="shared/constants.js"></script>
+  <script src="shared/skill-icons.js"></script>
   <script src="shared/tauri-api.js"></script>
   <script src="settings.js"></script>
 </body>

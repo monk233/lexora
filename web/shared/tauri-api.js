@@ -1,4 +1,4 @@
-/* Tauri frontend bridge for LingoPick.
+/* Tauri frontend bridge for Lexora.
  *
  * Exposes the two API shapes used by the renderers:
  *
@@ -237,37 +237,39 @@
     var engineInstalled = !/[?&]engine=0(?:&|$)/.test(query);
     var compactToolbar = /[?&]compact=1(?:&|$)/.test(query);
     var installedModel = {
-      file: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
-      name: "qwen2.5-1.5b-instruct-q4_k_m",
-      path: "C:\\Users\\Preview\\AppData\\Roaming\\LingoPick\\models\\qwen2.5-1.5b-instruct-q4_k_m.gguf",
-      sizeBytes: 1117320736,
+      file: "Hy-MT2-1.8B-Q4_K_M.gguf",
+      name: "Hy-MT2-1.8B-Q4_K_M",
+      path: "C:\\Users\\Preview\\AppData\\Roaming\\Lexora\\models\\Hy-MT2-1.8B-Q4_K_M.gguf",
+      sizeBytes: 1133080448,
       modifiedAt: Date.now() - 86400000,
-      catalogId: "qwen2.5-1.5b",
+      catalogId: "hy-mt2-1.8b",
     };
 
     mockStore = {
       app: {
-        name: "LingoPick",
+        name: "Lexora",
         version: "0.1.0",
         platform: "windows",
         packaged: false,
         portable: portable,
-        dataDir: "C:\\Users\\Preview\\AppData\\Roaming\\LingoPick",
-        modelsDir: "C:\\Users\\Preview\\AppData\\Roaming\\LingoPick\\models",
-        logsDir: "C:\\Users\\Preview\\AppData\\Roaming\\LingoPick\\logs",
-        repoUrl: "https://github.com/monk233/lingopick",
+        dataDir: "C:\\Users\\Preview\\AppData\\Roaming\\Lexora",
+        modelsDir: "C:\\Users\\Preview\\AppData\\Roaming\\Lexora\\models",
+        logsDir: "C:\\Users\\Preview\\AppData\\Roaming\\Lexora\\logs",
+        repoUrl: "https://github.com/monk233/lexora",
         license: "MIT",
       },
       settings: {
         version: 1,
         picker: {
           enabled: true,
-          shortcut: "Ctrl+Shift+D",
-          skills: ["translate", "summarize", "explain", "read", "copy"],
+          skills: ["translate", "summarize", "explain", "polish", "read", "copy", "search"],
           compact: compactToolbar,
           defaultTargetLang: "auto",
           blacklist: ["vscode.exe"],
           maxChars: 5000,
+          prompts: { translate: "", summarize: "", explain: "", polish: "" },
+          customSkills: [],
+          searchEngine: "google",
         },
         provider: {
           mode: "online",
@@ -281,7 +283,6 @@
             maxTokens: 1024,
           },
           local: {
-            modelFile: installedModel.file,
             contextSize: 4096,
             threads: 0,
             gpuLayers: 0,
@@ -292,7 +293,6 @@
           closeToTray: true,
           startAtLogin: false,
           theme: "system",
-          firstRunDone: true,
         },
       },
       engine: {
@@ -302,35 +302,26 @@
         providerLabel: "在线 · deepseek-chat",
         onlineConfigured: true,
         localState: "stopped",
-        localModelFile: installedModel.file,
-        localModelName: "qwen2.5-1.5b-instruct-q4_k_m",
+        localModelFile: "",
+        localModelName: "",
         localError: "",
         engineAvailable: engineInstalled,
       },
       models: [installedModel],
       catalog: [
         mockCatalogEntry(
-          "qwen2.5-0.5b",
-          "Qwen2.5 0.5B Instruct",
-          "轻量模型，低配机器可流畅运行",
-          "qwen2.5-0.5b-instruct-q4_k_m.gguf",
-          491400032,
-          false,
-          false
-        ),
-        mockCatalogEntry(
-          "qwen2.5-1.5b",
-          "Qwen2.5 1.5B Instruct",
-          "推荐：翻译与总结的质量/速度平衡",
-          "qwen2.5-1.5b-instruct-q4_k_m.gguf",
-          1117320736,
+          "hy-mt2-1.8b",
+          "腾讯混元 Hy-MT2 1.8B（翻译模型）",
+          "翻译专用：混元 Hy-MT2 1.8B Q4_K_M，速度快，适合中英及多语互译",
+          "Hy-MT2-1.8B-Q4_K_M.gguf",
+          1133080448,
           true,
           true
         ),
         mockCatalogEntry(
           "qwen2.5-3b",
-          "Qwen2.5 3B Instruct",
-          "质量优先，需要更多内存",
+          "Qwen2.5 3B（通用模型）",
+          "通用模型：翻译、总结、解释都能用；适合内存 16GB 以上的电脑",
           "qwen2.5-3b-instruct-q4_k_m.gguf",
           2104932768,
           false,
@@ -340,6 +331,16 @@
       download: null,
       picker: { visible: false, pinned: false },
       loginItem: { supported: !portable, enabled: false },
+      promptDefaults: {
+        translate:
+          "You are a professional translation engine. Translate the user's text into {target}. Output only the translation, without explanations, quotes, or the source text.",
+        summarize:
+          "You are a concise Chinese writing assistant. Summarize the user's text in Simplified Chinese and list the key points accurately, without adding anything that is not in the source.",
+        explain:
+          "You are a knowledge assistant. Explain the user's text in Simplified Chinese, covering its meaning, background and key concepts, with short examples when helpful.",
+        polish:
+          "You are a professional editor. Polish the user's text so it reads naturally and fluently while keeping the original meaning. Output only the polished text, without explanations, quotes, or the source text.",
+      },
     };
     refreshMockDerived();
   }
@@ -356,24 +357,25 @@
     );
     engine.providerLabel =
       engine.mode === "local"
-        ? "本地模型"
+        ? engine.localState === "ready" && engine.localModelName
+          ? "本地 · " + engine.localModelName
+          : "本地模型"
         : "在线 · " + String(online.model || "").trim();
-    engine.localModelFile = String(local.modelFile || "");
-    engine.localModelName = "";
-    mockStore.models.forEach(function (model) {
-      if (model.file === engine.localModelFile) {
-        engine.localModelName = model.name;
-      }
-    });
     engine.ready =
       engine.mode === "local"
         ? engine.localState === "ready"
         : engine.onlineConfigured;
-    engine.hint = engine.ready
-      ? ""
-      : engine.mode === "local"
-        ? "本地引擎未启动"
-        : "请填写在线服务地址与模型名";
+    if (engine.ready) {
+      engine.hint = "";
+    } else if (engine.mode === "local") {
+      engine.hint = !engine.engineAvailable
+        ? "尚未安装 llama.cpp 引擎"
+        : !mockStore.models.length
+          ? "尚未安装本地模型"
+          : "本地模型未启动";
+    } else {
+      engine.hint = "请填写在线服务地址与模型名";
+    }
 
     mockStore.loginItem.supported = !mockStore.app.portable;
     mockStore.loginItem.enabled = !!settings.app.startAtLogin;
@@ -382,22 +384,54 @@
       mockStore.loginItem.enabled = false;
     }
     mockStore.download = mockDownloads ? mockDownloads.progress : null;
-    settings.provider.local.modelFile = engine.localModelFile;
   }
 
   function normalizeMockSettings() {
     var settings = mockStore.settings;
     var picker = settings.picker;
-    var known = ["translate", "summarize", "explain", "read", "copy"];
+    var known = ["translate", "summarize", "explain", "polish", "read", "copy", "search"];
+    var customSkills = [];
+    (Array.isArray(picker.customSkills) ? picker.customSkills : []).forEach(function (entry) {
+      if (!entry || customSkills.length >= 20) {
+        return;
+      }
+      var id = String(entry.id || "").trim().toLowerCase();
+      var prompt = String(entry.prompt || "").trim().slice(0, 4000);
+      if (!/^custom-[a-z0-9_-]{1,40}$/.test(id) || !prompt) {
+        return;
+      }
+      if (customSkills.some(function (skill) { return skill.id === id; })) {
+        return;
+      }
+      var icons =
+        window.LP && Array.isArray(window.LP.CUSTOM_SKILL_ICON_KEYS)
+          ? window.LP.CUSTOM_SKILL_ICON_KEYS
+          : ["sparkles"];
+      var icon = String(entry.icon || "");
+      customSkills.push({
+        id: id,
+        label: String(entry.label || "自定义技能").trim().slice(0, 20) || "自定义技能",
+        icon: icons.indexOf(icon) >= 0 ? icon : "sparkles",
+        prompt: prompt,
+      });
+    });
+    picker.customSkills = customSkills;
+    var knownIds = known.concat(customSkills.map(function (skill) { return skill.id; }));
     var skills = [];
     (Array.isArray(picker.skills) ? picker.skills : []).forEach(function (skill) {
       var value = String(skill || "").toLowerCase();
-      if (known.indexOf(value) >= 0 && skills.indexOf(value) < 0) {
+      if (knownIds.indexOf(value) >= 0 && skills.indexOf(value) < 0) {
         skills.push(value);
       }
     });
     picker.skills = skills.length ? skills : known.slice();
-    var languages = ["auto", "zh", "en", "ja", "de", "fr", "es", "ru", "ko"];
+    var languageValues =
+      window.LP && Array.isArray(window.LP.LANGUAGES)
+        ? window.LP.LANGUAGES.map(function (entry) {
+            return entry.value;
+          })
+        : ["zh", "en", "ja", "de", "fr", "es", "ru", "ko"];
+    var languages = ["auto"].concat(languageValues);
     if (languages.indexOf(String(picker.defaultTargetLang)) < 0) {
       picker.defaultTargetLang = "auto";
     }
@@ -417,16 +451,19 @@
     });
     picker.blacklist = blacklist;
     picker.maxChars = Math.min(20000, Math.max(100, Number(picker.maxChars) || 5000));
+    var searchEngines = ["google", "baidu", "bing"];
+    picker.searchEngine =
+      searchEngines.indexOf(String(picker.searchEngine || "")) >= 0
+        ? String(picker.searchEngine)
+        : "google";
+    var promptStore =
+      picker.prompts && typeof picker.prompts === "object" ? picker.prompts : {};
+    picker.prompts = {};
+    ["translate", "summarize", "explain", "polish"].forEach(function (id) {
+      picker.prompts[id] = String(promptStore[id] || "").trim().slice(0, 4000);
+    });
     if (settings.provider.mode !== "local") {
       settings.provider.mode = "online";
-    }
-    if (
-      settings.provider.local.modelFile &&
-      !mockStore.models.some(function (model) {
-        return model.file === settings.provider.local.modelFile;
-      })
-    ) {
-      settings.provider.local.modelFile = "";
     }
     mockStore.picker.pinned = false;
   }
@@ -449,13 +486,6 @@
     es: "La traducción consiste en expresar en otro idioma el significado de un texto y actúa como puente entre culturas.",
     ru: "Перевод — это выражение смысла текста на другом языке; он служит мостом между культурами.",
     ko: "번역은 한 언어로 된 텍스트의 의미를 다른 언어로 표현하는 일이며, 문화 사이의 다리 역할을 합니다.",
-  };
-
-  var MOCK_ASSIST = {
-    summarize:
-      "这是浏览器预览模式返回的演示摘要。\n\n1. 翻译需要在目标语言中完整传达原文含义。\n2. 术语与语气应保持一致。\n3. 跨文化语境需要适当调整表达方式。",
-    explain:
-      "这段文字给出的是「翻译」的定义：翻译不只是逐词替换，而是把原文的意思、语气和语境用目标语言重新表达出来，让另一种语言的读者获得相同的理解。",
   };
 
   function mockTranslationText(text, targetLang) {
@@ -544,13 +574,22 @@
         return;
       }
       var picker = (mockStore && mockStore.settings.picker) || {};
+      var enabledIds = Array.isArray(picker.skills) ? picker.skills : [];
+      var customSkills = [];
+      (Array.isArray(picker.customSkills) ? picker.customSkills : []).forEach(function (skill) {
+        if (enabledIds.indexOf(skill.id) >= 0) {
+          customSkills.push({ id: skill.id, label: skill.label, icon: skill.icon });
+        }
+      });
       mockEmit("picker-data", {
         text: "Translation is the communication of the meaning of a source-language text by means of an equivalent target-language text.",
         programName: "notepad.exe",
         config: {
-          skills: (picker.skills || []).slice(),
+          skills: enabledIds.slice(),
+          customSkills: customSkills,
           compact: !!picker.compact,
           defaultTargetLang: picker.defaultTargetLang || "auto",
+          searchEngine: picker.searchEngine || "google",
         },
       });
     }
@@ -618,14 +657,13 @@
                   file: entry.filename,
                   name: entry.filename.replace(/\.gguf$/i, ""),
                   path:
-                    "C:\\Users\\Preview\\AppData\\Roaming\\LingoPick\\models\\" +
+                    "C:\\Users\\Preview\\AppData\\Roaming\\Lexora\\models\\" +
                     entry.filename,
                   sizeBytes: entry.sizeBytes,
                   modifiedAt: Date.now(),
                   catalogId: entry.id,
                 });
               }
-              mockStore.settings.provider.local.modelFile = entry.filename;
             }
             mockPublishState();
             mockEmit("toast", {
@@ -681,6 +719,8 @@
       case "picker_pin":
         mockStore.picker.pinned = !!args.pinned;
         return { ok: true, pinned: !!args.pinned };
+      case "picker_drag_panel":
+        return { ok: true };
       case "picker_resize":
         return {
           x: 0,
@@ -704,24 +744,39 @@
           String(args.targetLang || "")
         );
         return { ok: true };
+      case "picker_custom_skill":
+        if (!String(args.text || "").trim()) {
+          return { ok: false, error: "没有可处理的文本" };
+        }
+        startMockTranslate(
+          String(args.requestId || ""),
+          String(args.text || ""),
+          "zh"
+        );
+        return { ok: true };
+      case "picker_polish":
+        if (!String(args.text || "").trim()) {
+          return { ok: false, error: "没有可润色的文本" };
+        }
+        startMockTranslate(
+          String(args.requestId || ""),
+          String(args.text || ""),
+          "zh"
+        );
+        return { ok: true };
+      case "open_external":
+        console.info("[mock] 打开外部链接：", String(args.url || ""));
+        return { ok: true };
       case "picker_abort_translate":
         cancelMockTranslate(String(args.requestId || ""));
         return { ok: true };
       case "picker_assist": {
-        var action = String(args.action || "");
-        var label = action === "summarize" ? "总结" : "解释";
-        return new Promise(function (resolve) {
-          window.setTimeout(function () {
-            resolve({
-              ok: true,
-              text:
-                (MOCK_ASSIST[action] || "浏览器预览模式没有该技能的演示数据。") +
-                "\n\n（" +
-                label +
-                " · 演示数据）",
-            });
-          }, 520);
-        });
+        var assistRequestId = String(args.requestId || "");
+        if (!assistRequestId) {
+          return { ok: false, error: "缺少请求 ID" };
+        }
+        startMockTranslate(assistRequestId, String(args.text || ""), "zh");
+        return { ok: true };
       }
       case "picker_status":
         return {
@@ -761,13 +816,48 @@
       case "reset_settings": {
         var portable = mockStore.app.portable;
         var installed = mockStore.models.slice();
+        var keptCustomSkills = (mockStore.settings.picker.customSkills || []).slice();
+        var keptCustomEnabled = (mockStore.settings.picker.skills || []).filter(function (id) {
+          return String(id).indexOf("custom-") === 0;
+        });
         initMockStore();
         mockStore.app.portable = portable;
         mockStore.models = installed;
         mockStore.loginItem.supported = !portable;
+        mockStore.settings.picker.customSkills = keptCustomSkills;
+        mockStore.settings.picker.skills = mockStore.settings.picker.skills.concat(keptCustomEnabled);
         normalizeMockSettings();
         mockPublishState();
         return { state: clone(mockStore) };
+      }
+      case "check_update": {
+        return {
+          ok: true,
+          currentVersion: "0.1.0",
+          latestVersion: "0.1.1",
+          hasUpdate: true,
+          assetName: "Lexora-0.1.1-win-x64.exe",
+          assetUrl: "https://github.com/monk233/lexora/releases/download/v0.1.1/Lexora-0.1.1-win-x64.exe",
+          notes: "浏览器预览模式：这里显示新版本的更新说明。\\n\\n- 修复若干问题\\n- 改进技能面板",
+          publishedAt: "2026-10-24T12:00:00Z",
+          sizeBytes: 9500000,
+        };
+      }
+      case "install_update": {
+        return new Promise(function (resolve) {
+          window.setTimeout(function () {
+            mockEmit("update-progress", { status: "downloading", received: 2800000, total: 9500000, percent: 30 });
+          }, 250);
+          window.setTimeout(function () {
+            mockEmit("update-progress", { status: "downloading", received: 6600000, total: 9500000, percent: 70 });
+          }, 650);
+          window.setTimeout(function () {
+            mockEmit("update-progress", { status: "ready", received: 9500000, total: 9500000, percent: 100 });
+          }, 1000);
+          window.setTimeout(function () {
+            resolve({ ok: true, version: "0.1.1" });
+          }, 1200);
+        });
       }
 
       /* ---- settings: online provider ---- */
@@ -842,13 +932,12 @@
                 file: filename,
                 name: "imported-model-q4_k_m",
                 path:
-                  "C:\\Users\\Preview\\AppData\\Roaming\\LingoPick\\models\\" + filename,
+                  "C:\\Users\\Preview\\AppData\\Roaming\\Lexora\\models\\" + filename,
                 sizeBytes: 1048576000,
                 modifiedAt: Date.now(),
                 catalogId: "",
               });
             }
-            mockStore.settings.provider.local.modelFile = filename;
             mockPublishState();
             mockEmit("toast", {
               type: "success",
@@ -867,8 +956,10 @@
             item.installed = false;
           }
         });
-        if (mockStore.settings.provider.local.modelFile === file) {
-          mockStore.settings.provider.local.modelFile = "";
+        if (mockStore.engine.localModelFile === file) {
+          mockStore.engine.localState = "stopped";
+          mockStore.engine.localModelFile = "";
+          mockStore.engine.localModelName = "";
         }
         mockPublishState();
         return { ok: true };
@@ -912,18 +1003,24 @@
         hint: "请先在「翻译服务 → 本地模型」中下载引擎。",
       };
     }
-    if (!mockStore.settings.provider.local.modelFile) {
+    if (!mockStore.models.length) {
       return {
         ok: false,
-        error: "尚未选择本地模型",
+        error: "尚未安装本地模型",
         hint: "请先下载或导入 GGUF 模型。",
       };
     }
     if (mockStore.engine.localState === "ready") {
       return { ok: true };
     }
+    var preferred =
+      mockStore.models.filter(function (model) {
+        return model.catalogId === "hy-mt2-1.8b";
+      })[0] || mockStore.models[0];
     mockStore.engine.localState = "starting";
     mockStore.engine.localError = "";
+    mockStore.engine.localModelFile = preferred.file;
+    mockStore.engine.localModelName = preferred.name;
     mockPublishState();
     return new Promise(function (resolve) {
       window.setTimeout(function () {
@@ -938,6 +1035,8 @@
   function mockStopLocal() {
     mockStore.engine.localState = "stopped";
     mockStore.engine.localError = "";
+    mockStore.engine.localModelFile = "";
+    mockStore.engine.localModelName = "";
     mockPublishState();
     return { ok: true };
   }
@@ -1049,14 +1148,42 @@
         }
       });
     },
-    assist: function (action, text) {
+    assist: function (requestId, action, text) {
       return safeInvoke("picker_assist", {
+        requestId: String(requestId == null ? "" : requestId),
         action: String(action == null ? "" : action),
         text: String(text == null ? "" : text),
       });
     },
+    /* Streams a user-defined skill through the same translate-event channel. */
+    customSkill: function (requestId, skillId, text, programName) {
+      return safeInvoke("picker_custom_skill", {
+        requestId: String(requestId == null ? "" : requestId),
+        skillId: String(skillId == null ? "" : skillId),
+        text: String(text == null ? "" : text),
+        programName: String(programName == null ? "" : programName),
+      });
+    },
+    /* Streams the built-in 润色 skill through the same translate-event channel. */
+    polish: function (requestId, text) {
+      return safeInvoke("picker_polish", {
+        requestId: String(requestId == null ? "" : requestId),
+        text: String(text == null ? "" : text),
+      });
+    },
+    /* Opens an https URL in the system browser (search skill). */
+    openExternal: function (url) {
+      return safeInvoke("open_external", { url: String(url == null ? "" : url) });
+    },
     status: function () {
       return safeInvoke("picker_status", {});
+    },
+    /* Moves the picker window by a logical-pixel delta (panel header drag). */
+    dragPanel: function (dx, dy) {
+      return safeInvoke("picker_drag_panel", {
+        dx: Number(dx) || 0,
+        dy: Number(dy) || 0,
+      });
     },
     disableInApp: function (programName) {
       return safeInvoke("picker_disable_in_app", {
@@ -1131,6 +1258,7 @@
           ok: result.ok !== false,
           models: Array.isArray(result.models) ? result.models : [],
           error: result.error || "",
+          hint: result.hint || "",
         };
       });
     },
@@ -1164,6 +1292,19 @@
     },
     setStartAtLogin: function (enabled) {
       return safeInvoke("set_start_at_login", { enabled: !!enabled });
+    },
+    checkUpdate: function () {
+      return safeInvoke("check_update", {});
+    },
+    installUpdate: function () {
+      return safeInvoke("install_update", {});
+    },
+    onUpdateProgress: function (callback) {
+      return subscribe("update-progress", function (payload) {
+        if (typeof callback === "function") {
+          callback(payload);
+        }
+      });
     },
     quit: function () {
       return invokeQuiet("quit_app", {}, { ok: true });

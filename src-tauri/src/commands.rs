@@ -47,6 +47,8 @@ pub struct AppInfo {
 pub struct StatePayload {
     pub app: AppInfo,
     pub settings: Settings,
+    /// Built-in English default prompts for the skill customization UI.
+    pub prompt_defaults: serde_json::Value,
     pub engine: EngineStatus,
     pub models: Vec<ModelInfo>,
     pub catalog: Vec<CatalogEntry>,
@@ -69,7 +71,7 @@ pub struct LoginItemState {
     pub enabled: bool,
 }
 
-/// `PORTABLE_EXECUTABLE_DIR` is used by portable launchers; a plain LingoPick
+/// `PORTABLE_EXECUTABLE_DIR` is used by portable launchers; a plain Lexora
 /// zip has no such variable, so autostart stays available unless it is set.
 pub fn portable_mode() -> bool {
     std::env::var_os("PORTABLE_EXECUTABLE_DIR").is_some()
@@ -85,7 +87,7 @@ pub fn build_state(app: &AppHandle, state: &AppState) -> StatePayload {
     };
     StatePayload {
         app: AppInfo {
-            name: "LingoPick".to_string(),
+            name: "Lexora".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             platform: std::env::consts::OS.to_string(),
             packaged: !cfg!(debug_assertions),
@@ -93,10 +95,11 @@ pub fn build_state(app: &AppHandle, state: &AppState) -> StatePayload {
             data_dir: state.paths.data_dir.to_string_lossy().to_string(),
             models_dir: state.paths.models_dir.to_string_lossy().to_string(),
             logs_dir: state.paths.logs_dir.to_string_lossy().to_string(),
-            repo_url: "https://github.com/monk233/lingopick".to_string(),
+            repo_url: "https://github.com/monk233/lexora".to_string(),
             license: "MIT".to_string(),
         },
         settings,
+        prompt_defaults: crate::engine::default_prompts(),
         engine: state.engine.status(),
         models: state.engine.installed_models(),
         catalog: state.engine.catalog(),
@@ -331,12 +334,6 @@ pub async fn import_model(
 
     match state.engine.import_model(path).await {
         Ok(model) => {
-            let settings = state.settings.get();
-            if settings.provider.local.model_file.trim().is_empty() {
-                let _ = state.settings.update_json(json!({
-                    "provider": { "local": { "modelFile": model.file } }
-                }));
-            }
             toast(&app, "success", format!("模型已导入：{}", model.name));
             notify_changed(&app);
             Ok(json!({ "ok": true, "model": model }))
@@ -353,18 +350,6 @@ pub async fn import_model(
 pub fn remove_model(app: AppHandle, state: State<'_, Arc<AppState>>, file: String) -> Value {
     match state.engine.remove_model(&file) {
         Ok(()) => {
-            // Clear the selection when the removed model was the active one.
-            let settings = state.settings.get();
-            if settings
-                .provider
-                .local
-                .model_file
-                .eq_ignore_ascii_case(file.trim())
-            {
-                let _ = state
-                    .settings
-                    .update_json(json!({ "provider": { "local": { "modelFile": "" } } }));
-            }
             notify_changed(&app);
             json!({ "ok": true })
         }
@@ -448,7 +433,7 @@ pub fn set_start_at_login(app: AppHandle, state: State<'_, Arc<AppState>>, enabl
     if portable_mode() {
         return json!({
             "ok": false,
-            "error": "便携版不支持开机自启。请把 LingoPick 放到固定目录，或在启动文件夹中手动创建快捷方式。",
+            "error": "便携版不支持开机自启。请把 Lexora 放到固定目录，或在启动文件夹中手动创建快捷方式。",
         });
     }
     let result = crate::autostart::set_enabled(enabled);
@@ -485,6 +470,58 @@ pub fn quit_app(app: AppHandle) {
 }
 
 // ---------------------------------------------------------------------------
+// Update commands (§5.1)
+// ---------------------------------------------------------------------------
+
+/// Serializes [`crate::updater::UpdateInfo`] and adds the command-level `ok`
+/// flag. The About page consumes `currentVersion` / `latestVersion` etc.
+fn update_info_payload(info: crate::updater::UpdateInfo) -> Value {
+    match serde_json::to_value(&info) {
+        Ok(mut value) => {
+            if let Some(object) = value.as_object_mut() {
+                object.insert("ok".to_string(), json!(true));
+            }
+            value
+        }
+        Err(error) => json!({
+            "ok": false,
+            "error": "更新信息序列化失败。",
+            "hint": format!("请重启程序后重试（{error}）。"),
+        }),
+    }
+}
+
+/// Checks GitHub for a newer release (About page "检查更新").
+#[tauri::command]
+pub async fn check_update() -> Value {
+    match crate::updater::check_update().await {
+        Ok(info) => update_info_payload(info),
+        Err(error) => json!({
+            "ok": false,
+            "error": error.message,
+            "hint": error.hint,
+        }),
+    }
+}
+
+/// Downloads and schedules the new portable exe. Progress is pushed to the
+/// settings window as `update-progress`; the app exits right after this returns.
+#[tauri::command]
+pub async fn install_update(app: AppHandle) -> Value {
+    match crate::updater::install_update(&app).await {
+        Ok(info) => json!({
+            "ok": true,
+            "version": info.latest_version,
+        }),
+        Err(error) => json!({
+            "ok": false,
+            "error": error.message,
+            "hint": error.hint,
+        }),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Picker window commands (§5.2)
 // ---------------------------------------------------------------------------
 
@@ -511,6 +548,15 @@ pub fn picker_pin(state: State<'_, Arc<AppState>>, pinned: bool) -> Value {
 #[tauri::command]
 pub fn picker_resize(app: AppHandle, width: Option<f64>, height: Option<f64>) -> Option<Value> {
     crate::windows::resize_picker(&app, width.unwrap_or(440.0), height.unwrap_or(56.0))
+}
+
+/// Moves the picker window by a logical-pixel delta (dragging the result panel).
+#[tauri::command]
+pub fn picker_drag_panel(app: AppHandle, dx: f64, dy: f64) -> Value {
+    match crate::windows::move_picker_by(&app, dx, dy) {
+        Some((x, y)) => json!({ "ok": true, "x": x, "y": y }),
+        None => json!({ "ok": false }),
+    }
 }
 
 #[tauri::command]
@@ -600,6 +646,161 @@ pub fn picker_translate(
     json!({ "ok": true })
 }
 
+/// Streams a polish (rewriting) request. Same event contract as
+/// [`picker_translate`]: all chunks, errors and the final `done` event are
+/// pushed through the picker's `translate-event` channel.
+#[tauri::command]
+pub fn picker_polish(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    request_id: String,
+    text: String,
+) -> Value {
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return json!({
+            "ok": false,
+            "error": "没有可润色的文本。",
+            "hint": "请先选中一段文字，然后再点击润色。",
+        });
+    }
+
+    // Only one stream at a time: abort the previous request.
+    state.abort_translate();
+
+    let engine = state.engine.clone();
+    let task_app = app.clone();
+    let rid = request_id.clone();
+    let handle = tauri::async_runtime::spawn(async move {
+        let emit = |payload: Value| {
+            let _ = task_app.emit_to(crate::windows::PICKER_LABEL, "translate-event", payload);
+        };
+
+        match engine.polish_stream(&text).await {
+            Ok(mut stream) => {
+                while let Some(item) = stream.next().await {
+                    match item {
+                        Ok(chunk) => {
+                            if chunk.is_empty() {
+                                continue;
+                            }
+                            emit(json!({
+                                "requestId": rid.clone(),
+                                "type": "chunk",
+                                "text": chunk,
+                            }));
+                        }
+                        Err(error) => {
+                            emit(json!({
+                                "requestId": rid.clone(),
+                                "type": "error",
+                                "message": error.message,
+                            }));
+                            return;
+                        }
+                    }
+                }
+                emit(json!({
+                    "requestId": rid.clone(),
+                    "type": "done",
+                }));
+            }
+            Err(error) => {
+                emit(json!({
+                    "requestId": rid.clone(),
+                    "type": "error",
+                    "message": error.message,
+                }));
+            }
+        }
+    });
+
+    *lock(&state.translate_task) = Some(TranslateTask { request_id, handle });
+    json!({ "ok": true })
+}
+
+/// Streams a user-defined skill (`picker.customSkills`) through the same
+/// `translate-event` channel as [`picker_translate`]: chunk/error/done events
+/// carry the same payload shape, so the picker UI reuses one renderer.
+#[tauri::command]
+pub fn picker_custom_skill(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    request_id: String,
+    skill_id: String,
+    text: String,
+    program_name: String,
+) -> Value {
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return json!({
+            "ok": false,
+            "error": "没有可翻译的文本。",
+            "hint": "请先选中一段文字，然后再点击翻译。",
+        });
+    }
+    let skill_id = skill_id.trim().to_string();
+    // Custom skills follow the picker's default target language; there is no
+    // per-request target on this command (the toolbar has one target setting).
+    let target_lang = state.settings.get().picker.default_target_lang;
+
+    // Only one stream at a time: abort the previous request.
+    state.abort_translate();
+
+    let engine = state.engine.clone();
+    let task_app = app.clone();
+    let rid = request_id.clone();
+    let handle = tauri::async_runtime::spawn(async move {
+        let emit = |payload: Value| {
+            let _ = task_app.emit_to(crate::windows::PICKER_LABEL, "translate-event", payload);
+        };
+
+        match engine
+            .custom_stream(&skill_id, &text, &target_lang, &program_name)
+            .await
+        {
+            Ok(mut stream) => {
+                while let Some(item) = stream.next().await {
+                    match item {
+                        Ok(chunk) => {
+                            if chunk.is_empty() {
+                                continue;
+                            }
+                            emit(json!({
+                                "requestId": rid.clone(),
+                                "type": "chunk",
+                                "text": chunk,
+                            }));
+                        }
+                        Err(error) => {
+                            emit(json!({
+                                "requestId": rid.clone(),
+                                "type": "error",
+                                "message": error.message,
+                            }));
+                            return;
+                        }
+                    }
+                }
+                emit(json!({
+                    "requestId": rid.clone(),
+                    "type": "done",
+                }));
+            }
+            Err(error) => {
+                emit(json!({
+                    "requestId": rid.clone(),
+                    "type": "error",
+                    "message": error.message,
+                }));
+            }
+        }
+    });
+
+    *lock(&state.translate_task) = Some(TranslateTask { request_id, handle });
+    json!({ "ok": true })
+}
+
 #[tauri::command]
 pub fn picker_abort_translate(state: State<'_, Arc<AppState>>, request_id: String) -> Value {
     let mut guard = lock(&state.translate_task);
@@ -615,32 +816,82 @@ pub fn picker_abort_translate(state: State<'_, Arc<AppState>>, request_id: Strin
     json!({ "ok": true })
 }
 
+/// Streams a summarize/explain request through the same `translate-event`
+/// channel as translation. Returns immediately; chunks/errors/done are emitted
+/// to the picker window so every AI result in the UI is rendered as a stream.
 #[tauri::command]
-pub async fn picker_assist(
+pub fn picker_assist(
+    app: AppHandle,
     state: State<'_, Arc<AppState>>,
+    request_id: String,
     action: String,
     text: String,
-) -> Result<Value, String> {
+) -> Value {
     let action = action.trim().to_ascii_lowercase();
     if action != "summarize" && action != "explain" {
-        return Ok(json!({ "ok": false, "error": "不支持的操作。" }));
+        return json!({ "ok": false, "error": "不支持的操作。" });
     }
     let text = text.trim().to_string();
     if text.is_empty() {
-        return Ok(json!({
+        return json!({
             "ok": false,
             "error": "没有可处理的文本。",
             "hint": "请先选中一段文字。",
-        }));
+        });
     }
-    Ok(match state.engine.assist(&action, &text).await {
-        Ok(result) => json!({ "ok": true, "text": result }),
-        Err(error) => json!({
-            "ok": false,
-            "error": error.message,
-            "hint": error.hint,
-        }),
-    })
+
+    // Only one stream at a time: abort the previous request.
+    state.abort_translate();
+
+    let engine = state.engine.clone();
+    let task_app = app.clone();
+    let rid = request_id.clone();
+    let handle = tauri::async_runtime::spawn(async move {
+        let emit = |payload: Value| {
+            let _ = task_app.emit_to(crate::windows::PICKER_LABEL, "translate-event", payload);
+        };
+
+        match engine.assist_stream(&action, &text).await {
+            Ok(mut stream) => {
+                while let Some(item) = stream.next().await {
+                    match item {
+                        Ok(chunk) => {
+                            if chunk.is_empty() {
+                                continue;
+                            }
+                            emit(json!({
+                                "requestId": rid.clone(),
+                                "type": "chunk",
+                                "text": chunk,
+                            }));
+                        }
+                        Err(error) => {
+                            emit(json!({
+                                "requestId": rid.clone(),
+                                "type": "error",
+                                "message": error.message,
+                            }));
+                            return;
+                        }
+                    }
+                }
+                emit(json!({
+                    "requestId": rid.clone(),
+                    "type": "done",
+                }));
+            }
+            Err(error) => {
+                emit(json!({
+                    "requestId": rid.clone(),
+                    "type": "error",
+                    "message": error.message,
+                }));
+            }
+        }
+    });
+
+    *lock(&state.translate_task) = Some(TranslateTask { request_id, handle });
+    json!({ "ok": true })
 }
 
 #[tauri::command]
@@ -648,7 +899,7 @@ pub fn picker_status(state: State<'_, Arc<AppState>>) -> Value {
     let settings = state.settings.get();
     let status = state.engine.status();
     let configured = if settings.is_local_mode() {
-        status.engine_available && !status.local_model_file.trim().is_empty()
+        status.engine_available
     } else {
         status.online_configured
     };

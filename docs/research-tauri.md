@@ -1,4 +1,4 @@
-# LingoPick 的 Tauri v2（Windows / WebView2）实现要点与风险报告
+# Lexora 的 Tauri v2（Windows / WebView2）实现要点与风险报告
 > 调研时间：2026-10-24。本次只做文档与源码核对，未运行构建；标为「待实测」的条目必须在目标机器上验证。
 > 目标：全局取词后在鼠标位置弹出透明置顶小窗，调用在线 OpenAI 兼容接口或本地 llama-server，托盘后台运行，便携分发。
 - 透明、无边框、置顶、隐藏任务栏、不可缩放的小窗可用 `WebviewWindowBuilder` 一次配置；Windows 不需要 `macos-private-api`。
@@ -80,7 +80,7 @@ TrayIconBuilder::with_id("tray").icon(app.default_window_icon().unwrap().clone()
 - `tauri` 需启用 `tray-icon` feature；`show_menu_on_left_click` 与 `DoubleClick`（仅 Windows）见[系统托盘文档](https://v2.tauri.app/learn/system-tray/)和 [`TrayIconBuilder`](https://docs.rs/tauri/2.12.5/tauri/tray/struct.TrayIconBuilder.html)。`build` 的返回值不必长期持有，Tauri 资源表会保留托盘；只有动态换图标时才保存句柄。
 - 勾选菜单不要依赖系统自动翻转；点击后重新读取 `autolaunch().is_enabled()`，再 `set_checked()` 同步 UI。单实例插件必须在所有其他插件之前注册；Windows 用命名互斥体和 `WM_COPYDATA`，第二个实例转交参数后退出，见[单实例插件](https://v2.tauri.app/plugin/single-instance/)。便携版即使在不同目录，只要 `identifier` 相同也会被判为同一应用。
 - 自启使用 `tauri-plugin-autostart`，通过 `current_exe()` 写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`（无权限写 HKLM 时回退当前用户），见[自启插件](https://v2.tauri.app/plugin/autostart/)和 [`auto-launch` 源码](https://docs.rs/crate/auto-launch/0.6.0/source/src/windows.rs)。
-- 便携版关键缺陷：`auto-launch 0.6.0` 写入的值是 `"{exe_path} {args}"`，路径没有引号。exe 路径含空格时，启动项解析可能失败，**待实测**；稳妥做法是含空格时自行用 `winreg` 写带引号的 `"C:\...\LingoPick.exe" --autostart`，或创建带引号目标的 `.lnk`。自启参数建议带 `--autostart`，直接启动到托盘；移动目录后旧值会失效，设置页应提供“重新启用”并可选清理。
+- 便携版关键缺陷：`auto-launch 0.6.0` 写入的值是 `"{exe_path} {args}"`，路径没有引号。exe 路径含空格时，启动项解析可能失败，**待实测**；稳妥做法是含空格时自行用 `winreg` 写带引号的 `"C:\...\Lexora.exe" --autostart`，或创建带引号目标的 `.lnk`。自启参数建议带 `--autostart`，直接启动到托盘；移动目录后旧值会失效，设置页应提供“重新启用”并可选清理。
 - 免安装不等于完全绿色：Tauri 在 Windows 默认把 WebView2 数据目录设为应用本地数据目录。要真正便携，需用 [`data_directory`](https://docs.rs/tauri/2.12.5/tauri/webview/struct.WebviewWindowBuilder.html#method.data_directory) 指定 exe 同目录的数据文件夹，并测试只读目录场景。
 
 ## 5. 前后端通信与 token 流
@@ -152,7 +152,7 @@ for i in 0..archive.len() {
 - 免安装 zip：`npm run tauri build -- --no-bundle`，取 `src-tauri/target/release/<Cargo bin 名>.exe` 再压缩。无 `bundle.resources` 时单 exe 即可运行，因为前端资源已嵌入；`--no-bundle` 只跳过打包步骤，见[CLI build 选项](https://v2.tauri.app/reference/cli/#build)。
 - `bundle.resources` 不会因 `--no-bundle` 自动复制到 exe 旁。Windows 的 `resource_dir()` 解析为 exe 所在目录，见[`resource_dir`](https://docs.rs/tauri/2.12.5/tauri/path/struct.PathResolver.html#method.resource_dir)；zip 脚本必须显式复制资源，或改用 `include_bytes!`/`rust-embed` 编进二进制。读取方式见[嵌入附加文件](https://v2.tauri.app/develop/resources/)。
 - WebView2 是系统依赖，不随 exe 分发。Windows 10 2018 年 4 月后和 Windows 11 通常自带；更老或精简系统需要 Evergreen Runtime。安装包可用 `downloadBootstrapper`、`embedBootstrapper`、`offlineInstaller`、`fixedRuntime` 或 `skip`，体积见[WebView2 安装选项](https://v2.tauri.app/distribute/windows-installer/#webview2-installation-options)。便携 zip 不能自动安装，启动失败时应提示并给出微软下载地址。
-- 体积没有官方“空项目 exe 数字”，Tauri 只给优化建议，见[App Size](https://v2.tauri.app/concept/size/)。本次未构建，**空项目 release exe 大小待实测**；经验上约 5–10MB，不要按 Electron 的 200MB 级体积估算，实际以 `Get-Item .\src-tauri\target\release\LingoPick.exe | Select Length` 记录并在 CI 保存。优化可用 `lto = true`、`codegen-units = 1`、`opt-level = "s"`、`strip = true`、`panic = "abort"`，并开启 `build.removeUnusedCommands`。
+- 体积没有官方“空项目 exe 数字”，Tauri 只给优化建议，见[App Size](https://v2.tauri.app/concept/size/)。本次未构建，**空项目 release exe 大小待实测**；经验上约 5–10MB，不要按 Electron 的 200MB 级体积估算，实际以 `Get-Item .\src-tauri\target\release\Lexora.exe | Select Length` 记录并在 CI 保存。优化可用 `lto = true`、`codegen-units = 1`、`opt-level = "s"`、`strip = true`、`panic = "abort"`，并开启 `build.removeUnusedCommands`。
 - GitHub Actions 用 `Swatinem/rust-cache@v2` 缓存 `~/.cargo` 与 `src-tauri/target`，`workspaces: './src-tauri -> target'`，`cache-on-failure: true`；官方工作流见[GitHub 流水线](https://v2.tauri.app/distribute/pipelines/github/)。只做 zip 时把最后一步换成 `npm run tauri build -- --no-bundle` 加 `actions/upload-artifact`；未签名便携 exe 会触发 SmartScreen，正式分发应做代码签名。
 ```yaml
 - uses: actions/checkout@v7

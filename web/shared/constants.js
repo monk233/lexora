@@ -1,4 +1,4 @@
-/* Shared constants for the LingoPick web UI.
+/* Shared constants for the Lexora web UI.
  *
  * Loaded by both windows (picker + settings) before their own scripts. Keeps
  * skill/language/preset metadata and small formatting helpers in one place so
@@ -9,38 +9,55 @@
 
   var LP = (window.LP = window.LP || {});
 
-  LP.APP_NAME = "LingoPick";
-  LP.REPO_URL = "https://github.com/monk233/lingopick";
+  LP.APP_NAME = "Lexora";
+  LP.REPO_URL = "https://github.com/monk233/lexora";
   LP.LICENSE = "MIT";
 
   /* ---- Skills ---------------------------------------------------------- */
 
-  /* Display order when a skill is not enabled yet (settings window). */
+  /* Built-in skills. `icon` is a key from web/shared/skill-icons.js. */
   LP.SKILLS = [
     {
       id: "translate",
       label: "翻译",
+      icon: "languages",
       description: "用默认目标语言翻译选中文本",
     },
     {
       id: "summarize",
       label: "总结",
+      icon: "list",
       description: "用简体中文提炼选中文本的要点",
     },
     {
       id: "explain",
       label: "解释",
+      icon: "lightbulb",
       description: "用简体中文解释含义、背景与关键概念",
+    },
+    {
+      id: "polish",
+      label: "润色",
+      icon: "wand-sparkles",
+      description: "润色选中文本，让表达更通顺自然",
     },
     {
       id: "read",
       label: "朗读",
+      icon: "volume-2",
       description: "用 Windows 系统语音朗读选中文本",
     },
     {
       id: "copy",
       label: "复制",
+      icon: "copy",
       description: "把选中文本复制到剪贴板",
+    },
+    {
+      id: "search",
+      label: "搜索",
+      icon: "search",
+      description: "用所选搜索引擎搜索选中文本",
     },
   ];
 
@@ -53,17 +70,80 @@
     return skill.id;
   });
 
+  /* Built-in skills whose system prompt can be edited in the settings page. */
+  LP.PROMPT_SKILLS = ["translate", "summarize", "explain", "polish"];
+
+  /* Search skill engines. */
+  LP.SEARCH_ENGINES = [
+    { value: "google", label: "Google", url: "https://www.google.com/search?q=" },
+    { value: "baidu", label: "百度", url: "https://www.baidu.com/s?wd=" },
+    { value: "bing", label: "Bing", url: "https://www.bing.com/search?q=" },
+  ];
+
+  LP.SEARCH_ENGINE_MAP = {};
+  LP.SEARCH_ENGINES.forEach(function (engine) {
+    LP.SEARCH_ENGINE_MAP[engine.value] = engine;
+  });
+
+  LP.DEFAULT_SEARCH_ENGINE = "google";
+
+  /* ---- Skill icons ----------------------------------------------------- */
+
+  /* The 200-icon gallery and the legacy aliases live in skill-icons.js. That
+   * file is loaded after this one and provides LP.customSkillIconSvg. */
+  LP.CUSTOM_SKILL_DEFAULT_ICON = "sparkles";
+
+  LP.skillIconSvg = function (key) {
+    if (typeof LP.customSkillIconSvg === "function") {
+      return LP.customSkillIconSvg(key);
+    }
+    return "";
+  };
+
   /* ---- Languages ------------------------------------------------------- */
 
+  /* Languages supported by the Hy-MT2 translation model (33 languages plus
+   * Chinese variants and minority languages, see the official model card).
+   * Common targets first for a short dropdown. */
   LP.LANGUAGES = [
     { value: "zh", label: "中文" },
-    { value: "en", label: "英文" },
+    { value: "en", label: "英语" },
+    { value: "zh-hant", label: "繁体中文" },
+    { value: "yue", label: "粤语" },
     { value: "ja", label: "日语" },
-    { value: "de", label: "德语" },
-    { value: "fr", label: "法语" },
-    { value: "es", label: "西班牙语" },
-    { value: "ru", label: "俄语" },
     { value: "ko", label: "韩语" },
+    { value: "fr", label: "法语" },
+    { value: "de", label: "德语" },
+    { value: "es", label: "西班牙语" },
+    { value: "pt", label: "葡萄牙语" },
+    { value: "ru", label: "俄语" },
+    { value: "ar", label: "阿拉伯语" },
+    { value: "it", label: "意大利语" },
+    { value: "nl", label: "荷兰语" },
+    { value: "pl", label: "波兰语" },
+    { value: "tr", label: "土耳其语" },
+    { value: "th", label: "泰语" },
+    { value: "vi", label: "越南语" },
+    { value: "id", label: "印尼语" },
+    { value: "ms", label: "马来语" },
+    { value: "tl", label: "菲律宾语" },
+    { value: "hi", label: "印地语" },
+    { value: "bn", label: "孟加拉语" },
+    { value: "ta", label: "泰米尔语" },
+    { value: "te", label: "泰卢固语" },
+    { value: "mr", label: "马拉地语" },
+    { value: "gu", label: "古吉拉特语" },
+    { value: "ur", label: "乌尔都语" },
+    { value: "fa", label: "波斯语" },
+    { value: "he", label: "希伯来语" },
+    { value: "uk", label: "乌克兰语" },
+    { value: "cs", label: "捷克语" },
+    { value: "km", label: "高棉语" },
+    { value: "my", label: "缅甸语" },
+    { value: "bo", label: "藏语" },
+    { value: "kk", label: "哈萨克语" },
+    { value: "mn", label: "蒙古语" },
+    { value: "ug", label: "维吾尔语" },
   ];
 
   LP.LANG_LABELS = {};
@@ -71,9 +151,7 @@
     LP.LANG_LABELS[language.value] = language.label;
   });
 
-  LP.TARGET_LANGS = [{ value: "auto", label: "自动（中文→英文，其他→中文）" }].concat(
-    LP.LANGUAGES
-  );
+  LP.TARGET_LANGS = [{ value: "auto", label: "自动识别" }].concat(LP.LANGUAGES);
 
   /* ---- Online provider presets ---------------------------------------- */
 
@@ -82,7 +160,6 @@
       id: "deepseek",
       label: "DeepSeek",
       baseUrl: "https://api.deepseek.com/v1",
-      model: "deepseek-chat",
       needsKey: true,
       hint: "DeepSeek 开放平台，OpenAI 兼容接口",
     },
@@ -90,7 +167,6 @@
       id: "openai",
       label: "OpenAI",
       baseUrl: "https://api.openai.com/v1",
-      model: "gpt-4o-mini",
       needsKey: true,
       hint: "api.openai.com，需要可访问的 API Key",
     },
@@ -98,7 +174,6 @@
       id: "moonshot",
       label: "Moonshot Kimi",
       baseUrl: "https://api.moonshot.cn/v1",
-      model: "moonshot-v1-8k",
       needsKey: true,
       hint: "Moonshot 开放平台，OpenAI 兼容接口",
     },
@@ -106,7 +181,6 @@
       id: "zhipu",
       label: "智谱 GLM",
       baseUrl: "https://open.bigmodel.cn/api/paas/v4",
-      model: "glm-4-flash",
       needsKey: true,
       hint: "智谱 AI 开放平台，OpenAI 兼容接口",
     },
@@ -114,7 +188,6 @@
       id: "ollama",
       label: "Ollama（本机）",
       baseUrl: "http://127.0.0.1:11434/v1",
-      model: "qwen2.5:1.5b",
       needsKey: false,
       hint: "本机 Ollama 服务，通常无需 API Key",
     },
@@ -122,7 +195,6 @@
       id: "lmstudio",
       label: "LM Studio（本机）",
       baseUrl: "http://127.0.0.1:1234/v1",
-      model: "qwen2.5-1.5b-instruct",
       needsKey: false,
       hint: "本机 LM Studio 本地服务器，通常无需 API Key",
     },
@@ -130,7 +202,6 @@
       id: "custom",
       label: "自定义",
       baseUrl: "",
-      model: "",
       needsKey: true,
       hint: "任意 OpenAI 兼容服务地址",
     },

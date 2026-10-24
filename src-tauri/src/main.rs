@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-//! LingoPick — Windows selection translator.
+//! Lexora — Windows selection translator.
 //!
 //! A tray-resident Tauri app: global input hooks detect text selections, UI
 //! Automation reads the selected text, a transparent always-on-top webview shows
@@ -19,6 +19,7 @@ mod selection;
 mod settings;
 mod state;
 mod tray;
+mod updater;
 mod win32;
 mod windows;
 
@@ -33,13 +34,20 @@ use state::AppState;
 fn main() {
     let app = tauri::Builder::default()
         // The single-instance plugin must be registered before any other plugin.
+        // A second launch never opens a window on its own (a plain double-click
+        // stays silent); pass `--show` to explicitly bring settings up.
         .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            let force_show = wants_settings_window(&args);
+            let autostart_launch = is_autostart_launch(&args);
             if let Some(state) = app.try_state::<Arc<AppState>>() {
                 state.log.info(&format!(
-                    "second instance launched: args={args:?} cwd={cwd:?}; focusing settings"
+                    "second instance launched: args={args:?} cwd={cwd:?}; \
+                     force_show={force_show} autostart={autostart_launch}"
                 ));
             }
-            windows::show_settings(app);
+            if force_show {
+                windows::show_settings(app);
+            }
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -48,7 +56,7 @@ fn main() {
             let paths = paths::AppPaths::resolve();
             let log = logger::Logger::new(&paths.logs_dir, "main");
             log.info(&format!(
-                "=== LingoPick {} starting (os={}, exe={:?}, args={:?}) ===",
+                "=== Lexora {} starting (os={}, exe={:?}, args={:?}) ===",
                 env!("CARGO_PKG_VERSION"),
                 std::env::consts::OS,
                 std::env::current_exe().ok(),
@@ -70,28 +78,21 @@ fn main() {
 
             state.selection.start(app.handle().clone());
             sync_autostart(&state);
-
-            let first_run = !state.settings.get().app.first_run_done;
-            if first_run {
-                if let Err(error) = state
-                    .settings
-                    .update_json(serde_json::json!({ "app": { "firstRunDone": true } }))
-                {
-                    log.warn(&format!("failed to persist firstRunDone: {error}"));
-                }
-            }
+            restore_local_engine(app.handle(), &state);
 
             let args: Vec<String> = std::env::args().collect();
-            let force_show = args.iter().any(|argument| argument == "--show");
-            let autostart_launch = args.iter().any(|argument| argument == "--autostart");
+            let force_show = wants_settings_window(&args);
+            let autostart_launch = is_autostart_launch(&args);
 
+            // Silent start: a launch only mounts the tray (and picker) and
+            // never opens a window. `--show` is an explicit opt-in used by
+            // developers and tests.
             log.info(&format!(
-                "startup mode: first_run={first_run} force_show={force_show} autostart={autostart_launch}"
+                "startup mode: force_show={force_show} autostart={autostart_launch}; \
+                 starting silently in tray"
             ));
-            if first_run || force_show {
+            if force_show {
                 windows::show_settings(app.handle());
-            } else {
-                log.info("starting in tray; settings window stays hidden");
             }
             Ok(())
         })
@@ -149,13 +150,18 @@ fn main() {
             commands::open_external,
             commands::set_start_at_login,
             commands::quit_app,
+            commands::check_update,
+            commands::install_update,
             commands::picker_ready,
             commands::picker_close,
             commands::picker_pin,
             commands::picker_resize,
+            commands::picker_drag_panel,
             commands::picker_copy,
             commands::picker_open_settings,
             commands::picker_translate,
+            commands::picker_polish,
+            commands::picker_custom_skill,
             commands::picker_abort_translate,
             commands::picker_assist,
             commands::picker_status,
@@ -163,7 +169,7 @@ fn main() {
             commands::picker_disable_tool
         ])
         .build(tauri::generate_context!())
-        .expect("error while building LingoPick");
+        .expect("error while building Lexora");
 
     app.run(|app_handle, event| match event {
         RunEvent::ExitRequested { .. } => cleanup(app_handle),
@@ -200,6 +206,60 @@ fn sync_autostart(state: &AppState) {
     }
 }
 
+/// Restores the local llama.cpp engine when it was running in the previous
+/// session (`provider.local.keepRunning`). Runs in the background so a slow
+/// model load never delays window creation; failures are only logged (a silent
+/// startup must not pop an error box).
+fn restore_local_engine(app: &AppHandle, state: &Arc<AppState>) {
+    let settings = state.settings.get();
+    if !should_restore_local(settings.provider.local.keep_running) {
+        return;
+    }
+    if !state.engine.engine_installed() {
+        state
+            .log
+            .info("local engine restore skipped: llama.cpp engine is not installed");
+        return;
+    }
+    if state.engine.installed_models().is_empty() {
+        state
+            .log
+            .info("local engine restore skipped: no local model installed");
+        return;
+    }
+    state
+        .log
+        .info("restoring local engine from the previous session");
+    let engine = state.engine.clone();
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        match engine.start_local().await {
+            Ok(()) => {
+                if let Some(state) = app.try_state::<Arc<AppState>>() {
+                    state
+                        .log
+                        .info("local engine restored; last running state remembered");
+                    crate::tray::refresh(&app);
+                    commands::broadcast_state(&app, &state);
+                }
+            }
+            Err(error) => {
+                if let Some(state) = app.try_state::<Arc<AppState>>() {
+                    state.log.warn(&format!(
+                        "local engine restore failed: {} ({})",
+                        error.message, error.hint
+                    ));
+                }
+            }
+        }
+    });
+}
+
+/// Pure gate for [`restore_local_engine`] (kept testable without an app).
+fn should_restore_local(keep_running: bool) -> bool {
+    keep_running
+}
+
 /// Stops the local llama.cpp server and drops UI state before the process exits.
 /// Idempotent: both `ExitRequested` and `Exit` call it.
 fn cleanup(app: &AppHandle) {
@@ -215,12 +275,13 @@ fn cleanup(app: &AppHandle) {
     state.abort_translate();
     state.selection.set_picker_visible(false);
 
-    // `stop_local` completes synchronously (process kill), so spawn + a short
-    // wait is enough and cannot deadlock the main thread.
+    // `shutdown_local` completes synchronously (process kill) and deliberately
+    // keeps `local.keepRunning` so the next launch restores the engine; spawn +
+    // a short wait is enough and cannot deadlock the main thread.
     let engine = state.engine.clone();
     let (sender, receiver) = std::sync::mpsc::channel::<()>();
     tauri::async_runtime::spawn(async move {
-        let _ = engine.stop_local().await;
+        engine.shutdown_local();
         let _ = sender.send(());
     });
     if receiver.recv_timeout(Duration::from_millis(1500)).is_err() {
@@ -229,4 +290,52 @@ fn cleanup(app: &AppHandle) {
             .warn("local engine stop timed out; it will be terminated with this process");
     }
     state.log.info("shutdown: cleanup finished");
+}
+
+/// The settings window is only shown on an explicit `--show` launch. A plain
+/// double-click (and a start-at-login run) stays silent in the tray.
+fn wants_settings_window(args: &[String]) -> bool {
+    args.iter().any(|argument| argument == "--show")
+}
+
+/// Start-at-login launches pass `--autostart` (written by `autostart.rs`).
+fn is_autostart_launch(args: &[String]) -> bool {
+    args.iter().any(|argument| argument == "--autostart")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_autostart_launch, should_restore_local, wants_settings_window};
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn local_engine_restore_follows_the_last_running_state() {
+        assert!(!should_restore_local(false));
+        assert!(should_restore_local(true));
+    }
+
+    #[test]
+    fn double_click_launch_stays_silent() {
+        assert!(!wants_settings_window(&args(&["lexora.exe"])));
+        assert!(!wants_settings_window(&args(&[
+            "lexora.exe",
+            "--autostart"
+        ])));
+    }
+
+    #[test]
+    fn show_flag_opens_settings() {
+        assert!(wants_settings_window(&args(&["lexora.exe", "--show"])));
+        assert!(wants_settings_window(&args(&["--show", "--autostart"])));
+        assert!(!wants_settings_window(&args(&["lexora.exe", "--show-all"])));
+    }
+
+    #[test]
+    fn autostart_flag_is_detected() {
+        assert!(is_autostart_launch(&args(&["lexora.exe", "--autostart"])));
+        assert!(!is_autostart_launch(&args(&["lexora.exe", "--show"])));
+    }
 }

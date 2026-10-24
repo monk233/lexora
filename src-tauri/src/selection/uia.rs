@@ -61,7 +61,7 @@ pub(super) struct CapturedSelection {
 pub(super) fn capture_selection(mouse: Option<(i32, i32)>) -> Result<CapturedSelection, String> {
     let (sender, receiver) = mpsc::sync_channel(1);
     let spawned = thread::Builder::new()
-        .name("lingopick-uia".to_string())
+        .name("lexora-uia".to_string())
         .spawn(move || {
             let result = capture_on_thread(mouse);
             // The receiver is gone when the watchdog already gave up.

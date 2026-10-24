@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [master, main]
+    branches: [master, main, 'dev/**']
     paths-ignore:
       - 'docs/**'
       - '**/*.md'
@@ -62,7 +62,7 @@ jobs:
       - name: Upload debug executable
         uses: actions/upload-artifact@v4
         with:
-          name: lingopick-debug-exe
-          path: src-tauri/target/debug/lingopick.exe
+          name: lexora-debug-exe
+          path: src-tauri/target/debug/lexora.exe
           if-no-files-found: error
           retention-days: 7

@@ -1,4 +1,4 @@
-/* LingoPick settings renderer.
+/* Lexora settings renderer.
  *
  * Single-page settings window backed by `window.settingsAPI` (contract §5.1).
  * All changes save automatically: switches/selects immediately, text fields
@@ -13,8 +13,28 @@
   var API = window.settingsAPI;
   var LP = window.LP || {};
 
-  var SKILL_IDS = ["translate", "summarize", "explain", "read", "copy"];
+  /* Built-in skill ids come from shared metadata so newly added built-ins
+   * (polish/search) need no frontend change. Fallbacks keep the page usable
+   * when the cached shared script is stale. */
+  var SKILL_IDS = (
+    LP.DEFAULT_SKILLS && LP.DEFAULT_SKILLS.length
+      ? LP.DEFAULT_SKILLS
+      : ["translate", "summarize", "explain", "polish", "read", "copy", "search"]
+  ).slice();
   var DEFAULT_SKILLS = SKILL_IDS.slice();
+  /* Built-in skills that expose an editable prompt (read/copy/search have no
+   * model call). */
+  var PROMPT_SKILLS = (
+    LP.PROMPT_SKILLS && LP.PROMPT_SKILLS.length
+      ? LP.PROMPT_SKILLS
+      : ["translate", "summarize", "explain", "polish"]
+  ).slice();
+  var SEARCH_ENGINES = LP.SEARCH_ENGINES || [
+    { value: "google", label: "Google" },
+    { value: "baidu", label: "百度" },
+    { value: "bing", label: "Bing" },
+  ];
+  var CUSTOM_MODEL_VALUE = "__custom__";
 
   var state = null;
   var saveQueue = null;
@@ -23,9 +43,73 @@
   var textTimers = {};
   var textFields = [];
   var catalogOpen = false;
-  var recording = null;
   var localBusy = false;
   var loginBusy = false;
+
+  /* Online models fetched from /models, cached per baseUrl + apiKey. */
+  var onlineModelCache = {};
+  var customModelMode = false;
+  var onlineModelHint = "";
+  var onlineModelError = "";
+  var fetchModelsBusy = false;
+
+  /* Skill prompt editors: expansion, pending drafts and debounce timers. */
+  var promptExpanded = {};
+  var promptTimers = {};
+  var promptDrafts = {};
+
+  /* Skill id currently being dragged in the toolbar-order list. */
+  var dragSkillId = "";
+
+  /* Search-engine config panel (search skill) open state. */
+  var searchPanelOpen = false;
+
+  /* Icon picker search query (filters LP.CUSTOM_SKILL_ICON_KEYS by key). */
+  var iconSearchQuery = "";
+
+  /* Whether the compact icon picker panel is expanded inside the editor. */
+  var iconPickerOpen = false;
+
+  /* Custom skill editor: open flag, edited id ("" means a new skill) and the
+   * in-progress draft. The draft survives `state-changed` refreshes so a
+   * background update never wipes what the user is typing. */
+  var customEditorOpen = false;
+  var customEditingId = "";
+  var customDraft = null;
+
+  /* About-page updater: idle|checking|latest|available|downloading|ready|error. */
+  var updateState = "idle";
+  var updateInfo = null;
+  var updateErrorTitle = "";
+  var updateErrorText = "";
+  var updateErrorHint = "";
+  var updateProgressPercent = 0;
+  var updateNotesExpanded = false;
+  var updateChecking = false;
+  var updateInstalling = false;
+
+  /* Friendly names for the legacy/common icon keys (unknown keys show as-is). */
+  var CUSTOM_ICON_LABELS = {
+    sparkles: "灵感",
+    "wand-sparkles": "润色",
+    languages: "语言",
+    "pen-line": "书写",
+    "book-open": "阅读",
+    earth: "全球",
+    code: "代码",
+    list: "列表",
+    "message-circle": "对话",
+    lightbulb: "点子",
+    quote: "引用",
+    briefcase: "工作",
+    star: "收藏",
+    search: "搜索",
+    "circle-help": "帮助",
+    "volume-2": "朗读",
+    copy: "复制",
+  };
+
+  var CUSTOM_ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 
   /* ---- DOM helpers ----------------------------------------------------- */
 
@@ -261,6 +345,9 @@
         save(field.buildPatch());
       }
     });
+    Object.keys(promptDrafts).forEach(function (id) {
+      flushPromptDraft(id);
+    });
   }
 
   /* ---- State loading --------------------------------------------------- */
@@ -363,19 +450,214 @@
     }
     setInputValue(byId("online-base-url"), online.baseUrl || "");
     setInputValue(byId("online-api-key"), online.apiKey || "");
-    setInputValue(byId("online-model"), online.model || "");
+    renderOnlineModelOptions(online);
   }
 
-  function emptyOption(label) {
-    var option = document.createElement("option");
-    option.value = "";
-    option.textContent = label;
-    return option;
+  /* ---- Online model list ---------------------------------------------- */
+
+  function onlineModelCacheKey(baseUrl, apiKey) {
+    return String(baseUrl || "") + "\u0000" + String(apiKey || "");
+  }
+
+  function cachedOnlineModels(online) {
+    return onlineModelCache[onlineModelCacheKey(online.baseUrl, online.apiKey)] || [];
+  }
+
+  function cacheOnlineModels(online, models) {
+    var seen = {};
+    var cleaned = [];
+    (models || []).forEach(function (model) {
+      var text = typeof model === "string" ? model.trim() : "";
+      if (text && !seen[text]) {
+        seen[text] = true;
+        cleaned.push(text);
+      }
+    });
+    onlineModelCache[onlineModelCacheKey(online.baseUrl, online.apiKey)] = cleaned;
+    return cleaned;
+  }
+
+  /* Currently selected model: plain option value or the custom input. */
+  function getSelectedModel() {
+    var select = byId("online-model");
+    var value = select ? String(select.value || "") : "";
+    if (value === CUSTOM_MODEL_VALUE) {
+      var custom = byId("online-model-custom");
+      return custom ? String(custom.value || "").trim() : "";
+    }
+    return value;
+  }
+
+  function onlineModelOptions(online) {
+    var models = cachedOnlineModels(online);
+    var saved = String(online.model || "");
+    var seen = {};
+    var options = [];
+    if (!saved && !customModelMode) {
+      options.push({ value: "", label: "（未选择模型）" });
+    }
+    models.forEach(function (model) {
+      seen[model] = true;
+      options.push({ value: model, label: model });
+    });
+    if (!customModelMode && saved && !seen[saved]) {
+      options.push({ value: saved, label: saved + "（当前）" });
+    }
+    options.push({ value: CUSTOM_MODEL_VALUE, label: "自定义模型…" });
+    return options;
+  }
+
+  function renderOnlineModelOptions(online) {
+    var select = byId("online-model");
+    if (!select) {
+      return;
+    }
+    var options = onlineModelOptions(online);
+    var signature = options
+      .map(function (option) {
+        return option.value + "\u0002" + option.label;
+      })
+      .join("\u0001");
+    var desired = customModelMode ? CUSTOM_MODEL_VALUE : String(online.model || "");
+    if (select.getAttribute("data-signature") !== signature) {
+      select.setAttribute("data-signature", signature);
+      fillSelect(select, options);
+      select.value = desired;
+    } else {
+      setSelectValue(select, desired);
+    }
+    var custom = byId("online-model-custom");
+    if (custom) {
+      setHidden(custom, !customModelMode);
+      if (customModelMode) {
+        setInputValue(custom, online.model || "");
+      }
+    }
+    renderOnlineModelFeedback();
+  }
+
+  function renderOnlineModelFeedback() {
+    var hint = byId("online-model-hint");
+    var error = byId("online-model-error");
+    if (hint) {
+      hint.textContent = onlineModelHint;
+      hint.hidden = !onlineModelHint;
+    }
+    if (error) {
+      error.textContent = onlineModelError;
+      error.hidden = !onlineModelError;
+    }
+  }
+
+  function showOnlineModelError(message) {
+    onlineModelHint = "";
+    onlineModelError = String(message || "");
+    renderOnlineModelFeedback();
+  }
+
+  function chooseCustomModel() {
+    var online = state.settings.provider.online || {};
+    var custom = byId("online-model-custom");
+    customModelMode = true;
+    onlineModelError = "";
+    if (custom) {
+      custom.value = String(online.model || "");
+      setHidden(custom, false);
+      custom.focus();
+      custom.select();
+    }
+    renderOnlineModelOptions(online);
+  }
+
+  function selectOnlineModel(value) {
+    if (value === CUSTOM_MODEL_VALUE) {
+      chooseCustomModel();
+      return;
+    }
+    customModelMode = false;
+    onlineModelError = "";
+    renderOnline();
+    save(onlinePatch({ model: value }));
+  }
+
+  function fetchOnlineModels() {
+    if (fetchModelsBusy) {
+      return;
+    }
+    var button = byId("fetch-online-models");
+    var baseUrl = byId("online-base-url").value.trim();
+    var apiKey = byId("online-api-key").value;
+    if (!baseUrl) {
+      showOnlineModelError("请先填写服务地址");
+      return;
+    }
+    if (!/^https?:\/\//i.test(baseUrl)) {
+      showOnlineModelError("服务地址必须以 http:// 或 https:// 开头");
+      return;
+    }
+    fetchModelsBusy = true;
+    onlineModelHint = "";
+    onlineModelError = "";
+    renderOnlineModelFeedback();
+    if (button) {
+      button.disabled = true;
+      button.textContent = "拉取中…";
+    }
+    API.listOnlineModels({ baseUrl: baseUrl, apiKey: apiKey }).then(function (result) {
+      fetchModelsBusy = false;
+      if (button) {
+        button.disabled = false;
+        button.textContent = "拉取模型";
+      }
+      var online = (state && state.settings.provider.online) || {};
+      if (result && result.ok) {
+        var models = cacheOnlineModels(online, result.models);
+        onlineModelError = "";
+        if (models.length) {
+          onlineModelHint = "已加载 " + models.length + " 个模型";
+        } else {
+          onlineModelHint = "服务端没有返回模型，请选择「自定义模型…」手动填写";
+        }
+      } else {
+        onlineModelError = (result && result.error) || "拉取模型失败";
+        onlineModelHint =
+          (result && result.hint) || "可改用「自定义模型…」手动填写模型名";
+      }
+      renderOnlineModelOptions(online);
+    });
+  }
+
+  /* Built-in catalog ids map to the runtime role; imports count as custom. */
+  function modelRole(catalogId) {
+    if (catalogId === "hy-mt2-1.8b") {
+      return { label: "翻译模型", builtin: true };
+    }
+    if (catalogId === "qwen2.5-3b") {
+      return { label: "通用模型", builtin: true };
+    }
+    return { label: "自定义模型", builtin: false };
+  }
+
+  function localModelRow(model) {
+    var role = modelRole(model.catalogId);
+    var row = el("div", "model-card");
+    row.setAttribute("data-file", model.file || "");
+    var main = el("div", "model-card-main");
+    main.appendChild(
+      el("span", "model-card-name", model.name || model.file || "未命名模型")
+    );
+    var meta = el("div", "model-card-meta");
+    meta.appendChild(
+      el("span", "meta-pill" + (role.builtin ? " is-accent" : ""), role.label)
+    );
+    meta.appendChild(el("span", "meta-pill", LP.formatBytes(model.sizeBytes)));
+    main.appendChild(meta);
+    row.appendChild(main);
+    return row;
   }
 
   function renderLocal() {
     var engine = state.engine || {};
-    var settings = state.settings.provider.local || {};
     var download = state.download;
     var engineDownload =
       download && download.kind === "engine" ? download : null;
@@ -400,39 +682,34 @@
 
     renderEngineProgress(engineDownload);
 
-    var models = state.models || [];
-    var modelSelect = byId("local-model");
-    if (modelSelect) {
+    var models = Array.isArray(state.models) ? state.models : [];
+    var list = byId("local-models");
+    if (list) {
       var signature = models
         .map(function (model) {
-          return model.file;
+          return [
+            model.file,
+            model.name,
+            model.catalogId,
+            model.sizeBytes,
+          ].join("\u0001");
         })
-        .join("|");
-      if (modelSelect.getAttribute("data-signature") !== signature) {
-        modelSelect.setAttribute("data-signature", signature);
-        modelSelect.innerHTML = "";
-        if (!models.length) {
-          modelSelect.appendChild(emptyOption("未安装本地模型"));
-        } else {
-          modelSelect.appendChild(emptyOption("未选择模型"));
-          models.forEach(function (model) {
-            var option = document.createElement("option");
-            option.value = model.file;
-            option.textContent =
-              model.name + "（" + LP.formatBytes(model.sizeBytes) + "）";
-            modelSelect.appendChild(option);
-          });
-        }
+        .join("\u0002");
+      if (list.getAttribute("data-signature") !== signature) {
+        list.setAttribute("data-signature", signature);
+        list.innerHTML = "";
+        models.forEach(function (model) {
+          list.appendChild(localModelRow(model));
+        });
       }
-      setSelectValue(modelSelect, settings.modelFile || "");
     }
 
-    var modelHint = byId("local-model-hint");
+    var modelHint = byId("local-models-hint");
     if (modelHint) {
       if (!models.length) {
         modelHint.hidden = false;
         modelHint.textContent =
-          "还没有本地模型：展开「模型目录」下载，或点击「导入 GGUF」选择本机文件。";
+          "还没有本地模型：展开「模型目录」下载（翻译推荐 Hy-MT2，通用推荐 Qwen2.5 3B），或点击「导入 GGUF」选择本机文件。";
       } else {
         modelHint.hidden = true;
       }
@@ -506,9 +783,29 @@
       stopButton.disabled = localBusy;
     }
 
+    var hintNode = byId("local-state-hint");
+    if (hintNode) {
+      var modelName = String(engine.localModelName || "").trim();
+      if (localState === "ready") {
+        hintNode.textContent = modelName ? "当前模型：" + modelName : "模型已加载";
+      } else if (localState === "starting") {
+        hintNode.textContent = modelName
+          ? "正在加载模型：" + modelName
+          : "正在加载模型…";
+      } else {
+        hintNode.textContent =
+          "本地模型未启动时翻译/总结不会自动启动，请点击「启动」";
+      }
+      hintNode.hidden = false;
+    }
+
     var errorNode = byId("local-error");
-    if (errorNode && engine.localError) {
-      showInlineError(errorNode, engine.localError);
+    if (errorNode) {
+      if (engine.localError) {
+        showInlineError(errorNode, engine.localError);
+      } else {
+        hideInlineError(errorNode);
+      }
     }
   }
 
@@ -675,16 +972,160 @@
     var picker = state.settings.picker || {};
     setChecked(byId("picker-enabled"), picker.enabled !== false);
     setChecked(byId("picker-compact"), picker.compact === true);
-    if (!recording) {
-      var shortcut = picker.shortcut || "Ctrl+Shift+D";
-      var valueNode = byId("shortcut-value");
-      if (valueNode && valueNode.textContent !== shortcut) {
-        valueNode.textContent = shortcut;
-      }
-    }
     setSelectValue(byId("default-target-lang"), picker.defaultTargetLang || "auto");
     renderSkills();
+    renderCustomSkillEditor(false);
     renderBlacklist();
+  }
+
+  /* ---- Custom skills ----------------------------------------------------- */
+
+  /* Custom skills are stored as {id,label,icon,prompt}. Return copies so a
+   * patch never mutates the state object in place. */
+  function customSkillsList() {
+    var picker = state && state.settings && state.settings.picker;
+    var stored = picker && Array.isArray(picker.customSkills) ? picker.customSkills : [];
+    var seen = {};
+    var result = [];
+    stored.forEach(function (entry) {
+      if (!entry || !entry.id) {
+        return;
+      }
+      var id = String(entry.id);
+      if (seen[id]) {
+        return;
+      }
+      seen[id] = true;
+      result.push({
+        id: id,
+        label: String(entry.label || "").trim() || "自定义技能",
+        icon: validCustomIcon(entry.icon),
+        prompt: String(entry.prompt || ""),
+      });
+    });
+    return result;
+  }
+
+  function findCustomSkill(id) {
+    var skills = customSkillsList();
+    for (var index = 0; index < skills.length; index += 1) {
+      if (skills[index].id === id) {
+        return skills[index];
+      }
+    }
+    return null;
+  }
+
+  /* Map legacy 12-icon keys through the shared alias table, then verify the
+   * key exists in the 200-icon gallery. Unknown keys fall back to sparkles. */
+  function validCustomIcon(icon) {
+    var key = String(icon || "");
+    var aliases = LP.LEGACY_SKILL_ICON_ALIASES || {};
+    if (Object.prototype.hasOwnProperty.call(aliases, key)) {
+      key = String(aliases[key] || "");
+    }
+    var keys = LP.CUSTOM_SKILL_ICON_KEYS || [];
+    if (!key || (keys.length && keys.indexOf(key) < 0)) {
+      return LP.CUSTOM_SKILL_DEFAULT_ICON || "sparkles";
+    }
+    return key;
+  }
+
+  function builtinSkillIconKey(id) {
+    var meta = LP.SKILL_MAP && LP.SKILL_MAP[id];
+    return (meta && meta.icon) || id;
+  }
+
+  function currentSearchEngine() {
+    var picker = state && state.settings && state.settings.picker;
+    var value = String((picker && picker.searchEngine) || "");
+    for (var index = 0; index < SEARCH_ENGINES.length; index += 1) {
+      if (SEARCH_ENGINES[index].value === value) {
+        return value;
+      }
+    }
+    return LP.DEFAULT_SEARCH_ENGINE || "google";
+  }
+
+  function searchEnginePanel() {
+    var panel = el("div", "skill-prompt search-engine-panel");
+    panel.id = "search-engine-panel";
+    var current = currentSearchEngine();
+    var group = el("div", "search-engine-list");
+    group.setAttribute("role", "radiogroup");
+    group.setAttribute("aria-label", "搜索引擎");
+    SEARCH_ENGINES.forEach(function (engine) {
+      var selected = engine.value === current;
+      var button = el(
+        "button",
+        "search-engine-option" + (selected ? " is-selected" : "")
+      );
+      button.type = "button";
+      button.setAttribute("data-search-engine", engine.value);
+      button.setAttribute("role", "radio");
+      button.setAttribute("aria-checked", selected ? "true" : "false");
+      button.setAttribute("aria-label", "使用" + engine.label + "搜索");
+      button.appendChild(el("span", "search-engine-name", engine.label));
+      if (engine.url) {
+        var host = String(engine.url)
+          .replace(/^https?:\/\//, "")
+          .split("/")[0];
+        button.appendChild(el("span", "search-engine-url", host));
+      }
+      group.appendChild(button);
+    });
+    panel.appendChild(group);
+    panel.appendChild(
+      el(
+        "p",
+        "skill-prompt-hint",
+        "搜索技能会在所选搜索引擎中打开选中的文本；选择后立即保存"
+      )
+    );
+    return panel;
+  }
+
+  function toggleSearchPanel() {
+    searchPanelOpen = !searchPanelOpen;
+    renderSkills(true);
+  }
+
+  function selectSearchEngine(value) {
+    var next = String(value || "");
+    var valid = false;
+    SEARCH_ENGINES.forEach(function (engine) {
+      if (engine.value === next) {
+        valid = true;
+      }
+    });
+    if (!valid) {
+      next = LP.DEFAULT_SEARCH_ENGINE || "google";
+    }
+    save({ picker: { searchEngine: next } });
+  }
+
+  function knownSkillIds() {
+    return SKILL_IDS.concat(
+      customSkillsList().map(function (skill) {
+        return skill.id;
+      })
+    );
+  }
+
+  /* Enabled ids in saved toolbar order, ignoring stale/unknown entries. */
+  function enabledSkills() {
+    var picker = state && state.settings && state.settings.picker;
+    var stored =
+      picker && Array.isArray(picker.skills) ? picker.skills : DEFAULT_SKILLS;
+    var known = knownSkillIds();
+    var result = [];
+    stored.forEach(function (value) {
+      var id = String(value || "");
+      if (id && known.indexOf(id) >= 0 && result.indexOf(id) < 0) {
+        result.push(id);
+      }
+    });
+    return result;
   }
 
   function renderSkills(force) {
@@ -692,65 +1133,136 @@
     if (!list) {
       return;
     }
-    var enabled = Array.isArray(state.settings.picker.skills)
-      ? state.settings.picker.skills.slice()
-      : DEFAULT_SKILLS.slice();
-    var order = enabled.concat(
-      SKILL_IDS.filter(function (id) {
-        return enabled.indexOf(id) < 0;
-      })
-    );
+    var customs = customSkillsList();
+    var customMap = {};
+    customs.forEach(function (skill) {
+      customMap[skill.id] = skill;
+    });
+    var enabled = enabledSkills();
+    var order = enabled.slice();
+    SKILL_IDS.forEach(function (id) {
+      if (enabled.indexOf(id) < 0) {
+        order.push(id);
+      }
+    });
+    customs.forEach(function (skill) {
+      if (enabled.indexOf(skill.id) < 0) {
+        order.push(skill.id);
+      }
+    });
     var signature = order
       .map(function (id) {
-        return id + ":" + (enabled.indexOf(id) >= 0 ? 1 : 0);
+        var custom = customMap[id];
+        var detail = custom
+          ? custom.label + "\u0003" + custom.icon + "\u0003" + custom.prompt
+          : id === "search"
+            ? "search:" + currentSearchEngine()
+            : "";
+        return id + ":" + (enabled.indexOf(id) >= 0 ? 1 : 0) + ":" + detail;
       })
-      .join(",");
+      .join("\u0001");
     if (!force && signature === list.getAttribute("data-signature")) {
       return;
     }
     list.setAttribute("data-signature", signature);
     list.innerHTML = "";
     order.forEach(function (id) {
-      list.appendChild(skillRow(id, enabled.indexOf(id) >= 0, enabled.length));
+      list.appendChild(skillRow(id, enabled.indexOf(id) >= 0, customMap[id]));
     });
   }
 
-  function skillRow(id, enabled, enabledCount) {
-    var meta = (LP.SKILL_MAP && LP.SKILL_MAP[id]) || { label: id, description: "" };
+  function skillRow(id, enabled, custom) {
+    var meta = custom
+      ? {
+          label: custom.label,
+          description: String(custom.prompt || "")
+            .replace(/\s+/g, " ")
+            .trim(),
+        }
+      : (LP.SKILL_MAP && LP.SKILL_MAP[id]) || { label: id, description: "" };
     var row = el("li", "skill-item" + (enabled ? "" : " is-disabled"));
     row.setAttribute("data-skill", id);
+
+    var line = el("div", "skill-row");
+    if (enabled) {
+      line.setAttribute("draggable", "true");
+    }
+
+    var drag = el("span", "skill-drag");
+    drag.setAttribute("role", "img");
+    drag.setAttribute("aria-label", enabled ? "拖动排序" : "启用后可拖动排序");
+    drag.title = enabled ? "拖动排序" : "启用后可拖动排序";
+    drag.innerHTML =
+      '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' +
+      '<circle cx="9" cy="6" r="1.5"></circle><circle cx="15" cy="6" r="1.5"></circle>' +
+      '<circle cx="9" cy="12" r="1.5"></circle><circle cx="15" cy="12" r="1.5"></circle>' +
+      '<circle cx="9" cy="18" r="1.5"></circle><circle cx="15" cy="18" r="1.5"></circle>' +
+      "</svg>";
+    line.appendChild(drag);
+
+    var icon = el("span", "skill-icon");
+    icon.setAttribute("aria-hidden", "true");
+    icon.innerHTML = LP.skillIconSvg(
+      custom ? custom.icon : builtinSkillIconKey(id)
+    );
+    line.appendChild(icon);
 
     var main = el("div", "skill-main");
     main.appendChild(el("span", "skill-name", meta.label));
     if (meta.description) {
       main.appendChild(el("span", "skill-desc", meta.description));
     }
-    row.appendChild(main);
+    line.appendChild(main);
 
-    var order = el("div", "skill-order");
-    var up = el("button", "order-btn");
-    up.type = "button";
-    up.setAttribute("data-move", "-1");
-    up.setAttribute("aria-label", "上移" + meta.label);
-    up.innerHTML =
-      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 14 6-6 6 6"></path></svg>';
-    var down = el("button", "order-btn");
-    down.type = "button";
-    down.setAttribute("data-move", "1");
-    down.setAttribute("aria-label", "下移" + meta.label);
-    down.innerHTML =
-      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 10 6 6 6-6"></path></svg>';
-    var enabledIndex = enabled
-      ? Array.prototype.indexOf.call(
-          (state.settings.picker.skills || DEFAULT_SKILLS),
-          id
-        )
-      : -1;
-    up.disabled = enabledIndex <= 0;
-    down.disabled = enabledIndex < 0 || enabledIndex >= enabledCount - 1;
-    order.appendChild(up);
-    order.appendChild(down);
-    row.appendChild(order);
+    if (custom) {
+      var customEdit = el("button", "skill-edit");
+      customEdit.type = "button";
+      customEdit.setAttribute("data-custom-edit", id);
+      customEdit.setAttribute(
+        "aria-expanded",
+        customEditorOpen && customEditingId === id ? "true" : "false"
+      );
+      customEdit.setAttribute("aria-label", "编辑技能");
+      customEdit.title = "编辑技能";
+      customEdit.innerHTML =
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>';
+      line.appendChild(customEdit);
+
+      var removeButton = el("button", "skill-delete");
+      removeButton.type = "button";
+      removeButton.setAttribute("data-custom-delete", id);
+      removeButton.setAttribute("aria-label", "删除技能" + meta.label);
+      removeButton.title = "删除技能";
+      removeButton.innerHTML =
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"></path><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path></svg>';
+      line.appendChild(removeButton);
+    } else if (PROMPT_SKILLS.indexOf(id) >= 0) {
+      var editButton = el("button", "skill-edit");
+      editButton.type = "button";
+      editButton.setAttribute("data-prompt-toggle", id);
+      editButton.setAttribute("aria-label", "编辑提示词");
+      editButton.setAttribute(
+        "aria-expanded",
+        promptExpanded[id] ? "true" : "false"
+      );
+      editButton.title = "编辑提示词";
+      editButton.innerHTML =
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>';
+      line.appendChild(editButton);
+    } else if (id === "search") {
+      var configButton = el("button", "skill-edit");
+      configButton.type = "button";
+      configButton.setAttribute("data-search-config", "1");
+      configButton.setAttribute("aria-label", "配置搜索");
+      configButton.setAttribute(
+        "aria-expanded",
+        searchPanelOpen ? "true" : "false"
+      );
+      configButton.title = "配置搜索";
+      configButton.innerHTML =
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h10"></path><path d="M4 17h6"></path><path d="M18 7v10"></path><circle cx="16" cy="7" r="2"></circle><circle cx="12" cy="17" r="2"></circle></svg>';
+      line.appendChild(configButton);
+    }
 
     var toggle = el("label", "switch");
     var input = document.createElement("input");
@@ -763,9 +1275,631 @@
     track.appendChild(thumb);
     toggle.appendChild(input);
     toggle.appendChild(track);
-    row.appendChild(toggle);
+    line.appendChild(toggle);
 
+    row.appendChild(line);
+
+    if (!custom && PROMPT_SKILLS.indexOf(id) >= 0 && promptExpanded[id]) {
+      row.appendChild(skillPromptPanel(id, meta));
+    } else if (!custom && id === "search" && searchPanelOpen) {
+      row.appendChild(searchEnginePanel());
+    }
     return row;
+  }
+
+  /* ---- Skill prompts --------------------------------------------------- */
+
+  function promptCustomValue(id) {
+    var prompts =
+      (state && state.settings && state.settings.picker && state.settings.picker.prompts) ||
+      {};
+    var value = prompts[id];
+    return typeof value === "string" ? value : "";
+  }
+
+  function promptDefault(id) {
+    var defaults = (state && state.promptDefaults) || {};
+    var value = defaults[id];
+    return typeof value === "string" ? value : "";
+  }
+
+  /* Textarea value: pending draft wins, then custom prompt, then the default. */
+  function promptEditorValue(id) {
+    if (Object.prototype.hasOwnProperty.call(promptDrafts, id)) {
+      return promptDrafts[id];
+    }
+    return promptCustomValue(id) || promptDefault(id);
+  }
+
+  function skillPromptPanel(id, meta) {
+    var panel = el("div", "skill-prompt");
+    var textarea = document.createElement("textarea");
+    textarea.className = "textarea";
+    textarea.rows = 5;
+    textarea.spellcheck = false;
+    textarea.setAttribute("data-prompt-input", id);
+    textarea.setAttribute("aria-label", meta.label + "提示词");
+    textarea.value = promptEditorValue(id);
+    textarea.addEventListener("input", function () {
+      promptDrafts[id] = textarea.value;
+      if (promptTimers[id]) {
+        window.clearTimeout(promptTimers[id]);
+      }
+      promptTimers[id] = window.setTimeout(function () {
+        promptTimers[id] = null;
+        savePromptDraft(id);
+      }, 500);
+    });
+    textarea.addEventListener("blur", function () {
+      flushPromptDraft(id);
+    });
+    textarea.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        textarea.blur();
+      }
+    });
+    panel.appendChild(textarea);
+
+    var foot = el("div", "skill-prompt-foot");
+    foot.appendChild(
+      el(
+        "p",
+        "skill-prompt-hint",
+        "留空或重置后使用系统默认提示词；translate 支持 {target} 占位符"
+      )
+    );
+    var reset = el("button", "btn btn-ghost skill-prompt-reset", "重置为默认");
+    reset.type = "button";
+    reset.setAttribute("data-prompt-reset", id);
+    foot.appendChild(reset);
+    panel.appendChild(foot);
+    return panel;
+  }
+
+  function savePromptDraft(id) {
+    if (!Object.prototype.hasOwnProperty.call(promptDrafts, id)) {
+      return;
+    }
+    var value = promptDrafts[id];
+    delete promptDrafts[id];
+    savePromptValue(id, value);
+  }
+
+  function flushPromptDraft(id) {
+    if (promptTimers[id]) {
+      window.clearTimeout(promptTimers[id]);
+      promptTimers[id] = null;
+    }
+    savePromptDraft(id);
+  }
+
+  function savePromptValue(id, rawValue) {
+    var text = String(rawValue === null || rawValue === undefined ? "" : rawValue);
+    var trimmed = text.trim();
+    var stored = "";
+    if (trimmed && trimmed !== promptDefault(id).trim()) {
+      stored = trimmed;
+    }
+    var patch = { picker: { prompts: {} } };
+    patch.picker.prompts[id] = stored;
+    save(patch);
+  }
+
+  function togglePromptPanel(id) {
+    if (promptExpanded[id]) {
+      flushPromptDraft(id);
+      delete promptExpanded[id];
+    } else {
+      promptExpanded[id] = true;
+    }
+    renderSkills(true);
+  }
+
+  function resetPromptValue(id) {
+    flushPromptDraft(id);
+    savePromptValue(id, "");
+    var list = byId("skill-list");
+    var row = list && list.querySelector('[data-skill="' + id + '"]');
+    var textarea = row && row.querySelector(".skill-prompt .textarea");
+    if (textarea) {
+      textarea.value = promptDefault(id);
+    }
+    toast("已重置为默认提示词", "success");
+  }
+
+  /* ---- Custom skill editor --------------------------------------------- */
+
+  function assignFieldValue(input, value) {
+    if (!input) {
+      return;
+    }
+    var text = value === null || value === undefined ? "" : String(value);
+    if (input.value !== text) {
+      input.value = text;
+    }
+  }
+
+  function armSkillDelete(button, action, armedLabel) {
+    if (!button) {
+      return;
+    }
+    if (button.getAttribute("data-armed") === "1") {
+      disarmSkillDelete(button);
+      action();
+      return;
+    }
+    button.setAttribute("data-armed", "1");
+    button.classList.add("is-armed");
+    button.setAttribute("data-saved-title", button.title || "");
+    button.setAttribute("data-saved-label", button.getAttribute("aria-label") || "");
+    button.title = "再次点击确认删除";
+    button.setAttribute("aria-label", "再次点击确认删除");
+    if (armedLabel) {
+      button.setAttribute("data-saved-text", button.textContent || "");
+      button.textContent = armedLabel;
+    }
+    window.clearTimeout(button.disarmTimer);
+    button.disarmTimer = window.setTimeout(function () {
+      disarmSkillDelete(button);
+    }, 4000);
+  }
+
+  function disarmSkillDelete(button) {
+    if (!button) {
+      return;
+    }
+    window.clearTimeout(button.disarmTimer);
+    button.removeAttribute("data-armed");
+    button.classList.remove("is-armed");
+    var title = button.getAttribute("data-saved-title");
+    if (title !== null) {
+      button.title = title;
+      button.removeAttribute("data-saved-title");
+    }
+    var ariaLabel = button.getAttribute("data-saved-label");
+    if (ariaLabel !== null) {
+      button.setAttribute("aria-label", ariaLabel);
+      button.removeAttribute("data-saved-label");
+    }
+    var savedText = button.getAttribute("data-saved-text");
+    if (savedText !== null) {
+      button.textContent = savedText;
+      button.removeAttribute("data-saved-text");
+    }
+  }
+
+  function filteredIconKeys() {
+    var keys = LP.CUSTOM_SKILL_ICON_KEYS || [];
+    var query = String(iconSearchQuery || "")
+      .trim()
+      .toLowerCase();
+    if (!query) {
+      return keys.slice();
+    }
+    return keys.filter(function (key) {
+      return String(key).toLowerCase().indexOf(query) >= 0;
+    });
+  }
+
+  /* Keep the highlighted icon inside the scrollable gallery viewport. */
+  function scrollSelectedIconIntoView(grid) {
+    var node = grid && grid.querySelector(".icon-option.is-selected");
+    if (!node || !grid.clientHeight) {
+      return;
+    }
+    grid.scrollTop = Math.max(
+      0,
+      node.offsetTop - grid.clientHeight / 2 + node.offsetHeight / 2
+    );
+  }
+
+  function renderIconPreview() {
+    var key = validCustomIcon(customDraft ? customDraft.icon : "");
+    var preview = byId("custom-skill-icon-preview");
+    if (preview) {
+      preview.innerHTML = LP.skillIconSvg(key);
+    }
+    var current = byId("custom-skill-icon-current");
+    if (current) {
+      var friendly = CUSTOM_ICON_LABELS[key] || "";
+      current.textContent = key;
+      current.title = friendly ? key + "（" + friendly + "）" : key;
+    }
+  }
+
+  /* Expand/collapse the compact icon gallery. Search state is reset on every
+   * open so it always starts from the full 200-icon list. */
+  function setIconPickerOpen(open) {
+    iconPickerOpen = !!open;
+    var panel = byId("custom-skill-icon-panel");
+    setHidden(panel, !customEditorOpen || !iconPickerOpen);
+    var toggle = byId("toggle-icon-picker");
+    if (toggle) {
+      toggle.setAttribute("aria-expanded", iconPickerOpen ? "true" : "false");
+      toggle.textContent = iconPickerOpen ? "收起图标" : "更换图标";
+    }
+    if (!iconPickerOpen) {
+      return;
+    }
+    iconSearchQuery = "";
+    assignFieldValue(byId("custom-skill-icon-search"), "");
+    renderCustomIconGrid(true);
+    var searchInput = byId("custom-skill-icon-search");
+    if (searchInput && searchInput.focus) {
+      searchInput.focus();
+    }
+  }
+
+  function toggleIconPicker() {
+    setIconPickerOpen(!iconPickerOpen);
+  }
+
+  function renderCustomIconGrid(ensureSelectedVisible) {
+    var grid = byId("custom-skill-icons");
+    if (!grid) {
+      return;
+    }
+    var keys = filteredIconKeys();
+    var selected = validCustomIcon(customDraft ? customDraft.icon : "");
+    var empty = byId("custom-skill-icon-empty");
+    if (empty) {
+      setHidden(empty, keys.length > 0);
+    }
+    var signature = keys.join("\u0001") + "\u0002" + selected;
+    if (grid.getAttribute("data-signature") !== signature) {
+      grid.setAttribute("data-signature", signature);
+      grid.innerHTML = "";
+      keys.forEach(function (key) {
+        var button = el(
+          "button",
+          "icon-option" + (key === selected ? " is-selected" : "")
+        );
+        button.type = "button";
+        button.setAttribute("data-icon-key", key);
+        button.setAttribute("role", "radio");
+        button.setAttribute("aria-checked", key === selected ? "true" : "false");
+        var label = CUSTOM_ICON_LABELS[key] || key;
+        button.setAttribute("aria-label", "图标：" + label);
+        button.title = key;
+        button.innerHTML = LP.skillIconSvg(key);
+        grid.appendChild(button);
+      });
+    }
+    if (ensureSelectedVisible) {
+      scrollSelectedIconIntoView(grid);
+    }
+  }
+
+  /* `syncFields` is only true while opening the editor: state refreshes must
+   * not overwrite what the user is currently typing. */
+  function renderCustomSkillEditor(syncFields) {
+    var editor = byId("custom-skill-editor");
+    if (!editor) {
+      return;
+    }
+    if (!customEditorOpen) {
+      setHidden(editor, true);
+      return;
+    }
+    if (customEditingId && !findCustomSkill(customEditingId)) {
+      closeCustomEditor();
+      return;
+    }
+    setHidden(editor, false);
+    var title = byId("custom-skill-editor-title");
+    if (title) {
+      title.textContent = customEditingId ? "编辑技能" : "新增技能";
+    }
+    setHidden(byId("delete-custom-skill"), !customEditingId);
+    renderIconPreview();
+    setHidden(byId("custom-skill-icon-panel"), !iconPickerOpen);
+    var iconToggle = byId("toggle-icon-picker");
+    if (iconToggle) {
+      iconToggle.setAttribute(
+        "aria-expanded",
+        iconPickerOpen ? "true" : "false"
+      );
+      iconToggle.textContent = iconPickerOpen ? "收起图标" : "更换图标";
+    }
+    if (syncFields) {
+      assignFieldValue(
+        byId("custom-skill-name"),
+        customDraft ? customDraft.label : ""
+      );
+      assignFieldValue(
+        byId("custom-skill-prompt"),
+        customDraft ? customDraft.prompt : ""
+      );
+      if (iconPickerOpen) {
+        renderCustomIconGrid(true);
+      }
+    }
+  }
+
+  function openCustomEditor(id) {
+    var targetId = String(id || "");
+    var custom = targetId ? findCustomSkill(targetId) : null;
+    if (targetId && !custom) {
+      toast("技能不存在，可能已被删除", "error");
+      refreshState();
+      return;
+    }
+    customEditorOpen = true;
+    customEditingId = custom ? custom.id : "";
+    customDraft = {
+      icon: custom ? custom.icon : validCustomIcon(LP.CUSTOM_SKILL_DEFAULT_ICON),
+      label: custom ? custom.label : "",
+      prompt: custom ? custom.prompt : "",
+    };
+    iconSearchQuery = "";
+    assignFieldValue(byId("custom-skill-icon-search"), "");
+    iconPickerOpen = false;
+    hideInlineError(byId("custom-skill-error"));
+    disarmSkillDelete(byId("delete-custom-skill"));
+    renderCustomSkillEditor(true);
+    renderSkills(true);
+    var editor = byId("custom-skill-editor");
+    if (editor && editor.scrollIntoView) {
+      editor.scrollIntoView({ block: "nearest" });
+    }
+    var nameInput = byId("custom-skill-name");
+    if (nameInput && nameInput.focus) {
+      nameInput.focus();
+    }
+  }
+
+  function closeCustomEditor() {
+    customEditorOpen = false;
+    customEditingId = "";
+    customDraft = null;
+    iconPickerOpen = false;
+    setHidden(byId("custom-skill-icon-panel"), true);
+    disarmSkillDelete(byId("delete-custom-skill"));
+    hideInlineError(byId("custom-skill-error"));
+    renderCustomSkillEditor(false);
+    renderSkills(true);
+  }
+
+  function chooseCustomIcon(key) {
+    if (!customEditorOpen || !customDraft) {
+      return;
+    }
+    customDraft.icon = validCustomIcon(key);
+    renderIconPreview();
+    setIconPickerOpen(false);
+  }
+
+  function generateCustomSkillId(existing) {
+    var taken = {};
+    existing.forEach(function (skill) {
+      taken[skill.id] = true;
+    });
+    var id = "";
+    do {
+      var suffix = "";
+      for (var index = 0; index < 4; index += 1) {
+        suffix += CUSTOM_ID_ALPHABET.charAt(
+          Math.floor(Math.random() * CUSTOM_ID_ALPHABET.length)
+        );
+      }
+      id = "custom-" + Date.now().toString(36) + suffix;
+    } while (taken[id]);
+    return id;
+  }
+
+  function saveCustomSkill() {
+    if (!customEditorOpen || !customDraft) {
+      return;
+    }
+    var nameInput = byId("custom-skill-name");
+    var promptInput = byId("custom-skill-prompt");
+    var errorNode = byId("custom-skill-error");
+    var label = String(nameInput ? nameInput.value : customDraft.label)
+      .replace(/\s+/g, " ")
+      .trim();
+    var prompt = String(promptInput ? promptInput.value : customDraft.prompt).trim();
+    if (!label) {
+      showInlineError(errorNode, "请填写技能名称（最多 20 个字符）");
+      if (nameInput && nameInput.focus) {
+        nameInput.focus();
+      }
+      return;
+    }
+    if (label.length > 20) {
+      showInlineError(errorNode, "技能名称最多 20 个字符");
+      if (nameInput && nameInput.focus) {
+        nameInput.focus();
+      }
+      return;
+    }
+    if (!prompt) {
+      showInlineError(
+        errorNode,
+        "请填写提示词，可使用 {text}、{target}、{language}、{program}、{app} 变量"
+      );
+      if (promptInput && promptInput.focus) {
+        promptInput.focus();
+      }
+      return;
+    }
+    if (prompt.length > 4000) {
+      showInlineError(errorNode, "提示词最多 4000 个字符");
+      if (promptInput && promptInput.focus) {
+        promptInput.focus();
+      }
+      return;
+    }
+    var icon = validCustomIcon(customDraft.icon);
+    var customs = customSkillsList();
+    var skills = enabledSkills();
+    var editingId = customEditingId;
+    var labelText;
+    if (editingId) {
+      var index = -1;
+      customs.forEach(function (skill, position) {
+        if (skill.id === editingId) {
+          index = position;
+        }
+      });
+      if (index < 0) {
+        showInlineError(errorNode, "技能不存在，可能已被删除");
+        refreshState();
+        return;
+      }
+      customs[index] = {
+        id: editingId,
+        label: label,
+        icon: icon,
+        prompt: prompt,
+      };
+      labelText = "已保存技能「" + label + "」";
+    } else {
+      var id = generateCustomSkillId(customs);
+      customs.push({ id: id, label: label, icon: icon, prompt: prompt });
+      if (skills.indexOf(id) < 0) {
+        skills.push(id);
+      }
+      labelText = "已添加技能「" + label + "」";
+    }
+    closeCustomEditor();
+    save({ picker: { customSkills: customs, skills: skills } });
+    toast(labelText, "success");
+  }
+
+  function deleteCustomSkill(id) {
+    var custom = findCustomSkill(id);
+    if (!custom) {
+      toast("技能不存在，可能已被删除", "error");
+      refreshState();
+      return;
+    }
+    var remaining = customSkillsList().filter(function (skill) {
+      return skill.id !== id;
+    });
+    var skills = enabledSkills().filter(function (skillId) {
+      return skillId !== id;
+    });
+    if (!skills.length) {
+      skills = DEFAULT_SKILLS.slice();
+    }
+    if (customEditingId === id) {
+      closeCustomEditor();
+    }
+    save({ picker: { customSkills: remaining, skills: skills } });
+    toast("已删除技能「" + custom.label + "」", "success");
+  }
+
+  /* ---- Skill drag ordering -------------------------------------------- */
+
+  function skillItemFromEvent(event) {
+    var target = event.target;
+    if (!target || !target.closest) {
+      return null;
+    }
+    return target.closest(".skill-item");
+  }
+
+  function clearDropMarks() {
+    var list = byId("skill-list");
+    if (!list) {
+      return;
+    }
+    each(list.querySelectorAll(".drop-before, .drop-after"), function (node) {
+      node.classList.remove("drop-before", "drop-after");
+    });
+  }
+
+  function clearDragMarks() {
+    var list = byId("skill-list");
+    dragSkillId = "";
+    if (!list) {
+      return;
+    }
+    clearDropMarks();
+    each(list.querySelectorAll(".is-dragging"), function (node) {
+      node.classList.remove("is-dragging");
+    });
+  }
+
+  function startSkillDrag(event) {
+    var row = skillItemFromEvent(event);
+    var target = event.target;
+    if (!row || row.classList.contains("is-disabled") || !target.closest) {
+      return;
+    }
+    if (target.closest("button, input, label, textarea, .switch, .skill-prompt")) {
+      event.preventDefault();
+      return;
+    }
+    var id = row.getAttribute("data-skill");
+    if (!id) {
+      event.preventDefault();
+      return;
+    }
+    dragSkillId = id;
+    row.classList.add("is-dragging");
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = "move";
+      try {
+        event.dataTransfer.setData("text/plain", id);
+      } catch (ignored) {
+        /* IE-style dataTransfer quirks - order is tracked in memory */
+      }
+    }
+  }
+
+  function overSkillDrop(event) {
+    if (!dragSkillId) {
+      return;
+    }
+    var row = skillItemFromEvent(event);
+    if (!row || row.classList.contains("is-disabled")) {
+      return;
+    }
+    event.preventDefault();
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = "move";
+    }
+    clearDropMarks();
+    if (row.getAttribute("data-skill") === dragSkillId) {
+      return;
+    }
+    var rect = row.getBoundingClientRect();
+    var after = event.clientY > rect.top + rect.height / 2;
+    row.classList.add(after ? "drop-after" : "drop-before");
+  }
+
+  function dropSkill(event) {
+    var row = skillItemFromEvent(event);
+    if (!dragSkillId || !row || row.classList.contains("is-disabled")) {
+      clearDragMarks();
+      return;
+    }
+    event.preventDefault();
+    var targetId = row.getAttribute("data-skill");
+    var after = row.classList.contains("drop-after");
+    var movedId = dragSkillId;
+    clearDragMarks();
+    if (!targetId || targetId === movedId) {
+      return;
+    }
+    var original = enabledSkills();
+    var from = original.indexOf(movedId);
+    if (from < 0) {
+      return;
+    }
+    var next = original.slice();
+    next.splice(from, 1);
+    var to = next.indexOf(targetId);
+    if (to < 0) {
+      return;
+    }
+    next.splice(after ? to + 1 : to, 0, movedId);
+    if (next.join("|") === original.join("|")) {
+      return;
+    }
+    save({ picker: { skills: next } });
   }
 
   function renderBlacklist() {
@@ -817,7 +1951,7 @@
       if (note) {
         note.hidden = false;
         note.textContent =
-          "便携版不写入开机启动项，避免在系统里留下注册表记录。如需开机自启，可创建 LingoPick.exe 的快捷方式并放入 shell:startup 目录。";
+          "便携版不写入开机启动项，避免在系统里留下注册表记录。如需开机自启，可创建 Lexora.exe 的快捷方式并放入 shell:startup 目录。";
       }
     } else {
       if (hint) {
@@ -859,6 +1993,348 @@
     byId("about-models").textContent = models.length
       ? models.length + " 个本地模型 · " + (engine.localModelName || models[0].name)
       : "未安装本地模型";
+    renderUpdateVersionHint();
+  }
+
+  /* ---- Update checker -------------------------------------------------- */
+
+  function updateCurrentVersion() {
+    return (state && state.app && state.app.version) || "";
+  }
+
+  function renderUpdateVersionHint() {
+    var hint = byId("update-current-hint");
+    if (!hint) {
+      return;
+    }
+    var version = updateCurrentVersion();
+    hint.textContent =
+      (version ? "当前版本 v" + version : "当前版本 —") +
+      " · 自动下载并替换当前 exe，更新后自动重启";
+  }
+
+  function formatUpdateTime(value) {
+    if (!value) {
+      return "";
+    }
+    var date = new Date(value);
+    if (isNaN(date.getTime())) {
+      return String(value);
+    }
+    function pad(number) {
+      return number < 10 ? "0" + number : String(number);
+    }
+    return (
+      date.getFullYear() +
+      "-" +
+      pad(date.getMonth() + 1) +
+      "-" +
+      pad(date.getDate()) +
+      " " +
+      pad(date.getHours()) +
+      ":" +
+      pad(date.getMinutes())
+    );
+  }
+
+  function updateNotesText() {
+    var info = updateInfo || {};
+    var notes = typeof info.notes === "string" ? info.notes : "";
+    notes = notes.replace(/\r\n/g, "\n");
+    /* Some release payloads (and the browser-preview mock) double-encode line
+     * breaks as literal "\n"; decode them only when the text has no real
+     * newlines so normal multi-line notes stay untouched. */
+    if (notes.indexOf("\n") < 0 && notes.indexOf("\\n") >= 0) {
+      notes = notes.replace(/\\r\\n|\\n|\\r/g, "\n");
+    }
+    return notes.trim();
+  }
+
+  /* Notes are rendered as plain text (whitespace preserved), clamped to ~200
+   * characters with an explicit expand/collapse toggle. */
+  function renderUpdateNotes() {
+    var wrap = byId("update-notes");
+    var textNode = byId("update-notes-text");
+    var toggle = byId("toggle-update-notes");
+    if (!wrap || !textNode) {
+      return;
+    }
+    var notes = updateNotesText();
+    if (!notes) {
+      setHidden(wrap, true);
+      return;
+    }
+    setHidden(wrap, false);
+    var limit = 200;
+    var clamped = notes.length > limit;
+    textNode.textContent =
+      clamped && !updateNotesExpanded ? notes.slice(0, limit) + "…" : notes;
+    if (clamped && !updateNotesExpanded) {
+      textNode.classList.add("is-clamped");
+    } else {
+      textNode.classList.remove("is-clamped");
+    }
+    if (toggle) {
+      setHidden(toggle, !clamped);
+      toggle.textContent = updateNotesExpanded ? "收起" : "展开全部";
+    }
+  }
+
+  function renderUpdateProgress() {
+    var fill = byId("update-progress-fill");
+    var text = byId("update-progress-text");
+    var percent = Number(updateProgressPercent);
+    if (!isFinite(percent) || percent < 0) {
+      percent = 0;
+    }
+    if (percent > 100) {
+      percent = 100;
+    }
+    percent = Math.round(percent);
+    if (fill) {
+      fill.style.width = percent + "%";
+    }
+    if (text) {
+      text.textContent = percent + "%";
+    }
+  }
+
+  function renderUpdate() {
+    var status = byId("update-status");
+    if (!status) {
+      return;
+    }
+    var stateName = updateState || "idle";
+    status.setAttribute("data-state", stateName);
+    setHidden(status, stateName === "idle");
+
+    var message = byId("update-message");
+    var checkButton = byId("check-update");
+    setHidden(message, stateName === "idle");
+    setHidden(byId("update-notes"), true);
+    setHidden(byId("update-meta"), true);
+    setHidden(byId("update-actions"), true);
+    setHidden(byId("update-progress"), true);
+    hideInlineError(byId("update-error"));
+    if (checkButton) {
+      checkButton.disabled = false;
+      checkButton.textContent = "检查更新";
+    }
+    if (stateName === "idle") {
+      return;
+    }
+
+    if (stateName === "checking") {
+      message.textContent = "正在检查更新…";
+      if (checkButton) {
+        checkButton.disabled = true;
+        checkButton.textContent = "检查中…";
+      }
+      return;
+    }
+    if (stateName === "latest") {
+      var latest = (updateInfo && updateInfo.latestVersion) || updateCurrentVersion();
+      message.textContent = latest ? "已是最新版本 v" + latest : "已是最新版本";
+      if (checkButton) {
+        checkButton.textContent = "重新检查";
+      }
+      return;
+    }
+    if (stateName === "available") {
+      var info = updateInfo || {};
+      var targetVersion = info.latestVersion || "";
+      var currentVersion = info.currentVersion || updateCurrentVersion();
+      message.textContent =
+        "发现新版本" +
+        (targetVersion ? " v" + targetVersion : "") +
+        (currentVersion ? "（当前 v" + currentVersion + "）" : "");
+      renderUpdateNotes();
+      var timeNode = byId("update-time");
+      var sizeNode = byId("update-size");
+      var meta = byId("update-meta");
+      var timeText = formatUpdateTime(info.publishedAt);
+      var sizeText = info.sizeBytes ? LP.formatBytes(info.sizeBytes) : "";
+      if (timeNode) {
+        timeNode.textContent = timeText;
+        setHidden(timeNode, !timeText);
+      }
+      if (sizeNode) {
+        sizeNode.textContent = sizeText;
+        setHidden(sizeNode, !sizeText);
+      }
+      if (meta) {
+        meta.title = info.assetName || "";
+        setHidden(meta, !timeText && !sizeText);
+      }
+      setHidden(byId("update-actions"), false);
+      if (checkButton) {
+        checkButton.textContent = "重新检查";
+      }
+      return;
+    }
+    if (stateName === "downloading") {
+      message.textContent = "正在下载更新…";
+      setHidden(byId("update-progress"), false);
+      renderUpdateProgress();
+      if (checkButton) {
+        checkButton.disabled = true;
+        checkButton.textContent = "更新中…";
+      }
+      return;
+    }
+    if (stateName === "ready") {
+      message.textContent = "更新已就绪，应用即将重启…";
+      setHidden(byId("update-progress"), false);
+      renderUpdateProgress();
+      if (checkButton) {
+        checkButton.disabled = true;
+        checkButton.textContent = "即将重启…";
+      }
+      return;
+    }
+
+    /* error */
+    message.textContent = updateErrorTitle || "检查更新失败";
+    showInlineError(
+      byId("update-error"),
+      updateErrorText || "未知错误",
+      updateErrorHint || ""
+    );
+    if (checkButton) {
+      checkButton.textContent = "重新检查";
+    }
+  }
+
+  function handleUpdateProgress(progress) {
+    if (!progress || typeof progress !== "object") {
+      return;
+    }
+    if (
+      updateState !== "downloading" &&
+      updateState !== "ready" &&
+      !updateInstalling
+    ) {
+      return;
+    }
+    var percent = Number(progress.percent);
+    if (!isFinite(percent) && Number(progress.total) > 0) {
+      percent = (Number(progress.received) / Number(progress.total)) * 100;
+    }
+    if (isFinite(percent)) {
+      updateProgressPercent = percent;
+    }
+    if (progress.status === "ready") {
+      updateState = "ready";
+      updateProgressPercent = 100;
+    } else if (progress.status === "downloading") {
+      updateState = "downloading";
+    } else {
+      return;
+    }
+    renderUpdate();
+  }
+
+  function checkForUpdates() {
+    if (!API || typeof API.checkUpdate !== "function") {
+      toast("当前版本不支持检查更新", "error");
+      return;
+    }
+    if (updateChecking || updateInstalling) {
+      return;
+    }
+    if (updateState === "downloading" || updateState === "ready") {
+      return;
+    }
+    updateChecking = true;
+    updateInfo = null;
+    updateErrorTitle = "";
+    updateErrorText = "";
+    updateErrorHint = "";
+    updateNotesExpanded = false;
+    updateState = "checking";
+    renderUpdate();
+    API.checkUpdate().then(
+      function (result) {
+        updateChecking = false;
+        if (!result || result.ok === false) {
+          updateState = "error";
+          updateErrorTitle = "检查更新失败";
+          updateErrorText = (result && result.error) || "未知错误";
+          updateErrorHint = (result && result.hint) || "";
+          renderUpdate();
+          return;
+        }
+        updateInfo = result;
+        updateNotesExpanded = false;
+        updateState = result.hasUpdate ? "available" : "latest";
+        renderUpdate();
+      },
+      function (error) {
+        updateChecking = false;
+        updateState = "error";
+        updateErrorTitle = "检查更新失败";
+        updateErrorText = String(error || "未知错误");
+        updateErrorHint = "";
+        renderUpdate();
+      }
+    );
+  }
+
+  function installAppUpdate() {
+    if (!API || typeof API.installUpdate !== "function") {
+      toast("当前版本不支持安装更新", "error");
+      return;
+    }
+    if (updateInstalling || updateState === "downloading" || updateState === "ready") {
+      return;
+    }
+    updateInstalling = true;
+    updateProgressPercent = 0;
+    updateErrorTitle = "";
+    updateErrorText = "";
+    updateErrorHint = "";
+    updateState = "downloading";
+    renderUpdate();
+    API.installUpdate().then(
+      function (result) {
+        updateInstalling = false;
+        if (!result || result.ok === false) {
+          updateState = "error";
+          updateErrorTitle = "下载更新失败";
+          updateErrorText = (result && result.error) || "未知错误";
+          updateErrorHint = (result && result.hint) || "";
+          renderUpdate();
+          return;
+        }
+        updateProgressPercent = 100;
+        updateState = "ready";
+        renderUpdate();
+        toast("更新已就绪，应用即将重启", "success");
+      },
+      function (error) {
+        updateInstalling = false;
+        updateState = "error";
+        updateErrorTitle = "下载更新失败";
+        updateErrorText = String(error || "未知错误");
+        updateErrorHint = "";
+        renderUpdate();
+      }
+    );
+  }
+
+  function dismissUpdate() {
+    if (updateState === "downloading" || updateState === "ready") {
+      return;
+    }
+    updateState = "idle";
+    updateInfo = null;
+    updateNotesExpanded = false;
+    renderUpdate();
+  }
+
+  function toggleUpdateNotes() {
+    updateNotesExpanded = !updateNotesExpanded;
+    renderUpdateNotes();
   }
 
   /* ---- Actions --------------------------------------------------------- */
@@ -876,22 +2352,27 @@
   }
 
   function applyPreset(presetId) {
-    var preset = LP.presetFor(presetId);
-    if (!preset || preset.id === "custom") {
-      save({ provider: { online: { preset: presetId || "custom" } } });
-      return;
-    }
     hideInlineError(byId("test-error"));
     var badge = byId("test-badge");
     if (badge) {
       badge.hidden = true;
     }
+    var preset = LP.presetFor(presetId);
+    var isCustom = !preset || preset.id === "custom";
+    // Switching providers must never keep the previous provider's leftovers:
+    // clear the API key / model and the cached model list, and do not pre-fill
+    // a model name (the user pulls /models and picks one explicitly).
+    customModelMode = false;
+    onlineModelHint = "";
+    onlineModelError = "";
+    onlineModelCache = {};
     save({
       provider: {
         online: {
-          preset: preset.id,
-          baseUrl: preset.baseUrl,
-          model: preset.model,
+          preset: isCustom ? "custom" : preset.id,
+          baseUrl: isCustom ? "" : preset.baseUrl,
+          apiKey: "",
+          model: "",
         },
       },
     });
@@ -904,7 +2385,7 @@
   function testConnection() {
     var baseUrl = byId("online-base-url").value.trim();
     var apiKey = byId("online-api-key").value;
-    var model = byId("online-model").value.trim();
+    var model = getSelectedModel();
     var errorNode = byId("test-error");
     var badge = byId("test-badge");
     var button = byId("test-connection");
@@ -944,6 +2425,13 @@
             badge.textContent = parts.join(" · ");
             setTone(badge, "ok");
           }
+          if (result.models && result.models.length) {
+            var online = (state && state.settings.provider.online) || {};
+            var models = cacheOnlineModels(online, result.models);
+            onlineModelError = "";
+            onlineModelHint = "已加载 " + models.length + " 个模型";
+            renderOnlineModelOptions(online);
+          }
           if (
             result.models &&
             result.models.length &&
@@ -954,8 +2442,7 @@
               errorNode,
               "连接成功，但模型列表中没有「" +
                 model +
-                "」。可用模型：" +
-                result.models.slice(0, 6).join("、")
+                "」。可从模型下拉列表选择其他模型，或继续使用自定义模型。"
             );
           }
         } else {
@@ -1069,9 +2556,7 @@
   }
 
   function toggleSkill(id, enabled) {
-    var skills = Array.isArray(state.settings.picker.skills)
-      ? state.settings.picker.skills.slice()
-      : DEFAULT_SKILLS.slice();
+    var skills = enabledSkills();
     if (enabled) {
       if (skills.indexOf(id) < 0) {
         skills.push(id);
@@ -1086,23 +2571,6 @@
         return skill !== id;
       });
     }
-    save({ picker: { skills: skills } });
-  }
-
-  function moveSkill(id, delta) {
-    var skills = Array.isArray(state.settings.picker.skills)
-      ? state.settings.picker.skills.slice()
-      : DEFAULT_SKILLS.slice();
-    var index = skills.indexOf(id);
-    if (index < 0) {
-      return;
-    }
-    var next = index + delta;
-    if (next < 0 || next >= skills.length) {
-      return;
-    }
-    var moved = skills.splice(index, 1)[0];
-    skills.splice(next, 0, moved);
     save({ picker: { skills: skills } });
   }
 
@@ -1143,101 +2611,6 @@
         })
       : [];
     save({ picker: { blacklist: list } });
-  }
-
-  /* ---- Shortcut recorder ----------------------------------------------- */
-
-  function shortcutModifiers(event) {
-    var parts = [];
-    if (event.ctrlKey) {
-      parts.push("Ctrl");
-    }
-    if (event.altKey) {
-      parts.push("Alt");
-    }
-    if (event.shiftKey) {
-      parts.push("Shift");
-    }
-    return parts;
-  }
-
-  function shortcutKey(event) {
-    var code = String(event.code || "");
-    var match = /^Key([A-Z])$/.exec(code);
-    if (match) {
-      return match[1];
-    }
-    match = /^Digit([0-9])$/.exec(code);
-    if (match) {
-      return match[1];
-    }
-    match = /^F([1-9]|1[0-2])$/.exec(code);
-    if (match) {
-      return "F" + match[1];
-    }
-    return "";
-  }
-
-  function startRecording() {
-    if (recording) {
-      return;
-    }
-    recording = { previous: state.settings.picker.shortcut || "Ctrl+Shift+D" };
-    byId("shortcut-input").classList.add("is-recording");
-    byId("shortcut-value").textContent = "请按下组合键…";
-    byId("shortcut-edit").textContent = "Esc 取消";
-    hideInlineError(byId("shortcut-hint"));
-    document.addEventListener("keydown", onRecordingKeydown, true);
-  }
-
-  function stopRecording(cancelled) {
-    if (!recording) {
-      return;
-    }
-    var previous = recording.previous;
-    recording = null;
-    document.removeEventListener("keydown", onRecordingKeydown, true);
-    byId("shortcut-input").classList.remove("is-recording");
-    byId("shortcut-edit").textContent = "点击修改";
-    if (cancelled) {
-      byId("shortcut-value").textContent = previous;
-    }
-  }
-
-  function onRecordingKeydown(event) {
-    if (!recording) {
-      return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-    if (event.key === "Escape") {
-      stopRecording(true);
-      return;
-    }
-    var modifiers = shortcutModifiers(event);
-    var key = shortcutKey(event);
-    if (!key) {
-      var preview = modifiers.length
-        ? modifiers.join("+") + " + …"
-        : "请按下组合键…";
-      byId("shortcut-value").textContent = preview;
-      if (modifiers.length) {
-        hideInlineError(byId("shortcut-hint"));
-      }
-      return;
-    }
-    if (!modifiers.length) {
-      showInlineError(
-        byId("shortcut-hint"),
-        "快捷键至少需要 Ctrl、Alt 或 Shift 中的一个"
-      );
-      return;
-    }
-    var value = modifiers.concat([key]).join("+");
-    stopRecording(false);
-    byId("shortcut-value").textContent = value;
-    hideInlineError(byId("shortcut-hint"));
-    save({ picker: { shortcut: value } });
   }
 
   /* ---- Danger actions -------------------------------------------------- */
@@ -1318,13 +2691,32 @@
     });
 
     bindTextField(byId("online-base-url"), function () {
+      onlineModelHint = "";
+      onlineModelError = "";
       return onlinePatch({ baseUrl: byId("online-base-url").value.trim() });
     });
     bindTextField(byId("online-api-key"), function () {
+      onlineModelHint = "";
+      onlineModelError = "";
       return onlinePatch({ apiKey: byId("online-api-key").value });
     });
-    bindTextField(byId("online-model"), function () {
-      return onlinePatch({ model: byId("online-model").value.trim() });
+    byId("online-model").addEventListener("change", function () {
+      selectOnlineModel(byId("online-model").value);
+    });
+    byId("fetch-online-models").addEventListener("click", fetchOnlineModels);
+    bindTextField(byId("online-model-custom"), function () {
+      return onlinePatch({ model: byId("online-model-custom").value.trim() });
+    });
+    byId("online-model-custom").addEventListener("blur", function () {
+      if (!customModelMode) {
+        return;
+      }
+      var online = (state && state.settings.provider.online) || {};
+      var value = this.value.trim();
+      if (!value || value === String(online.model || "").trim()) {
+        customModelMode = false;
+        renderOnline();
+      }
     });
     byId("api-key-toggle").addEventListener("click", function () {
       var input = byId("online-api-key");
@@ -1346,10 +2738,6 @@
     byId("import-model").addEventListener("click", importModel);
     byId("start-local").addEventListener("click", startLocal);
     byId("stop-local").addEventListener("click", stopLocal);
-    byId("local-model").addEventListener("change", function (event) {
-      hideInlineError(byId("local-error"));
-      save({ provider: { local: { modelFile: event.target.value } } });
-    });
     byId("catalog-list").addEventListener("click", function (event) {
       var downloadButton =
         event.target.closest && event.target.closest("[data-catalog-download]");
@@ -1376,27 +2764,6 @@
     byId("default-target-lang").addEventListener("change", function (event) {
       save({ picker: { defaultTargetLang: event.target.value } });
     });
-    byId("shortcut-input").addEventListener("click", function () {
-      if (recording) {
-        stopRecording(true);
-      } else {
-        startRecording();
-      }
-    });
-    document.addEventListener(
-      "mousedown",
-      function (event) {
-        if (!recording) {
-          return;
-        }
-        var box = byId("shortcut-input");
-        if (box && box.contains(event.target)) {
-          return;
-        }
-        stopRecording(true);
-      },
-      true
-    );
     byId("skill-list").addEventListener("change", function (event) {
       var input = event.target;
       var id = input && input.getAttribute("data-skill-toggle");
@@ -1405,16 +2772,111 @@
       }
     });
     byId("skill-list").addEventListener("click", function (event) {
-      var button =
-        event.target.closest && event.target.closest("[data-move]");
-      if (!button) {
+      var target = event.target;
+      if (!target.closest) {
         return;
       }
-      var row = button.closest("[data-skill]");
-      if (!row) {
+      var promptToggle = target.closest("[data-prompt-toggle]");
+      if (promptToggle) {
+        togglePromptPanel(promptToggle.getAttribute("data-prompt-toggle"));
         return;
       }
-      moveSkill(row.getAttribute("data-skill"), Number(button.getAttribute("data-move")));
+      var promptReset = target.closest("[data-prompt-reset]");
+      if (promptReset) {
+        resetPromptValue(promptReset.getAttribute("data-prompt-reset"));
+        return;
+      }
+      var searchConfig = target.closest("[data-search-config]");
+      if (searchConfig) {
+        toggleSearchPanel();
+        return;
+      }
+      var engineOption = target.closest("[data-search-engine]");
+      if (engineOption) {
+        selectSearchEngine(engineOption.getAttribute("data-search-engine"));
+        return;
+      }
+      var customEdit = target.closest("[data-custom-edit]");
+      if (customEdit) {
+        openCustomEditor(customEdit.getAttribute("data-custom-edit"));
+        return;
+      }
+      var customDelete = target.closest("[data-custom-delete]");
+      if (customDelete) {
+        var deletedId = customDelete.getAttribute("data-custom-delete");
+        armSkillDelete(customDelete, function () {
+          deleteCustomSkill(deletedId);
+        });
+      }
+    });
+    byId("skill-list").addEventListener("dragstart", startSkillDrag);
+    byId("skill-list").addEventListener("dragover", overSkillDrop);
+    byId("skill-list").addEventListener("drop", dropSkill);
+    byId("skill-list").addEventListener("dragend", clearDragMarks);
+
+    byId("add-custom-skill").addEventListener("click", function () {
+      openCustomEditor("");
+    });
+    byId("toggle-icon-picker").addEventListener("click", toggleIconPicker);
+    byId("custom-skill-icons").addEventListener("click", function (event) {
+      var button = event.target.closest && event.target.closest("[data-icon-key]");
+      if (button) {
+        chooseCustomIcon(button.getAttribute("data-icon-key"));
+      }
+    });
+    byId("custom-skill-icon-search").addEventListener("input", function () {
+      iconSearchQuery = this.value;
+      renderCustomIconGrid(true);
+    });
+    byId("custom-skill-icon-search").addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && this.value) {
+        event.stopPropagation();
+        this.value = "";
+        iconSearchQuery = "";
+        renderCustomIconGrid(true);
+      }
+    });
+    byId("custom-skill-name").addEventListener("input", function () {
+      if (customDraft) {
+        customDraft.label = this.value;
+      }
+      hideInlineError(byId("custom-skill-error"));
+    });
+    byId("custom-skill-prompt").addEventListener("input", function () {
+      if (customDraft) {
+        customDraft.prompt = this.value;
+      }
+      hideInlineError(byId("custom-skill-error"));
+    });
+    byId("custom-skill-editor").addEventListener("keydown", function (event) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        if (iconPickerOpen) {
+          setIconPickerOpen(false);
+          return;
+        }
+        closeCustomEditor();
+        return;
+      }
+      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        saveCustomSkill();
+      }
+    });
+    byId("save-custom-skill").addEventListener("click", saveCustomSkill);
+    byId("cancel-custom-skill").addEventListener("click", closeCustomEditor);
+    byId("delete-custom-skill").addEventListener("click", function () {
+      var editingId = customEditingId;
+      if (!editingId) {
+        return;
+      }
+      armSkillDelete(
+        this,
+        function () {
+          deleteCustomSkill(editingId);
+        },
+        "确认删除"
+      );
     });
     byId("blacklist-input").addEventListener("keydown", function (event) {
       if (event.key === "Enter") {
@@ -1476,6 +2938,10 @@
     byId("open-repo").addEventListener("click", function () {
       openExternal((state && state.app && state.app.repoUrl) || LP.REPO_URL);
     });
+    byId("check-update").addEventListener("click", checkForUpdates);
+    byId("install-update").addEventListener("click", installAppUpdate);
+    byId("dismiss-update").addEventListener("click", dismissUpdate);
+    byId("toggle-update-notes").addEventListener("click", toggleUpdateNotes);
     byId("reset-settings").addEventListener("click", function () {
       armDanger(byId("reset-settings"), "确认恢复默认", resetSettings);
     });
@@ -1556,6 +3022,12 @@
     API.onState(handleStateChanged);
     API.onDownloadProgress(handleDownloadProgress);
     API.onToast(handleToast);
+    /* Progress is only emitted while installing; subscribing once is enough
+     * for the lifetime of the settings window. */
+    if (typeof API.onUpdateProgress === "function") {
+      API.onUpdateProgress(handleUpdateProgress);
+    }
+    renderUpdate();
 
     API.getState().then(function (result) {
       if (!result.ok) {

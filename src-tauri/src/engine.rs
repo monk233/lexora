@@ -8,7 +8,8 @@
 //!   Chinese error mapping;
 //! * [`llama`] — local `llama-server.exe` process manager + state machine;
 //! * [`models`] — GGUF catalog, directory scanning and file-name safety;
-//! * [`prompts`] — translation / summarize / explain prompt construction.
+//! * [`prompts`] — translation / summarize / explain / polish and custom-skill
+//!   prompt construction.
 //!
 //! Streaming downloads emit `download-progress` events roughly every 200 ms and
 //! can be cancelled with [`EngineService::cancel_download`].
@@ -33,6 +34,7 @@ mod openai;
 mod prompts;
 
 pub use llama::LocalState;
+pub use prompts::default_prompts;
 
 /// Pinned llama.cpp Windows CPU release used when the user installs the engine.
 /// Verified to exist and to contain `llama-server.exe`; the archive is ~23 MB.
@@ -40,9 +42,9 @@ pub const ENGINE_DOWNLOAD_URL: &str =
     "https://github.com/ggml-org/llama.cpp/releases/download/b11851/llama-b11851-bin-win-cpu-x64.zip";
 
 /// Optional environment override for the engine archive URL.
-pub const ENV_LLAMA_URL: &str = "LINGOPICK_LLAMA_URL";
+pub const ENV_LLAMA_URL: &str = "LEXORA_LLAMA_URL";
 /// Optional runtime override for the online API key (§4 of the contract).
-pub const ENV_API_KEY: &str = "LINGOPICK_API_KEY";
+pub const ENV_API_KEY: &str = "LEXORA_API_KEY";
 
 /// Event name used for both model and engine download progress.
 const DOWNLOAD_EVENT: &str = "download-progress";
@@ -258,15 +260,26 @@ pub struct EngineService {
     logger: Logger,
     http: reqwest::Client,
     local: llama::LocalServer,
+    /// True after the user clicked "启动" and until they click "停止". While it
+    /// is false a request never starts the local server on its own.
+    local_desired: AtomicBool,
     download: Mutex<DownloadState>,
     /// Serializes downloads (only one at a time, per the UI contract).
     download_lock: tokio::sync::Mutex<()>,
 }
 
+/// Which model role a request needs. Hy-MT2 is translation-specialised while
+/// Qwen2.5 3B handles summarization/explanation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalRole {
+    Translate,
+    General,
+}
+
 impl EngineService {
     pub fn new(paths: AppPaths, settings: Arc<SettingsStore>, logger: Logger) -> Self {
         let http = reqwest::Client::builder()
-            .user_agent(concat!("LingoPick/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("Lexora/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(15))
             .redirect(reqwest::redirect::Policy::limited(10))
             .build()
@@ -277,6 +290,7 @@ impl EngineService {
             logger,
             http,
             local: llama::LocalServer::new(),
+            local_desired: AtomicBool::new(false),
             download: Mutex::new(DownloadState::default()),
             download_lock: tokio::sync::Mutex::new(()),
         }
@@ -287,19 +301,13 @@ impl EngineService {
     pub fn status(&self) -> EngineStatus {
         let settings = self.settings.get();
         let local = self.local.snapshot();
-        let model_file = settings.provider.local.model_file.clone();
         let engine_available = self.paths.engine_installed();
         let online_configured = settings.online_configured();
+        let installed = models::scan_models(&self.paths.models_dir);
+        let has_models = !installed.is_empty();
 
-        let local_model_name = if model_file.trim().is_empty() {
-            local.model_name.clone()
-        } else {
-            models::scan_models(&self.paths.models_dir)
-                .into_iter()
-                .find(|model| model.file.eq_ignore_ascii_case(model_file.trim()))
-                .map(|model| model.name)
-                .unwrap_or_else(|| models::model_display_name(&model_file))
-        };
+        let local_model_file = local.model_file.clone();
+        let local_model_name = local.model_name.clone();
 
         let (ready, hint) = if settings.is_local_mode() {
             match local.state {
@@ -323,24 +331,16 @@ impl EngineService {
                             "本地引擎尚未安装。请在「设置 → 本地模型」中下载 llama.cpp 引擎，或切换到在线模式。"
                                 .to_string(),
                         )
-                    } else if model_file.trim().is_empty() {
+                    } else if !has_models {
                         (
                             false,
-                            "尚未选择本地模型。请先下载或导入 GGUF 模型，并在下拉框中选择。"
+                            "尚未安装本地模型。请下载 Hy-MT2（翻译）或 Qwen2.5 3B（通用），也可以导入 GGUF 文件。"
                                 .to_string(),
-                        )
-                    } else if !self.paths.models_dir.join(model_file.trim()).is_file() {
-                        (
-                            false,
-                            format!(
-                                "本地模型文件不存在：{}。请重新下载或导入。",
-                                model_file.trim()
-                            ),
                         )
                     } else {
                         (
                             false,
-                            "本地模型尚未启动。可点击「启动」，或直接翻译（会自动启动）。"
+                            "本地模型未启动。点击「启动」后即可使用，翻译/总结不会自动启动本地模型。"
                                 .to_string(),
                         )
                     }
@@ -375,11 +375,46 @@ impl EngineService {
             provider_label,
             online_configured,
             local_state: local.state.as_str().to_string(),
-            local_model_file: model_file,
+            local_model_file,
             local_model_name,
             local_error: local.error,
             engine_available,
         }
+    }
+
+    /// Installed GGUF models, catalog entries first.
+    fn installed_local_models(&self) -> Vec<ModelInfo> {
+        models::scan_models(&self.paths.models_dir)
+    }
+
+    /// Resolves which installed model to use for a role. Preferred catalog model
+    /// wins; any imported GGUF is used as a fallback so importing one model is
+    /// enough to use the local engine.
+    fn model_for_role(&self, role: LocalRole) -> Option<String> {
+        let installed = self.installed_local_models();
+        if installed.is_empty() {
+            return None;
+        }
+        let preferred: [&str; 2] = match role {
+            LocalRole::Translate => [models::TRANSLATION_MODEL_ID, models::GENERAL_MODEL_ID],
+            LocalRole::General => [models::GENERAL_MODEL_ID, models::TRANSLATION_MODEL_ID],
+        };
+        for id in preferred {
+            if let Some(spec) = models::spec_by_id(id) {
+                if installed
+                    .iter()
+                    .any(|model| model.file.eq_ignore_ascii_case(spec.filename))
+                {
+                    return Some(spec.filename.to_string());
+                }
+            }
+        }
+        installed.first().map(|model| model.file.clone())
+    }
+
+    /// Model started by the settings "启动" button: translation-preferred.
+    fn default_local_model(&self) -> Option<String> {
+        self.model_for_role(LocalRole::Translate)
     }
 
     // -- translation -------------------------------------------------------- //
@@ -399,18 +434,139 @@ impl EngineService {
         }
         let truncated = prompts::truncate_chars(cleaned, settings.picker.max_chars as usize);
         let target = prompts::resolve_target_lang(target_lang, &truncated);
-        let (system, user) = prompts::translate_messages(&truncated, &target);
+        let (system, user) =
+            prompts::translate_messages(&truncated, &target, &settings.picker.prompts.translate);
         let messages = vec![
             json!({"role": "system", "content": system}),
             json!({"role": "user", "content": user}),
         ];
-        let config = self.chat_config(&settings).await?;
+        let config = self.chat_config(&settings, LocalRole::Translate).await?;
         self.logger.info(&format!(
             "translate stream start: provider={} model={} chars={} target={}",
             if config.local { "local" } else { "online" },
             config.model,
             truncated.chars().count(),
             target
+        ));
+        openai::stream_chat(&self.http, &config, messages, config.header_timeout()).await
+    }
+
+    /// Streams a polish (rewriting) request. Uses the general model role like
+    /// summarize/explain; an empty `picker.prompts.polish` falls back to the
+    /// built-in English default.
+    pub async fn polish_stream(
+        &self,
+        text: &str,
+    ) -> Result<BoxStream<'static, Result<String, EngineError>>, EngineError> {
+        let settings = self.settings.get();
+        let cleaned = text.trim();
+        if cleaned.is_empty() {
+            return Err(EngineError::new(
+                "没有可润色的文本。",
+                "请先选中一段文字，然后再点击润色。",
+            ));
+        }
+        let truncated = prompts::truncate_chars(cleaned, settings.picker.max_chars as usize);
+        let (system, user) = prompts::polish_messages(&truncated, &settings.picker.prompts.polish);
+        let messages = vec![
+            json!({"role": "system", "content": system}),
+            json!({"role": "user", "content": user}),
+        ];
+        let config = self.chat_config(&settings, LocalRole::General).await?;
+        self.logger.info(&format!(
+            "polish stream start: provider={} chars={}",
+            if config.local { "local" } else { "online" },
+            truncated.chars().count()
+        ));
+        openai::stream_chat(&self.http, &config, messages, config.header_timeout()).await
+    }
+
+    /// Streams a user-defined skill: the stored prompt is rendered with the
+    /// `{text}` / `{target}` / `{language}` / `{program}` / `{app}`
+    /// placeholders, then sent through the general model role (custom skills
+    /// are free-form instructions, so they use the same role as summarize).
+    pub async fn custom_stream(
+        &self,
+        skill_id: &str,
+        text: &str,
+        target_lang: &str,
+        program: &str,
+    ) -> Result<BoxStream<'static, Result<String, EngineError>>, EngineError> {
+        let settings = self.settings.get();
+        let skill_id = skill_id.trim();
+        let skill = settings
+            .picker
+            .custom_skills
+            .iter()
+            .find(|skill| skill.id == skill_id)
+            .cloned()
+            .ok_or_else(|| {
+                EngineError::new(
+                    "技能不存在（可能已被删除）",
+                    "请在设置 → 划词行为中重新添加该技能。",
+                )
+            })?;
+        // A defined skill can be disabled while keeping its definition.
+        if !settings.picker.skills.iter().any(|id| id == skill_id) {
+            return Err(EngineError::new(
+                "技能未启用",
+                "请在设置 → 划词行为中启用该技能。",
+            ));
+        }
+        let cleaned = text.trim();
+        if cleaned.is_empty() {
+            return Err(EngineError::new(
+                "没有可翻译的文本。",
+                "请先选中一段文字，然后再点击翻译。",
+            ));
+        }
+        let truncated = prompts::truncate_chars(cleaned, settings.picker.max_chars as usize);
+        let target = prompts::resolve_target_lang(target_lang, &truncated);
+        let system = prompts::render_custom_prompt(&skill.prompt, &truncated, &target, program);
+        let messages = vec![
+            json!({"role": "system", "content": system}),
+            json!({"role": "user", "content": truncated}),
+        ];
+        let config = self.chat_config(&settings, LocalRole::General).await?;
+        self.logger.info(&format!(
+            "custom skill stream start: skill={} provider={} chars={}",
+            skill_id,
+            if config.local { "local" } else { "online" },
+            truncated.chars().count()
+        ));
+        openai::stream_chat(&self.http, &config, messages, config.header_timeout()).await
+    }
+
+    pub async fn assist_stream(
+        &self,
+        action: &str,
+        text: &str,
+    ) -> Result<BoxStream<'static, Result<String, EngineError>>, EngineError> {
+        let settings = self.settings.get();
+        let cleaned = text.trim();
+        if cleaned.is_empty() {
+            return Err(EngineError::new(
+                "没有可处理的文本。",
+                "请先选中一段文字，然后再点击总结或解释。",
+            ));
+        }
+        let truncated = prompts::truncate_chars(cleaned, prompts::ASSIST_MAX_CHARS);
+        let custom_prompt = match action.trim().to_ascii_lowercase().as_str() {
+            "summarize" | "summary" | "总结" => settings.picker.prompts.summarize.as_str(),
+            "explain" | "解释" => settings.picker.prompts.explain.as_str(),
+            _ => "",
+        };
+        let (system, user) = prompts::assist_messages(action, &truncated, custom_prompt)?;
+        let messages = vec![
+            json!({"role": "system", "content": system}),
+            json!({"role": "user", "content": user}),
+        ];
+        let config = self.chat_config(&settings, LocalRole::General).await?;
+        self.logger.info(&format!(
+            "assist stream start: action={} provider={} chars={}",
+            action,
+            if config.local { "local" } else { "online" },
+            truncated.chars().count()
         ));
         openai::stream_chat(&self.http, &config, messages, config.header_timeout()).await
     }
@@ -425,12 +581,17 @@ impl EngineService {
             ));
         }
         let truncated = prompts::truncate_chars(cleaned, prompts::ASSIST_MAX_CHARS);
-        let (system, user) = prompts::assist_messages(action, &truncated)?;
+        let custom_prompt = match action.trim().to_ascii_lowercase().as_str() {
+            "summarize" | "summary" | "总结" => settings.picker.prompts.summarize.as_str(),
+            "explain" | "解释" => settings.picker.prompts.explain.as_str(),
+            _ => "",
+        };
+        let (system, user) = prompts::assist_messages(action, &truncated, custom_prompt)?;
         let messages = vec![
             json!({"role": "system", "content": system}),
             json!({"role": "user", "content": user}),
         ];
-        let config = self.chat_config(&settings).await?;
+        let config = self.chat_config(&settings, LocalRole::General).await?;
         let max_tokens = settings.provider.online.max_tokens.clamp(256, 1024);
         let timeout = Duration::from_millis(config.timeout_ms.clamp(5_000, 300_000));
         self.logger.info(&format!(
@@ -452,12 +613,31 @@ impl EngineService {
         result
     }
 
-    /// Resolves the endpoint used for translation/assist; starts the local
-    /// server on demand when the provider mode is `local`.
-    async fn chat_config(&self, settings: &Settings) -> Result<openai::OnlineConfig, EngineError> {
+    /// Resolves the endpoint used for translation / assist. In local mode the
+    /// user must have started the engine explicitly ("启动"); the model is then
+    /// picked by role and swapped automatically when necessary.
+    async fn chat_config(
+        &self,
+        settings: &Settings,
+        role: LocalRole,
+    ) -> Result<openai::OnlineConfig, EngineError> {
         if settings.is_local_mode() {
-            self.start_local().await?;
-            self.local_config(settings)
+            if !self.local_desired.load(Ordering::Acquire) {
+                return Err(EngineError::new(
+                    "本地模型未启动。",
+                    "请在「设置 → 翻译服务 → 本地模型」点击「启动」，或切换到在线 API。",
+                ));
+            }
+            let Some(model_file) = self.model_for_role(role) else {
+                return Err(EngineError::new(
+                    "尚未安装本地模型。",
+                    "请在「设置 → 本地模型」下载 Hy-MT2（翻译）或 Qwen2.5 3B（通用），也可以导入 GGUF 文件。",
+                ));
+            };
+            self.local
+                .ensure_model(&self.paths, settings, &model_file, &self.http, &self.logger)
+                .await?;
+            self.local_config(settings, &model_file)
         } else {
             let config = self.online_config(settings);
             if !config.is_configured() {
@@ -487,25 +667,21 @@ impl EngineService {
         }
     }
 
-    fn local_config(&self, settings: &Settings) -> Result<openai::OnlineConfig, EngineError> {
+    fn local_config(
+        &self,
+        settings: &Settings,
+        model_file: &str,
+    ) -> Result<openai::OnlineConfig, EngineError> {
         let base_url = self.local.base_url().ok_or_else(|| {
             EngineError::new(
                 "本地引擎尚未就绪。",
                 "请先在「设置 → 本地模型」中启动本地模型，然后重试。",
             )
         })?;
-        let model = {
-            let file = settings.provider.local.model_file.trim();
-            if file.is_empty() {
-                "local".to_string()
-            } else {
-                models::model_display_name(file)
-            }
-        };
         Ok(openai::OnlineConfig {
             base_url,
             api_key: String::new(),
-            model,
+            model: models::model_display_name(model_file),
             timeout_ms: LOCAL_HEADER_TIMEOUT_MS,
             temperature: settings.provider.online.temperature,
             max_tokens: settings.provider.online.max_tokens,
@@ -702,17 +878,20 @@ impl EngineService {
             spec.size_bytes,
         );
         let mut last_error: Option<EngineError> = None;
-        for (index, url) in [spec.hf_url, spec.modelscope_url].iter().enumerate() {
+        // A model may only be published on one mirror; empty URLs are skipped.
+        let urls: Vec<&str> = [spec.hf_url, spec.modelscope_url]
+            .into_iter()
+            .filter(|url| !url.is_empty())
+            .collect();
+        for (index, url) in urls.iter().enumerate() {
             if self.cancelled() {
                 let _ = std::fs::remove_file(&part);
                 reporter.cancelled();
                 return Err(cancelled_error());
             }
             if index > 0 {
-                self.logger.warn(&format!(
-                    "model download falling back to mirror: {}",
-                    spec.modelscope_url
-                ));
+                self.logger
+                    .warn(&format!("model download falling back to mirror: {url}"));
                 reporter.status("downloading");
             }
             self.logger
@@ -804,7 +983,7 @@ impl EngineService {
         if !url.starts_with("http://") && !url.starts_with("https://") {
             return Err(EngineError::new(
                 "引擎下载地址无效。",
-                format!("LINGOPICK_LLAMA_URL 必须是 http(s) 地址；当前值：{url}"),
+                format!("LEXORA_LLAMA_URL 必须是 http(s) 地址；当前值：{url}"),
             ));
         }
         let filename = url
@@ -904,7 +1083,7 @@ impl EngineService {
         if !models::is_gguf_file(&file_name) {
             return Err(EngineError::new(
                 "仅支持 .gguf 格式的模型文件。",
-                "请下载 LingoPick 模型列表中的 GGUF 文件，或先在设置中下载内置模型。",
+                "请下载 Lexora 模型列表中的 GGUF 文件，或先在设置中下载内置模型。",
             ));
         }
         let metadata = std::fs::metadata(&path).map_err(|error| {
@@ -990,15 +1169,55 @@ impl EngineService {
 
     pub async fn start_local(&self) -> Result<(), EngineError> {
         let settings = self.settings.get();
-        self.local
-            .ensure_ready(&self.paths, &settings, &self.http, &self.logger)
-            .await
-            .map(|_| ())
+        let Some(model_file) = self.default_local_model() else {
+            return Err(EngineError::new(
+                "尚未安装本地模型。",
+                "请先在「设置 → 本地模型」下载 Hy-MT2（翻译）或 Qwen2.5 3B（通用），也可以导入 GGUF 文件。",
+            ));
+        };
+        self.local_desired.store(true, Ordering::Release);
+        let result = self
+            .local
+            .ensure_model(
+                &self.paths,
+                &settings,
+                &model_file,
+                &self.http,
+                &self.logger,
+            )
+            .await;
+        if result.is_err() {
+            self.local_desired.store(false, Ordering::Release);
+        } else {
+            // Remember the user's explicit start so the next launch can restore
+            // the engine (see `main::restore_local_engine`).
+            self.set_keep_running(true);
+        }
+        result.map(|_| ())
     }
 
     pub async fn stop_local(&self) -> Result<(), EngineError> {
+        self.local_desired.store(false, Ordering::Release);
         self.local.stop(Some(&self.logger));
+        self.set_keep_running(false);
         Ok(())
+    }
+
+    /// App shutdown: kill llama-server without forgetting that the user had
+    /// started it, so a restart can restore the previous running state.
+    pub fn shutdown_local(&self) {
+        self.local_desired.store(false, Ordering::Release);
+        self.local.stop(Some(&self.logger));
+    }
+
+    /// Persists `provider.local.keepRunning` (best effort; a read-only config
+    /// must never break engine start/stop).
+    fn set_keep_running(&self, keep_running: bool) {
+        let patch = json!({ "provider": { "local": { "keepRunning": keep_running } } });
+        if let Err(error) = self.settings.update_json(patch) {
+            self.logger
+                .warn(&format!("failed to persist local keepRunning: {error}"));
+        }
     }
 
     // -- paths / settings --------------------------------------------------- //
@@ -1135,7 +1354,7 @@ fn cancelled_error() -> EngineError {
 }
 
 /// `rename` first (same volume) and fall back to copy+delete when the cache and
-/// models directories live on different drives (`LINGOPICK_MODEL_DIR` override).
+/// models directories live on different drives (`LEXORA_MODEL_DIR` override).
 fn move_file(source: &Path, target: &Path) -> std::io::Result<()> {
     match std::fs::rename(source, target) {
         Ok(()) => Ok(()),
@@ -1307,6 +1526,27 @@ mod tests {
             .block_on(future)
     }
 
+    /// Registers a custom skill and enables (or disables) it in `picker.skills`.
+    fn save_custom_skill(env: &TestEnv, skill_id: &str, prompt: &str, enabled: bool) {
+        let mut skills = vec!["translate".to_string()];
+        if enabled {
+            skills.push(skill_id.to_string());
+        }
+        env.store
+            .update_json(json!({
+                "picker": {
+                    "skills": skills,
+                    "customSkills": [{
+                        "id": skill_id,
+                        "label": "测试技能",
+                        "icon": "wand",
+                        "prompt": prompt
+                    }]
+                }
+            }))
+            .unwrap();
+    }
+
     #[test]
     fn service_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
@@ -1377,45 +1617,74 @@ mod tests {
             status.hint
         );
 
+        // Installing a model is enough; no model selection is persisted.
         std::fs::write(
             env.paths.models_dir.join(models::CATALOG[1].filename),
             b"fake",
         )
         .unwrap();
-        env.store
-            .update_json(json!({"provider": {"local": {"modelFile": models::CATALOG[1].filename}}}))
-            .unwrap();
         let status = env.service.status();
-        assert_eq!(status.local_model_file, models::CATALOG[1].filename);
-        assert_eq!(status.local_model_name, "qwen2.5-1.5b-instruct-q4_k_m");
+        assert!(status.local_model_file.is_empty());
+        assert!(status.local_model_name.is_empty());
         assert!(!status.ready);
         assert!(
             status.hint.contains("启动"),
             "expected start hint, got {}",
             status.hint
         );
-        assert_eq!(status.provider_label, "本地 · qwen2.5-1.5b-instruct-q4_k_m");
+        assert_eq!(status.provider_label, "本地模型");
+        assert_eq!(
+            env.service.model_for_role(LocalRole::Translate),
+            Some(models::CATALOG[1].filename.to_string())
+        );
+        assert_eq!(
+            env.service.model_for_role(LocalRole::General),
+            Some(models::CATALOG[1].filename.to_string())
+        );
     }
 
     #[test]
-    fn local_mode_reports_missing_model_file() {
+    fn local_mode_without_models_reports_download_hint() {
         let env = test_env();
         std::fs::write(env.paths.llama_binary(), b"stub").unwrap();
         env.store
-            .update_json(
-                json!({"provider": {"mode": "local", "local": {"modelFile": "missing.gguf"}}}),
-            )
+            .update_json(json!({"provider": {"mode": "local"}}))
             .unwrap();
         let status = env.service.status();
         assert!(!status.ready);
-        assert!(status.hint.contains("不存在"), "hint: {}", status.hint);
+        assert!(
+            status.hint.contains("下载") || status.hint.contains("导入"),
+            "hint: {}",
+            status.hint
+        );
+        assert!(env.service.default_local_model().is_none());
+    }
+
+    #[test]
+    fn model_roles_prefer_their_catalog_model() {
+        let env = test_env();
+        for spec in models::CATALOG.iter() {
+            std::fs::write(env.paths.models_dir.join(spec.filename), b"fake").unwrap();
+        }
+        assert_eq!(
+            env.service.model_for_role(LocalRole::Translate),
+            Some(models::CATALOG[0].filename.to_string())
+        );
+        assert_eq!(
+            env.service.model_for_role(LocalRole::General),
+            Some(models::CATALOG[1].filename.to_string())
+        );
+        assert_eq!(
+            env.service.default_local_model(),
+            Some(models::CATALOG[0].filename.to_string())
+        );
     }
 
     #[test]
     fn installed_models_and_catalog_track_files() {
         let env = test_env();
         std::fs::write(
-            env.paths.models_dir.join(models::CATALOG[2].filename),
+            env.paths.models_dir.join(models::CATALOG[1].filename),
             b"gguf-data",
         )
         .unwrap();
@@ -1425,11 +1694,10 @@ mod tests {
         assert_eq!(installed[0].size_bytes, 9);
 
         let catalog = env.service.catalog();
-        assert_eq!(catalog.len(), 3);
+        assert_eq!(catalog.len(), 2);
         assert!(!catalog[0].installed);
-        assert!(!catalog[1].installed);
-        assert!(catalog[2].installed);
-        assert_eq!(catalog[2].filename, models::CATALOG[2].filename);
+        assert!(catalog[1].installed);
+        assert_eq!(catalog[1].filename, models::CATALOG[1].filename);
     }
 
     #[test]
@@ -1451,6 +1719,96 @@ mod tests {
     }
 
     #[test]
+    fn empty_polish_input_is_rejected() {
+        let env = test_env();
+        let error = block_on(env.service.polish_stream("   "))
+            .err()
+            .expect("expected engine error");
+        assert!(
+            error.message.contains("没有可润色"),
+            "message: {}",
+            error.message
+        );
+        assert!(error.hint.contains("润色"), "hint: {}", error.hint);
+    }
+
+    #[test]
+    fn polish_online_requires_configuration() {
+        let env = test_env();
+        env.store
+            .update_json(json!({"provider": {"online": {"baseUrl": ""}}}))
+            .unwrap();
+        let error = block_on(env.service.polish_stream("hello"))
+            .err()
+            .expect("expected engine error");
+        assert!(error.message.contains("配置"), "message: {}", error.message);
+    }
+
+    #[test]
+    fn custom_skill_must_exist_and_be_enabled() {
+        let env = test_env();
+        let error = block_on(
+            env.service
+                .custom_stream("custom-missing", "hello", "zh", "Code"),
+        )
+        .err()
+        .expect("expected engine error");
+        assert!(
+            error.message.contains("技能不存在"),
+            "message: {}",
+            error.message
+        );
+        assert!(error.hint.contains("重新添加"), "hint: {}", error.hint);
+
+        // A defined but disabled skill is rejected with its own hint.
+        save_custom_skill(&env, "custom-disabled", "Explain {text}", false);
+        let error = block_on(
+            env.service
+                .custom_stream("custom-disabled", "hello", "zh", "Code"),
+        )
+        .err()
+        .expect("expected engine error");
+        assert!(
+            error.message.contains("技能未启用"),
+            "message: {}",
+            error.message
+        );
+        assert!(error.hint.contains("启用"), "hint: {}", error.hint);
+    }
+
+    #[test]
+    fn custom_skill_rejects_empty_text() {
+        let env = test_env();
+        save_custom_skill(&env, "custom-empty", "Explain {text}", true);
+        let error = block_on(
+            env.service
+                .custom_stream("custom-empty", "   ", "zh", "Code"),
+        )
+        .err()
+        .expect("expected engine error");
+        assert!(error.message.contains("没有可翻译"));
+        assert!(!error.hint.is_empty());
+    }
+
+    #[test]
+    fn custom_skill_requires_a_configured_provider() {
+        let env = test_env();
+        save_custom_skill(&env, "custom-lookup", "Explain {text}", true);
+        env.store
+            .update_json(json!({"provider": {"online": {"baseUrl": ""}}}))
+            .unwrap();
+        // Skill lookup and text checks pass, then provider resolution fails
+        // before any HTTP request is made.
+        let error = block_on(
+            env.service
+                .custom_stream("custom-lookup", "hello", "zh", "Code"),
+        )
+        .err()
+        .expect("expected engine error");
+        assert!(error.message.contains("配置"), "message: {}", error.message);
+    }
+
+    #[test]
     fn online_translation_requires_configuration() {
         let env = test_env();
         env.store
@@ -1464,28 +1822,57 @@ mod tests {
     }
 
     #[test]
-    fn local_translation_without_engine_fails_with_hint() {
+    fn local_translation_requires_explicit_start() {
         let env = test_env();
+        std::fs::write(env.paths.llama_binary(), b"stub").unwrap();
+        std::fs::write(
+            env.paths.models_dir.join(models::CATALOG[0].filename),
+            b"fake",
+        )
+        .unwrap();
         env.store
             .update_json(json!({"provider": {"mode": "local"}}))
             .unwrap();
+        // Translation must never auto-start the local engine (issue: after the
+        // user pressed 停止 a request started it again).
         let error = block_on(env.service.translate_stream("hello", "zh"))
             .err()
             .expect("expected engine error");
-        assert!(error.message.contains("引擎"), "message: {}", error.message);
-        assert!(error.hint.contains("下载"));
+        assert!(
+            error.message.contains("未启动"),
+            "message: {}",
+            error.message
+        );
+        assert!(error.hint.contains("启动"));
     }
 
     #[test]
-    fn local_translation_without_model_fails_with_hint() {
+    fn start_local_without_engine_reports_download_hint() {
+        let env = test_env();
+        std::fs::write(
+            env.paths.models_dir.join(models::CATALOG[0].filename),
+            b"fake",
+        )
+        .unwrap();
+        env.store
+            .update_json(json!({"provider": {"mode": "local"}}))
+            .unwrap();
+        let error = block_on(env.service.start_local()).unwrap_err();
+        assert!(error.message.contains("引擎"), "message: {}", error.message);
+        assert!(error.hint.contains("下载"));
+        // A failed start leaves the engine in the stopped state.
+        assert_eq!(env.service.status().local_state, "stopped");
+        assert!(!env.store.get().provider.local.keep_running);
+    }
+
+    #[test]
+    fn start_local_without_models_reports_install_hint() {
         let env = test_env();
         std::fs::write(env.paths.llama_binary(), b"stub").unwrap();
         env.store
             .update_json(json!({"provider": {"mode": "local"}}))
             .unwrap();
-        let error = block_on(env.service.translate_stream("hello", "zh"))
-            .err()
-            .expect("expected engine error");
+        let error = block_on(env.service.start_local()).unwrap_err();
         assert!(error.message.contains("模型"), "message: {}", error.message);
         assert!(error.hint.contains("下载") || error.hint.contains("导入"));
     }
@@ -1642,6 +2029,7 @@ mod tests {
         block_on(env.service.stop_local()).unwrap();
         block_on(env.service.stop_local()).unwrap();
         assert_eq!(env.service.status().local_state, "stopped");
+        assert!(!env.store.get().provider.local.keep_running);
     }
 
     #[test]
@@ -1698,23 +2086,21 @@ mod tests {
     /// Optional developer smoke test (not run by CI).
     ///
     /// ```text
-    /// $env:LINGOPICK_LLAMA_DIR="...\vendor\llama"
-    /// $env:LINGOPICK_MODEL_DIR="...\models"
+    /// $env:LEXORA_LLAMA_DIR="...\vendor\llama"
+    /// $env:LEXORA_MODEL_DIR="...\models"
     /// cargo test manual_local_engine_smoke -- --ignored --nocapture
     /// ```
     #[test]
     #[ignore = "manual smoke test: needs a real llama.cpp engine and GGUF model"]
     fn manual_local_engine_smoke() {
-        let Ok(engine_dir) = std::env::var("LINGOPICK_LLAMA_DIR") else {
-            eprintln!("skip: LINGOPICK_LLAMA_DIR is not set");
+        let Ok(engine_dir) = std::env::var("LEXORA_LLAMA_DIR") else {
+            eprintln!("skip: LEXORA_LLAMA_DIR is not set");
             return;
         };
-        let Ok(models_dir) = std::env::var("LINGOPICK_MODEL_DIR") else {
-            eprintln!("skip: LINGOPICK_MODEL_DIR is not set");
+        let Ok(models_dir) = std::env::var("LEXORA_MODEL_DIR") else {
+            eprintln!("skip: LEXORA_MODEL_DIR is not set");
             return;
         };
-        let model_file = std::env::var("LINGOPICK_SMOKE_MODEL")
-            .unwrap_or_else(|_| "qwen2.5-3b-instruct-q4_k_m.gguf".to_string());
         let dir = TempDir::new().unwrap();
         let data = dir.path().to_path_buf();
         let paths = AppPaths {
@@ -1731,7 +2117,7 @@ mod tests {
             .update_json(json!({
                 "provider": {
                     "mode": "local",
-                    "local": {"modelFile": model_file, "contextSize": 2048, "threads": 4}
+                    "local": {"contextSize": 2048, "threads": 4}
                 }
             }))
             .unwrap();
@@ -1769,10 +2155,7 @@ mod tests {
             );
 
             let summary = service
-                .assist(
-                    "summarize",
-                    "LingoPick is a selection translator for Windows.",
-                )
+                .assist("summarize", "Lexora is a selection translator for Windows.")
                 .await
                 .expect("assist should succeed");
             eprintln!("smoke summary: {}", summary.trim());
