@@ -586,6 +586,7 @@
           customSkills.push({ id: skill.id, label: skill.label, icon: skill.icon });
         }
       });
+      var panelPinned = !!picker.panelPinned;
       mockEmit("picker-data", {
         text: "Translation is the communication of the meaning of a source-language text by means of an equivalent target-language text.",
         programName: "notepad.exe",
@@ -595,6 +596,7 @@
           compact: !!picker.compact,
           defaultTargetLang: picker.defaultTargetLang || "auto",
           searchEngine: picker.searchEngine || "google",
+          panelPinned: panelPinned,
         },
       });
     }
@@ -734,7 +736,14 @@
         return { ok: true };
       case "picker_pin":
         mockStore.picker.pinned = !!args.pinned;
+        if (args.remember === true) {
+          mockStore.settings.picker.panelPinned = !!args.pinned;
+        }
         return { ok: true, pinned: !!args.pinned };
+      case "picker_panel_state":
+        return { ok: true };
+      case "picker_activate":
+        return { ok: true };
       case "picker_drag_panel":
         return { ok: true };
       case "picker_resize":
@@ -1136,8 +1145,19 @@
     close: function () {
       return safeInvoke("picker_close", {});
     },
-    pin: function (pinned) {
-      return safeInvoke("picker_pin", { pinned: !!pinned });
+    pin: function (pinned, remember) {
+      return safeInvoke("picker_pin", {
+        pinned: !!pinned,
+        remember: remember === true,
+      });
+    },
+    /* Tells the shell whether a tool panel is currently open (sticky panel). */
+    panelState: function (open) {
+      return safeInvoke("picker_panel_state", { open: !!open });
+    },
+    /* Allows keyboard input in the picker (follow-up text field) while open. */
+    activate: function (active) {
+      return safeInvoke("picker_activate", { active: !!active });
     },
     resize: function (width, height) {
       return invokeQuiet("picker_resize", { width: width, height: height }, null);

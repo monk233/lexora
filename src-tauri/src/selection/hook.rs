@@ -114,11 +114,16 @@ fn on_event(inner: &Arc<Inner>, state: &mut HookState, event: Event) {
     }
 }
 
-/// Hides an un-pinned toolbar when the user keeps typing/clicking/scrolling.
+/// Hides an un-pinned toolbar when the user keeps typing/clicking.
+///
 /// The picker window is non-activating, so these events already go to the
-/// foreground application; the toolbar only steps out of the way.
+/// foreground application; the toolbar only steps out of the way. A sticky
+/// panel (pinned or an open result panel) is never dismissed this way.
 fn dismiss_picker_on_input(inner: &Arc<Inner>, reason: &'static str) {
-    if !inner.picker_visible.load(Ordering::Acquire) || inner.panel_pinned.load(Ordering::Acquire) {
+    if !inner.picker_visible.load(Ordering::Acquire)
+        || inner.panel_pinned.load(Ordering::Acquire)
+        || inner.panel_open.load(Ordering::Acquire)
+    {
         return;
     }
     inner.send_action(ActionRequest::DismissOnInput { reason });
@@ -130,6 +135,8 @@ fn handle_left_press(inner: &Arc<Inner>, state: &mut HookState) {
     state.press_origin = state.mouse;
 
     // A left click outside the picker dismisses it (unless the panel is pinned).
+    // An open result panel is sticky for keyboard/right-click input, but an
+    // outside click still hides the picker while it is not pinned.
     if !inner.picker_visible.load(Ordering::Acquire) || inner.panel_pinned.load(Ordering::Acquire) {
         return;
     }

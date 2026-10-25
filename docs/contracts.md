@@ -73,6 +73,7 @@ lexora/
     "blacklist": [],                      // 进程名，可含 .exe
     "maxChars": 5000,
     "searchEngine": "google",             // google | baidu | bing（搜索技能）
+    "panelPinned": false,                 // 记住「钉住到桌面」偏好：后续结果面板默认钉住
     "prompts": {                          // 空字符串 = 使用系统默认提示词
       "translate": "",
       "summarize": "",
@@ -132,7 +133,9 @@ lexora/
 | --- | --- | --- |
 | `picker_ready` | — | `{ok}`（renderer 初始化完成；Rust 若有待展示数据则补发 `picker-data`） |
 | `picker_close` | — | `{ok}` |
-| `picker_pin` | `{pinned: boolean}` | `{pinned: boolean}` |
+| `picker_pin` | `{pinned: boolean, remember?: boolean}` | `{ok, pinned}`（remember=true 时持久化 picker.panelPinned） |
+| `picker_panel_state` | `{open: boolean}` | `{ok}`（面板打开时键盘/右键不再隐藏；点击外部未钉住仍隐藏） |
+| `picker_activate` | `{active: boolean}` | `{ok}`（按需让 picker 可获取键盘焦点，用于继续提问输入） |
 | `picker_resize` | `{width, height}` | `{x,y,width,height} \| null`（Rust 已应用 bounds 后返回逻辑像素） |
 | `picker_drag_panel` | `{dx, dy}` | `{ok, x?, y?}`（逻辑像素 delta 移动窗口，面板标题栏拖动） |
 | `picker_copy` | `{text: string}` | `{ok}` |
@@ -294,7 +297,7 @@ pub struct SelectionService {
 
 - `windows::show_settings(app)`：显示/聚焦 settings（最小化还原）。
 - `windows::show_picker(app, payload) -> bool`：按物理锚点 + 该显示器 scale 计算逻辑坐标，初始 440×56，`x = anchor/scale - 40`（限制工作区）、`y = anchor/scale + 12`，下方放不下翻到上方；clamp 到工作区；`show`（**不调用 `set_focus`**，picker 窗口配置 `focusable: false`）；`app.emit_to("picker","picker-data", payload)`；记录最近 payload 供 `picker_ready` 补发。
-- `windows::resize_picker(app, w, h) -> Option<bounds>`：clamp 宽度 200–780、高度 40–620，保持左上/工作区内；设置 LogicalSize/Position 后返回最终 bounds；菜单/面板依赖此语义避免裁剪。
+- `windows::resize_picker(app, w, h) -> Option<bounds>`：不再有 200–780×40–620 人工限制；非法/非正尺寸回退基础尺寸，合法值 1..=100000，位置仍 clamp 到工作区内；设置 LogicalSize/Position 后返回最终 bounds。
 - `windows::move_picker_by(app, dx, dy) -> Option<(f64, f64)>`：按逻辑像素 delta 移动 picker 窗口（结果面板标题栏拖动），clamp 到工作区，返回新的逻辑左上角坐标。
 - `windows::hide_picker(app)`：隐藏 + 清空 pinned + emit `picker-hidden`。
 - `is_picker_visible` / `picker_scale_factor`。
@@ -341,7 +344,10 @@ pub struct SelectionService {
   - 结果区渲染 Markdown（安全子集，HTML 先转义）：标题、粗体/斜体/删除线、行内代码、代码块、有序/无序列表、引用、分隔线、表格、http(s) 链接（链接点击经 `open_external` 打开，不在 webview 内导航）；流式输出按 rAF 合并重渲染，用户向上翻阅时不强制滚到底部。
   - 朗读：仅用 `window.speechSynthesis`（Windows 系统语音）；无语音时提示「系统未安装可用的语音包：Windows 设置 → 时间和语言 → 语音」。朗读中再次点击是「停止朗读」，必须静默恢复按钮态，不提示失败（忽略 `interrupted`/`canceled` 错误）。
   - 结果面板可通过标题栏空白处拖动整个工具窗口（`picker_drag_panel`，每次 mousemove 发送屏幕坐标差值的逻辑像素 delta）；按钮/语言下拉区域不触发拖动。
-- 结果面板右下角提供缩放手柄：拖动调用 `picker_resize`（最小 360×240，Rust clamp 到 780×620），尺寸写入 localStorage `lexora.panelSize`，下次打开沿用；手动调整后内容自适应不再覆盖用户尺寸；双击手柄恢复自动大小。
+- 结果面板右下角提供缩放手柄：拖动调用 `picker_resize`（不再有 780×620/360×240 人工限制，仅合法正数；窗口位置仍 clamp 到工作区），尺寸写入 localStorage `lexora.panelSize`，下次打开沿用；手动调整后 `.panel` 填满窗口、内容自适应不再覆盖用户尺寸；双击手柄恢复自动大小。
+- 面板粘滞：结果面板打开时后端 panel_open=true，键盘/右键/滚轮不会隐藏；未钉住时点击面板外区域仍隐藏（钉住则保持）。点击继续提问输入框时按需激活 picker 窗口以获取键盘焦点，关闭面板后恢复非激活。
+- 面板尺寸与窗口一致：自动尺寸按可见 panel 高度计算，窗口底部不再有透明隐藏区；toast 显示在面板顶部覆盖，不额外占位。
+- 继续提问/建议区为透明悬浮样式（输入行与 chips 独立浮起），不显示整块背景。
 - 翻译/总结/解释/润色/自定义技能成功结果下方显示「继续提问」输入框；提交后调用 `picker_followup`，在同一面板内追加多轮流式问答（沿用 Markdown/复制/朗读/错误重试）。
 - 单个英文单词的翻译/解释使用词典式提示词（释义、音标、核心含义及用法、高频场景），结果完成后显示 3 个建议追问 chip（造句/近义词区别/常见搭配），点击即发送 follow-up。
   - 目标语言下拉从 `LP.LANGUAGES`（38 种 Hy-MT2 支持语言）动态生成，不再硬编码 option。

@@ -541,10 +541,60 @@ pub fn picker_close(app: AppHandle) -> Value {
     json!({ "ok": true })
 }
 
+/// Persists the "pin panel" preference so the picker can restore it later.
+fn persist_panel_pinned(
+    settings: &crate::settings::SettingsStore,
+    pinned: bool,
+) -> Result<crate::settings::Settings, String> {
+    settings.update_json(json!({ "picker": { "panelPinned": pinned } }))
+}
+
+/// Pins the picker panel at runtime; with `remember == Some(true)` the
+/// preference is also written to settings. A persistence failure keeps the
+/// runtime pin and only reports the error.
 #[tauri::command]
-pub fn picker_pin(state: State<'_, Arc<AppState>>, pinned: bool) -> Value {
+pub fn picker_pin(state: State<'_, Arc<AppState>>, pinned: bool, remember: Option<bool>) -> Value {
     state.selection.set_panel_pinned(pinned);
-    json!({ "ok": true, "pinned": state.selection.is_panel_pinned() })
+    let mut error: Option<String> = None;
+    if remember == Some(true) {
+        match persist_panel_pinned(&state.settings, pinned) {
+            Ok(updated) => state.selection.apply_settings(&updated),
+            Err(message) => error = Some(format!("保存固定面板偏好失败：{message}")),
+        }
+    }
+    match error {
+        Some(message) => json!({
+            "ok": false,
+            "pinned": state.selection.is_panel_pinned(),
+            "error": message,
+        }),
+        None => json!({ "ok": true, "pinned": state.selection.is_panel_pinned() }),
+    }
+}
+
+/// Tells the shell whether a tool panel is currently open. While open, the
+/// global input hook no longer dismisses the picker (sticky panel).
+#[tauri::command]
+pub fn picker_panel_state(state: State<'_, Arc<AppState>>, open: bool) -> Value {
+    state.selection.set_panel_open(open);
+    json!({ "ok": true })
+}
+
+/// Makes the picker focusable so the follow-up input can receive keyboard
+/// input, and returns it to non-activating mode when the panel closes.
+#[tauri::command]
+pub fn picker_activate(app: AppHandle, active: bool) -> Value {
+    let Some(window) = app.get_webview_window(crate::windows::PICKER_LABEL) else {
+        return json!({ "ok": false });
+    };
+    if active {
+        if window.set_focusable(true).is_err() || window.set_focus().is_err() {
+            return json!({ "ok": false });
+        }
+    } else if window.set_focusable(false).is_err() {
+        return json!({ "ok": false });
+    }
+    json!({ "ok": true })
 }
 
 #[tauri::command]
@@ -1058,5 +1108,29 @@ pub fn picker_disable_tool(app: AppHandle, state: State<'_, Arc<AppState>>) -> V
             json!({ "ok": true })
         }
         Err(error) => json!({ "ok": false, "error": error }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::persist_panel_pinned;
+
+    #[test]
+    fn pin_preference_is_persisted_through_settings() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("settings.json");
+        let store = crate::settings::SettingsStore::load(file.clone());
+        assert!(!store.get().picker.panel_pinned);
+
+        let updated = persist_panel_pinned(&store, true).unwrap();
+        assert!(updated.picker.panel_pinned);
+        assert!(store.get().picker.panel_pinned);
+        let reloaded = crate::settings::SettingsStore::load(file.clone());
+        assert!(reloaded.get().picker.panel_pinned);
+
+        let cleared = persist_panel_pinned(&store, false).unwrap();
+        assert!(!cleared.picker.panel_pinned);
+        let reloaded = crate::settings::SettingsStore::load(file);
+        assert!(!reloaded.get().picker.panel_pinned);
     }
 }

@@ -122,6 +122,9 @@ struct Inner {
     worker_config: Mutex<WorkerConfig>,
     picker_visible: AtomicBool,
     panel_pinned: AtomicBool,
+    /// A result panel is open: the global input hook must not dismiss the
+    /// picker (sticky panel), even when it is not pinned.
+    panel_open: AtomicBool,
     capturing: AtomicBool,
     started: AtomicBool,
     last_selection: Mutex<Option<PickerPayload>>,
@@ -209,6 +212,7 @@ impl SelectionService {
             worker_config: Mutex::new(WorkerConfig::default()),
             picker_visible: AtomicBool::new(false),
             panel_pinned: AtomicBool::new(false),
+            panel_open: AtomicBool::new(false),
             capturing: AtomicBool::new(false),
             started: AtomicBool::new(false),
             last_selection: Mutex::new(None),
@@ -277,11 +281,23 @@ impl SelectionService {
         self.inner.picker_visible.store(visible, Ordering::Release);
         if !visible {
             self.inner.panel_pinned.store(false, Ordering::Release);
+            self.inner.panel_open.store(false, Ordering::Release);
         }
     }
 
     pub fn set_panel_pinned(&self, pinned: bool) {
         self.inner.panel_pinned.store(pinned, Ordering::Release);
+    }
+
+    /// Marks whether a tool panel is currently open. While open, keyboard and
+    /// right/middle mouse input no longer dismiss the picker; clicking outside
+    /// of an un-pinned picker still hides it.
+    pub fn set_panel_open(&self, open: bool) {
+        self.inner.panel_open.store(open, Ordering::Release);
+    }
+
+    pub fn is_panel_open(&self) -> bool {
+        self.inner.panel_open.load(Ordering::Acquire)
     }
 
     pub fn last_selection(&self) -> Option<PickerPayload> {
@@ -432,7 +448,13 @@ fn action_worker(inner: Arc<Inner>, receiver: Receiver<ActionRequest>) {
                 inner.picker_visible.store(false, Ordering::Release);
             }
             ActionRequest::DismissOnInput { reason } => {
-                if inner.panel_pinned.load(Ordering::Acquire) {
+                // Sticky panel: pinned pickers and open result panels must not
+                // be dismissed by keyboard/right-click input. An outside left
+                // click is handled by `OutsideClick` and still hides un-pinned
+                // pickers.
+                if inner.panel_pinned.load(Ordering::Acquire)
+                    || inner.panel_open.load(Ordering::Acquire)
+                {
                     continue;
                 }
                 // A keypress that arrived right before a fresh capture (e.g. the
@@ -490,6 +512,8 @@ fn config_from_settings(settings: &Settings) -> WorkerConfig {
             "defaultTargetLang": &settings.picker.default_target_lang,
             // Search engine used by the built-in `search` skill.
             "searchEngine": &settings.picker.search_engine,
+            // Remembered pin preference: the picker restores it when a panel opens.
+            "panelPinned": settings.picker.panel_pinned,
             // Only enabled custom skills are sent to the picker; the full
             // definition (including the prompt) stays in settings.
             "customSkills": enabled_custom_skill_metadata(settings),
@@ -654,9 +678,38 @@ mod tests {
         assert_eq!(config.picker_config["compact"], true);
         assert_eq!(config.picker_config["defaultTargetLang"], "zh");
         assert_eq!(config.picker_config["searchEngine"], "google");
+        assert_eq!(config.picker_config["panelPinned"], false);
         assert_eq!(config.picker_config["skills"][0], "translate");
         assert_eq!(config.picker_config["skills"][1], "copy");
         assert_eq!(config.picker_config["customSkills"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn picker_config_forwards_the_panel_pin_preference() {
+        let mut settings = Settings::default();
+        settings.picker.panel_pinned = true;
+
+        let config = config_from_settings(&settings);
+        assert_eq!(config.picker_config["panelPinned"], true);
+    }
+
+    #[test]
+    fn panel_open_state_is_tracked_and_reset_when_hidden() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(SettingsStore::load(dir.path().join("settings.json")));
+        let logger = Logger::new(&dir.path().join("logs"), "selection-test");
+        let service = SelectionService::new(store, logger);
+
+        assert!(!service.is_panel_open());
+        service.set_panel_pinned(true);
+        service.set_panel_open(true);
+        assert!(service.is_panel_open());
+        assert!(service.is_panel_pinned());
+
+        // Hiding the picker clears both the pin and the open-panel state.
+        service.set_picker_visible(false);
+        assert!(!service.is_panel_open());
+        assert!(!service.is_panel_pinned());
     }
 
     #[test]

@@ -340,6 +340,13 @@ body.is-dragging-panel * {
   box-shadow: 0 4px 14px -4px rgba(15, 23, 42, 0.24);
 }
 
+/* Manually resized panels fill the whole picker window: no transparent strip
+ * below the card, the body scrolls inside instead. */
+.panel.is-manual-size {
+  flex: 1 1 auto;
+  height: 100%;
+}
+
 /* ---- Result panel resize grip ------------------------------------------ */
 
 .panel-resize-grip {
@@ -632,16 +639,18 @@ body.is-resizing-panel * {
 
 .panel-followup {
   flex: 0 0 auto;
-  padding: 6px 8px;
-  border-top: 1px solid var(--border);
-  background: var(--surface-muted);
+  padding: 4px 10px 8px;
+  /* Transparent host: the input row and the suggestion chips float on their
+   * own, so the follow-up area blends into the panel content. */
+  background: transparent;
+  border-top: 0;
 }
 
 .panel-suggestions {
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
-  padding: 2px 1px 6px;
+  padding: 2px 1px 7px;
 }
 
 .panel-suggestion {
@@ -650,6 +659,7 @@ body.is-resizing-panel * {
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--surface);
+  box-shadow: 0 2px 6px -3px rgba(15, 23, 42, 0.28);
   color: var(--text-muted);
   font-family: inherit;
   font-size: 11.5px;
@@ -662,6 +672,7 @@ body.is-resizing-panel * {
   border-color: var(--primary);
   background: var(--primary-soft);
   color: var(--primary);
+  box-shadow: 0 3px 9px -3px rgba(79, 70, 229, 0.3);
 }
 
 .panel-suggestion:focus-visible {
@@ -679,10 +690,11 @@ body.is-resizing-panel * {
   flex: 1 1 auto;
   min-width: 0;
   height: 28px;
-  padding: 0 9px;
+  padding: 0 10px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   background: var(--surface);
+  box-shadow: 0 3px 10px -4px rgba(15, 23, 42, 0.26);
   color: var(--text);
   font-family: inherit;
   font-size: 12px;
@@ -696,11 +708,13 @@ body.is-resizing-panel * {
   border-color: var(--primary);
   outline: 2px solid var(--primary-soft);
   outline-offset: 0;
+  box-shadow: 0 3px 12px -4px rgba(79, 70, 229, 0.35);
 }
 
 .panel-followup-input:disabled {
   background: var(--surface-muted);
   color: var(--text-faint);
+  box-shadow: none;
 }
 
 .panel-followup-send {
@@ -708,8 +722,9 @@ body.is-resizing-panel * {
   height: 28px;
   padding: 0 12px;
   border: 1px solid #c7d2fe;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   background: var(--primary-soft);
+  box-shadow: 0 2px 7px -3px rgba(79, 70, 229, 0.35);
   color: var(--primary);
   font-family: inherit;
   font-size: 12px;
@@ -950,7 +965,10 @@ body.is-resizing-panel * {
 .toast {
   position: fixed;
   left: 50%;
-  bottom: 8px;
+  /* Top overlay: the window is sized to the panel, so the old bottom toast
+   * forced an empty strip below the card. */
+  top: 8px;
+  bottom: auto;
   transform: translateX(-50%);
   width: max-content;
   max-width: calc(100% - 20px);
