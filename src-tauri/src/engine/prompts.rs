@@ -23,6 +23,20 @@ pub const DEFAULT_EXPLAIN_PROMPT: &str = "You are a knowledge assistant. Explain
 
 pub const DEFAULT_POLISH_PROMPT: &str = "You are a professional editor. Polish the user's text so it reads naturally and fluently while keeping the original meaning. Output only the polished text, without explanations, quotes, or the source text.";
 
+/// System prompt for a single-word dictionary lookup (translate/explain on a
+/// single English word).
+pub const DEFAULT_DICTIONARY_PROMPT: &str = "你是一名严谨的英汉词典助手。用户会给出一个英文单词，请用简体中文输出词典式释义，使用 Markdown 排版，依次包含：\n1. 常见释义：按词性分别列出；\n2. 音标：英式/美式音标（IPA，若你确定；不确定则省略这一项）；\n3. 核心含义及用法：按词性说明，给出常见搭配与例句（例句附中文翻译）；\n4. 高频场景：这个词最常见的语境或搭配场景。\n不要编造不存在的义项或音标，信息不确定时如实说明。";
+
+/// System prompt for the picker's follow-up ("继续提问") question mode.
+pub const FOLLOWUP_SYSTEM_PROMPT: &str = "你是 Lexora AI 助手的继续提问模式。用户先从应用中划选了一段文本，助手已经给出了回答，现在用户想基于这段文本和之前的回答继续提问。请用简体中文回答，聚焦用户当前的问题，可以使用 Markdown 排版；不要复述原文或之前的回答，除非用户明确要求。";
+
+/// Maximum characters of one follow-up context block (原文/回答/问题/问答).
+pub const FOLLOWUP_SEGMENT_MAX_CHARS: usize = 4_000;
+/// Maximum number of previous Q/A turns included in a follow-up prompt.
+pub const FOLLOWUP_HISTORY_MAX_TURNS: usize = 10;
+/// Maximum total characters of the composed follow-up user message.
+pub const FOLLOWUP_TOTAL_MAX_CHARS: usize = 20_000;
+
 /// Maps a language code to the English name used inside prompts. Covers the
 /// languages supported by Hy-MT2 (33 languages plus Chinese variants and
 /// minority languages).
@@ -117,6 +131,25 @@ pub fn truncate_chars(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect()
 }
 
+/// `true` when `text` is a single Latin word worth a dictionary lookup:
+/// 1–40 characters, letters plus optional `'` / `-`, at least one letter.
+/// Chinese text, multiple words, numbers and punctuation return `false`.
+pub fn is_single_word(text: &str) -> bool {
+    let trimmed = text.trim();
+    if !(1..=40).contains(&trimmed.chars().count()) {
+        return false;
+    }
+    let mut letters = 0usize;
+    for character in trimmed.chars() {
+        if character.is_ascii_alphabetic() {
+            letters += 1;
+        } else if character != '\'' && character != '-' {
+            return false;
+        }
+    }
+    letters > 0
+}
+
 /// Builds the chat messages for a translation request.
 ///
 /// `custom_prompt` is trimmed first; when it is empty the built-in English
@@ -177,6 +210,104 @@ pub fn polish_messages(text: &str, custom_prompt: &str) -> (String, String) {
         custom_prompt
     };
     (system.to_string(), text.to_string())
+}
+
+/// Builds the chat messages for a single-word dictionary lookup. The word is
+/// also the user message; the system prompt asks for a Markdown dictionary
+/// entry (meanings, IPA, usage, common contexts).
+pub fn dictionary_messages(word: &str) -> (String, String) {
+    (
+        DEFAULT_DICTIONARY_PROMPT.to_string(),
+        word.trim().to_string(),
+    )
+}
+
+/// Translation entry point: single words become dictionary entries, everything
+/// else uses [`translate_messages`]. Used by `EngineService::translate_stream`.
+pub fn translate_or_dictionary_messages(
+    text: &str,
+    target_lang: &str,
+    custom_prompt: &str,
+) -> (String, String) {
+    if is_single_word(text) {
+        dictionary_messages(text)
+    } else {
+        translate_messages(text, target_lang, custom_prompt)
+    }
+}
+
+/// Explain entry point: `explain` on a single word becomes a dictionary entry
+/// (custom explain prompts are ignored there), everything else keeps
+/// [`assist_messages`]. Used by `EngineService::assist_stream`.
+pub fn assist_or_dictionary_messages(
+    action: &str,
+    text: &str,
+    custom_prompt: &str,
+) -> Result<(String, String), EngineError> {
+    let is_explain = matches!(
+        action.trim().to_ascii_lowercase().as_str(),
+        "explain" | "解释"
+    );
+    if is_explain && is_single_word(text) {
+        return Ok(dictionary_messages(text));
+    }
+    assist_messages(action, text, custom_prompt)
+}
+
+/// Builds the chat messages for a follow-up question about the original
+/// selection and the previous AI answer.
+///
+/// The user message combines the original selection, the previous answer, up
+/// to [`FOLLOWUP_HISTORY_MAX_TURNS`] earlier Q/A turns and the current
+/// question. Every block is capped at [`FOLLOWUP_SEGMENT_MAX_CHARS`]; the
+/// current question is always kept and older context is dropped first so the
+/// whole message stays within [`FOLLOWUP_TOTAL_MAX_CHARS`].
+pub fn followup_messages(
+    text: &str,
+    previous_answer: &str,
+    question: &str,
+    history: &[(String, String)],
+) -> (String, String) {
+    let selection = truncate_chars(text.trim(), FOLLOWUP_SEGMENT_MAX_CHARS);
+    let previous = truncate_chars(previous_answer.trim(), FOLLOWUP_SEGMENT_MAX_CHARS);
+    let current = truncate_chars(question.trim(), FOLLOWUP_SEGMENT_MAX_CHARS);
+
+    let recent = if history.len() > FOLLOWUP_HISTORY_MAX_TURNS {
+        &history[history.len() - FOLLOWUP_HISTORY_MAX_TURNS..]
+    } else {
+        history
+    };
+    let mut turns: Vec<String> = Vec::new();
+    for (turn_question, turn_answer) in recent {
+        turns.push(format!(
+            "Q: {}\nA: {}",
+            truncate_chars(turn_question.trim(), FOLLOWUP_SEGMENT_MAX_CHARS),
+            truncate_chars(turn_answer.trim(), FOLLOWUP_SEGMENT_MAX_CHARS)
+        ));
+    }
+
+    let mut prefix: Vec<String> = Vec::new();
+    if !selection.is_empty() {
+        prefix.push(format!("【用户选中的原文】\n{selection}"));
+    }
+    if !previous.is_empty() {
+        prefix.push(format!("【之前的回答】\n{previous}"));
+    }
+    if !turns.is_empty() {
+        prefix.push(format!("【历史问答】\n{}", turns.join("\n\n")));
+    }
+
+    // The current question is mandatory; prepend context newest-first until the
+    // character budget is used up.
+    let mut user = format!("【当前问题】\n{current}");
+    for section in prefix.into_iter().rev() {
+        let extra = section.chars().count() + 2; // "\n\n" separator
+        if user.chars().count() + extra > FOLLOWUP_TOTAL_MAX_CHARS {
+            break;
+        }
+        user = format!("{section}\n\n{user}");
+    }
+    (FOLLOWUP_SYSTEM_PROMPT.to_string(), user)
 }
 
 /// Placeholder used in prompts when the source application is unknown.
@@ -475,5 +606,159 @@ mod tests {
             render_custom_prompt("Translate into {language}", "hi", "de", "Code"),
             "Translate into German"
         );
+    }
+
+    #[test]
+    fn single_word_detection_covers_boundaries() {
+        for word in [
+            "hello",
+            "a",
+            "don't",
+            "well-known",
+            "rock'n'roll",
+            "  hello  ",
+            "cafe",
+        ] {
+            assert!(is_single_word(word), "should accept {word:?}");
+        }
+        let longest = "a".repeat(40);
+        assert!(is_single_word(&longest));
+        for not_word in [
+            "",
+            "   ",
+            "hello world",
+            "hello,world",
+            "hello!",
+            "hello.",
+            "中文",
+            "hello中文",
+            "123",
+            "hello123",
+            "'",
+            "-",
+            "hello_world",
+            "hello\nworld",
+        ] {
+            assert!(!is_single_word(not_word), "should reject {not_word:?}");
+        }
+        let too_long = "a".repeat(41);
+        assert!(!is_single_word(&too_long));
+    }
+
+    #[test]
+    fn dictionary_messages_are_chinese_markdown_lookups() {
+        let (system, user) = dictionary_messages("  serendipity ");
+        assert_eq!(system, DEFAULT_DICTIONARY_PROMPT);
+        assert_eq!(user, "serendipity");
+        for expected in ["词典", "释义", "音标", "用法", "场景", "Markdown"] {
+            assert!(
+                system.contains(expected),
+                "dictionary prompt must mention {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn single_words_use_the_dictionary_prompt() {
+        let (translated, user) = translate_or_dictionary_messages("hello", "zh", "custom");
+        assert_eq!(translated, DEFAULT_DICTIONARY_PROMPT);
+        assert_eq!(user, "hello");
+
+        let (explained, _) =
+            assist_or_dictionary_messages("explain", "hello", "custom explain").unwrap();
+        assert_eq!(explained, DEFAULT_DICTIONARY_PROMPT);
+        let (explained_zh, _) = assist_or_dictionary_messages("解释", "hello", "").unwrap();
+        assert_eq!(explained_zh, DEFAULT_DICTIONARY_PROMPT);
+    }
+
+    #[test]
+    fn multiple_words_keep_the_normal_prompts() {
+        let (system, _) =
+            translate_or_dictionary_messages("hello world", "zh", "Translate into {target}.");
+        assert_eq!(system, "Translate into Simplified Chinese.");
+
+        let (summarized, _) = assist_or_dictionary_messages("summarize", "hello", "").unwrap();
+        assert_eq!(summarized, DEFAULT_SUMMARIZE_PROMPT);
+        let (explained, _) = assist_or_dictionary_messages("explain", "hello world", "").unwrap();
+        assert_eq!(explained, DEFAULT_EXPLAIN_PROMPT);
+        let (custom, _) =
+            assist_or_dictionary_messages("explain", "two words", "Be brief.").unwrap();
+        assert_eq!(custom, "Be brief.");
+    }
+
+    #[test]
+    fn followup_messages_combine_the_context_in_order() {
+        let history = vec![
+            ("第一问".to_string(), "第一答".to_string()),
+            ("第二问".to_string(), "第二答".to_string()),
+        ];
+        let (system, user) = followup_messages("选中的原文", "上一轮回答", "为什么？", &history);
+        assert_eq!(system, FOLLOWUP_SYSTEM_PROMPT);
+        assert!(system.contains("简体中文"));
+        assert!(system.contains("Markdown"));
+        let positions = [
+            user.find("【用户选中的原文】")
+                .expect("original text block"),
+            user.find("【之前的回答】").expect("previous answer block"),
+            user.find("【历史问答】").expect("history block"),
+            user.find("【当前问题】").expect("question block"),
+        ];
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(user.contains("选中的原文"));
+        assert!(user.contains("上一轮回答"));
+        assert!(user.contains("第一问"));
+        assert!(user.contains("第二答"));
+        assert!(user.ends_with("为什么？"));
+    }
+
+    #[test]
+    fn followup_omits_empty_context_blocks() {
+        let (_, user) = followup_messages("", "", "只有问题", &[]);
+        assert_eq!(user, "【当前问题】\n只有问题");
+        let (_, user) = followup_messages("原文", "", "问题", &[]);
+        assert!(!user.contains("【之前的回答】"));
+        assert!(!user.contains("【历史问答】"));
+    }
+
+    #[test]
+    fn followup_history_is_capped_to_the_last_ten_turns() {
+        let history: Vec<(String, String)> = (0..15)
+            .map(|index| (format!("问题{index}"), format!("回答{index}")))
+            .collect();
+        let (_, user) = followup_messages("原文", "", "当前", &history);
+        assert_eq!(user.matches("Q: ").count(), FOLLOWUP_HISTORY_MAX_TURNS);
+        assert!(!user.contains("问题4"), "older turns must be dropped");
+        assert!(user.contains("问题5"));
+        assert!(user.contains("问题14"));
+    }
+
+    #[test]
+    fn followup_truncates_segments_and_keeps_within_the_total_budget() {
+        // "字" never appears in the section labels, so it counts text only.
+        let long_text = "字".repeat(5_000);
+        let (_, user) = followup_messages(&long_text, "", "问题", &[]);
+        assert_eq!(user.matches('字').count(), FOLLOWUP_SEGMENT_MAX_CHARS);
+        assert!(user.ends_with("【当前问题】\n问题"));
+
+        let long_history: Vec<(String, String)> = (0..10)
+            .map(|index| (format!("问{index}"), "答".repeat(5_000)))
+            .collect();
+        let (_, user) =
+            followup_messages(&long_text, &"回".repeat(5_000), "关键问题", &long_history);
+        assert!(
+            user.chars().count() <= FOLLOWUP_TOTAL_MAX_CHARS,
+            "user message too long: {}",
+            user.chars().count()
+        );
+        // The current question always survives the budget trimming.
+        assert!(user.contains("关键问题"));
+        assert!(user.contains("【当前问题】"));
+    }
+
+    #[test]
+    fn followup_prompt_requires_chinese_markdown_and_no_repetition() {
+        assert!(FOLLOWUP_SYSTEM_PROMPT.contains("简体中文"));
+        assert!(FOLLOWUP_SYSTEM_PROMPT.contains("Markdown"));
+        assert!(FOLLOWUP_SYSTEM_PROMPT.contains("不要复述"));
     }
 }

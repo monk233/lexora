@@ -14,6 +14,7 @@
 //! Streaming downloads emit `download-progress` events roughly every 200 ms and
 //! can be cancelled with [`EngineService::cancel_download`].
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -146,50 +147,157 @@ pub struct DownloadProgress {
     pub error: String,
 }
 
-/// Shared download bookkeeping: latest progress + cooperative cancel flag.
-#[derive(Default)]
-struct DownloadState {
-    current: Option<DownloadProgress>,
+/// Registry key of the llama.cpp engine download.
+const ENGINE_DOWNLOAD_KEY: &str = "engine";
+
+/// One in-flight download: latest progress snapshot plus its own cancel flag.
+struct ActiveDownload {
+    progress: DownloadProgress,
     cancel: Arc<AtomicBool>,
 }
 
-/// Emits throttled `download-progress` events and keeps the state snapshot in
-/// sync. All methods lock for a very short time; no guard is held across await.
+/// Shared download bookkeeping. Several downloads may run at the same time:
+/// the engine plus one per model id. Keys are `engine` and `model:<id>`.
+#[derive(Default)]
+struct DownloadState {
+    tasks: HashMap<String, ActiveDownload>,
+}
+
+/// Registry key for a download (`engine` or `model:<id>`).
+fn download_key(kind: &str, id: &str) -> String {
+    if kind == "engine" {
+        ENGINE_DOWNLOAD_KEY.to_string()
+    } else {
+        format!("model:{id}")
+    }
+}
+
+/// Snapshot of the active downloads, sorted by registry key (`engine` first,
+/// then models by id) so the settings UI always sees a stable order.
+fn download_list(state: &DownloadState) -> Vec<DownloadProgress> {
+    let mut entries: Vec<(&String, &DownloadProgress)> = state
+        .tasks
+        .iter()
+        .map(|(key, task)| (key, &task.progress))
+        .collect();
+    entries.sort_by(|left, right| left.0.cmp(right.0));
+    entries
+        .into_iter()
+        .map(|(_, progress)| progress.clone())
+        .collect()
+}
+
+/// Error returned when the same engine/model download is already running.
+fn duplicate_download_error(kind: &str) -> EngineError {
+    if kind == "engine" {
+        EngineError::new("引擎正在下载中。", "请等待当前下载完成，或先取消后再试。")
+    } else {
+        EngineError::new("该模型正在下载中。", "请等待当前下载完成，或先取消后再试。")
+    }
+}
+
+/// Reserves a slot in the download registry. Fails when the same id is already
+/// running; different ids may download concurrently. The caller owns the
+/// returned cancel token and must drop its [`DownloadReporter`] to free the slot.
+fn reserve_download(
+    state: &Mutex<DownloadState>,
+    kind: &str,
+    id: &str,
+    filename: &str,
+    total: u64,
+) -> Result<(String, Arc<AtomicBool>, DownloadProgress), EngineError> {
+    let key = download_key(kind, id);
+    let mut guard = state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if guard.tasks.contains_key(&key) {
+        return Err(duplicate_download_error(kind));
+    }
+    let cancel = Arc::new(AtomicBool::new(false));
+    let progress = DownloadProgress {
+        kind: kind.to_string(),
+        id: id.to_string(),
+        filename: filename.to_string(),
+        received: 0,
+        total,
+        percent: 0.0,
+        status: "downloading".to_string(),
+        error: String::new(),
+    };
+    guard.tasks.insert(
+        key.clone(),
+        ActiveDownload {
+            progress: progress.clone(),
+            cancel: cancel.clone(),
+        },
+    );
+    Ok((key, cancel, progress))
+}
+
+/// Marks matching downloads as cancelled. `id = None` (or an empty/blank id)
+/// cancels every task; `Some("engine")` only the engine and `Some(model_id)`
+/// only that model. Returns the cancelled registry keys, sorted.
+fn cancel_tasks(state: &Mutex<DownloadState>, id: Option<&str>) -> Vec<String> {
+    let wanted = id.map(str::trim).filter(|value| !value.is_empty());
+    let guard = state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut cancelled: Vec<String> = Vec::new();
+    for (key, task) in &guard.tasks {
+        let matches = match wanted {
+            None => true,
+            Some("engine") => key.as_str() == ENGINE_DOWNLOAD_KEY,
+            Some(model_id) => key.as_str() == format!("model:{model_id}"),
+        };
+        if matches {
+            task.cancel.store(true, Ordering::SeqCst);
+            cancelled.push(key.clone());
+        }
+    }
+    cancelled.sort();
+    cancelled
+}
+
+/// Emits throttled `download-progress` events and keeps the registry snapshot
+/// in sync. Dropping the reporter removes its entry, so finished/cancelled
+/// downloads disappear from [`EngineService::download_state`].
 struct DownloadReporter<'a> {
     app: &'a tauri::AppHandle,
     state: &'a Mutex<DownloadState>,
+    key: String,
     progress: DownloadProgress,
+    cancel: Arc<AtomicBool>,
     last_emit: Instant,
 }
 
 impl<'a> DownloadReporter<'a> {
-    fn new(
+    /// Registers a new download; fails when the same id is already running.
+    fn begin(
         app: &'a tauri::AppHandle,
         state: &'a Mutex<DownloadState>,
         kind: &str,
         id: &str,
         filename: &str,
         total: u64,
-    ) -> Self {
+    ) -> Result<Self, EngineError> {
+        let (key, cancel, progress) = reserve_download(state, kind, id, filename, total)?;
         let mut reporter = Self {
             app,
             state,
-            progress: DownloadProgress {
-                kind: kind.to_string(),
-                id: id.to_string(),
-                filename: filename.to_string(),
-                received: 0,
-                total,
-                percent: 0.0,
-                status: "downloading".to_string(),
-                error: String::new(),
-            },
+            key,
+            progress,
+            cancel,
             last_emit: Instant::now()
                 .checked_sub(PROGRESS_INTERVAL)
                 .unwrap_or_else(Instant::now),
         };
         reporter.emit(true);
-        reporter
+        Ok(reporter)
+    }
+
+    /// `true` when this specific download was cancelled by the user.
+    fn is_cancelled(&self) -> bool {
+        self.cancel.load(Ordering::SeqCst)
     }
 
     fn set_total(&mut self, total: u64) {
@@ -218,30 +326,45 @@ impl<'a> DownloadReporter<'a> {
             self.progress.received = self.progress.total;
         }
         self.emit(true);
-        if let Ok(mut state) = self.state.lock() {
-            state.current = None;
-        }
+        self.finish();
     }
 
     fn fail(&mut self, message: &str) {
         self.progress.status = "failed".to_string();
         self.progress.error = message.to_string();
         self.emit(true);
+        self.finish();
     }
 
     fn cancelled(&mut self) {
         self.progress.status = "cancelled".to_string();
         self.emit(true);
+        self.finish();
+    }
+
+    /// Removes this download from the registry (idempotent).
+    fn finish(&mut self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.tasks.remove(&self.key);
+        }
     }
 
     fn emit(&mut self, force: bool) {
         if let Ok(mut state) = self.state.lock() {
-            state.current = Some(self.progress.clone());
+            if let Some(task) = state.tasks.get_mut(&self.key) {
+                task.progress = self.progress.clone();
+            }
         }
         if force || self.last_emit.elapsed() >= PROGRESS_INTERVAL {
             self.last_emit = Instant::now();
             let _ = self.app.emit(DOWNLOAD_EVENT, &self.progress);
         }
+    }
+}
+
+impl Drop for DownloadReporter<'_> {
+    fn drop(&mut self) {
+        self.finish();
     }
 }
 
@@ -263,9 +386,8 @@ pub struct EngineService {
     /// True after the user clicked "启动" and until they click "停止". While it
     /// is false a request never starts the local server on its own.
     local_desired: AtomicBool,
+    /// Registry of concurrent downloads (engine + one per model id).
     download: Mutex<DownloadState>,
-    /// Serializes downloads (only one at a time, per the UI contract).
-    download_lock: tokio::sync::Mutex<()>,
 }
 
 /// Which model role a request needs. Hy-MT2 is translation-specialised while
@@ -292,7 +414,6 @@ impl EngineService {
             local: llama::LocalServer::new(),
             local_desired: AtomicBool::new(false),
             download: Mutex::new(DownloadState::default()),
-            download_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -434,19 +555,30 @@ impl EngineService {
         }
         let truncated = prompts::truncate_chars(cleaned, settings.picker.max_chars as usize);
         let target = prompts::resolve_target_lang(target_lang, &truncated);
-        let (system, user) =
-            prompts::translate_messages(&truncated, &target, &settings.picker.prompts.translate);
+        // A single English word gets a dictionary entry instead of a plain
+        // translation; the target language is irrelevant in that mode.
+        let dictionary = prompts::is_single_word(&truncated);
+        let (system, user) = prompts::translate_or_dictionary_messages(
+            &truncated,
+            &target,
+            &settings.picker.prompts.translate,
+        );
         let messages = vec![
             json!({"role": "system", "content": system}),
             json!({"role": "user", "content": user}),
         ];
         let config = self.chat_config(&settings, LocalRole::Translate).await?;
         self.logger.info(&format!(
-            "translate stream start: provider={} model={} chars={} target={}",
+            "translate stream start: provider={} model={} chars={} target={} mode={}",
             if config.local { "local" } else { "online" },
             config.model,
             truncated.chars().count(),
-            target
+            target,
+            if dictionary {
+                "dictionary"
+            } else {
+                "translate"
+            }
         ));
         openai::stream_chat(&self.http, &config, messages, config.header_timeout()).await
     }
@@ -556,7 +688,10 @@ impl EngineService {
             "explain" | "解释" => settings.picker.prompts.explain.as_str(),
             _ => "",
         };
-        let (system, user) = prompts::assist_messages(action, &truncated, custom_prompt)?;
+        // `explain` on a single English word becomes a dictionary entry;
+        // `summarize` keeps its normal prompt.
+        let (system, user) =
+            prompts::assist_or_dictionary_messages(action, &truncated, custom_prompt)?;
         let messages = vec![
             json!({"role": "system", "content": system}),
             json!({"role": "user", "content": user}),
@@ -567,6 +702,40 @@ impl EngineService {
             action,
             if config.local { "local" } else { "online" },
             truncated.chars().count()
+        ));
+        openai::stream_chat(&self.http, &config, messages, config.header_timeout()).await
+    }
+
+    /// Streams a follow-up question about the original selection and the
+    /// previous AI answer. History is the Q/A exchange shown in the panel's
+    /// follow-up thread; [`prompts::followup_messages`] caps its size.
+    pub async fn followup_stream(
+        &self,
+        text: &str,
+        previous_answer: &str,
+        question: &str,
+        history: &[(String, String)],
+    ) -> Result<BoxStream<'static, Result<String, EngineError>>, EngineError> {
+        let settings = self.settings.get();
+        let question = question.trim();
+        if question.is_empty() {
+            return Err(EngineError::new(
+                "没有可回答的问题。",
+                "请在结果下方的输入框中输入要继续提问的问题后再提交。",
+            ));
+        }
+        let (system, user) = prompts::followup_messages(text, previous_answer, question, history);
+        let user_chars = user.chars().count();
+        let messages = vec![
+            json!({"role": "system", "content": system}),
+            json!({"role": "user", "content": user}),
+        ];
+        let config = self.chat_config(&settings, LocalRole::General).await?;
+        self.logger.info(&format!(
+            "followup stream start: provider={} chars={} history={}",
+            if config.local { "local" } else { "online" },
+            user_chars,
+            history.len()
         ));
         openai::stream_chat(&self.http, &config, messages, config.header_timeout()).await
     }
@@ -821,18 +990,39 @@ impl EngineService {
         models::catalog_entries(&self.paths.models_dir)
     }
 
-    pub fn download_state(&self) -> Option<DownloadProgress> {
+    /// Snapshot of every active download (engine + models), sorted by key.
+    pub fn download_state(&self) -> Vec<DownloadProgress> {
         self.download
             .lock()
-            .map(|state| state.current.clone())
-            .unwrap_or(None)
+            .map(|state| download_list(&state))
+            .unwrap_or_default()
     }
 
-    pub fn cancel_download(&self) {
-        if let Ok(state) = self.download.lock() {
-            state.cancel.store(true, Ordering::SeqCst);
+    /// `true` when the same engine/model download is already registered.
+    pub fn has_download(&self, kind: &str, id: &str) -> bool {
+        let key = download_key(kind, id);
+        self.download
+            .lock()
+            .map(|state| state.tasks.contains_key(&key))
+            .unwrap_or(false)
+    }
+
+    /// Cancels one download or all of them. `None` (or a blank id) cancels every
+    /// active task; `Some("engine")` only the engine, `Some(model_id)` only
+    /// that model. The download loops observe their own token and stop.
+    pub fn cancel_download(&self, id: Option<&str>) {
+        let cancelled = cancel_tasks(&self.download, id);
+        if cancelled.is_empty() {
+            self.logger.info(&format!(
+                "download cancellation requested: no active download (id={:?})",
+                id
+            ));
+        } else {
+            self.logger.info(&format!(
+                "download cancellation requested: {}",
+                cancelled.join(", ")
+            ));
         }
-        self.logger.info("download cancellation requested");
     }
 
     pub fn engine_installed(&self) -> bool {
@@ -850,16 +1040,6 @@ impl EngineService {
                 "请在「设置 → 本地模型」的内置模型列表中选择要下载的模型。",
             )
         })?;
-        let _guard = match self.download_lock.try_lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                return Err(EngineError::new(
-                    "已有下载任务正在进行。",
-                    "请等待当前下载完成，或先点击取消后再试。",
-                ))
-            }
-        };
-        self.reset_cancel();
 
         let final_path = self.paths.models_dir.join(spec.filename);
         if final_path.is_file() {
@@ -869,19 +1049,21 @@ impl EngineService {
         }
 
         let part = models::part_path(&self.paths.cache_dir, spec.filename);
-        let mut reporter = DownloadReporter::new(
+        // Reserves this model id in the registry; a second request for the same
+        // model fails with "该模型正在下载中" while other models stay free.
+        let mut reporter = DownloadReporter::begin(
             &app,
             &self.download,
             "model",
             spec.id,
             spec.filename,
             spec.size_bytes,
-        );
+        )?;
         let mut last_error: Option<EngineError> = None;
         // ModelScope first (mainland-friendly), Hugging Face as fallback.
         let urls = models::download_urls(&spec);
         for (index, url) in urls.iter().enumerate() {
-            if self.cancelled() {
+            if reporter.is_cancelled() {
                 let _ = std::fs::remove_file(&part);
                 reporter.cancelled();
                 return Err(cancelled_error());
@@ -907,7 +1089,7 @@ impl EngineService {
                         error.message, error.hint
                     ));
                     let _ = std::fs::remove_file(&part);
-                    if self.cancelled() {
+                    if reporter.is_cancelled() {
                         reporter.cancelled();
                         return Err(cancelled_error());
                     }
@@ -961,17 +1143,6 @@ impl EngineService {
     }
 
     pub async fn install_engine(&self, app: tauri::AppHandle) -> Result<(), EngineError> {
-        let _guard = match self.download_lock.try_lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                return Err(EngineError::new(
-                    "已有下载任务正在进行。",
-                    "请等待当前下载完成，或先点击取消后再试。",
-                ))
-            }
-        };
-        self.reset_cancel();
-
         let url = std::env::var(ENV_LLAMA_URL)
             .ok()
             .map(|value| value.trim().to_string())
@@ -993,8 +1164,10 @@ impl EngineService {
             .to_string();
 
         let part = models::part_path(&self.paths.cache_dir, &filename);
+        // The engine is one registry entry; a second install while it runs
+        // returns "引擎正在下载中" while model downloads keep working.
         let mut reporter =
-            DownloadReporter::new(&app, &self.download, "engine", "llama.cpp", &filename, 0);
+            DownloadReporter::begin(&app, &self.download, "engine", "", &filename, 0)?;
         self.logger
             .info(&format!("downloading llama.cpp engine from {url}"));
         let attempt = self
@@ -1002,7 +1175,7 @@ impl EngineService {
             .await;
         if let Err(error) = attempt {
             let _ = std::fs::remove_file(&part);
-            if self.cancelled() {
+            if reporter.is_cancelled() {
                 reporter.cancelled();
                 return Err(cancelled_error());
             }
@@ -1019,7 +1192,7 @@ impl EngineService {
                 ),
             ));
         }
-        if self.cancelled() {
+        if reporter.is_cancelled() {
             let _ = std::fs::remove_file(&part);
             reporter.cancelled();
             return Err(cancelled_error());
@@ -1233,19 +1406,6 @@ impl EngineService {
 
     // -- internals ---------------------------------------------------------- //
 
-    fn reset_cancel(&self) {
-        if let Ok(state) = self.download.lock() {
-            state.cancel.store(false, Ordering::SeqCst);
-        }
-    }
-
-    fn cancelled(&self) -> bool {
-        self.download
-            .lock()
-            .map(|state| state.cancel.load(Ordering::SeqCst))
-            .unwrap_or(false)
-    }
-
     fn model_info_for(&self, path: &Path) -> ModelInfo {
         let file = path
             .file_name()
@@ -1308,7 +1468,7 @@ impl EngineService {
         })?;
         let mut body = response.bytes_stream();
         loop {
-            if self.cancelled() {
+            if reporter.is_cancelled() {
                 drop(file);
                 let _ = std::fs::remove_file(part);
                 return Err(cancelled_error());
@@ -1742,6 +1902,32 @@ mod tests {
     }
 
     #[test]
+    fn followup_requires_a_question() {
+        let env = test_env();
+        let error = block_on(env.service.followup_stream("text", "answer", "   ", &[]))
+            .err()
+            .expect("expected engine error");
+        assert!(error.message.contains("问题"), "message: {}", error.message);
+        assert!(!error.hint.is_empty());
+    }
+
+    #[test]
+    fn followup_online_requires_configuration() {
+        let env = test_env();
+        env.store
+            .update_json(json!({"provider": {"online": {"baseUrl": ""}}}))
+            .unwrap();
+        let history = vec![("first?".to_string(), "first answer".to_string())];
+        let error = block_on(
+            env.service
+                .followup_stream("text", "answer", "为什么？", &history),
+        )
+        .err()
+        .expect("expected engine error");
+        assert!(error.message.contains("配置"), "message: {}", error.message);
+    }
+
+    #[test]
     fn custom_skill_must_exist_and_be_enabled() {
         let env = test_env();
         let error = block_on(
@@ -1927,11 +2113,123 @@ mod tests {
     }
 
     #[test]
-    fn download_state_is_empty_initially() {
+    fn downloads_are_empty_initially_and_cancel_is_a_noop() {
         let env = test_env();
-        assert!(env.service.download_state().is_none());
-        env.service.cancel_download();
-        assert!(env.service.download_state().is_none());
+        assert!(env.service.download_state().is_empty());
+        assert!(!env.service.has_download("engine", ""));
+        env.service.cancel_download(None);
+        assert!(env.service.download_state().is_empty());
+    }
+
+    #[test]
+    fn download_keys_follow_the_registry_contract() {
+        assert_eq!(download_key("engine", ""), "engine");
+        // The engine id is always the empty string in the UI contract.
+        assert_eq!(download_key("engine", "llama.cpp"), "engine");
+        assert_eq!(download_key("model", "hy-mt2-1.8b"), "model:hy-mt2-1.8b");
+    }
+
+    #[test]
+    fn concurrent_downloads_are_tracked_independently() {
+        let state = Mutex::new(DownloadState::default());
+        reserve_download(&state, "engine", "", "llama.zip", 0).unwrap();
+        reserve_download(&state, "model", "hy-mt2-1.8b", "a.gguf", 10).unwrap();
+        reserve_download(&state, "model", "qwen2.5-3b", "b.gguf", 20).unwrap();
+
+        let guard = state.lock().unwrap();
+        let downloads = download_list(&guard);
+        assert_eq!(downloads.len(), 3);
+        // Stable order: engine first, then models sorted by id.
+        assert_eq!(downloads[0].kind, "engine");
+        assert_eq!(downloads[0].id, "");
+        assert_eq!(downloads[1].id, "hy-mt2-1.8b");
+        assert_eq!(downloads[1].status, "downloading");
+        assert_eq!(downloads[1].total, 10);
+        assert_eq!(downloads[2].id, "qwen2.5-3b");
+        assert_eq!(downloads[2].total, 20);
+    }
+
+    #[test]
+    fn duplicate_downloads_of_the_same_id_are_rejected() {
+        let state = Mutex::new(DownloadState::default());
+        reserve_download(&state, "model", "hy-mt2-1.8b", "a.gguf", 1).unwrap();
+        let error = reserve_download(&state, "model", "hy-mt2-1.8b", "a.gguf", 1).unwrap_err();
+        assert!(
+            error.message.contains("该模型正在下载中"),
+            "message: {}",
+            error.message
+        );
+        assert!(!error.hint.is_empty());
+
+        // Different model ids and the engine may run concurrently.
+        reserve_download(&state, "model", "qwen2.5-3b", "b.gguf", 1).unwrap();
+        reserve_download(&state, "engine", "", "engine.zip", 0).unwrap();
+        let error = reserve_download(&state, "engine", "", "engine.zip", 0).unwrap_err();
+        assert!(
+            error.message.contains("引擎正在下载中"),
+            "message: {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn cancel_by_id_only_stops_the_selected_download() {
+        let state = Mutex::new(DownloadState::default());
+        let (_, engine_cancel, _) =
+            reserve_download(&state, "engine", "", "engine.zip", 0).unwrap();
+        let (_, model_cancel, _) =
+            reserve_download(&state, "model", "hy-mt2-1.8b", "a.gguf", 1).unwrap();
+        let (_, other_cancel, _) =
+            reserve_download(&state, "model", "qwen2.5-3b", "b.gguf", 1).unwrap();
+
+        assert_eq!(
+            cancel_tasks(&state, Some("hy-mt2-1.8b")),
+            vec!["model:hy-mt2-1.8b".to_string()]
+        );
+        assert!(!engine_cancel.load(Ordering::SeqCst));
+        assert!(model_cancel.load(Ordering::SeqCst));
+        assert!(!other_cancel.load(Ordering::SeqCst));
+
+        assert_eq!(
+            cancel_tasks(&state, Some("engine")),
+            vec!["engine".to_string()]
+        );
+        assert!(engine_cancel.load(Ordering::SeqCst));
+
+        // Unknown ids cancel nothing.
+        assert!(cancel_tasks(&state, Some("missing-model")).is_empty());
+        assert!(!other_cancel.load(Ordering::SeqCst));
+
+        // No id (or a blank id) cancels every registered task.
+        assert_eq!(cancel_tasks(&state, Some("   ")).len(), 3);
+        assert!(other_cancel.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn finished_downloads_leave_the_registry() {
+        let state = Mutex::new(DownloadState::default());
+        reserve_download(&state, "model", "hy-mt2-1.8b", "a.gguf", 1).unwrap();
+        assert_eq!(download_list(&state.lock().unwrap()).len(), 1);
+        state.lock().unwrap().tasks.remove("model:hy-mt2-1.8b");
+        assert!(download_list(&state.lock().unwrap()).is_empty());
+    }
+
+    #[test]
+    fn engine_service_exposes_the_download_registry() {
+        let env = test_env();
+        assert!(env.service.download_state().is_empty());
+        let (_, cancel, _) =
+            reserve_download(&env.service.download, "model", "hy-mt2-1.8b", "a.gguf", 10).unwrap();
+        assert!(env.service.has_download("model", "hy-mt2-1.8b"));
+        assert!(!env.service.has_download("model", "other"));
+        assert_eq!(env.service.download_state().len(), 1);
+
+        env.service.cancel_download(Some("hy-mt2-1.8b"));
+        assert!(cancel.load(Ordering::SeqCst));
+        // The entry stays until its reporter finishes/drops.
+        assert_eq!(env.service.download_state().len(), 1);
+        env.service.download.lock().unwrap().tasks.clear();
+        assert!(env.service.download_state().is_empty());
     }
 
     #[test]

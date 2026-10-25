@@ -656,11 +656,91 @@
     return row;
   }
 
+  /* ---- Downloads (concurrent: engine + several models) ----------------- */
+
+  function currentDownloads() {
+    var result = [];
+    if (state && Array.isArray(state.downloads)) {
+      state.downloads.forEach(function (item) {
+        if (item && typeof item === "object") {
+          result.push(item);
+        }
+      });
+    }
+    /* Legacy single-task payload fallback for older backends. */
+    if (!result.length && state && state.download) {
+      result.push(state.download);
+    }
+    return result;
+  }
+
+  function isActiveDownload(progress) {
+    return (
+      !!progress &&
+      (progress.status === "downloading" || progress.status === "verifying")
+    );
+  }
+
+  /* Find the active task for `kind` ("engine"/"model") and optional id. */
+  function activeDownload(kind, id) {
+    var downloads = currentDownloads();
+    for (var index = 0; index < downloads.length; index += 1) {
+      var item = downloads[index];
+      if (!item || item.kind !== kind || !isActiveDownload(item)) {
+        continue;
+      }
+      if (id !== undefined && String(item.id || "") !== String(id)) {
+        continue;
+      }
+      return item;
+    }
+    return null;
+  }
+
+  function activeModelDownloadIds() {
+    var ids = [];
+    currentDownloads().forEach(function (item) {
+      if (item && item.kind === "model" && isActiveDownload(item)) {
+        ids.push(String(item.id || ""));
+      }
+    });
+    return ids;
+  }
+
+  function mergeProgressIntoDownloads(progress) {
+    if (!state) {
+      return;
+    }
+    var kind = String(progress.kind || "model");
+    var key = kind + ":" + String(progress.id || "");
+    var downloads = Array.isArray(state.downloads) ? state.downloads.slice() : [];
+    var next = [];
+    var replaced = false;
+    downloads.forEach(function (item) {
+      if (!item) {
+        return;
+      }
+      var itemKey =
+        String(item.kind || "model") + ":" + String(item.id || "");
+      if (itemKey !== key) {
+        next.push(item);
+        return;
+      }
+      replaced = true;
+      if (isActiveDownload(progress)) {
+        next.push(progress);
+      }
+    });
+    if (!replaced && isActiveDownload(progress)) {
+      next.push(progress);
+    }
+    state.downloads = next;
+    state.download = null;
+  }
+
   function renderLocal() {
     var engine = state.engine || {};
-    var download = state.download;
-    var engineDownload =
-      download && download.kind === "engine" ? download : null;
+    var engineDownload = activeDownload("engine");
     var engineAvailable = engine.engineAvailable === true;
 
     var dot = byId("engine-dot");
@@ -785,13 +865,10 @@
 
     var hintNode = byId("local-state-hint");
     if (hintNode) {
-      var modelName = String(engine.localModelName || "").trim();
       if (localState === "ready") {
-        hintNode.textContent = modelName ? "当前模型：" + modelName : "模型已加载";
+        hintNode.textContent = "模型已加载";
       } else if (localState === "starting") {
-        hintNode.textContent = modelName
-          ? "正在加载模型：" + modelName
-          : "正在加载模型…";
+        hintNode.textContent = "正在加载模型…";
       } else {
         hintNode.textContent =
           "本地模型未启动时翻译/总结不会自动启动，请点击「启动」";
@@ -817,9 +894,6 @@
     var main = el("div", "catalog-main");
     var name = el("div", "catalog-name");
     name.appendChild(el("span", null, entry.name || entry.id));
-    if (entry.recommended) {
-      name.appendChild(el("span", "meta-pill is-accent", "推荐"));
-    }
     main.appendChild(name);
     if (entry.description) {
       main.appendChild(el("div", "catalog-desc", entry.description));
@@ -887,13 +961,7 @@
       return;
     }
     var catalog = state.catalog || [];
-    var download = state.download;
-    var activeId =
-      download &&
-      download.kind === "model" &&
-      (download.status === "downloading" || download.status === "verifying")
-        ? download.id
-        : "";
+    var activeIds = activeModelDownloadIds();
     var signature =
       catalog
         .map(function (entry) {
@@ -901,7 +969,7 @@
         })
         .join("|") +
       "#" +
-      activeId;
+      activeIds.join(",");
     if (signature !== list.getAttribute("data-signature")) {
       list.setAttribute("data-signature", signature);
       list.innerHTML = "";
@@ -909,25 +977,21 @@
         list.appendChild(catalogRow(entry));
       });
     }
-    updateCatalogProgress(download);
+    updateCatalogProgress();
   }
 
-  function updateCatalogProgress(progress) {
+  function updateCatalogProgress() {
     each(byId("catalog-list").querySelectorAll(".catalog-item"), function (row) {
       var id = row.getAttribute("data-catalog-id");
       var installed = row.getAttribute("data-installed") === "1";
+      var progress = activeDownload("model", id);
       var progressWrap = row.querySelector(".catalog-progress");
       var fill = row.querySelector(".catalog-progress .progress-fill");
       var text = row.querySelector(".catalog-progress-text");
       var downloadButton = row.querySelector("[data-catalog-download]");
       var cancelButton = row.querySelector("[data-catalog-cancel]");
       var installedBadge = row.querySelector("[data-catalog-installed]");
-      var active =
-        !!progress &&
-        progress.kind === "model" &&
-        progress.id === id &&
-        (progress.status === "downloading" || progress.status === "verifying");
-      if (active) {
+      if (progress) {
         var percent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
         if (progressWrap) {
           progressWrap.hidden = false;
@@ -2478,15 +2542,17 @@
     });
   }
 
-  function cancelDownload() {
-    API.cancelDownload().then(function () {
+  /* Cancel one task (model id or "engine"); empty id cancels everything. */
+  function cancelDownload(id) {
+    var target = id === undefined || id === null ? "" : String(id);
+    API.cancelDownload(target).then(function () {
       refreshState();
     });
   }
 
   function downloadCatalogModel(id, button) {
-    if (state && state.download) {
-      toast("当前已有下载任务在进行，请等待完成或取消", "info");
+    if (activeDownload("model", id)) {
+      toast("该模型已在下载中", "info");
       return;
     }
     button.disabled = true;
@@ -2730,7 +2796,9 @@
     byId("test-connection").addEventListener("click", testConnection);
 
     byId("download-engine").addEventListener("click", downloadEngine);
-    byId("cancel-engine-download").addEventListener("click", cancelDownload);
+    byId("cancel-engine-download").addEventListener("click", function () {
+      cancelDownload("engine");
+    });
     byId("toggle-catalog").addEventListener("click", function () {
       catalogOpen = !catalogOpen;
       renderCatalog();
@@ -2751,7 +2819,7 @@
       var cancelButton =
         event.target.closest && event.target.closest("[data-catalog-cancel]");
       if (cancelButton) {
-        cancelDownload();
+        cancelDownload(cancelButton.getAttribute("data-catalog-cancel"));
       }
     });
 
@@ -2960,35 +3028,23 @@
   /* ---- Download progress ---------------------------------------------- */
 
   function handleDownloadProgress(progress) {
-    if (!progress) {
+    if (!progress || typeof progress !== "object") {
       return;
     }
-    var active =
-      progress.status === "downloading" || progress.status === "verifying";
-    if (state) {
-      state.download = active ? progress : null;
-    }
-    if (progress.kind === "engine") {
-      renderEngineProgress(active ? progress : null);
-      setHidden(byId("download-engine"), active);
-      setHidden(byId("cancel-engine-download"), !active);
-      var title = byId("engine-title");
-      if (title && active) {
-        title.textContent = "正在下载 llama.cpp 引擎…";
-        byId("engine-sub").textContent = progress.filename || "";
-      }
-      if (!active && progress.status === "failed") {
-        showInlineError(
-          byId("local-error"),
-          progress.error || "引擎下载失败"
-        );
-      }
+    var active = isActiveDownload(progress);
+    var kind = String(progress.kind || "model");
+    mergeProgressIntoDownloads(progress);
+    if (kind === "engine") {
+      /* Re-render the engine header/progress from the downloads array. */
+      renderLocal();
     } else {
       renderCatalog();
     }
     if (!active) {
       if (progress.status === "failed") {
-        if (progress.kind === "model") {
+        if (kind === "engine") {
+          showInlineError(byId("local-error"), progress.error || "引擎下载失败");
+        } else {
           toast("下载失败：" + (progress.error || "未知错误"), "error");
         }
       }

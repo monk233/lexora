@@ -43,6 +43,16 @@
   var COMPACT_MAX_TOOLBAR_WIDTH = 420;
   var TOOLBAR_BUTTON_GAP = 2;
 
+  /* Result panel: remembered manual size + drag-to-resize limits (the Rust
+   * side additionally clamps the final window to 780x620). */
+  var PANEL_SIZE_KEY = "lexora.panelSize";
+  var PANEL_MIN_WIDTH = 360;
+  var PANEL_MIN_HEIGHT = 240;
+  var PANEL_MAX_WIDTH = 780;
+  var PANEL_MAX_HEIGHT = 620;
+  var DEFAULT_PANEL_WIDTH = 520;
+  var DEFAULT_PANEL_HEIGHT = 360;
+
   /* Label fallback only: LP.SKILL_MAP is the primary source for built-in
    * labels/icons (see builtinSkillMeta). */
   var SKILL_LABELS = {
@@ -187,6 +197,14 @@
     panelRetry: null,
     panelSpeakText: "",
     panelCopyText: "",
+    /* Manual panel size: once the user drags the resize grip the window stops
+     * following the content size (double-clicking the grip restores that). */
+    panelAutoResize: true,
+    panelManualSize: null,
+    /* Follow-up conversation of the current AI panel. */
+    followupHistory: [],
+    followupAnswer: "",
+    followupBusy: false,
     speaking: false,
     translating: false,
   };
@@ -210,6 +228,11 @@
   var panelSpeak = document.getElementById("panel-speak");
   var panelCopy = document.getElementById("panel-copy");
   var panelRetry = document.getElementById("panel-retry");
+  var panelFollowup = document.getElementById("panel-followup");
+  var panelSuggestions = document.getElementById("panel-suggestions");
+  var panelFollowupInput = document.getElementById("panel-followup-input");
+  var panelFollowupSend = document.getElementById("panel-followup-send");
+  var panelResizeGrip = document.getElementById("panel-resize-grip");
   var menu = document.getElementById("menu");
   var toastEl = document.getElementById("toast");
 
@@ -290,7 +313,7 @@
 
   function resizePanelForContent() {
     window.requestAnimationFrame(function () {
-      if (!state.panelOpen) {
+      if (!state.panelOpen || !state.panelAutoResize) {
         return;
       }
       var flat = String(panelBody.innerText || "").replace(/\s+/g, "");
@@ -487,6 +510,188 @@
     panelDrag.lastX = x;
     panelDrag.lastY = y;
     queuePanelDrag(dx, dy);
+  }
+
+  /* ---- Result panel size (grip drag + remembered size) ----------------- */
+
+  function clampPanelSize(width, height) {
+    var w = Math.round(Number(width));
+    var h = Math.round(Number(height));
+    if (!isFinite(w)) {
+      w = DEFAULT_PANEL_WIDTH;
+    }
+    if (!isFinite(h)) {
+      h = DEFAULT_PANEL_HEIGHT;
+    }
+    return {
+      width: Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, w)),
+      height: Math.min(PANEL_MAX_HEIGHT, Math.max(PANEL_MIN_HEIGHT, h)),
+    };
+  }
+
+  /* localStorage may be unavailable or hold a broken/out-of-range value; none
+   * of that may prevent the panel from opening. */
+  function loadPanelSize() {
+    try {
+      var raw = window.localStorage.getItem(PANEL_SIZE_KEY);
+      if (!raw) {
+        return null;
+      }
+      var parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object") {
+        return null;
+      }
+      var width = Number(parsed.width);
+      var height = Number(parsed.height);
+      if (!isFinite(width) || !isFinite(height) || width <= 0 || height <= 0) {
+        return null;
+      }
+      return clampPanelSize(width, height);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function savePanelSize(size) {
+    try {
+      window.localStorage.setItem(
+        PANEL_SIZE_KEY,
+        JSON.stringify({ width: size.width, height: size.height })
+      );
+    } catch (error) {
+      /* persistence is a convenience; ignore quota/security errors */
+    }
+  }
+
+  function clearPanelSize() {
+    try {
+      window.localStorage.removeItem(PANEL_SIZE_KEY);
+    } catch (error) {
+      /* ignore */
+    }
+  }
+
+  var panelResize = {
+    active: false,
+    applied: false,
+    startX: 0,
+    startY: 0,
+    startWidth: 0,
+    startHeight: 0,
+    targetWidth: 0,
+    targetHeight: 0,
+    size: null,
+    frame: 0,
+  };
+
+  function flushPanelResize() {
+    panelResize.frame = 0;
+    if (!panelResize.active) {
+      return;
+    }
+    var size = clampPanelSize(panelResize.targetWidth, panelResize.targetHeight);
+    if (
+      panelResize.size &&
+      size.width === panelResize.size.width &&
+      size.height === panelResize.size.height
+    ) {
+      return;
+    }
+    panelResize.size = size;
+    panelResize.applied = true;
+    // Manual size wins over content-based sizing until a double-click resets it.
+    state.panelAutoResize = false;
+    state.panelManualSize = { width: size.width, height: size.height };
+    if (API && typeof API.resize === "function") {
+      API.resize(size.width, size.height);
+    }
+  }
+
+  function queuePanelResize(width, height) {
+    panelResize.targetWidth = width;
+    panelResize.targetHeight = height;
+    if (!panelResize.frame) {
+      panelResize.frame = window.requestAnimationFrame(flushPanelResize);
+    }
+  }
+
+  function beginPanelResize(event) {
+    if (!state.panelOpen || event.button !== 0) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    panelResize.active = true;
+    panelResize.applied = false;
+    panelResize.startX = Number(event.screenX) || 0;
+    panelResize.startY = Number(event.screenY) || 0;
+    panelResize.startWidth = Math.max(window.innerWidth, PANEL_MIN_WIDTH);
+    panelResize.startHeight = Math.max(window.innerHeight, PANEL_MIN_HEIGHT);
+    panelResize.targetWidth = panelResize.startWidth;
+    panelResize.targetHeight = panelResize.startHeight;
+    panelResize.size = {
+      width: panelResize.startWidth,
+      height: panelResize.startHeight,
+    };
+    document.body.classList.add("is-resizing-panel");
+    panel.classList.add("is-resizing-panel");
+  }
+
+  function handlePanelResizeMove(event) {
+    if (!panelResize.active) {
+      return;
+    }
+    if (!state.panelOpen || event.buttons === 0) {
+      endPanelResize();
+      return;
+    }
+    var x = Number(event.screenX) || 0;
+    var y = Number(event.screenY) || 0;
+    queuePanelResize(
+      panelResize.startWidth + (x - panelResize.startX),
+      panelResize.startHeight + (y - panelResize.startY)
+    );
+  }
+
+  function endPanelResize() {
+    if (!panelResize.active) {
+      return;
+    }
+    flushPanelResize();
+    panelResize.active = false;
+    if (panelResize.frame) {
+      window.cancelAnimationFrame(panelResize.frame);
+      panelResize.frame = 0;
+    }
+    if (panelResize.applied && panelResize.size) {
+      savePanelSize(panelResize.size);
+    }
+    document.body.classList.remove("is-resizing-panel");
+    panel.classList.remove("is-resizing-panel");
+  }
+
+  /* Double-clicking the grip forgets the manual size and follows the content
+   * again (same as before the user ever dragged it). */
+  function resetPanelSize(event) {
+    if (event) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+    panelResize.active = false;
+    panelResize.applied = false;
+    if (panelResize.frame) {
+      window.cancelAnimationFrame(panelResize.frame);
+      panelResize.frame = 0;
+    }
+    state.panelAutoResize = true;
+    state.panelManualSize = null;
+    clearPanelSize();
+    document.body.classList.remove("is-resizing-panel");
+    panel.classList.remove("is-resizing-panel");
+    if (state.panelOpen) {
+      API.resize(DEFAULT_PANEL_WIDTH, DEFAULT_PANEL_HEIGHT);
+      resizePanelForContent();
+    }
   }
 
   /* ---- Toolbar --------------------------------------------------------- */
@@ -782,6 +987,7 @@
     closeMenu();
     abortActiveRequest();
     stopSpeech();
+    resetFollowup();
     state.panelOpen = true;
     state.panelRetry = null;
     state.panelSpeakText = "";
@@ -792,8 +998,14 @@
     pickerEl.classList.add("panel-mode");
     syncPanelPin();
     syncPanelFoot();
-    API.resize(520, 360);
-    resizePanelForContent();
+    if (state.panelManualSize) {
+      // A manually resized panel keeps its remembered size instead of
+      // re-adapting to the content.
+      API.resize(state.panelManualSize.width, state.panelManualSize.height);
+    } else {
+      API.resize(DEFAULT_PANEL_WIDTH, DEFAULT_PANEL_HEIGHT);
+      resizePanelForContent();
+    }
   }
 
   function closePanel() {
@@ -805,6 +1017,7 @@
     }
     abortActiveRequest();
     stopSpeech();
+    resetFollowup();
     panel.hidden = true;
     state.panelOpen = false;
     state.panelRetry = null;
@@ -929,6 +1142,229 @@
     resizePanelForContent();
   }
 
+  /* ---- Follow-up conversation ----------------------------------------- */
+
+  /* Follow-up context belongs to the current panel: closing the panel or
+   * switching skills resets it so a new answer never inherits old history. */
+  function resetFollowup() {
+    state.followupHistory = [];
+    state.followupAnswer = "";
+    state.followupBusy = false;
+    if (panelFollowupInput) {
+      panelFollowupInput.value = "";
+      panelFollowupInput.disabled = false;
+    }
+    if (panelFollowupSend) {
+      panelFollowupSend.disabled = false;
+    }
+    if (panelFollowup) {
+      panelFollowup.hidden = true;
+      panelFollowup.classList.remove("is-busy");
+    }
+    setFollowupSuggestions([]);
+  }
+
+  function singleEnglishWord(text) {
+    var word = String(text == null ? "" : text).trim();
+    return /^[A-Za-z][A-Za-z'-]{0,39}$/.test(word) ? word : "";
+  }
+
+  function wordSuggestions(word) {
+    return [
+      "用「" + word + "」造几个句子。",
+      "「" + word + "」和近义词有什么区别？",
+      "「" + word + "」有哪些常见搭配？",
+    ];
+  }
+
+  function setFollowupSuggestions(list) {
+    if (!panelSuggestions) {
+      return;
+    }
+    panelSuggestions.innerHTML = "";
+    if (!list || !list.length) {
+      panelSuggestions.hidden = true;
+      return;
+    }
+    list.forEach(function (text) {
+      var chip = el("button", "panel-suggestion", text);
+      chip.type = "button";
+      chip.addEventListener("click", function () {
+        submitFollowup(text);
+      });
+      panelSuggestions.appendChild(chip);
+    });
+    panelSuggestions.hidden = false;
+  }
+
+  /* Called when an AI panel (translate/summarize/explain/polish/custom) renders
+   * its first successful answer. Error panels and non-AI skills never call it. */
+  function enableFollowup(request) {
+    var answer = String(request.raw || "").trim();
+    if (!answer) {
+      return;
+    }
+    state.followupAnswer = request.raw;
+    state.followupBusy = false;
+    panelFollowup.hidden = false;
+    panelFollowup.classList.remove("is-busy");
+    panelFollowupInput.disabled = false;
+    panelFollowupSend.disabled = false;
+    var word = "";
+    if (request.kind === "translate" || (request.kind === "assist" && request.action === "explain")) {
+      word = singleEnglishWord(state.text);
+    }
+    setFollowupSuggestions(word ? wordSuggestions(word) : []);
+  }
+
+  function setFollowupBusy(busy) {
+    state.followupBusy = !!busy;
+    if (!panelFollowup) {
+      return;
+    }
+    panelFollowup.classList.toggle("is-busy", state.followupBusy);
+    panelFollowupInput.disabled = state.followupBusy;
+    panelFollowupSend.disabled = state.followupBusy;
+    if (!state.followupBusy && state.panelOpen) {
+      panelFollowupInput.focus();
+    }
+  }
+
+  function appendFollowupBlock(question) {
+    var block = el("div", "followup-block");
+    block.appendChild(el("p", "followup-question", "追问：" + question));
+    var loadingRow = loadingNode("正在回答…");
+    block.appendChild(loadingRow);
+    var answer = el("div", "result-text markdown followup-answer");
+    block.appendChild(answer);
+    panelBody.appendChild(block);
+    panelBody.scrollTop = panelBody.scrollHeight;
+    resizePanelForContent();
+    return { block: block, loading: loadingRow, answer: answer };
+  }
+
+  function submitFollowup(questionOverride) {
+    if (!state.panelOpen || !panelFollowup || panelFollowup.hidden) {
+      return;
+    }
+    if (state.followupBusy || (activeRequest && activeRequest.active)) {
+      return;
+    }
+    var question = String(questionOverride == null ? panelFollowupInput.value : questionOverride)
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!question) {
+      return;
+    }
+    if (!API || typeof API.followup !== "function") {
+      showToast("当前版本不支持继续提问");
+      return;
+    }
+    var previousAnswer = state.followupAnswer;
+    var history = state.followupHistory.slice();
+    var block = appendFollowupBlock(question);
+    panelFollowupInput.value = "";
+    setFollowupBusy(true);
+
+    var request = {
+      id: makeRequestId(),
+      kind: "followup",
+      question: question,
+      block: block.block,
+      target: block.block,
+      result: block.answer,
+      raw: "",
+      renderPending: false,
+      loading: block.loading,
+      active: true,
+      failed: false,
+      sawContent: false,
+    };
+    activeRequest = request;
+    state.translating = true;
+    API.followup(request.id, state.text, previousAnswer, question, history).then(
+      function (response) {
+        if (!request.active) {
+          return;
+        }
+        if (!response || !response.ok) {
+          failFollowup(
+            request,
+            (response && response.error) || "回答失败",
+            (response && response.hint) || ""
+          );
+        }
+      },
+      function (error) {
+        failFollowup(request, String(error));
+      }
+    );
+  }
+
+  function finishFollowup(request) {
+    if (!request || !request.active) {
+      return;
+    }
+    request.active = false;
+    if (activeRequest === request) {
+      activeRequest = null;
+    }
+    state.translating = false;
+    removeLoadingRow(request);
+    var answer = String(request.raw || "").trim();
+    if (!answer) {
+      failFollowup(request, "没有返回内容，请重试。");
+      return;
+    }
+    renderMarkdownInto(request.result, request.raw);
+    state.followupAnswer = request.raw;
+    state.followupHistory.push({ question: request.question, answer: request.raw });
+    setFollowupBusy(false);
+    setPanelSpeakText(plainFromMarkdown(request.raw));
+    setPanelCopyText(plainFromMarkdown(request.raw));
+    panelBody.scrollTop = panelBody.scrollHeight;
+    resizePanelForContent();
+  }
+
+  /* A follow-up failure stays inside its block: the initial result and the
+   * rest of the conversation are never replaced. */
+  function failFollowup(request, message, hint) {
+    if (!request || request.failed) {
+      return;
+    }
+    request.failed = true;
+    request.active = false;
+    if (activeRequest === request) {
+      activeRequest = null;
+    }
+    state.translating = false;
+    removeLoadingRow(request);
+    var text = friendlyError(message || "回答失败");
+    if (String(request.raw || "").trim()) {
+      renderMarkdownInto(request.result, request.raw);
+    } else if (request.result && request.result.parentNode) {
+      request.result.parentNode.removeChild(request.result);
+    }
+    var error = el("div", "followup-error");
+    error.appendChild(el("p", "followup-error-text", text));
+    if (hint) {
+      error.appendChild(el("p", "followup-error-hint", hint));
+    }
+    var retryButton = el("button", "followup-retry", "重试");
+    retryButton.type = "button";
+    retryButton.addEventListener("click", function () {
+      if (request.block && request.block.parentNode) {
+        request.block.parentNode.removeChild(request.block);
+      }
+      submitFollowup(request.question);
+    });
+    error.appendChild(retryButton);
+    request.block.appendChild(error);
+    setFollowupBusy(false);
+    panelBody.scrollTop = panelBody.scrollHeight;
+    resizePanelForContent();
+  }
+
   /* ---- Translation ----------------------------------------------------- */
 
   function abortActiveRequest() {
@@ -1012,6 +1448,7 @@
     renderMarkdownInto(request.result, request.raw);
     setPanelSpeakText(plainFromMarkdown(request.raw));
     setPanelCopyText(plainFromMarkdown(request.raw));
+    enableFollowup(request);
     resizePanelForContent();
   }
 
@@ -1091,11 +1528,19 @@
       return;
     }
     if (event.type === "done") {
-      finishTranslation(request);
+      if (request.kind === "followup") {
+        finishFollowup(request);
+      } else {
+        finishTranslation(request);
+      }
       return;
     }
     if (event.type === "error") {
-      failTranslation(request, event.message || requestFailureTitle(request));
+      if (request.kind === "followup") {
+        failFollowup(request, event.message || "回答失败");
+      } else {
+        failTranslation(request, event.message || requestFailureTitle(request));
+      }
     }
   }
 
@@ -1608,6 +2053,20 @@
   document.addEventListener("mousemove", handlePanelDragMove);
   document.addEventListener("mouseup", endPanelDrag);
   window.addEventListener("blur", endPanelDrag);
+  panelResizeGrip.addEventListener("mousedown", beginPanelResize);
+  panelResizeGrip.addEventListener("dblclick", resetPanelSize);
+  document.addEventListener("mousemove", handlePanelResizeMove);
+  document.addEventListener("mouseup", endPanelResize);
+  window.addEventListener("blur", endPanelResize);
+  panelFollowupSend.addEventListener("click", function () {
+    submitFollowup();
+  });
+  panelFollowupInput.addEventListener("keydown", function (event) {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      submitFollowup();
+    }
+  });
   panelPin.addEventListener("click", togglePanelPinned);
   document.getElementById("panel-close").addEventListener("click", closePanel);
   panelSpeak.innerHTML = skillIconSvg(builtinSkillMeta("read").icon) + "<span>朗读</span>";
@@ -1703,6 +2162,8 @@
 
   /* ---- Boot ------------------------------------------------------------ */
 
+  state.panelManualSize = loadPanelSize();
+  state.panelAutoResize = !state.panelManualSize;
   syncPanelPin();
   syncPanelFoot();
   populateTargetLanguages();

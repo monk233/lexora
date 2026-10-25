@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_clipboard_manager::ClipboardExt;
@@ -52,7 +52,8 @@ pub struct StatePayload {
     pub engine: EngineStatus,
     pub models: Vec<ModelInfo>,
     pub catalog: Vec<CatalogEntry>,
-    pub download: Option<DownloadProgress>,
+    /// Every download currently in flight (engine + one entry per model id).
+    pub downloads: Vec<DownloadProgress>,
     pub picker: PickerRuntime,
     pub login_item: LoginItemState,
 }
@@ -103,7 +104,7 @@ pub fn build_state(app: &AppHandle, state: &AppState) -> StatePayload {
         engine: state.engine.status(),
         models: state.engine.installed_models(),
         catalog: state.engine.catalog(),
-        download: state.engine.download_state(),
+        downloads: state.engine.download_state(),
         picker: PickerRuntime {
             visible: crate::windows::is_picker_visible(app),
             pinned: state.selection.is_panel_pinned(),
@@ -138,14 +139,6 @@ fn notify_changed(app: &AppHandle) {
         crate::tray::refresh(app);
         broadcast_state(app, &state);
     }
-}
-
-fn active_download(state: &AppState) -> bool {
-    state
-        .engine
-        .download_state()
-        .map(|progress| progress.status == "downloading" || progress.status == "verifying")
-        .unwrap_or(false)
 }
 
 fn normalize_program_name(value: &str) -> String {
@@ -230,8 +223,9 @@ pub fn download_engine(app: AppHandle, state: State<'_, Arc<AppState>>) -> Value
     if state.engine.engine_installed() {
         return json!({ "ok": true, "installed": true });
     }
-    if active_download(&state) {
-        return json!({ "ok": false, "error": "已有下载任务正在进行，请等待完成或取消。" });
+    // The engine has its own download slot; models can download in parallel.
+    if state.engine.has_download("engine", "") {
+        return json!({ "ok": false, "error": "引擎正在下载中，请等待完成或取消。" });
     }
     let engine = state.engine.clone();
     let task_app = app.clone();
@@ -239,6 +233,7 @@ pub fn download_engine(app: AppHandle, state: State<'_, Arc<AppState>>) -> Value
         if let Some(state) = task_app.try_state::<Arc<AppState>>() {
             state.log.info("engine download started");
         }
+        notify_changed(&task_app);
         match engine.install_engine(task_app.clone()).await {
             Ok(()) => {
                 toast(
@@ -272,12 +267,14 @@ pub fn download_model(app: AppHandle, state: State<'_, Arc<AppState>>, id: Strin
     if id.is_empty() {
         return json!({ "ok": false, "error": "缺少模型标识。" });
     }
-    if active_download(&state) {
-        return json!({ "ok": false, "error": "已有下载任务正在进行，请等待完成或取消。" });
+    // Only the same model id is blocked; other models may download in parallel.
+    if state.engine.has_download("model", &id) {
+        return json!({ "ok": false, "error": "该模型正在下载中，请等待完成或取消。" });
     }
     let engine = state.engine.clone();
     let task_app = app.clone();
     tauri::async_runtime::spawn(async move {
+        notify_changed(&task_app);
         match engine.download_model(task_app.clone(), &id).await {
             Ok(model) => {
                 toast(&task_app, "success", format!("模型已安装：{}", model.name));
@@ -301,9 +298,14 @@ pub fn download_model(app: AppHandle, state: State<'_, Arc<AppState>>, id: Strin
     json!({ "ok": true })
 }
 
+/// Cancels one download or all of them: `id` is the model id or `engine`;
+/// omitting it (or sending an empty string) cancels every active download.
 #[tauri::command]
-pub fn cancel_download(state: State<'_, Arc<AppState>>) -> Value {
-    state.engine.cancel_download();
+pub fn cancel_download(state: State<'_, Arc<AppState>>, id: Option<String>) -> Value {
+    let wanted = id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    state.engine.cancel_download(wanted.as_deref());
     json!({ "ok": true })
 }
 
@@ -852,6 +854,99 @@ pub fn picker_assist(
         };
 
         match engine.assist_stream(&action, &text).await {
+            Ok(mut stream) => {
+                while let Some(item) = stream.next().await {
+                    match item {
+                        Ok(chunk) => {
+                            if chunk.is_empty() {
+                                continue;
+                            }
+                            emit(json!({
+                                "requestId": rid.clone(),
+                                "type": "chunk",
+                                "text": chunk,
+                            }));
+                        }
+                        Err(error) => {
+                            emit(json!({
+                                "requestId": rid.clone(),
+                                "type": "error",
+                                "message": error.message,
+                            }));
+                            return;
+                        }
+                    }
+                }
+                emit(json!({
+                    "requestId": rid.clone(),
+                    "type": "done",
+                }));
+            }
+            Err(error) => {
+                emit(json!({
+                    "requestId": rid.clone(),
+                    "type": "error",
+                    "message": error.message,
+                }));
+            }
+        }
+    });
+
+    *lock(&state.translate_task) = Some(TranslateTask { request_id, handle });
+    json!({ "ok": true })
+}
+
+/// One Q/A turn of the picker's follow-up thread (frontend `history` items).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FollowupTurn {
+    pub question: String,
+    pub answer: String,
+}
+
+/// Streams a follow-up question about the original selection and the previous
+/// answer through the same `translate-event` channel as translation; the picker
+/// appends the streamed answer below the previous result.
+#[tauri::command]
+pub fn picker_followup(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    request_id: String,
+    text: String,
+    previous_answer: String,
+    question: String,
+    history: Vec<FollowupTurn>,
+) -> Value {
+    let question = question.trim().to_string();
+    if question.is_empty() {
+        return json!({
+            "ok": false,
+            "error": "没有可回答的问题。",
+            "hint": "请在结果下方的输入框中输入要继续提问的问题后再提交。",
+        });
+    }
+    let text = text.trim().to_string();
+    let previous_answer = previous_answer.trim().to_string();
+    let turns: Vec<(String, String)> = history
+        .into_iter()
+        .map(|turn| (turn.question, turn.answer))
+        .collect();
+
+    // Only one stream at a time: abort the previous request.
+    state.abort_translate();
+
+    let engine = state.engine.clone();
+    let task_app = app.clone();
+    let rid = request_id.clone();
+    let handle = tauri::async_runtime::spawn(async move {
+        let emit = |payload: Value| {
+            let _ = task_app.emit_to(crate::windows::PICKER_LABEL, "translate-event", payload);
+        };
+
+        match engine
+            .followup_stream(&text, &previous_answer, &question, &turns)
+            .await
+        {
             Ok(mut stream) => {
                 while let Some(item) = stream.next().await {
                     match item {

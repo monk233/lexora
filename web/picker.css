@@ -293,6 +293,7 @@ body {
 /* ---- Result panel ------------------------------------------------------ */
 
 .panel {
+  position: relative;
   display: flex;
   flex-direction: column;
   flex: 0 1 auto;
@@ -336,6 +337,45 @@ body.is-dragging-panel * {
 }
 
 .panel.is-dragging-panel {
+  box-shadow: 0 4px 14px -4px rgba(15, 23, 42, 0.24);
+}
+
+/* ---- Result panel resize grip ------------------------------------------ */
+
+.panel-resize-grip {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 16px;
+  height: 16px;
+  z-index: 3;
+  cursor: nwse-resize;
+  opacity: 0.55;
+  border-bottom-right-radius: var(--radius-lg);
+  /* Three diagonal strokes in the bottom-right corner. */
+  background-image: linear-gradient(
+    135deg,
+    transparent 0 46%,
+    var(--border-strong) 46% 54%,
+    transparent 54% 62%,
+    var(--border-strong) 62% 70%,
+    transparent 70% 78%,
+    var(--border-strong) 78% 86%,
+    transparent 86%
+  );
+}
+
+.panel-resize-grip:hover {
+  opacity: 1;
+}
+
+body.is-resizing-panel,
+body.is-resizing-panel * {
+  cursor: nwse-resize !important;
+  user-select: none !important;
+}
+
+.panel.is-resizing-panel {
   box-shadow: 0 4px 14px -4px rgba(15, 23, 42, 0.24);
 }
 
@@ -586,6 +626,176 @@ body.is-dragging-panel * {
   user-select: text;
   scrollbar-width: thin;
   scrollbar-color: var(--border-strong) transparent;
+}
+
+/* ---- Follow-up conversation -------------------------------------------- */
+
+.panel-followup {
+  flex: 0 0 auto;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-muted);
+}
+
+.panel-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 2px 1px 6px;
+}
+
+.panel-suggestion {
+  max-width: 100%;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 11.5px;
+  line-height: 1.35;
+  text-align: left;
+  cursor: pointer;
+}
+
+.panel-suggestion:hover {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.panel-suggestion:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+.panel-followup-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.panel-followup-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.panel-followup-input::placeholder {
+  color: var(--text-faint);
+}
+
+.panel-followup-input:focus {
+  border-color: var(--primary);
+  outline: 2px solid var(--primary-soft);
+  outline-offset: 0;
+}
+
+.panel-followup-input:disabled {
+  background: var(--surface-muted);
+  color: var(--text-faint);
+}
+
+.panel-followup-send {
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid #c7d2fe;
+  border-radius: var(--radius-sm);
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.panel-followup-send:hover:not(:disabled) {
+  background: #e0e7ff;
+  color: #4338ca;
+}
+
+.panel-followup-send:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.panel-followup-send:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+/* One question/answer pair appended below the initial result. */
+.followup-block {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border-strong);
+}
+
+.followup-question {
+  margin: 0 0 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.followup-answer {
+  margin: 0;
+}
+
+.followup-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 9px;
+  margin-top: 6px;
+  padding: 7px 9px;
+  border-radius: var(--radius-sm);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.followup-error-text {
+  flex: 1 1 100%;
+  margin: 0;
+}
+
+.followup-error-hint {
+  flex: 1 1 100%;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.followup-retry {
+  height: 25px;
+  padding: 0 10px;
+  border: 1px solid #fecaca;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--danger);
+  font-family: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.followup-retry:hover {
+  background: #fee2e2;
+}
+
+.followup-retry:focus-visible {
+  outline: 2px solid var(--danger);
+  outline-offset: 1px;
 }
 
 .panel-foot {

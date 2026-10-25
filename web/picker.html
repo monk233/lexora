@@ -40,11 +40,21 @@
         </div>
       </div>
       <div class="panel-body" id="panel-body"></div>
+      <div class="panel-followup" id="panel-followup" hidden>
+        <div class="panel-suggestions" id="panel-suggestions" hidden></div>
+        <div class="panel-followup-row">
+          <input type="text" class="panel-followup-input" id="panel-followup-input"
+                 placeholder="继续提问…" autocomplete="off" aria-label="继续提问">
+          <button type="button" class="panel-followup-send" id="panel-followup-send">发送</button>
+        </div>
+      </div>
       <div class="panel-foot" id="panel-foot">
         <button type="button" class="panel-foot-btn" id="panel-speak">朗读</button>
         <button type="button" class="panel-foot-btn" id="panel-copy">复制</button>
         <button type="button" class="panel-foot-btn" id="panel-retry">重试</button>
       </div>
+      <div class="panel-resize-grip" id="panel-resize-grip" role="separator"
+           aria-label="调整面板大小" title="拖动调整大小 · 双击恢复自动大小"></div>
     </div>
     <div class="menu" id="menu" hidden role="menu"></div>
     <div class="toast" id="toast" hidden></div>

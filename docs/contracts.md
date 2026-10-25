@@ -115,7 +115,7 @@ lexora/
 | `list_online_models` | `{baseUrl, apiKey}` | `{models: string[]}` |
 | `download_engine` | — | `{ok}`（进度走 `download-progress` 事件） |
 | `download_model` | `{id: string}` | `{ok, error?}` |
-| `cancel_download` | — | `{ok}` |
+| `cancel_download` | `{id?: string}` | `{ok}`（id 为模型 id 或 `engine`；省略则取消全部） |
 | `import_model` | — | `{ok, model?, error?}`（Rust 弹原生文件对话框） |
 | `remove_model` | `{file: string}` | `{ok, error?}` |
 | `start_local` / `stop_local` | — | `{ok, error?, hint?}` |
@@ -142,6 +142,7 @@ lexora/
 | `picker_polish` | `{requestId, text}` | `{ok, error?, hint?}`（随后 `translate-event` 流；内置润色技能） |
 | `picker_abort_translate` | `{requestId}` | `{ok}` |
 | `picker_assist` | `{requestId, action: "summarize"|"explain", text}` | `{ok, error?, hint?}`（随后 `translate-event` 流；总结/解释不再一次性返回） |
+| `picker_followup` | `{requestId, text, previousAnswer, question, history: [{question,answer}]}` | `{ok, error?, hint?}`（随后 `translate-event` 流；面板继续提问） |
 | `picker_status` | — | `{mode, ready, configured, providerLabel, localState, hint}` |
 | `picker_disable_in_app` | `{programName}` | `{ok, error?}` |
 | `picker_disable_tool` | — | `{ok, error?}` |
@@ -151,7 +152,7 @@ lexora/
 | event | 目标 | payload |
 | --- | --- | --- |
 | `state-changed` | settings | `StatePayload` |
-| `download-progress` | settings | `DownloadProgress` |
+| `download-progress` | settings | `DownloadProgress`（可并发多个：engine 与各模型独立） |
 | `update-progress` | settings | `{status:"downloading"\|"ready", received, total, percent}` |
 | `toast` | settings | `{type:"success"|"error"|"info", message}` |
 | `picker-data` | picker | `{text, programName, config:{skills,customSkills,compact,defaultTargetLang,searchEngine}}` |
@@ -176,7 +177,7 @@ lexora/
                "path":"...","sizeBytes":1117320736,"modifiedAt":1760000000000,"catalogId":"qwen2.5-1.5b"} ],
   "catalog": [ {"id":"hy-mt2-1.8b","name":"腾讯混元 Hy-MT2 1.8B（翻译模型）","description":"...","filename":"...",
                 "sizeBytes":1117320736,"license":"Apache-2.0","languages":"多语言","recommended":true,"installed":false} ],
-  "download": null,   // 或 DownloadProgress
+  "downloads": [],   // 正在进行的下载（可多个）
   "picker": {"visible":false,"pinned":false},
   "loginItem": {"supported":true,"enabled":false},
   "promptDefaults": {                       // 系统默认提示词，供设置页 textarea 预填
@@ -187,7 +188,7 @@ lexora/
 }
 ```
 
-`DownloadProgress`：`{kind:"engine"|"model", id, filename, received, total, percent, status:"downloading"|"verifying"|"failed"|"cancelled", error}`。
+`DownloadProgress`：`{kind:"engine"|"model", id, filename, received, total, percent, status:"downloading"|"verifying"|"failed"|"cancelled", error}`；同一时间可存在多个条目（不同模型并发下载，engine 也独立）。
 
 ### 5.5 PickerData.config
 
@@ -213,6 +214,8 @@ impl EngineService {
       -> Result<BoxStream<'static, Result<String, EngineError>>, EngineError>;
   pub async fn assist_stream(&self, action:&str, text:&str)
       -> Result<BoxStream<'static, Result<String, EngineError>>, EngineError>;
+  pub async fn followup_stream(&self, text:&str, previous:&str, question:&str, history:&[(String, String)])
+      -> Result<BoxStream<'static, Result<String, EngineError>>, EngineError>;
   pub async fn custom_stream(&self, skill_id:&str, text:&str, target_lang:&str, program:&str)
       -> Result<BoxStream<'static, Result<String, EngineError>>, EngineError>;
   pub async fn polish_stream(&self, text:&str)
@@ -221,10 +224,10 @@ impl EngineService {
   pub async fn list_online_models(&self, base_url:&str, api_key:&str) -> Result<Vec<String>, EngineError>;
   pub fn installed_models(&self) -> Vec<ModelInfo>;
   pub fn catalog(&self) -> Vec<CatalogEntry>;
-  pub fn download_state(&self) -> Option<DownloadProgress>;
+  pub fn download_state(&self) -> Vec<DownloadProgress>;
   pub async fn download_model(&self, app: tauri::AppHandle, id:&str) -> Result<ModelInfo, EngineError>;
   pub async fn install_engine(&self, app: tauri::AppHandle) -> Result<(), EngineError>;
-  pub fn cancel_download(&self);
+  pub fn cancel_download(&self, id: Option<&str>);
   pub fn engine_installed(&self) -> bool;
   pub async fn start_local(&self) -> Result<(), EngineError>;
   pub async fn stop_local(&self) -> Result<(), EngineError>;
@@ -253,7 +256,7 @@ impl EngineService {
 - 模型目录（两个模型，已验证 URL）：
   | id | 名称 | 文件 | 大小 | 说明 |
   | --- | --- | --- | --- | --- |
-  | `hy-mt2-1.8b` | 腾讯混元 Hy-MT2 1.8B（翻译模型） | Hy-MT2-1.8B-Q4_K_M.gguf | 1,133,080,448 | 翻译专用，推荐，仅 ModelScope |
+  | `hy-mt2-1.8b` | 腾讯混元 Hy-MT2 1.8B（翻译模型） | Hy-MT2-1.8B-Q4_K_M.gguf | 1,133,080,448 | 翻译专用，仅 ModelScope |
   | `qwen2.5-3b` | Qwen2.5 3B（通用模型） | qwen2.5-3b-instruct-q4_k_m.gguf | 2,104,932,768 | 通用：翻译/总结/解释 |
   - Hy-MT2：`https://www.modelscope.cn/models/liaowenbin/Hy-MT2-1.8B-Q4_K_M-GGUF/resolve/master/Hy-MT2-1.8B-Q4_K_M.gguf`（无 HF 镜像，`hf_url` 为空时跳过）。
   - Qwen2.5 3B：ModelScope（优先）`https://www.modelscope.cn/models/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/master/qwen2.5-3b-instruct-q4_k_m.gguf`；HF（回退）`https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf`。
@@ -338,6 +341,9 @@ pub struct SelectionService {
   - 结果区渲染 Markdown（安全子集，HTML 先转义）：标题、粗体/斜体/删除线、行内代码、代码块、有序/无序列表、引用、分隔线、表格、http(s) 链接（链接点击经 `open_external` 打开，不在 webview 内导航）；流式输出按 rAF 合并重渲染，用户向上翻阅时不强制滚到底部。
   - 朗读：仅用 `window.speechSynthesis`（Windows 系统语音）；无语音时提示「系统未安装可用的语音包：Windows 设置 → 时间和语言 → 语音」。朗读中再次点击是「停止朗读」，必须静默恢复按钮态，不提示失败（忽略 `interrupted`/`canceled` 错误）。
   - 结果面板可通过标题栏空白处拖动整个工具窗口（`picker_drag_panel`，每次 mousemove 发送屏幕坐标差值的逻辑像素 delta）；按钮/语言下拉区域不触发拖动。
+- 结果面板右下角提供缩放手柄：拖动调用 `picker_resize`（最小 360×240，Rust clamp 到 780×620），尺寸写入 localStorage `lexora.panelSize`，下次打开沿用；手动调整后内容自适应不再覆盖用户尺寸；双击手柄恢复自动大小。
+- 翻译/总结/解释/润色/自定义技能成功结果下方显示「继续提问」输入框；提交后调用 `picker_followup`，在同一面板内追加多轮流式问答（沿用 Markdown/复制/朗读/错误重试）。
+- 单个英文单词的翻译/解释使用词典式提示词（释义、音标、核心含义及用法、高频场景），结果完成后显示 3 个建议追问 chip（造句/近义词区别/常见搭配），点击即发送 follow-up。
   - 目标语言下拉从 `LP.LANGUAGES`（38 种 Hy-MT2 支持语言）动态生成，不再硬编码 option。
   - 菜单「划词设置…」→ `invoke("picker_open_settings")`；「在此应用中禁用」「禁用划词工具」→ 对应命令。
 - 初始尺寸 440×56，白色卡片边缘透明；`picker_ready` 在 DOM 就绪后调用一次。
@@ -347,7 +353,7 @@ pub struct SelectionService {
 - 翻译服务：
   - 分段控件「在线 API / 本地模型」立即保存 mode。
   - 在线：预设下拉（DeepSeek/OpenAI/Moonshot/智谱/Ollama/LM Studio/自定义）、服务地址、API Key（password + 显示切换）、模型名下拉（[拉取模型] 通过 `list_online_models` 拉取 `/models`，并保留「自定义模型…」手填兜底）、[测试连接]（显示延迟/模型列表/错误）、状态徽标。切换预设必须清空上一个服务商的 API Key / 模型名与模型缓存，且**不再自动填充模型名**；已知预设只填服务地址。
-  - 本地：引擎状态（未安装→[下载引擎]，显示进度/取消；已安装→版本状态）、已安装模型列表（显示名称、大小、角色徽标：翻译模型/通用模型/自定义模型；不再有模型下拉选择）、[下载模型]（弹目录列表：名称/大小/量化/协议/推荐标记/下载按钮+进度）、[导入 GGUF]、[启动]/[停止]、当前状态徽标与错误提示。启动时后端自动选择模型；停止后翻译/总结不会自动启动；应用重启会恢复上次运行状态（keepRunning）。
+  - 本地：引擎状态（未安装→[下载引擎]，显示进度/取消；已安装→版本状态）、已安装模型列表（显示名称、大小、角色徽标：翻译模型/通用模型/自定义模型；不再有模型下拉选择）、[下载模型]（弹目录列表：名称/大小/量化/协议/下载按钮+各自进度；多个模型可同时下载、可分别取消；不显示「推荐」标签）、[导入 GGUF]、[启动]/[停止]、当前状态徽标与错误提示。运行状态不再显示当前模型名；状态 badge 与启动/停止按钮靠该行最右并与左侧标签垂直居中。启动时后端自动选择模型；停止后翻译/总结不会自动启动；应用重启会恢复上次运行状态（keepRunning）。
 - 划词行为：启用开关、紧凑模式开关（紧跟启用开关、右对齐）、技能开关 + 拖拽排序（无上下箭头）、每行显示技能图标（内置用 `LP.SKILL_MAP[id].icon`，自定义用自定义图标）、技能提示词编辑（行内展开 textarea，默认填充系统默认英文提示词，支持重置默认；translate 支持 `{target}` 占位符；支持 translate/summarize/explain/polish）、自定义技能管理（[添加技能] 打开内联表单：**图标选择器默认紧凑显示当前图标预览 +「更换图标」，点击展开 200 个 Lucide 图标 + 名称搜索过滤**；名称 ≤20、提示词必填 ≤4000、变量提示 `{text}/{target}/{language}/{program}/{app}`；支持编辑、删除二次确认）、搜索配置（搜索行「配置」按钮展开 Google/百度/Bing，保存 `picker.searchEngine`）、默认目标语言（auto 显示「自动识别」，共 38 种语言）、黑名单 chip 输入（回车添加/可删除）。快捷键功能已移除。恢复默认设置保留自定义技能与已下载模型/引擎。「开机自启」「关闭窗口后驻留托盘」两个开关行与划词开关一致：标签/开关垂直居中、开关靠右。
 - 应用与启动：开机自启（portable 不支持时置灰说明）、关闭窗口后驻留托盘、打开数据/模型/日志/引擎目录、退出程序。
 - 关于：版本、Tauri/Rust 版本、MIT、GitHub 链接、引擎与模型状态。
