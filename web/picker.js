@@ -1063,7 +1063,13 @@
     setPanelCopyText("");
     pickerEl.classList.remove("panel-mode");
     notifyPanelState(false);
-    scheduleToolbarResize();
+    // Closing a tool panel dismisses the whole picker instead of falling back to
+    // the toolbar capsule: the user explicitly asked to get it out of the way.
+    if (API && typeof API.close === "function") {
+      API.close();
+    } else {
+      scheduleToolbarResize();
+    }
   }
 
   function setBody(node) {
