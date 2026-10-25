@@ -1076,6 +1076,27 @@ body.picking-color * {
   color: var(--danger);
 }
 
+/* ---- Manual long-screenshot live mode (contract §11.14.1) --------------
+ * The overlay stays visible but the frozen screenshot / crop handles / all
+ * chrome are hidden so the selection area shows the real application window
+ * underneath (transparent window). Only the blue selection border and the
+ * dimming mask outside it remain. */
+body.is-longshot-live {
+  cursor: default;
+}
+
+body.is-longshot-live .capture-shot,
+body.is-longshot-live .capture-annotations,
+body.is-longshot-live .selection-handle,
+body.is-longshot-live .capture-bar,
+body.is-longshot-live .capture-palette,
+body.is-longshot-live .capture-hint,
+body.is-longshot-live .selection-size,
+body.is-longshot-live .capture-toast,
+body.is-longshot-live .capture-longshot-progress {
+  display: none;
+}
+
 /* ---- Motion preferences ------------------------------------------------- */
 
 @media (prefers-reduced-motion: reduce) {

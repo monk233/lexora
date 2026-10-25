@@ -1,13 +1,17 @@
-//! Manual-scroll long screenshot (contract §11.14).
+//! Manual-scroll long screenshot (contract §11.14/§11.14.1).
 //!
-//! `longshot_start` hides the capture overlay, seeds the stitcher with the
-//! selected region and shows a small preview window **beside** the selection.
-//! The user scrolls the target application manually; a background thread grabs
-//! the same screen region ~8 times per second and stitches the new content:
+//! `longshot_start` keeps the capture overlay **visible** (the selection shows a
+//! live view of the target application) but makes it click-through, seeds the
+//! stitcher with the selected region and shows a small preview window **beside**
+//! the selection. The user scrolls the target application manually, in either
+//! direction; a background thread grabs the same screen region ~8 times per
+//! second and stitches the new content:
 //!
 //! * vertical scrolling uses the row-overlap stitcher from [`crate::capture`];
 //! * horizontal scrolling rotates each frame by 90° and reuses the same row
-//!   stitcher (columns become rows), rotating the result back for preview/export.
+//!   stitcher (columns become rows), rotating the result back for preview/export;
+//! * every frame is tried both as an append (scrolling forward) and as a prepend
+//!   (scrolling back), so the user can move up/down/left/right freely.
 //!
 //! No synthetic wheel input or cursor movement is ever generated here — the user
 //! is in full control. `longshot_finish` copies + pins the stitched image and
@@ -24,8 +28,8 @@ use tauri::{
 };
 
 use crate::capture::{
-    clamp_rect, find_overlap, frames_identical, png_data_url, write_clipboard_image, HitRect,
-    LongshotSeed, Stitched,
+    clamp_rect, find_overlap, find_overlap_prepend, frames_identical, png_data_url,
+    write_clipboard_image, HitRect, LongshotSeed, Stitched,
 };
 use crate::engine::EngineError;
 use crate::state::AppState;
@@ -35,6 +39,8 @@ use crate::win32;
 pub const LONG_SHOT_LABEL: &str = "longshot";
 /// Rust → `longshot` window: stitched size/frame counter changed.
 const EVENT_PROGRESS: &str = "longshot-progress";
+/// Rust → capture overlay windows: enter the live long-screenshot mode.
+pub const EVENT_STARTED: &str = "longshot-started";
 /// Rust → capture overlay windows: the manual session was cancelled.
 pub const EVENT_CANCELLED: &str = "longshot-cancelled";
 
@@ -53,10 +59,13 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(120);
 const MAX_VERTICAL_HEIGHT: u32 = 30_000;
 const MAX_HORIZONTAL_WIDTH: u32 = 40_000;
 const MAX_PIXELS: u64 = 64_000_000;
-/// The preview image is downscaled to this longest side before PNG encoding so
-/// `longshot_preview` stays cheap even for very long pages (the full-resolution
-/// image is used for the clipboard/pin on finish).
-const PREVIEW_MAX_SIDE: u32 = 1400;
+/// The preview PNG is downscaled to about this display width before encoding
+/// (contract §11.14.1); the full-resolution image is used for clipboard/pin.
+const PREVIEW_TARGET_WIDTH: u32 = 720;
+/// Grab inset on each side of the selection in CSS pixels, converted to physical
+/// pixels with the monitor DPI scale so the selection border never lands in the
+/// stitched image (contract §11.14.1).
+const CROP_INSET_CSS: f64 = 2.0;
 
 /// Scroll direction of the manual long screenshot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -90,7 +99,12 @@ struct Geometry {
     origin_y: i32,
     monitor_width: u32,
     monitor_height: u32,
+    /// Grabbed region inside the monitor image (selection inset by the border
+    /// safety margin, contract §11.14.1).
     crop: (u32, u32, u32, u32),
+    /// Original selection rectangle in physical screen coordinates (used to
+    /// place the preview window beside the selection).
+    selection_screen: (i32, i32, i32, i32),
 }
 
 impl Geometry {
@@ -106,15 +120,10 @@ impl Geometry {
 
     /// Selection rectangle in physical screen coordinates.
     fn screen_rect(&self) -> (i32, i32, i32, i32) {
-        let (left, top, width, height) = self.crop;
-        (
-            self.origin_x + left as i32,
-            self.origin_y + top as i32,
-            width as i32,
-            height as i32,
-        )
+        self.selection_screen
     }
 
+    #[cfg(test)]
     fn center(&self) -> (i32, i32) {
         let (left, top, width, height) = self.screen_rect();
         (left + width / 2, top + height / 2)
@@ -139,7 +148,10 @@ struct Shared {
     stitched: Stitched,
     /// Last grabbed frame in stitch space (used for the identical-frame check).
     last_frame: RgbaImage,
-    last_overlap: Option<u32>,
+    /// Overlap hint of the most recent append (forward scrolling).
+    last_append_overlap: Option<u32>,
+    /// Overlap hint of the most recent prepend (backwards scrolling).
+    last_prepend_overlap: Option<u32>,
     frames: u32,
     stalled: bool,
     limit_reached: bool,
@@ -176,12 +188,14 @@ fn take_runtime() -> Option<Arc<Runtime>> {
     lock(session_cell()).take()
 }
 
-/// Stops and forgets the current session without touching any window (used when
-/// the preview window is destroyed by the shell or during shutdown).
-pub fn forget_session() {
+/// Stops and forgets the current session without destroying any window (used
+/// when the preview window is destroyed by the shell or during shutdown) and
+/// restores the capture overlay's normal mouse handling.
+pub fn forget_session(app: &AppHandle) {
     if let Some(runtime) = take_runtime() {
         runtime.stop.store(true, Ordering::SeqCst);
     }
+    set_overlay_click_through(app, false);
 }
 
 fn not_running_error() -> EngineError {
@@ -202,6 +216,24 @@ fn log_warn(app: &AppHandle, message: &str) {
     if let Some(state) = app.try_state::<Arc<AppState>>() {
         state.log.warn(message);
     }
+}
+
+/// Toggles click-through (`ignore_cursor_events`) on every capture overlay
+/// window. During the manual long screenshot the overlays stay visible (live
+/// selection frame) but must not swallow wheel/mouse input, so the user can
+/// scroll the target application below them (contract §11.14.1). Returns the
+/// number of overlay windows updated.
+fn set_overlay_click_through(app: &AppHandle, ignore: bool) -> usize {
+    let mut updated = 0;
+    for (label, window) in app.webview_windows() {
+        if !label.starts_with(crate::windows::CAPTURE_PREFIX) {
+            continue;
+        }
+        if window.set_ignore_cursor_events(ignore).is_ok() {
+            updated += 1;
+        }
+    }
+    updated
 }
 
 // ---------------------------------------------------------------------------
@@ -241,6 +273,64 @@ fn preview_window_position(
         right + PREVIEW_GAP
     };
     win32::clamp_to_work_area(x, top, window_width, window_height, work)
+}
+
+/// Insets a crop rectangle by the selection-border margin (≈2 CSS pixels,
+/// converted with `scale`) so the blue selection border never appears in the
+/// stitched image (contract §11.14.1). The inset is capped so at least 1×1 pixel
+/// remains.
+fn inset_crop(crop: (u32, u32, u32, u32), scale: f64) -> (u32, u32, u32, u32) {
+    let (left, top, width, height) = crop;
+    let scale = if scale.is_finite() && scale > 0.1 {
+        scale
+    } else {
+        1.0
+    };
+    let requested = (CROP_INSET_CSS * scale).round().max(1.0) as u32;
+    let inset_x = requested.min(width.saturating_sub(1) / 2);
+    let inset_y = requested.min(height.saturating_sub(1) / 2);
+    (
+        left + inset_x,
+        top + inset_y,
+        width.saturating_sub(inset_x * 2).max(1),
+        height.saturating_sub(inset_y * 2).max(1),
+    )
+}
+
+/// Downscale factor for the preview PNG so its display width is about
+/// [`PREVIEW_TARGET_WIDTH`] (never upscaled, contract §11.14.1).
+fn preview_scale_factor(display_width: u32) -> f64 {
+    if display_width == 0 || display_width <= PREVIEW_TARGET_WIDTH {
+        1.0
+    } else {
+        PREVIEW_TARGET_WIDTH as f64 / display_width as f64
+    }
+}
+
+/// Side of the stitched image a frame was merged on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MergeSide {
+    /// Appended after the stitched content (scrolling forward/down/right).
+    Append,
+    /// Prepended before the stitched content (scrolling back/up/left).
+    Prepend,
+}
+
+/// Chooses the better of the two overlap candidates: the larger reliable
+/// overlap wins, ties prefer appending (forward scrolling is the common case).
+fn choose_merge(append: Option<u32>, prepend: Option<u32>) -> Option<(MergeSide, u32)> {
+    match (append, prepend) {
+        (None, None) => None,
+        (Some(overlap), None) => Some((MergeSide::Append, overlap)),
+        (None, Some(overlap)) => Some((MergeSide::Prepend, overlap)),
+        (Some(append_overlap), Some(prepend_overlap)) => {
+            if prepend_overlap > append_overlap {
+                Some((MergeSide::Prepend, prepend_overlap))
+            } else {
+                Some((MergeSide::Append, append_overlap))
+            }
+        }
+    }
 }
 
 /// `true` when appending `stitched_height` (stitch space) would exceed the
@@ -283,9 +373,16 @@ fn display_image(shared: &Shared) -> RgbaImage {
 }
 
 /// Downscaled stitched image in the original orientation, used only for the
-/// preview IPC. The finish path uses the full-resolution [`display_image`].
+/// preview IPC (about 720 px display width). The finish path uses the
+/// full-resolution [`display_image`].
 fn display_preview_image(shared: &Shared) -> RgbaImage {
-    let scaled = shared.stitched.scaled_to_image(PREVIEW_MAX_SIDE);
+    let (display_width, _display_height) = display_dimensions(shared);
+    let scale = preview_scale_factor(display_width);
+    let scaled = if scale >= 1.0 {
+        shared.stitched.to_image()
+    } else {
+        shared.stitched.scaled_by(scale)
+    };
     match shared.direction {
         Direction::Vertical => scaled,
         Direction::Horizontal => image::imageops::rotate270(&scaled),
@@ -300,7 +397,8 @@ fn reset_stitch(shared: &mut Shared, direction: Direction) {
         first_frame: shared.first_frame.clone(),
         stitched: Stitched::from_image(&first),
         last_frame: first,
-        last_overlap: None,
+        last_append_overlap: None,
+        last_prepend_overlap: None,
         frames: 1,
         stalled: false,
         limit_reached: false,
@@ -315,6 +413,7 @@ fn progress_payload(shared: &Shared) -> Value {
         "width": width,
         "height": height,
         "frames": shared.frames,
+        "revision": shared.revision,
         "stalled": shared.stalled,
     })
 }
@@ -323,9 +422,10 @@ fn progress_payload(shared: &Shared) -> Value {
 // Background stitcher
 // ---------------------------------------------------------------------------
 
-/// Merges one grabbed frame into the session. Returns the progress payload when
-/// the frame was processed (also when it was skipped/stalled), `None` when the
-/// session is already done.
+/// Merges one grabbed frame into the session (forward append or backward
+/// prepend, whichever overlap is larger). Returns the progress payload when the
+/// frame was processed (also when it stalled), `None` when the session is
+/// already done.
 fn stitch_frame(runtime: &Runtime, frame: RgbaImage) -> Option<Value> {
     let mut shared = lock(&runtime.shared);
     if shared.limit_reached {
@@ -336,8 +436,9 @@ fn stitch_frame(runtime: &Runtime, frame: RgbaImage) -> Option<Value> {
     if frames_identical(&shared.last_frame, &oriented) {
         return None;
     }
-    let overlap = find_overlap(&shared.stitched, &oriented, shared.last_overlap);
-    let Some(overlap) = overlap else {
+    let append = find_overlap(&shared.stitched, &oriented, shared.last_append_overlap);
+    let prepend = find_overlap_prepend(&shared.stitched, &oriented, shared.last_prepend_overlap);
+    let Some((side, overlap)) = choose_merge(append, prepend) else {
         shared.last_frame = oriented;
         shared.stalled = true;
         return Some(progress_payload(&shared));
@@ -355,8 +456,16 @@ fn stitch_frame(runtime: &Runtime, frame: RgbaImage) -> Option<Value> {
         shared.stalled = true;
         return Some(progress_payload(&shared));
     }
-    shared.stitched.push_rows(&oriented, overlap);
-    shared.last_overlap = Some(overlap);
+    match side {
+        MergeSide::Append => {
+            shared.stitched.push_rows(&oriented, overlap);
+            shared.last_append_overlap = Some(overlap);
+        }
+        MergeSide::Prepend => {
+            shared.stitched.prepend_rows(&oriented, overlap);
+            shared.last_prepend_overlap = Some(overlap);
+        }
+    }
     shared.last_frame = oriented;
     shared.frames = shared.frames.saturating_add(1);
     shared.stalled = false;
@@ -557,14 +666,24 @@ fn start_impl(app: &AppHandle, index: u32, rect: &HitRect) -> Result<Value, Engi
         ));
     }
     let seed = state.capture.longshot_seed(index, rect)?;
-    let geometry = Geometry {
-        origin_x: seed.origin_x,
-        origin_y: seed.origin_y,
-        monitor_width: seed.monitor_width,
-        monitor_height: seed.monitor_height,
-        crop: seed.crop,
-    };
-    let center = geometry.center();
+    let LongshotSeed {
+        origin_x,
+        origin_y,
+        monitor_width,
+        monitor_height,
+        crop: selection_crop,
+        first_frame: selection_image,
+    } = seed;
+    let selection_screen = (
+        origin_x + selection_crop.0 as i32,
+        origin_y + selection_crop.1 as i32,
+        selection_crop.2 as i32,
+        selection_crop.3 as i32,
+    );
+    let center = (
+        selection_screen.0 + selection_screen.2 / 2,
+        selection_screen.1 + selection_screen.3 / 2,
+    );
     let scale = win32::monitor_scale_factor(center.0, center.1);
     let scale = if scale.is_finite() && scale > 0.1 {
         scale
@@ -572,6 +691,25 @@ fn start_impl(app: &AppHandle, index: u32, rect: &HitRect) -> Result<Value, Engi
         1.0
     };
     let work = win32::work_area_physical(center.0, center.1);
+    // Inset the grabbed region so the blue selection border never lands in the
+    // stitched image (contract §11.14.1).
+    let crop = inset_crop(selection_crop, scale);
+    let first_frame = image::imageops::crop_imm(
+        &selection_image,
+        crop.0 - selection_crop.0,
+        crop.1 - selection_crop.1,
+        crop.2,
+        crop.3,
+    )
+    .to_image();
+    let geometry = Geometry {
+        origin_x,
+        origin_y,
+        monitor_width,
+        monitor_height,
+        crop,
+        selection_screen,
+    };
     let logical_size = preview_window_size(scale, &work);
     let physical_size = (
         ((logical_size.0 * scale).round() as u32).max(1),
@@ -583,18 +721,18 @@ fn start_impl(app: &AppHandle, index: u32, rect: &HitRect) -> Result<Value, Engi
         &work,
     );
 
-    // The overlay would cover the application being scrolled and would appear in
-    // every grabbed frame: hide it (not destroy) for the whole session.
-    crate::windows::hide_capture_windows(app);
+    // The overlay stays visible (live selection frame + dimmed outside) but must
+    // not swallow the wheel/mouse input the user needs to scroll the target
+    // application: make every capture window click-through (contract §11.14.1).
+    set_overlay_click_through(app, true);
     let window = match create_preview_window(app, logical_size, physical_size, position) {
         Ok(window) => window,
         Err(error) => {
-            crate::windows::show_all_capture_windows(app);
+            set_overlay_click_through(app, false);
             return Err(error);
         }
     };
-    // Hiding the overlay leaves keyboard focus on the (now hidden) overlay, which
-    // would swallow the wheel input the user needs to scroll. Hand the focus to
+    // The overlay keeps keyboard focus after its buttons were used; hand it to
     // the application under the selection (the preview window is NOACTIVATE, so
     // it will not take it back).
     if !win32::focus_window_at(center.0, center.1) {
@@ -604,14 +742,14 @@ fn start_impl(app: &AppHandle, index: u32, rect: &HitRect) -> Result<Value, Engi
         );
     }
 
-    let LongshotSeed { first_frame, .. } = seed;
     let (initial_width, initial_height) = first_frame.dimensions();
     let shared = Shared {
         direction: Direction::Vertical,
         stitched: Stitched::from_image(&first_frame),
         last_frame: first_frame.clone(),
         first_frame,
-        last_overlap: None,
+        last_append_overlap: None,
+        last_prepend_overlap: None,
         frames: 1,
         stalled: false,
         limit_reached: false,
@@ -631,9 +769,8 @@ fn start_impl(app: &AppHandle, index: u32, rect: &HitRect) -> Result<Value, Engi
         .name("lexora-longshot".to_string())
         .spawn(move || capture_loop(thread_app, runtime));
     if let Err(error) = spawned {
-        forget_session();
+        forget_session(app);
         let _ = window.destroy();
-        crate::windows::show_all_capture_windows(app);
         return Err(EngineError::new(
             "无法启动长截图线程。",
             format!("请重试或重启程序（{error}）。"),
@@ -643,9 +780,8 @@ fn start_impl(app: &AppHandle, index: u32, rect: &HitRect) -> Result<Value, Engi
     // Session state is ready before the page becomes visible, so its first
     // `longshot_state`/`longshot_preview` calls already succeed.
     if let Err(error) = window.show() {
-        forget_session();
+        forget_session(app);
         let _ = window.destroy();
-        crate::windows::show_all_capture_windows(app);
         return Err(EngineError::new(
             "无法显示长截图预览窗口。",
             format!("请重试或重启程序（{error}）。"),
@@ -655,6 +791,10 @@ fn start_impl(app: &AppHandle, index: u32, rect: &HitRect) -> Result<Value, Engi
     // SetForegroundWindow), which would swallow the user's wheel input. Hand the
     // focus back to the application under the selection.
     let _ = win32::focus_window_at(center.0, center.1);
+    // Tell the overlays to switch to the live long-screenshot mode (hide the
+    // frozen screenshot/handles, keep the selection border + mask; the page also
+    // makes its own area transparent so the real application shows through).
+    let _ = app.emit(EVENT_STARTED, json!({ "index": index }));
 
     log_info(
         app,
@@ -699,6 +839,7 @@ pub fn longshot_state() -> Value {
         "direction": shared.direction.as_str(),
         "stalled": shared.stalled,
         "done": shared.limit_reached,
+        "revision": shared.revision,
     })
 }
 
@@ -734,6 +875,7 @@ fn preview_payload() -> Result<Value, EngineError> {
                     "height": height,
                     "frames": shared.frames,
                     "direction": shared.direction.as_str(),
+                    "revision": shared.revision,
                 }));
             }
         }
@@ -769,13 +911,14 @@ fn preview_payload() -> Result<Value, EngineError> {
         "height": height,
         "frames": frames,
         "direction": direction.as_str(),
+        "revision": revision,
     }))
 }
 
 /// `longshot_direction {direction}` — switches the scroll direction and resets
 /// the stitching from the current selection frame (contract §11.14).
 #[tauri::command]
-pub fn longshot_direction(direction: String) -> Value {
+pub fn longshot_direction(app: AppHandle, direction: String) -> Value {
     let Some(parsed) = Direction::parse(&direction) else {
         return json!({
             "ok": false,
@@ -790,10 +933,14 @@ pub fn longshot_direction(direction: String) -> Value {
             "hint": not_running_error().hint,
         });
     };
-    {
+    let progress = {
         let mut shared = lock(&runtime.shared);
         reset_stitch(&mut shared, parsed);
-    }
+        progress_payload(&shared)
+    };
+    // Notify the preview right away: a reset changes the stitched image even
+    // though no new frame was merged (contract §11.14.1).
+    let _ = app.emit_to(LONG_SHOT_LABEL, EVENT_PROGRESS, progress);
     json!({ "ok": true, "direction": parsed.as_str() })
 }
 
@@ -840,6 +987,9 @@ fn finish_impl(app: &AppHandle) -> Result<Value, EngineError> {
     match crate::pin::create_pin(app, image) {
         Ok((pin_id, _, _)) => {
             let _ = take_runtime();
+            // The overlay is visible again from the cancel path; finish closes
+            // the whole capture UI, so restore its normal mouse handling first.
+            set_overlay_click_through(app, false);
             destroy_preview_window(app);
             if let Some(state) = app.try_state::<Arc<AppState>>() {
                 // The screenshot session is finished: hide the overlays and release
@@ -863,7 +1013,7 @@ fn finish_impl(app: &AppHandle) -> Result<Value, EngineError> {
         }
         Err(error) => {
             // Keep the preview (and the session) so the renderer can show the
-            // error and the user can retry or cancel; the overlay stays hidden.
+            // error and the user can retry or cancel.
             log_warn(
                 app,
                 &format!("longshot: finish failed while pinning: {}", error.message),
@@ -887,6 +1037,10 @@ pub fn cancel(app: &AppHandle) {
     if let Some(runtime) = &runtime {
         runtime.stop.store(true, Ordering::SeqCst);
     }
+    // Restore normal mouse handling on the (still visible) capture overlays and
+    // re-show them as a safety net; the page switches back from the live mode on
+    // the `longshot-cancelled` event (contract §11.14.1).
+    set_overlay_click_through(app, false);
     destroy_preview_window(app);
     crate::windows::show_all_capture_windows(app);
     let _ = app.emit(EVENT_CANCELLED, json!({}));
@@ -898,11 +1052,13 @@ pub fn cancel(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::{
-        display_dimensions, exceeds_limits, orient_frame, preview_window_position,
-        preview_window_size, reset_stitch, Direction, Geometry, Shared, LONG_SHOT_LABEL,
-        MAX_PIXELS, PREVIEW_LOGICAL_WIDTH, PREVIEW_MAX_LOGICAL_HEIGHT,
+        choose_merge, display_dimensions, exceeds_limits, inset_crop, orient_frame,
+        preview_scale_factor, preview_window_position, preview_window_size, progress_payload,
+        reset_stitch, Direction, Geometry, MergeSide, Shared, EVENT_CANCELLED, EVENT_STARTED,
+        LONG_SHOT_LABEL, MAX_PIXELS, PREVIEW_LOGICAL_WIDTH, PREVIEW_MAX_LOGICAL_HEIGHT,
+        PREVIEW_TARGET_WIDTH,
     };
-    use crate::capture::{find_overlap, Stitched};
+    use crate::capture::{find_overlap, find_overlap_prepend, Stitched};
     use crate::win32::WorkArea;
     use image::{Rgba, RgbaImage};
 
@@ -933,6 +1089,9 @@ mod tests {
     #[test]
     fn longshot_window_label_is_fixed() {
         assert_eq!(LONG_SHOT_LABEL, "longshot");
+        assert_eq!(EVENT_STARTED, "longshot-started");
+        assert_eq!(EVENT_CANCELLED, "longshot-cancelled");
+        assert_eq!(PREVIEW_TARGET_WIDTH, 720);
     }
 
     #[test]
@@ -1047,7 +1206,8 @@ mod tests {
             first_frame: first.clone(),
             stitched: Stitched::from_image(&first),
             last_frame: first.clone(),
-            last_overlap: Some(12),
+            last_append_overlap: Some(12),
+            last_prepend_overlap: Some(8),
             frames: 4,
             stalled: true,
             limit_reached: true,
@@ -1069,7 +1229,8 @@ mod tests {
         assert_eq!(shared.frames, 1);
         assert!(!shared.stalled);
         assert!(!shared.limit_reached);
-        assert_eq!(shared.last_overlap, None);
+        assert_eq!(shared.last_append_overlap, None);
+        assert_eq!(shared.last_prepend_overlap, None);
         assert_eq!(shared.revision, 10);
         let (width, height) = display_dimensions(&shared);
         assert_eq!((width, height), (80, 60));
@@ -1083,6 +1244,7 @@ mod tests {
             monitor_width: 1920,
             monitor_height: 1080,
             crop: (100, 200, 400, 300),
+            selection_screen: (-1820, 200, 400, 300),
         };
         assert_eq!(geometry.screen_rect(), (-1820, 200, 400, 300));
         assert_eq!(geometry.center(), (-1620, 350));
@@ -1091,5 +1253,117 @@ mod tests {
             (rect.x, rect.y, rect.width, rect.height),
             (100.0, 200.0, 400.0, 300.0)
         );
+    }
+
+    #[test]
+    fn crop_inset_follows_the_dpi_scale() {
+        // 2 CSS px per side at 100% and 150%.
+        assert_eq!(inset_crop((100, 200, 400, 300), 1.0), (102, 202, 396, 296));
+        assert_eq!(inset_crop((100, 200, 400, 300), 1.5), (103, 203, 394, 294));
+        // Tiny selections never become empty.
+        assert_eq!(inset_crop((10, 20, 3, 4), 1.0), (11, 21, 1, 2));
+        assert_eq!(inset_crop((10, 20, 1, 1), 1.0), (10, 20, 1, 1));
+    }
+
+    #[test]
+    fn preview_scales_to_about_720_display_width() {
+        assert_eq!(preview_scale_factor(1440), 0.5);
+        assert_eq!(preview_scale_factor(720), 1.0);
+        assert_eq!(preview_scale_factor(360), 1.0);
+        assert_eq!(preview_scale_factor(0), 1.0);
+        let stitched = Stitched::from_image(&noise_image(1440, 1600, 3));
+        let scaled = stitched.scaled_by(preview_scale_factor(1440));
+        assert_eq!(scaled.dimensions(), (720, 800));
+    }
+
+    #[test]
+    fn merge_choice_prefers_the_larger_overlap_and_appends_on_ties() {
+        assert_eq!(choose_merge(None, None), None);
+        assert_eq!(choose_merge(Some(10), None), Some((MergeSide::Append, 10)));
+        assert_eq!(choose_merge(None, Some(20)), Some((MergeSide::Prepend, 20)));
+        // Forward scrolling is preferred when both overlaps are equally good.
+        assert_eq!(
+            choose_merge(Some(25), Some(25)),
+            Some((MergeSide::Append, 25))
+        );
+        assert_eq!(
+            choose_merge(Some(20), Some(30)),
+            Some((MergeSide::Prepend, 30))
+        );
+        assert_eq!(
+            choose_merge(Some(30), Some(20)),
+            Some((MergeSide::Append, 30))
+        );
+    }
+
+    #[test]
+    fn vertical_prepend_stitches_rows_scrolled_back_up() {
+        // The user scrolled up: the new frame sits above the current image. Its
+        // bottom rows overlap the stitched top rows.
+        let canvas = noise_image(40, 200, 21);
+        let stitched_image = image::imageops::crop_imm(&canvas, 0, 60, 40, 80).to_image();
+        let frame = image::imageops::crop_imm(&canvas, 0, 20, 40, 80).to_image();
+        let mut stitched = Stitched::from_image(&stitched_image);
+        let overlap = find_overlap_prepend(&stitched, &frame, None).expect("prepend overlap");
+        assert_eq!(overlap, 40);
+        assert_eq!(
+            choose_merge(None, Some(overlap)),
+            Some((MergeSide::Prepend, overlap))
+        );
+        stitched.prepend_rows(&frame, overlap);
+        assert_eq!(stitched.height(), 120);
+        let restored = stitched.to_image();
+        assert_eq!(restored.dimensions(), (40, 120));
+        for y in 0..120 {
+            assert_eq!(
+                *restored.get_pixel(0, y),
+                *canvas.get_pixel(0, 20 + y),
+                "row {y} mismatched"
+            );
+        }
+    }
+
+    #[test]
+    fn horizontal_prepend_uses_the_rotated_column_overlap() {
+        // Same trick as horizontal appending: rotate 90°, prepend rows, rotate
+        // the result back.
+        let canvas = noise_image(600, 120, 31);
+        let frame = |x: u32| image::imageops::crop_imm(&canvas, x, 0, 200, 120).to_image();
+        let current = orient_frame(frame(200), Direction::Horizontal);
+        let previous = orient_frame(frame(100), Direction::Horizontal);
+        let mut stitched = Stitched::from_image(&current);
+        let overlap =
+            find_overlap_prepend(&stitched, &previous, None).expect("column prepend overlap");
+        assert_eq!(overlap, 100);
+        stitched.prepend_rows(&previous, overlap);
+        let restored = image::imageops::rotate270(&stitched.to_image());
+        // Covered columns: 100..399 (the current frame already held 200..399).
+        assert_eq!(restored.dimensions(), (300, 120));
+        let expected = image::imageops::crop_imm(&canvas, 100, 0, 300, 120).to_image();
+        assert_eq!(restored.as_raw(), expected.as_raw());
+    }
+
+    #[test]
+    fn progress_payload_carries_the_revision() {
+        let first = noise_image(10, 10, 1);
+        let shared = Shared {
+            direction: Direction::Vertical,
+            first_frame: first.clone(),
+            stitched: Stitched::from_image(&first),
+            last_frame: first,
+            last_append_overlap: None,
+            last_prepend_overlap: None,
+            frames: 2,
+            stalled: true,
+            limit_reached: false,
+            revision: 7,
+            preview: None,
+        };
+        let payload = progress_payload(&shared);
+        assert_eq!(payload["revision"], 7);
+        assert_eq!(payload["stalled"], true);
+        assert_eq!(payload["frames"], 2);
+        assert_eq!(payload["width"], 10);
+        assert_eq!(payload["height"], 10);
     }
 }

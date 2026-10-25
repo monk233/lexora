@@ -1186,7 +1186,11 @@
           height: Math.max(120, Math.round(Number(args.rect && args.rect.height) || 480)),
           frames: 1,
           stalled: false,
+          revision: 1,
         };
+        setTimeout(function () {
+          mockEmit("longshot-started", { index: Number(args.index) || 0 });
+        }, 80);
         return {
           ok: true,
           width: mockLongshot.width,
@@ -1214,6 +1218,7 @@
           frames: mockLongshot.frames,
           direction: mockLongshot.direction,
           stalled: mockLongshot.stalled,
+          revision: mockLongshot.revision || 1,
           done: false,
         };
       }
@@ -1229,11 +1234,21 @@
           };
         }
         mockLongshot.frames += 1;
+        mockLongshot.revision = (mockLongshot.revision || 1) + 1;
         if (mockLongshot.direction === "horizontal") {
           mockLongshot.width += 160;
         } else {
           mockLongshot.height += 220;
         }
+        setTimeout(function () {
+          mockEmit("longshot-progress", {
+            width: mockLongshot.width,
+            height: mockLongshot.height,
+            frames: mockLongshot.frames,
+            revision: mockLongshot.revision,
+            stalled: !!mockLongshot.stalled,
+          });
+        }, 0);
         return {
           ok: true,
           dataUrl: mockLongshotPreview(mockLongshot),
@@ -1241,6 +1256,7 @@
           height: mockLongshot.height,
           frames: mockLongshot.frames,
           direction: mockLongshot.direction,
+          revision: mockLongshot.revision,
         };
       }
       case "longshot_direction": {
@@ -2163,6 +2179,13 @@
     },
     cancel: function () {
       return safeInvoke("longshot_cancel", {});
+    },
+    onStarted: function (callback) {
+      return subscribe("longshot-started", function (payload) {
+        if (typeof callback === "function") {
+          callback(payload);
+        }
+      });
     },
     onProgress: function (callback) {
       return subscribe("longshot-progress", function (payload) {

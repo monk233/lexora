@@ -1275,23 +1275,46 @@ impl Stitched {
         self.height = (self.data.len() / (width as usize * 4)) as u32;
     }
 
+    /// Prepends the rows of `image` *above* the current content: its bottom
+    /// `overlap` rows duplicate the top of the stitched image, the rest is
+    /// inserted before it (manual long screenshot scrolled upwards, §11.14.1).
+    pub(crate) fn prepend_rows(&mut self, image: &RgbaImage, overlap: u32) {
+        let width = self.width;
+        if width == 0 || image.width() < width {
+            return;
+        }
+        let new_rows = image.height().saturating_sub(overlap);
+        if new_rows == 0 {
+            return;
+        }
+        let source = image.as_raw();
+        let source_width = image.width() as usize;
+        let row_bytes = width as usize * 4;
+        let mut prefix = Vec::with_capacity(self.data.len() + new_rows as usize * row_bytes);
+        for y in 0..new_rows {
+            let start = y as usize * source_width * 4;
+            prefix.extend_from_slice(&source[start..start + row_bytes]);
+        }
+        prefix.extend_from_slice(&self.data);
+        self.data = prefix;
+        self.height = (self.data.len() / (width as usize * 4)) as u32;
+    }
+
     /// Copy of the stitched image (keeps the buffer usable for more frames).
     pub(crate) fn to_image(&self) -> RgbaImage {
         RgbaImage::from_raw(self.width.max(1), self.height.max(1), self.data.clone())
             .unwrap_or_else(|| RgbaImage::new(self.width.max(1), self.height.max(1)))
     }
 
-    /// Nearest-neighbour downscale of the stitched image to `max_side` longest
-    /// pixels, without materialising the full-resolution copy first. Used for
-    /// the manual long-screenshot preview, where only a small on-screen image is
-    /// needed and re-encoding the full page on every poll would be expensive.
-    pub(crate) fn scaled_to_image(&self, max_side: u32) -> RgbaImage {
+    /// Nearest-neighbour downscale by `scale` (< 1.0). Frames are never enlarged.
+    pub(crate) fn scaled_by(&self, scale: f64) -> RgbaImage {
         let (width, height) = (self.width.max(1), self.height.max(1));
-        let longest = width.max(height);
-        if max_side == 0 || longest <= max_side {
+        if !scale.is_finite() || scale <= 0.0 {
             return self.to_image();
         }
-        let scale = max_side as f64 / longest as f64;
+        if scale >= 1.0 {
+            return self.to_image();
+        }
         let out_width = ((width as f64 * scale).round() as u32).max(1);
         let out_height = ((height as f64 * scale).round() as u32).max(1);
         let mut out = RgbaImage::new(out_width, out_height);
@@ -1423,6 +1446,98 @@ fn overlap_mean_difference(stitched: &Stitched, next: &RgbaImage, overlap: u32, 
         while x < width {
             let above = stitched_pixel(stitched, x, stitched_y);
             let below = next.get_pixel(x, row);
+            for channel in 0..3 {
+                total_difference +=
+                    (above[channel] as i16 - below[channel] as i16).unsigned_abs() as u64;
+            }
+            samples += 3;
+            x += step_x;
+        }
+        row += row_step;
+    }
+    if samples == 0 {
+        return f64::MAX;
+    }
+    total_difference as f64 / samples as f64
+}
+
+/// Finds the best row overlap between the **bottom of `next`** and the **top of
+/// `stitched`** (the user scrolled the content upwards, contract §11.14.1).
+/// Mirrors [`find_overlap`]: candidate range 10%–90% of the frame height, dense
+/// sampled mismatch scoring, `expected` fast path.
+pub(crate) fn find_overlap_prepend(
+    stitched: &Stitched,
+    next: &RgbaImage,
+    expected: Option<u32>,
+) -> Option<u32> {
+    let width = stitched.width.min(next.width());
+    let next_height = next.height();
+    if width == 0 || next_height < 2 || stitched.height() < 2 {
+        return None;
+    }
+    let min_overlap = ((next_height as f64 * LONGSHOT_MIN_OVERLAP_RATIO).ceil() as u32).max(1);
+    let max_overlap = ((next_height as f64 * LONGSHOT_MAX_OVERLAP_RATIO).floor() as u32)
+        .min(stitched.height())
+        .min(next_height.saturating_sub(1));
+    if max_overlap < min_overlap {
+        return None;
+    }
+    if let Some(expected) = expected.filter(|value| (min_overlap..=max_overlap).contains(value)) {
+        let slack = (expected / 2).clamp(4, 64);
+        let low = expected.saturating_sub(slack).max(min_overlap);
+        let high = (expected + slack).min(max_overlap);
+        if let Some(overlap) = best_overlap_in_prepend(stitched, next, width, low, high) {
+            return Some(overlap);
+        }
+    }
+    best_overlap_in_prepend(stitched, next, width, min_overlap, max_overlap)
+}
+
+/// Best-scoring prepend candidate in `[low, high]`.
+fn best_overlap_in_prepend(
+    stitched: &Stitched,
+    next: &RgbaImage,
+    width: u32,
+    low: u32,
+    high: u32,
+) -> Option<u32> {
+    let mut best: Option<(f64, u32)> = None;
+    for overlap in low..=high {
+        let difference = prepend_mean_difference(stitched, next, overlap, width);
+        if difference > LONGSHOT_OVERLAP_MAX_MEAN_DIFF {
+            continue;
+        }
+        best = match best {
+            None => Some((difference, overlap)),
+            Some((best_difference, best_overlap)) => {
+                if difference + 1e-6 < best_difference {
+                    Some((difference, overlap))
+                } else {
+                    Some((best_difference, best_overlap))
+                }
+            }
+        };
+    }
+    best.map(|(_, overlap)| overlap)
+}
+
+/// Mean absolute RGB difference between the top `overlap` rows of `stitched` and
+/// the bottom `overlap` rows of `next` (prepend direction).
+fn prepend_mean_difference(stitched: &Stitched, next: &RgbaImage, overlap: u32, width: u32) -> f64 {
+    let step_x = (width / 96).max(1);
+    let sample_rows = overlap.clamp(1, 96);
+    let row_step = (overlap / sample_rows).max(1);
+    let start_y = next.height().saturating_sub(overlap);
+    let mut total_difference = 0u64;
+    let mut samples = 0u64;
+    let mut row = 0;
+    while row < overlap {
+        let stitched_y = row;
+        let next_y = start_y + row;
+        let mut x = 0;
+        while x < width {
+            let above = stitched_pixel(stitched, x, stitched_y);
+            let below = next.get_pixel(x, next_y);
             for channel in 0..3 {
                 total_difference +=
                     (above[channel] as i16 - below[channel] as i16).unsigned_abs() as u64;
@@ -2949,13 +3064,16 @@ mod tests {
     fn stitched_scaled_preview_keeps_the_aspect_ratio() {
         let image = RgbaImage::from_fn(400, 200, |x, y| Rgba([x as u8, y as u8, 0, 255]));
         let stitched = Stitched::from_image(&image);
-        // Longest side is capped to 100 px → 100×50.
-        let scaled = stitched.scaled_to_image(100);
+        // 0.25 scale → 100×50.
+        let scaled = stitched.scaled_by(0.25);
         assert_eq!(scaled.dimensions(), (100, 50));
-        // Already small enough: untouched copy.
-        let full = stitched.scaled_to_image(1000);
+        // Already small enough / scale 1: untouched copy.
+        let full = stitched.scaled_by(1.0);
         assert_eq!(full.dimensions(), (400, 200));
         assert_eq!(full.as_raw(), image.as_raw());
+        // Invalid scales fall back to the full image instead of panicking.
+        assert_eq!(stitched.scaled_by(f64::NAN).dimensions(), (400, 200));
+        assert_eq!(stitched.scaled_by(0.0).dimensions(), (400, 200));
     }
 
     fn image_skill_settings() -> Settings {

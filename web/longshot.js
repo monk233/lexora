@@ -1,21 +1,23 @@
-/* Lexora manual-scroll long-screenshot preview renderer (contract §11.14).
+/* Lexora manual-scroll long-screenshot preview renderer (contract §11.14.1).
  *
- * The shell hides the capture overlay, creates this always-on-top window and
- * keeps stitching frames while the user scrolls the target app. This page polls
- * `longshot_state` for size/frame changes, fetches `longshot_preview` (PNG data
- * URL) when the stitched image changed, and offers direction switch / finish /
- * cancel.
+ * The shell keeps stitching frames while the user scrolls the target app and
+ * emits `longshot-progress {width,height,frames,revision,stalled}` after every
+ * stitch. This page is event driven: a changed `revision` triggers a throttled
+ * (≤100ms) `longshot_preview` fetch, and the PNG is decoded on a back <img>
+ * layer before being promoted to the front (double buffering → no flashing).
+ * A low-frequency `state` fallback (1s) only recovers missed events / stalled
+ * flags — there is no unconditional 350ms polling.
  *
- * Browser preview: the mock increments the stitched size on every preview call,
- * so polling also previews each tick while `window.__TAURI__` is absent.
+ * Browser preview: the mock emits progress from `preview()` as well, so the
+ * event chain keeps the simulated stitch growing.
  */
 (function () {
   "use strict";
 
   var API = window.longshotAPI;
   var PREVIEW_MODE = !(window.__TAURI__ && window.__TAURI__.core);
-  var POLL_INTERVAL = 350;
-  var PROGRESS_THROTTLE = 200;
+  var PREVIEW_THROTTLE = 80;
+  var STATE_FALLBACK = 1000;
   var TOAST_MS = 3200;
 
   var state = {
@@ -28,11 +30,18 @@
     cancelled: false,
     busy: false,
     ready: false,
+    revision: 0,
+    renderedRevision: 0,
+    renders: 0,
+    frontLayer: 0,
+    lastRenderMs: 0,
+    lastProgressRevision: 0,
     finishCalls: 0,
     cancelCalls: 0,
     directionCalls: 0,
     stateCalls: 0,
     previewCalls: 0,
+    progressEvents: 0,
     imageSrcLength: 0,
     lastError: ""
   };
@@ -41,10 +50,12 @@
   window.__longshotState = state;
 
   var dom = {};
-  var pollTimer = 0;
-  var progressTimer = 0;
+  var previewTimer = 0;
+  var fallbackTimer = 0;
   var toastTimer = 0;
   var previewInflight = false;
+  var previewQueued = false;
+  var renderToken = 0;
 
   /* ---- Small helpers --------------------------------------------------- */
 
@@ -55,6 +66,12 @@
   function positiveNumber(value) {
     var number = Number(value);
     return isFinite(number) && number > 0 ? Math.round(number) : 0;
+  }
+
+  function now() {
+    return window.performance && typeof window.performance.now === "function"
+      ? window.performance.now()
+      : Date.now();
   }
 
   function errorText(error) {
@@ -78,7 +95,10 @@
 
   function apiCall(name, argument) {
     if (!API || typeof API[name] !== "function") {
-      return Promise.resolve({ ok: false, error: "长截图服务不可用，请重启 Lexora 后再试。" });
+      return Promise.resolve({
+        ok: false,
+        error: "长截图服务不可用，请重启 Lexora 后再试。"
+      });
     }
     try {
       return Promise.resolve(API[name](argument));
@@ -87,11 +107,17 @@
     }
   }
 
+  function locked() {
+    return state.busy || state.done || state.cancelled;
+  }
+
   /* ---- DOM cache + boot ------------------------------------------------ */
 
   function cacheDom() {
     dom.root = byId("longshot-root");
+    dom.canvas = byId("longshot-canvas");
     dom.image = byId("longshot-image");
+    dom.imageBuffer = byId("longshot-image-buffer");
     dom.empty = byId("longshot-empty");
     dom.error = byId("longshot-error");
     dom.errorText = byId("longshot-error-text");
@@ -115,11 +141,7 @@
     bindEvents();
     subscribeLongshot();
     updateUi();
-    poll(true, function () {
-      state.ready = true;
-      updateUi();
-    });
-    schedulePoll();
+    initialLoad();
   }
 
   function bindEvents() {
@@ -154,7 +176,7 @@
       try {
         API.onProgress(onProgress);
       } catch (error) {
-        /* polling still keeps the preview fresh */
+        /* the 1s state fallback still refreshes the preview */
       }
     }
     if (typeof API.onCancelled === "function") {
@@ -166,50 +188,12 @@
     }
   }
 
-  /* ---- Polling / preview ----------------------------------------------- */
-
-  function schedulePoll() {
-    window.clearTimeout(pollTimer);
-    pollTimer = window.setTimeout(function () {
-      pollTimer = 0;
-      poll(false);
-    }, POLL_INTERVAL);
-  }
-
-  function poll(force, onDone) {
-    if (state.done || state.cancelled) {
-      return;
-    }
-    state.stateCalls += 1;
-    apiCall("state")
-      .then(function (result) {
-        if (state.done || state.cancelled) {
-          return undefined;
-        }
-        if (!result || result.ok === false) {
-          showError(failureText(result, "读取长截图状态失败"));
-          return undefined;
-        }
-        var changed = applyState(result);
-        if (force || changed || PREVIEW_MODE) {
-          return loadPreview();
-        }
-        return undefined;
-      })
-      .catch(function (error) {
-        showError("读取长截图状态失败：" + errorText(error));
-      })
-      .then(function () {
-        if (typeof onDone === "function") {
-          onDone();
-        }
-        if (!state.done && !state.cancelled) {
-          schedulePoll();
-        }
-      });
-  }
+  /* ---- State <-> UI ---------------------------------------------------- */
 
   function applyState(result) {
+    if (!result) {
+      return { changed: false, revisionAdvanced: false };
+    }
     var changed = false;
     var width = positiveNumber(result.width);
     var height = positiveNumber(result.height);
@@ -229,21 +213,66 @@
     if (result.direction === "horizontal" || result.direction === "vertical") {
       state.direction = result.direction;
     }
-    state.stalled = !!result.stalled;
+    if (typeof result.stalled === "boolean") {
+      state.stalled = result.stalled;
+    }
     if (typeof result.done === "boolean") {
       state.done = state.done || result.done;
     }
+    var revision = positiveNumber(result.revision);
+    var revisionAdvanced = revision > state.revision;
+    if (revisionAdvanced) {
+      state.revision = revision;
+    }
     updateUi();
-    return changed;
+    return { changed: changed, revisionAdvanced: revisionAdvanced };
   }
 
-  function loadPreview() {
-    if (state.done || state.cancelled || previewInflight) {
-      return Promise.resolve();
+  /* ---- Event-driven preview refresh ----------------------------------- */
+
+  /* `longshot-progress` carries a monotonic `revision`; a newer revision than
+   * the last stitched frame we rendered means new pixels are available, so
+   * schedule a throttled preview fetch (≤100ms). The mock shell emits its
+   * progress asynchronously after the preview response, hence the preview-mode
+   * branch that keeps the simulated stitch growing. */
+  function onProgress(payload) {
+    if (!payload || state.done || state.cancelled) {
+      return;
+    }
+    state.progressEvents += 1;
+    var progressRevision = positiveNumber(payload.revision);
+    var info = applyState(payload);
+    var unrendered =
+      progressRevision > 0 && progressRevision > state.renderedRevision;
+    if (progressRevision > state.lastProgressRevision) {
+      state.lastProgressRevision = progressRevision;
+    }
+    if (info.changed || unrendered || PREVIEW_MODE) {
+      schedulePreview();
+    }
+  }
+
+  function schedulePreview() {
+    if (locked() || previewTimer) {
+      return;
+    }
+    previewTimer = window.setTimeout(function () {
+      previewTimer = 0;
+      fetchPreview();
+    }, PREVIEW_THROTTLE);
+  }
+
+  function fetchPreview() {
+    if (locked()) {
+      return;
+    }
+    if (previewInflight) {
+      previewQueued = true;
+      return;
     }
     previewInflight = true;
     state.previewCalls += 1;
-    return apiCall("preview")
+    apiCall("preview")
       .then(function (result) {
         if (state.done || state.cancelled) {
           return;
@@ -252,57 +281,100 @@
           showError(failureText(result, "获取长截图预览失败"));
           return;
         }
-        if (positiveNumber(result.width)) {
-          state.width = positiveNumber(result.width);
-        }
-        if (positiveNumber(result.height)) {
-          state.height = positiveNumber(result.height);
-        }
-        if (positiveNumber(result.frames)) {
-          state.frames = positiveNumber(result.frames);
-        }
-        if (result.direction === "horizontal" || result.direction === "vertical") {
-          state.direction = result.direction;
-        }
+        applyState(result);
         if (result.dataUrl) {
-          setImage(String(result.dataUrl));
+          renderPreview(String(result.dataUrl));
         }
-        updateUi();
       })
       .catch(function (error) {
         showError("获取长截图预览失败：" + errorText(error));
       })
       .then(function () {
         previewInflight = false;
+        if (previewQueued) {
+          previewQueued = false;
+          schedulePreview();
+        }
       });
   }
 
-  function setImage(dataUrl) {
-    state.imageSrcLength = dataUrl.length;
-    dom.image.onload = function () {
-      dom.image.hidden = false;
+  /* Double buffering: decode on the back layer, then swap the front layer.
+   * The contract's `#longshot-image` element is one of the two layers. */
+  function renderPreview(dataUrl) {
+    var layers = [dom.image];
+    if (dom.imageBuffer) {
+      layers.push(dom.imageBuffer);
+    }
+    if (!layers.length) {
+      return;
+    }
+    var front = state.frontLayer % layers.length;
+    var backIndex = layers.length > 1 ? (front + 1) % layers.length : front;
+    var target = layers[backIndex];
+    var token = (renderToken += 1);
+    var started = now();
+    var applied = false;
+
+    function apply() {
+      if (applied || token !== renderToken || state.done || state.cancelled) {
+        return;
+      }
+      applied = true;
+      var previous = layers[state.frontLayer % layers.length];
+      if (previous && previous !== target) {
+        previous.classList.remove("is-front");
+      }
+      target.hidden = false;
+      target.classList.add("is-front");
+      state.frontLayer = backIndex;
+      state.renders += 1;
+      state.lastRenderMs = Math.round(now() - started);
+      state.renderedRevision = state.revision;
+      state.imageSrcLength = dataUrl.length;
       if (dom.empty) {
         dom.empty.hidden = true;
       }
+      updateUi();
+    }
+
+    target.classList.remove("is-front");
+    target.hidden = false;
+    target.onload = function () {
+      target.onload = null;
+      apply();
     };
-    dom.image.onerror = function () {
-      showError("长截图预览加载失败");
-    };
-    dom.image.src = dataUrl;
-    if (dom.image.complete && dom.image.naturalWidth > 0) {
-      dom.image.hidden = false;
-      if (dom.empty) {
-        dom.empty.hidden = true;
+    target.onerror = function () {
+      target.onerror = null;
+      if (token === renderToken) {
+        showError("长截图预览加载失败");
       }
+    };
+    target.src = dataUrl;
+    if (typeof target.decode === "function") {
+      target.decode().then(apply, function () {
+        /* the onload handler still applies the frame */
+      });
+    }
+    if (target.complete && target.naturalWidth > 0) {
+      apply();
     }
   }
 
   function clearPreview() {
+    renderToken += 1;
+    [dom.image, dom.imageBuffer].forEach(function (node) {
+      if (!node) {
+        return;
+      }
+      node.hidden = true;
+      node.classList.remove("is-front");
+      node.onload = null;
+      node.onerror = null;
+      node.removeAttribute("src");
+    });
+    state.frontLayer = 0;
     state.imageSrcLength = 0;
-    dom.image.hidden = true;
-    dom.image.onload = null;
-    dom.image.onerror = null;
-    dom.image.removeAttribute("src");
+    state.lastRenderMs = 0;
     if (dom.empty) {
       dom.empty.hidden = false;
       dom.empty.textContent = "正在重置拼接…";
@@ -310,66 +382,77 @@
     hideError();
   }
 
-  /* ---- Realtime progress event ---------------------------------------- */
+  /* ---- Initial load + low-frequency state fallback --------------------- */
 
-  function onProgress(payload) {
-    if (!payload || state.done || state.cancelled) {
-      return;
-    }
-    var changed = false;
-    var width = positiveNumber(payload.width);
-    var height = positiveNumber(payload.height);
-    if (width && width !== state.width) {
-      state.width = width;
-      changed = true;
-    }
-    if (height && height !== state.height) {
-      state.height = height;
-      changed = true;
-    }
-    var frames = positiveNumber(payload.frames);
-    if (frames && frames !== state.frames) {
-      state.frames = frames;
-      changed = true;
-    }
-    state.stalled = !!payload.stalled;
-    updateUi();
-    if (changed) {
-      scheduleProgressPreview();
-    }
+  function initialLoad() {
+    state.stateCalls += 1;
+    apiCall("state")
+      .then(function (result) {
+        if (!result || result.ok === false) {
+          showError(failureText(result, "读取长截图状态失败"));
+          return;
+        }
+        applyState(result);
+      })
+      .catch(function (error) {
+        showError("读取长截图状态失败：" + errorText(error));
+      })
+      .then(function () {
+        state.ready = true;
+        updateUi();
+        fetchPreview();
+        scheduleFallback();
+      });
   }
 
-  function scheduleProgressPreview() {
-    if (progressTimer) {
+  function scheduleFallback() {
+    window.clearTimeout(fallbackTimer);
+    if (state.done || state.cancelled) {
       return;
     }
-    progressTimer = window.setTimeout(function () {
-      progressTimer = 0;
-      loadPreview();
-    }, PROGRESS_THROTTLE);
+    fallbackTimer = window.setTimeout(fallbackTick, STATE_FALLBACK);
   }
 
-  function onCancelled() {
-    if (state.cancelled) {
+  function fallbackTick() {
+    if (state.done || state.cancelled) {
       return;
     }
-    state.cancelled = true;
-    window.clearTimeout(pollTimer);
-    pollTimer = 0;
-    if (dom.doneText) {
-      dom.doneText.textContent = "已取消长截图";
-    }
-    if (dom.done) {
-      dom.done.hidden = false;
-    }
-    toast("已取消长截图", "info");
-    updateUi();
+    state.stateCalls += 1;
+    apiCall("state")
+      .then(function (result) {
+        if (state.done || state.cancelled) {
+          return;
+        }
+        if (!result || result.ok === false) {
+          showError(failureText(result, "读取长截图状态失败"));
+          return;
+        }
+        var info = applyState(result);
+        if (
+          info.revisionAdvanced ||
+          (!state.imageSrcLength && info.changed) ||
+          state.revision > state.renderedRevision
+        ) {
+          schedulePreview();
+        }
+        if (!state.imageSrcLength) {
+          fetchPreview();
+        }
+      })
+      .catch(function (error) {
+        showError("读取长截图状态失败：" + errorText(error));
+      })
+      .then(function () {
+        if (!state.done && !state.cancelled) {
+          scheduleFallback();
+        }
+      });
   }
 
   /* ---- Actions --------------------------------------------------------- */
 
   function switchDirection(direction) {
-    if (state.busy || state.done || state.cancelled) {
+    if (locked()) {
       return;
     }
     var next = direction === "horizontal" ? "horizontal" : "vertical";
@@ -391,9 +474,12 @@
         state.height = 0;
         state.frames = 0;
         state.stalled = false;
+        state.revision = 0;
+        state.renderedRevision = 0;
+        previewQueued = false;
         clearPreview();
         updateUi();
-        return poll(true);
+        return refreshFromState();
       })
       .catch(function (error) {
         showError("切换拼接方向失败：" + errorText(error));
@@ -404,8 +490,19 @@
       });
   }
 
+  function refreshFromState() {
+    state.stateCalls += 1;
+    return apiCall("state").then(function (result) {
+      if (result && result.ok !== false) {
+        applyState(result);
+      }
+      updateUi();
+      return fetchPreview();
+    });
+  }
+
   function finish() {
-    if (state.busy || state.done || state.cancelled) {
+    if (locked()) {
       return;
     }
     state.busy = true;
@@ -421,8 +518,7 @@
         }
         state.done = true;
         state.busy = false;
-        window.clearTimeout(pollTimer);
-        pollTimer = 0;
+        stopTimers();
         if (dom.doneText) {
           dom.doneText.textContent = "已完成，图片已复制并钉在桌面";
         }
@@ -440,7 +536,7 @@
   }
 
   function cancel() {
-    if (state.busy || state.done || state.cancelled) {
+    if (locked()) {
       return;
     }
     state.busy = true;
@@ -456,8 +552,7 @@
         }
         state.busy = false;
         state.cancelled = true;
-        window.clearTimeout(pollTimer);
-        pollTimer = 0;
+        stopTimers();
         if (dom.doneText) {
           dom.doneText.textContent = "已取消长截图";
         }
@@ -474,10 +569,33 @@
       });
   }
 
+  function onCancelled() {
+    if (state.cancelled) {
+      return;
+    }
+    state.cancelled = true;
+    stopTimers();
+    if (dom.doneText) {
+      dom.doneText.textContent = "已取消长截图";
+    }
+    if (dom.done) {
+      dom.done.hidden = false;
+    }
+    toast("已取消长截图", "info");
+    updateUi();
+  }
+
+  function stopTimers() {
+    window.clearTimeout(previewTimer);
+    previewTimer = 0;
+    window.clearTimeout(fallbackTimer);
+    fallbackTimer = 0;
+  }
+
   /* ---- UI -------------------------------------------------------------- */
 
   function updateUi() {
-    var locked = state.busy || state.done || state.cancelled;
+    var isLocked = locked();
     var width = state.width || 0;
     var height = state.height || 0;
     if (dom.size) {
@@ -493,19 +611,18 @@
       Array.prototype.forEach.call(
         dom.directions.querySelectorAll("[data-direction]"),
         function (button) {
-          var active =
-            button.getAttribute("data-direction") === state.direction;
+          var active = button.getAttribute("data-direction") === state.direction;
           button.classList.toggle("is-active", active);
           button.setAttribute("aria-pressed", active ? "true" : "false");
-          button.disabled = locked || !state.ready;
+          button.disabled = isLocked || !state.ready;
         }
       );
     }
     if (dom.finish) {
-      dom.finish.disabled = locked || !state.ready;
+      dom.finish.disabled = isLocked || !state.ready;
     }
     if (dom.cancel) {
-      dom.cancel.disabled = locked || !state.ready;
+      dom.cancel.disabled = isLocked || !state.ready;
     }
   }
 
@@ -544,9 +661,7 @@
   /* Test/debug helper: force a state/preview refresh. */
   window.__longshotRefresh = function () {
     hideError();
-    return new Promise(function (resolve) {
-      poll(true, resolve);
-    });
+    return refreshFromState();
   };
 
   /* ---- Boot ------------------------------------------------------------ */

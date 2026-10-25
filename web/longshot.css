@@ -1,8 +1,9 @@
-/* Lexora manual-scroll long-screenshot preview window (contract §11.14).
+/* Lexora manual-scroll long-screenshot preview window (contract §11.14.1).
  *
- * Frameless always-on-top helper window: white controls around a dark preview
- * canvas that shows the stitched image while the user scrolls the target app.
- * No external dependencies; the shell sizes the window (≈360px wide).
+ * Frameless always-on-top helper window: a white panel with the direction
+ * control on top, a large dark preview card in the middle (double-buffered
+ * <img> layers for flicker-free updates) and size/frame/hint status below.
+ * No external dependencies; the shell sizes the window (≈360–420px wide).
  */
 
 :root {
@@ -73,8 +74,10 @@ button {
 .longshot-root {
   display: flex;
   flex-direction: column;
+  gap: 8px;
   width: 100%;
   height: 100%;
+  padding: 10px;
   background: var(--surface);
 }
 
@@ -84,9 +87,6 @@ button {
   justify-content: space-between;
   gap: 8px;
   flex: 0 0 auto;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
 }
 
 .longshot-actions {
@@ -102,26 +102,26 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  padding: 2px;
+  padding: 3px;
   border-radius: 999px;
   background: var(--surface-hover);
 }
 
 .ls-seg {
-  height: 26px;
-  padding: 0 12px;
+  height: 28px;
+  padding: 0 14px;
   border: 0;
   border-radius: 999px;
   background: transparent;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 12.5px;
   line-height: 1;
   white-space: nowrap;
   cursor: pointer;
   transition: background 120ms ease, color 120ms ease;
 }
 
-.ls-seg:hover {
+.ls-seg:hover:not(:disabled) {
   color: var(--text);
 }
 
@@ -137,6 +137,11 @@ button {
   outline-offset: 1px;
 }
 
+.ls-seg:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* ---- Buttons ------------------------------------------------------------ */
 
 .ls-btn {
@@ -144,8 +149,8 @@ button {
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  height: 28px;
-  padding: 0 12px;
+  height: 30px;
+  padding: 0 14px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface);
@@ -185,7 +190,7 @@ button {
   background: var(--success-strong);
 }
 
-/* ---- Preview ------------------------------------------------------------ */
+/* ---- Preview card (dark, rounded, double buffered) --------------------- */
 
 .longshot-preview {
   position: relative;
@@ -194,7 +199,8 @@ button {
   justify-content: center;
   flex: 1 1 auto;
   min-height: 0;
-  padding: 8px;
+  padding: 6px;
+  border-radius: var(--radius-md);
   overflow: hidden;
   background-color: var(--preview-bg);
   background-image: repeating-linear-gradient(
@@ -204,19 +210,32 @@ button {
     transparent 8px,
     transparent 16px
   );
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.22);
 }
 
+.longshot-canvas {
+  position: absolute;
+  inset: 6px;
+}
+
+/* Two stacked layers: the incoming image decodes on the back layer and is only
+ * promoted to the front (opacity 1) once decoded — no flashing. */
 .longshot-image {
+  position: absolute;
+  inset: 0;
   display: block;
-  max-width: 100%;
-  max-height: 100%;
-  width: auto;
-  height: auto;
+  width: 100%;
+  height: 100%;
   object-fit: contain;
+  opacity: 0;
   background: transparent;
-  box-shadow: 0 2px 12px rgba(2, 6, 23, 0.5);
   -webkit-user-drag: none;
   user-select: none;
+  transition: opacity 90ms ease;
+}
+
+.longshot-image.is-front {
+  opacity: 1;
 }
 
 .longshot-empty {
@@ -275,11 +294,8 @@ button {
 .longshot-footer {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   flex: 0 0 auto;
-  padding: 8px 10px;
-  border-top: 1px solid var(--border);
-  background: var(--surface);
 }
 
 .longshot-status {
@@ -293,7 +309,7 @@ button {
 
 .longshot-size {
   color: var(--text);
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
@@ -304,6 +320,7 @@ button {
 }
 
 .longshot-hint {
+  flex: 1 0 100%;
   color: var(--text-faint);
 }
 
@@ -369,7 +386,8 @@ button {
 
 @media (prefers-reduced-motion: reduce) {
   .ls-seg,
-  .ls-btn {
+  .ls-btn,
+  .longshot-image {
     transition: none;
   }
 }

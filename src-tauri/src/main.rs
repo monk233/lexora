@@ -181,7 +181,7 @@ fn main() {
                 if window.label() == crate::longshot::LONG_SHOT_LABEL {
                     // The preview window is gone: never leave the grab thread or
                     // its buffered image running behind the shell's back.
-                    crate::longshot::forget_session();
+                    crate::longshot::forget_session(window.app_handle());
                 }
             }
             WindowEvent::Focused(false) => {
@@ -365,7 +365,7 @@ fn cleanup(app: &AppHandle) {
     crate::pin::clear_registry();
     // Stop the manual long-screenshot grab thread (if any); the preview window
     // dies with the process.
-    crate::longshot::forget_session();
+    crate::longshot::forget_session(app);
 
     // `shutdown_local` completes synchronously (process kill) and deliberately
     // keeps `local.keepRunning` so the next launch restores the engine; spawn +

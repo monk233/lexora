@@ -1710,7 +1710,8 @@
       "is-dragging",
       "is-over-selection",
       "annotating",
-      "is-longshot"
+      "is-longshot",
+      "is-longshot-live"
     );
     if (API && typeof API.close === "function") {
       try {
@@ -1911,7 +1912,7 @@
       button.setAttribute("aria-pressed", "false");
       button.disabled = false;
     });
-    document.body.classList.remove("annotating", "is-longshot");
+    document.body.classList.remove("annotating", "is-longshot", "is-longshot-live");
     if (dom.canvas) {
       dom.canvas.hidden = true;
     }
@@ -2850,6 +2851,9 @@
     state.longshotActive = false;
     state.busy = false;
     document.body.classList.remove("is-longshot");
+    /* §11.14.1: the CSS class hides the frozen screenshot / crop handles while
+     * the live view is showing; dropping it restores them. */
+    document.body.classList.remove("is-longshot-live");
     hideLegacyLongshotProgress();
     if (state.closed) {
       return;
@@ -2861,16 +2865,50 @@
     render();
   }
 
-  function subscribeLongshotEvents() {
-    var api = getLongshotApi();
-    if (!api || typeof api.onCancelled !== "function") {
+  /* §11.14.1 live mode: the overlay stays visible (selection border/mask shown)
+   * and the frozen screenshot + crop handles are hidden via CSS. Toolbar,
+   * palette, hint and colour pickers are hidden here. */
+  function enterLongshotLive() {
+    if (state.closed) {
       return;
     }
+    state.longshotActive = true;
+    state.busy = false;
+    document.body.classList.add("is-longshot");
+    document.body.classList.add("is-longshot-live");
+    setHidden(dom.bar, true);
+    setHidden(dom.palette, true);
+    hideHint();
+    stopColorPicking();
+    closeAllColorPanels();
+    hideLegacyLongshotProgress();
+    updateBarState();
+  }
+
+  function subscribeLongshotEvents() {
+    var api = getLongshotApi();
+    if (!api) {
+      return;
+    }
+    /* `longshot-started` (live mode) and `longshot-cancelled` (restore). */
     try {
-      api.onCancelled(handleLongshotCancelled);
+      if (typeof api.onStarted === "function") {
+        api.onStarted(handleLongshotStarted);
+      }
+    } catch (error) {
+      /* the start() fallback below still enters live mode */
+    }
+    try {
+      if (typeof api.onCancelled === "function") {
+        api.onCancelled(handleLongshotCancelled);
+      }
     } catch (error) {
       /* every other overlay action still works without this event */
     }
+  }
+
+  function handleLongshotStarted() {
+    enterLongshotLive();
   }
 
   function handleLongshotCancelled() {
@@ -2881,8 +2919,9 @@
     toast("已取消长截图", "info", 1800);
   }
 
-  /* §11.14: the longshot button hands the frozen crop over to the shell, which
-   * hides this overlay and opens the manual-scroll preview window. */
+  /* §11.14/§11.14.1: the longshot button starts the shell's manual-scroll
+   * session; the overlay stays visible in live mode so the user can see the
+   * selection border over the real application window. */
   function startLongshot() {
     if (!isConfigEnabled("longshot")) {
       return;
@@ -2919,16 +2958,9 @@
           );
           return;
         }
-        /* Success: the shell hides this overlay (the preview window takes
-         * over). Keep the selection/annotations intact for the cancel path. */
-        state.longshotActive = true;
-        document.body.classList.add("is-longshot");
-        setHidden(dom.bar, true);
-        setHidden(dom.palette, true);
-        closeAllColorPanels();
-        stopColorPicking();
-        hideLegacyLongshotProgress();
-        updateBarState();
+        /* Fallback for a shell that does not emit `longshot-started` yet: make
+         * sure live mode is active. Idempotent when the event already arrived. */
+        enterLongshotLive();
       },
       function (error) {
         if (state.closed || generation !== state.captureGeneration) {

@@ -28,7 +28,12 @@
     </header>
 
     <main class="longshot-preview" id="longshot-preview">
-      <img class="longshot-image" id="longshot-image" alt="" draggable="false" hidden>
+      <div class="longshot-canvas" id="longshot-canvas">
+        <img class="longshot-image" id="longshot-image" alt="" draggable="false"
+             hidden>
+        <img class="longshot-image" id="longshot-image-buffer" alt="" draggable="false"
+             aria-hidden="true" hidden>
+      </div>
       <div class="longshot-empty" id="longshot-empty">正在等待拼接…</div>
       <div class="longshot-error" id="longshot-error" role="alert" hidden>
         <span class="longshot-error-text" id="longshot-error-text"></span>
