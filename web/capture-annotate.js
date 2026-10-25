@@ -1394,9 +1394,9 @@
       next.push(annotation);
       pushState(next);
       notifyHistory();
-      /* New drawings are selected immediately so the transform handles show up
-       * (§11.12). */
-      selectedUid = annotation.uid;
+      /* Round 19: a freshly drawn annotation is NOT selected automatically;
+       * clicking it later selects it for transforms (§11.12). */
+      selectedUid = null;
       requestRender();
     }
 
@@ -1588,7 +1588,19 @@
         return;
       }
 
-      /* 3) A drawing tool is active: start a new annotation. */
+      /* 3) A drawing tool is active. Clicking an existing annotation selects it
+       * (round 19: drawings are no longer auto-selected, so this is how the user
+       * gets the transform handles back); clicking empty space draws a new one. */
+      var existing = hitTestTopmost(point);
+      if (existing) {
+        ensureUid(existing.annotation);
+        selectedUid = existing.annotation.uid;
+        startTransform("move", point, "", event);
+        event.preventDefault();
+        event.stopPropagation();
+        requestRender();
+        return;
+      }
       clearSelection();
       startNewAnnotation(event, point);
     }
