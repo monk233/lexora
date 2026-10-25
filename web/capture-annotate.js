@@ -207,12 +207,65 @@
       var size = cssSize();
       prepareContext(context, size);
       context.clearRect(0, 0, size.width, size.height);
+      /* Annotations are confined to the selection rectangle (contract
+       * §11.2/§11.11.5): everything outside stays untouched. */
+      var box = selectionBounds();
+      if (box) {
+        context.save();
+        context.beginPath();
+        context.rect(box.x, box.y, box.width, box.height);
+        context.clip();
+      }
       drawList(context, history[historyIndex], size);
       if (draft) {
         /* Live preview (§11.11): the uncommitted op is painted above the
          * committed annotations and never enters history until pointerup. */
         drawAnnotation(context, draftToAnnotation(draft), size);
       }
+      if (box) {
+        context.restore();
+      }
+    }
+
+    /* Selection rectangle in CSS pixels, or null when the user has not framed
+     * one yet. */
+    function selectionBounds() {
+      var selection = getSelection();
+      if (!selection) {
+        return null;
+      }
+      var x = finite(selection.x, 0);
+      var y = finite(selection.y, 0);
+      var width = finite(selection.width, 0);
+      var height = finite(selection.height, 0);
+      if (width <= 0 || height <= 0) {
+        return null;
+      }
+      return { x: x, y: y, width: width, height: height };
+    }
+
+    function clampToSelection(point) {
+      var box = selectionBounds();
+      if (!box) {
+        return point;
+      }
+      return {
+        x: Math.min(box.x + box.width, Math.max(box.x, point.x)),
+        y: Math.min(box.y + box.height, Math.max(box.y, point.y))
+      };
+    }
+
+    function insideSelection(point) {
+      var box = selectionBounds();
+      if (!box) {
+        return true;
+      }
+      return (
+        point.x >= box.x &&
+        point.x <= box.x + box.width &&
+        point.y >= box.y &&
+        point.y <= box.y + box.height
+      );
     }
 
     function drawList(targetContext, list, size) {
@@ -649,6 +702,12 @@
         /* pointer capture is an optimisation only */
       }
       var point = pointFromEvent(event);
+      /* Starting an annotation outside the selection does nothing: drawing is
+       * confined to the framed region (contract §11.11.5). */
+      if (!insideSelection(point)) {
+        return;
+      }
+      point = clampToSelection(point);
       activePointerId = event.pointerId;
 
       if (tool === "text") {
@@ -721,7 +780,9 @@
         return;
       }
       event.preventDefault();
-      var point = pointFromEvent(event);
+      /* Keep the drag inside the selection: the pointer may leave the box while
+       * the user keeps dragging, but the annotation stops at the edges. */
+      var point = clampToSelection(pointFromEvent(event));
       if (draft.type === "pen" || draft.type === "mosaic") {
         var points = draft.points;
         var last = points[points.length - 1];
