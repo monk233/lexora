@@ -322,34 +322,54 @@
       targetContext.stroke();
     }
 
+    /* QQ-style arrow (fifteenth round): a solid triangular head plus a tapered
+     * cone-shaped tail. The shaft widens from a near-point at the start to a
+     * narrow base at the head, and the head triangle is wider than that base, so
+     * the silhouette has the two barbs of the reference screenshot. Both parts
+     * are filled with the annotation colour (no stroke). */
     function drawArrow(targetContext, annotation) {
       var dx = annotation.x2 - annotation.x1;
       var dy = annotation.y2 - annotation.y1;
       var length = Math.sqrt(dx * dx + dy * dy);
-      if (length < 0.5) {
+      if (length < 1) {
         return;
       }
       var width = Math.max(1, annotation.width || 1);
-      var headLength = Math.max(9, width * 3.2);
-      var angle = Math.atan2(dy, dx);
-      var spread = Math.PI / 7;
-      var headLeftX = annotation.x2 - headLength * Math.cos(angle - spread);
-      var headLeftY = annotation.y2 - headLength * Math.sin(angle - spread);
-      var headRightX = annotation.x2 - headLength * Math.cos(angle + spread);
-      var headRightY = annotation.y2 - headLength * Math.sin(angle + spread);
+      // Chunky QQ proportions: the head is clearly wider than the shaft and
+      // scales with the line width, but never eats the whole arrow.
+      var headLength = Math.min(Math.max(26, width * 8), length * 0.55, 120);
+      var headHalf = headLength * 0.6;
+      var shaftHalfAtHead = Math.max(width * 0.8, headLength * 0.12);
+      var shaftHalfAtTail = Math.max(0.4, width * 0.08);
+      var ux = dx / length;
+      var uy = dy / length;
+      var px = -uy;
+      var py = ux;
+      var baseX = annotation.x2 - ux * headLength;
+      var baseY = annotation.y2 - uy * headLength;
 
       targetContext.save();
-      setupStroke(targetContext, annotation);
+      targetContext.fillStyle = annotation.color || "#ef4444";
       targetContext.beginPath();
-      targetContext.moveTo(annotation.x1, annotation.y1);
-      targetContext.lineTo(annotation.x2, annotation.y2);
-      targetContext.stroke();
+      targetContext.moveTo(
+        annotation.x1 + px * shaftHalfAtTail,
+        annotation.y1 + py * shaftHalfAtTail
+      );
+      targetContext.lineTo(baseX + px * shaftHalfAtHead, baseY + py * shaftHalfAtHead);
+      targetContext.lineTo(baseX - px * shaftHalfAtHead, baseY - py * shaftHalfAtHead);
+      targetContext.lineTo(
+        annotation.x1 - px * shaftHalfAtTail,
+        annotation.y1 - py * shaftHalfAtTail
+      );
+      targetContext.closePath();
+      targetContext.fill();
+
       targetContext.beginPath();
       targetContext.moveTo(annotation.x2, annotation.y2);
-      targetContext.lineTo(headLeftX, headLeftY);
-      targetContext.moveTo(annotation.x2, annotation.y2);
-      targetContext.lineTo(headRightX, headRightY);
-      targetContext.stroke();
+      targetContext.lineTo(baseX + px * headHalf, baseY + py * headHalf);
+      targetContext.lineTo(baseX - px * headHalf, baseY - py * headHalf);
+      targetContext.closePath();
+      targetContext.fill();
       targetContext.restore();
     }
 
