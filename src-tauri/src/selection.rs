@@ -125,6 +125,11 @@ struct Inner {
     /// A result panel is open: the global input hook must not dismiss the
     /// picker (sticky panel), even when it is not pinned.
     panel_open: AtomicBool,
+    /// A screenshot overlay is active: the picker/settings stay open and the
+    /// global input hook must not dismiss the picker while the user frames the
+    /// screenshot (contract §10.1). Set by `capture.rs`, cleared when the
+    /// capture flow ends.
+    capture_active: AtomicBool,
     capturing: AtomicBool,
     started: AtomicBool,
     last_selection: Mutex<Option<PickerPayload>>,
@@ -213,6 +218,7 @@ impl SelectionService {
             picker_visible: AtomicBool::new(false),
             panel_pinned: AtomicBool::new(false),
             panel_open: AtomicBool::new(false),
+            capture_active: AtomicBool::new(false),
             capturing: AtomicBool::new(false),
             started: AtomicBool::new(false),
             last_selection: Mutex::new(None),
@@ -298,6 +304,18 @@ impl SelectionService {
 
     pub fn is_panel_open(&self) -> bool {
         self.inner.panel_open.load(Ordering::Acquire)
+    }
+
+    /// Marks whether a screenshot overlay is currently active. While active the
+    /// picker/settings are kept open on purpose and the global input hook must
+    /// not dismiss them (contract §10.1). It is cleared by `capture_close`,
+    /// `capture_skill` and `capture_copy`.
+    pub fn set_capture_active(&self, active: bool) {
+        self.inner.capture_active.store(active, Ordering::Release);
+    }
+
+    pub fn is_capture_active(&self) -> bool {
+        self.inner.capture_active.load(Ordering::Acquire)
     }
 
     pub fn last_selection(&self) -> Option<PickerPayload> {
@@ -414,6 +432,13 @@ fn process_capture(inner: &Arc<Inner>, request: &CaptureRequest) -> Result<(), S
 
 fn action_worker(inner: Arc<Inner>, receiver: Receiver<ActionRequest>) {
     while let Ok(request) = receiver.recv() {
+        // While a screenshot is being taken the picker/settings stay open and
+        // ordinary input (keyboard, wheel, right/middle click, outside click)
+        // must not dismiss them (contract §10.1). The requests are simply
+        // dropped: after the capture ends the next input dismisses normally.
+        if inner.capture_active.load(Ordering::Acquire) {
+            continue;
+        }
         match request {
             ActionRequest::OutsideClick { x, y } => {
                 if inner.panel_pinned.load(Ordering::Acquire) {
@@ -737,6 +762,25 @@ mod tests {
         service.set_picker_visible(false);
         assert!(!service.is_panel_open());
         assert!(!service.is_panel_pinned());
+    }
+
+    #[test]
+    fn capture_active_gates_the_input_dismissal() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(SettingsStore::load(dir.path().join("settings.json")));
+        let logger = Logger::new(&dir.path().join("logs"), "selection-test");
+        let service = SelectionService::new(store, logger);
+
+        // Off by default: input dismissal works normally.
+        assert!(!service.is_capture_active());
+        service.set_capture_active(true);
+        assert!(service.is_capture_active());
+        // Hiding the picker does not clear the screenshot gate: only the
+        // capture flow itself ends it.
+        service.set_picker_visible(false);
+        assert!(service.is_capture_active());
+        service.set_capture_active(false);
+        assert!(!service.is_capture_active());
     }
 
     #[test]

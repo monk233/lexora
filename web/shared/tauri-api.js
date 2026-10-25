@@ -786,6 +786,15 @@
   function startMockImageStream(requestId, action) {
     var text = MOCK_IMAGE_TEXTS[action] || MOCK_IMAGE_TEXTS.explain;
     var step = action === "ocr" ? 12 : 6;
+    // Screenshot translation reports its resolved target language first (the
+    // real shell resolves it from the recognized text, contract §10.3).
+    if (action === "translate") {
+      mockEmit("translate-event", {
+        requestId: requestId,
+        type: "target",
+        targetLang: "zh",
+      });
+    }
     var index = 0;
     var timer = window.setInterval(function () {
       if (index >= text.length) {
@@ -865,6 +874,12 @@
    * the (reused) overlay window for another capture. */
   window.__mockCaptureArmed = function (index) {
     mockEmit("capture-armed", { index: Number(index) || 0 });
+  };
+
+  /* Console helper to push an arbitrary translate-event (target language,
+   * error, chunk…) while previewing the picker panels. */
+  window.__mockTranslateEvent = function (payload) {
+    mockEmit("translate-event", payload || {});
   };
 
   var MOCK_NAMED_KEYS = {
@@ -1522,9 +1537,13 @@
       });
     },
     /* Re-runs the screenshot skill that opened the current image panel. */
-    captureRetry: function (requestId) {
+    /* Re-runs the screenshot skill that opened the current image panel.
+     * `targetLang` is only used by screenshot translation (language switch or
+     * retry with the currently selected target). */
+    captureRetry: function (requestId, targetLang) {
       return safeInvoke("capture_retry", {
         requestId: String(requestId == null ? "" : requestId),
+        targetLang: String(targetLang == null ? "" : targetLang),
       });
     },
     /* Follow-up on a screenshot panel (vision / OCR context kept in the shell). */
@@ -1749,9 +1768,10 @@
         targetLang: String(targetLang == null ? "" : targetLang),
       });
     },
-    retry: function (requestId) {
+    retry: function (requestId, targetLang) {
       return safeInvoke("capture_retry", {
         requestId: String(requestId == null ? "" : requestId),
+        targetLang: String(targetLang == null ? "" : targetLang),
       });
     },
     followup: function (requestId, question, previousAnswer, history) {

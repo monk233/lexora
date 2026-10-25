@@ -260,10 +260,24 @@
         <div class="field field-stack">
           <div class="field-label">
             <span class="field-name">工具栏技能</span>
-            <p class="field-hint">勾选要显示在工具栏的技能，拖动调整顺序；图片技能点击后进入截图</p>
+            <p class="field-hint">勾选要显示在工具栏的技能，拖动调整顺序；两个分类分别保存开关与顺序</p>
           </div>
           <div class="field-control">
+            <div class="segmented skill-kind-tabs" role="tablist" aria-label="技能分类">
+              <button type="button" class="segment" id="skill-tab-text"
+                      data-skill-tab="text" role="tab" aria-selected="true"
+                      aria-controls="skill-list">
+                文字技能<span class="segment-count" id="skill-tab-text-count"></span>
+              </button>
+              <button type="button" class="segment" id="skill-tab-image"
+                      data-skill-tab="image" role="tab" aria-selected="false"
+                      aria-controls="skill-list">
+                图片技能<span class="segment-count" id="skill-tab-image-count"></span>
+              </button>
+            </div>
+            <p class="skill-kind-note" id="skill-kind-note" hidden>点击后进入截图框选</p>
             <ul class="skill-list" id="skill-list"></ul>
+            <p class="skill-list-empty" id="skill-list-empty" hidden>还没有自定义图片技能，点击「添加技能」创建</p>
             <div class="skill-actions">
               <button type="button" class="btn" id="add-custom-skill">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"

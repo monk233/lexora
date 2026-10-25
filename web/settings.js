@@ -67,6 +67,10 @@
   /* Skill id currently being dragged in the toolbar-order list. */
   var dragSkillId = "";
 
+  /* Active toolbar-skill category tab: "text" | "image". Not persisted; every
+   * settings window starts on the text tab (contract §7.2). */
+  var skillTab = "text";
+
   /* Search-engine config panel (search skill) open state. */
   var searchPanelOpen = false;
 
@@ -1525,6 +1529,83 @@
     return result;
   }
 
+  /* ---- Skill categories (文字技能 / 图片技能 tabs) ----------------------- */
+
+  /* Built-in skills: screenshot is the only image skill and every other
+   * built-in is a text skill (contract §7.2). Custom skills follow their own
+   * kind; unknown ids return "" so a stale saved id is never mistaken for a
+   * member of either category. */
+  function skillCategory(id, customMap) {
+    var custom = customMap && customMap[id];
+    if (custom) {
+      return customSkillKind(custom) === "image" ? "image" : "text";
+    }
+    if (SKILL_IDS.indexOf(id) >= 0) {
+      return builtinSkillKind(id) === "image" ? "image" : "text";
+    }
+    return "";
+  }
+
+  function customSkillMap() {
+    var map = {};
+    customSkillsList().forEach(function (skill) {
+      map[skill.id] = skill;
+    });
+    return map;
+  }
+
+  /* Raw saved toolbar order, including ids the UI filters out. Never mutate
+   * the stored array: reordering builds a new one. */
+  function storedSkillOrder() {
+    var picker = state && state.settings && state.settings.picker;
+    var stored =
+      picker && Array.isArray(picker.skills) ? picker.skills : DEFAULT_SKILLS;
+    return stored
+      .map(function (value) {
+        return String(value || "");
+      })
+      .filter(function (id) {
+        return !!id;
+      });
+  }
+
+  function enabledCategorySkills(category) {
+    var customMap = customSkillMap();
+    return enabledSkills().filter(function (id) {
+      return skillCategory(id, customMap) === category;
+    });
+  }
+
+  /* Reorder one category without moving the other: walk the saved global order
+   * and replace that category's ids with the new category order; every other
+   * id keeps its slot and relative position (contract §7.2). */
+  function mergeCategoryOrder(globalOrder, category, categoryNext, customMap) {
+    var queue = categoryNext.slice();
+    var merged = [];
+    globalOrder.forEach(function (id) {
+      if (skillCategory(id, customMap) !== category) {
+        merged.push(id);
+        return;
+      }
+      if (queue.length) {
+        merged.push(queue.shift());
+      }
+    });
+    while (queue.length) {
+      merged.push(queue.shift());
+    }
+    return merged;
+  }
+
+  function selectSkillTab(tab) {
+    var next = tab === "image" ? "image" : "text";
+    if (next === skillTab) {
+      return;
+    }
+    skillTab = next;
+    renderSkills(true);
+  }
+
   function renderSkills(force) {
     var list = byId("skill-list");
     if (!list) {
@@ -1564,14 +1645,62 @@
         return id + ":" + (enabled.indexOf(id) >= 0 ? 1 : 0) + ":" + detail;
       })
       .join("\u0001");
-    if (!force && signature === list.getAttribute("data-signature")) {
+    if (
+      !force &&
+      skillTab === list.getAttribute("data-active-tab") &&
+      signature === list.getAttribute("data-signature")
+    ) {
       return;
     }
+    list.setAttribute("data-active-tab", skillTab);
     list.setAttribute("data-signature", signature);
     list.innerHTML = "";
     order.forEach(function (id) {
+      if (skillCategory(id, customMap) !== skillTab) {
+        return;
+      }
       list.appendChild(skillRow(id, enabled.indexOf(id) >= 0, customMap[id]));
     });
+    renderSkillTabs(order, customMap, customs);
+  }
+
+  /* Tab chrome: selected state, per-category counts, the image-tab note and
+   * the empty hint shown while the image tab has no custom skills. */
+  function renderSkillTabs(order, customMap, customs) {
+    var counts = { text: 0, image: 0 };
+    order.forEach(function (id) {
+      var category = skillCategory(id, customMap);
+      if (category === "text" || category === "image") {
+        counts[category] += 1;
+      }
+    });
+    var textTab = byId("skill-tab-text");
+    if (textTab) {
+      textTab.setAttribute(
+        "aria-selected",
+        skillTab === "text" ? "true" : "false"
+      );
+    }
+    var imageTab = byId("skill-tab-image");
+    if (imageTab) {
+      imageTab.setAttribute(
+        "aria-selected",
+        skillTab === "image" ? "true" : "false"
+      );
+    }
+    var textCount = byId("skill-tab-text-count");
+    if (textCount) {
+      textCount.textContent = "(" + counts.text + ")";
+    }
+    var imageCount = byId("skill-tab-image-count");
+    if (imageCount) {
+      imageCount.textContent = "(" + counts.image + ")";
+    }
+    setHidden(byId("skill-kind-note"), skillTab !== "image");
+    var hasCustomImage = customs.some(function (skill) {
+      return customSkillKind(skill) === "image";
+    });
+    setHidden(byId("skill-list-empty"), skillTab !== "image" || hasCustomImage);
   }
 
   function skillRow(id, enabled, custom) {
@@ -2071,7 +2200,7 @@
       icon: custom ? custom.icon : validCustomIcon(LP.CUSTOM_SKILL_DEFAULT_ICON),
       label: custom ? custom.label : "",
       prompt: custom ? custom.prompt : "",
-      kind: custom ? customSkillKind(custom) : "text",
+      kind: custom ? customSkillKind(custom) : skillTab,
     };
     iconSearchQuery = "";
     assignFieldValue(byId("custom-skill-icon-search"), "");
@@ -2213,6 +2342,9 @@
       }
       labelText = "已添加技能「" + label + "」";
     }
+    /* Land on the tab that holds the saved skill so a new or re-typed row is
+     * visible immediately (contract §7.2). */
+    skillTab = kind;
     closeCustomEditor();
     save({ picker: { customSkills: customs, skills: skills } });
     toast(labelText, "success");
@@ -2335,7 +2467,9 @@
     if (!targetId || targetId === movedId) {
       return;
     }
-    var original = enabledSkills();
+    /* Reorder inside the active category only, then merge back into the saved
+     * global order so the other category keeps its slots (contract §7.2). */
+    var original = enabledCategorySkills(skillTab);
     var from = original.indexOf(movedId);
     if (from < 0) {
       return;
@@ -2350,7 +2484,13 @@
     if (next.join("|") === original.join("|")) {
       return;
     }
-    save({ picker: { skills: next } });
+    var merged = mergeCategoryOrder(
+      storedSkillOrder(),
+      skillTab,
+      next,
+      customSkillMap()
+    );
+    save({ picker: { skills: merged } });
   }
 
   function renderBlacklist() {
@@ -3284,6 +3424,13 @@
     byId("skill-list").addEventListener("dragover", overSkillDrop);
     byId("skill-list").addEventListener("drop", dropSkill);
     byId("skill-list").addEventListener("dragend", clearDragMarks);
+
+    byId("skill-tab-text").addEventListener("click", function () {
+      selectSkillTab("text");
+    });
+    byId("skill-tab-image").addEventListener("click", function () {
+      selectSkillTab("image");
+    });
 
     byId("add-custom-skill").addEventListener("click", function () {
       openCustomEditor("");

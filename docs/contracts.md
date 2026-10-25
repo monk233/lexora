@@ -379,7 +379,7 @@ pub struct SelectionService {
   - 分段控件「在线 API / 本地模型」立即保存 mode。
   - 在线：预设下拉（DeepSeek/OpenAI/Moonshot/智谱/Ollama/LM Studio/自定义）、服务地址、API Key（password + 显示切换）、模型名下拉（[拉取模型] 通过 `list_online_models` 拉取 `/models`，并保留「自定义模型…」手填兜底）、[测试连接]（显示延迟/模型列表/错误）、状态徽标。切换预设必须清空上一个服务商的 API Key / 模型名与模型缓存，且**不再自动填充模型名**；已知预设只填服务地址。
   - 本地：引擎状态（未安装→[下载引擎]，显示进度/取消；已安装→版本状态）、已安装模型列表（显示名称、大小、角色徽标：翻译模型/通用模型/**视觉模型**/自定义模型；不再有模型下拉选择）、[下载模型]（弹目录列表：名称/大小/量化/协议/下载按钮+各自进度；多个模型可同时下载、可分别取消；不显示「推荐」标签；视觉模型显示「视觉」徽标，下载时先主模型后投影器）、[导入 GGUF]、[启动]/[停止]、当前状态徽标与错误提示。运行状态不再显示当前模型名；状态 badge 与启动/停止按钮靠该行最右并与左侧标签垂直居中。启动时后端自动选择模型；停止后翻译/总结不会自动启动；应用重启会恢复上次运行状态（keepRunning）。本地模式图片理解使用 Qwen2.5-VL 3B（含 mmproj）。
-- 划词行为：启用开关、紧凑模式开关（紧跟启用开关、右对齐）、面板模式（紧跟紧凑模式：滚动/自适应，保存 `picker.panelMode`）、技能开关 + 拖拽排序（无上下箭头）…（其余同前）、每行显示技能图标（内置用 `LP.SKILL_MAP[id].icon`，自定义用自定义图标）、技能提示词编辑（行内展开 textarea，默认填充系统默认英文提示词，支持重置默认；translate 支持 `{target}` 占位符；支持 translate/summarize/explain/polish）、自定义技能管理（[添加技能] 打开内联表单：**图标选择器默认紧凑显示当前图标预览 +「更换图标」，点击展开 200 个 Lucide 图标 + 名称搜索过滤**；名称 ≤20、提示词必填 ≤4000、变量提示 `{text}/{target}/{language}/{program}/{app}`；支持编辑、删除二次确认）、搜索配置（搜索行「配置」按钮展开 Google/百度/Bing，保存 `picker.searchEngine`）、默认目标语言（auto 显示「自动识别」，共 38 种语言）、黑名单 chip 输入（回车添加/可删除）。截图快捷键可配置（见 §10.4）。恢复默认设置保留自定义技能与已下载模型/引擎。「开机自启」「关闭窗口后驻留托盘」两个开关行与划词开关一致：标签/开关垂直居中、开关靠右。
+- 划词行为：启用开关、紧凑模式开关（紧跟启用开关、右对齐）、面板模式（紧跟紧凑模式：滚动/自适应，保存 `picker.panelMode`）、技能开关 + 拖拽排序（无上下箭头）…（其余同前；**第三轮起按「文字技能 / 图片技能」两个 Tab 分类展示，各自独立开关与排序，Tab 内拖动只重排该分类并保留另一分类相对顺序**）、每行显示技能图标（内置用 `LP.SKILL_MAP[id].icon`，自定义用自定义图标）、技能提示词编辑（行内展开 textarea，默认填充系统默认英文提示词，支持重置默认；translate 支持 `{target}` 占位符；支持 translate/summarize/explain/polish）、自定义技能管理（[添加技能] 打开内联表单：**图标选择器默认紧凑显示当前图标预览 +「更换图标」，点击展开 200 个 Lucide 图标 + 名称搜索过滤**；名称 ≤20、提示词必填 ≤4000、变量提示 `{text}/{target}/{language}/{program}/{app}`；支持编辑、删除二次确认）、搜索配置（搜索行「配置」按钮展开 Google/百度/Bing，保存 `picker.searchEngine`）、默认目标语言（auto 显示「自动识别」，共 38 种语言）、黑名单 chip 输入（回车添加/可删除）。截图快捷键可配置（见 §10.4）。恢复默认设置保留自定义技能与已下载模型/引擎。「开机自启」「关闭窗口后驻留托盘」两个开关行与划词开关一致：标签/开关垂直居中、开关靠右。
 - 快捷键（第二轮反馈起独立成卡片，不再放在「划词行为」内）：卡片头「快捷键」+ 说明「配置 Lexora 的全局快捷键。」；内含「截图快捷键」录制器——显示当前组合（如「Win + Shift + X」），点击后提示「请按下新的快捷键…（Esc 取消）」，按下「修饰键 + 主键」即调用 `capture_set_hotkey` 保存并立即生效；Esc 取消；冲突时内联提示并保留旧值；「恢复默认」还原 `Win+Shift+X`；保存 `capture.regionShortcut`。
 - 应用与启动：开机自启（portable 不支持时置灰说明）、关闭窗口后驻留托盘、打开数据/模型/日志/引擎目录、退出程序。
 - 关于：版本、Tauri/Rust 版本、MIT、GitHub 链接、引擎与模型状态。
@@ -412,21 +412,24 @@ pub struct SelectionService {
 - 构建 release：`scripts/build-portable.ps1` 产出单个 `dist/Lexora-<version>-win-x64.exe`；双击运行后静默驻留托盘，数据写入 exe 同级 data/；Release 正文由 `scripts/release-notes.ps1` 生成排版化 changelog。
 
 
-## 10. 截图（v0.2.2 性能与无闪烁重做，权威契约）
+## 10. 截图（v0.2.3 第三轮反馈，权威契约）
 
-本轮（第二轮反馈）改造：截图调用延迟与屏幕闪烁、默认全屏时拖拽语义、截图快捷键独立设置模块、图片提取文字改用视觉模型（VL）而非 Windows OCR。
+历史轮次：v0.2.1 无黑屏/白色工具条/面板化/本地视觉/可配置快捷键；v0.2.2 复用+透明+JPEG 性能、全屏拖拽语义、快捷键独立卡片、VL 文字提取。
+本轮（第三轮反馈）：截图不再关闭设置/工具面板窗口；设置页图片技能与文字技能分 Tab；提取文字恢复流式输出；图片翻译可切换目标语言并修正源/目标语言显示。
 
 ### 10.1 快速启动、无闪烁（overlay 复用 + 透明窗口 + 并行预编码）
 目标：把「按快捷键 → overlay 可见」压到 ~300ms 级别，且任何一帧都不出现黑白闪烁。
 
 - **overlay 窗口复用**：`capture-<index>` 窗口第一次截图时创建，之后 `capture_close`/技能执行**只隐藏不销毁**；下次 `start_capture` 若显示器数量与几何一致则直接复用（webview 常驻 = 省掉冷启动/窗口创建）。显示器布局变化（数量/坐标/尺寸）时才销毁重建。
 - **窗口透明**：`create_capture_window` 使用 `transparent(true)` + 透明背景色 + `shadow(false)`、`visible(false)`；页面 body/根容器背景透明，只在 `<img>` 与遮罩层上绘制。避免 `show()` 首帧白底/黑底闪烁。
-- **并行预编码**：`start_capture` 先隐藏自身窗口并确保 overlay 已创建（webview 在后台开始加载），随后 `xcap` 抓取所有显示器，`spawn_blocking` 并行把每块屏编码为 **JPEG data URL（质量约 85）** 存入 `Session`。JPEG 替代 PNG：编码、IPC、webview 解码均快数倍，overlay 只用于显示；裁切/OCR/视觉请求始终从内存里的原始 `RgbaImage` 取像素，无损。
+- **不隐藏自身窗口（第三轮修复）**：截图期间 **设置窗口与划词工具面板保持打开**，不再调用 hide。做法：对 `settings`、`picker`、`capture-*` 窗口调用 `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)`，使其不进入抓屏结果（Windows 10 2004+）。API 不可用/失败时退回旧行为：仅隐藏确实可见的窗口并等待 ~100ms，结束后恢复设置窗口可见性。
+- **输入抑制**：截图进行中 `SelectionService::set_capture_active(true)`；此状态下 picker 的 blur-hide 与全局钩子的 dismiss/outside-click 一律忽略，避免截图过程把工具面板/面板关掉。`capture_close`/`capture_skill`/`capture_copy` 结束时置回 false。
+- **并行预编码**：`start_capture` 先清 Session 并确保 overlay 已创建（webview 在后台开始加载），随后 `xcap` 抓取所有显示器，`spawn_blocking` 并行把每块屏编码为 **JPEG data URL（质量约 85）** 存入 `Session`。JPEG 替代 PNG：编码、IPC、webview 解码均快数倍，overlay 只用于显示；裁切/OCR/视觉请求始终从内存里的原始 `RgbaImage` 取像素，无损。
 - **arm 事件**：抓屏完成、`Session` 就绪后，Rust 向每个 overlay 窗口 emit `capture-armed {index}`；页面收到后重新初始化（重置选区/面板/错误状态）并拉取 `capture_monitor_info`。页面首次加载时同样主动拉取（配合 8–10s 轮询直到 Session 就绪）。
 - `<img>.onload` 后计算尺寸、渲染 UI，并调用 **`capture_ready(index)`**；Rust 收到后 `show()` 对应 overlay（index 0 同时 `set_focus`）。
 - 兜底：Rust 在 `start` 后 2500ms 调 `show_all_capture_windows`（前端异常也能看到 overlay）。
 - overlay 页面**不显示**任何全屏 loading；仅当图片加载失败时显示白色错误条（重试/关闭）。抓屏期间窗口保持隐藏，因此没有黑屏过程。
-- 隐藏的 overlay 窗口不参与合成，因此抓屏不会把上一张截图/工具条拍进去。
+- 隐藏的 overlay 窗口不参与合成，因此抓屏不会把上一张截图/工具条拍进去；被 `WDA_EXCLUDEFROMCAPTURE` 排除的自身窗口也不会被拍进去。
 
 ### 10.2 overlay 交互
 - 默认全屏选区 + 暗遮罩；选区 1.5px 主色 `#4f46e5`，8 个白色手柄，尺寸标签为白色 pill。
@@ -447,9 +450,9 @@ pub struct SelectionService {
 | `capture_ready` | `{index}` | `{ok}` — overlay 图片已绘制，显示窗口 |
 | `capture_copy` | `{index, rect}` | `{ok, error?, hint?}` — 裁切图入剪贴板并隐藏 overlay |
 | `capture_skill` | `{requestId, index, rect, action, skillId?, targetLang?}` | `{ok, clipboard, error?, hint?}` |
-| `capture_retry` | `{requestId}` | `{ok, error?, hint?}` — 用上一张截图重跑当前动作 |
+| `capture_retry` | `{requestId, targetLang?}` | `{ok, error?, hint?}` — 用上一张截图重跑当前动作；`targetLang` 仅对 translate 生效（切换目标语言） |
 | `capture_followup` | `{requestId, question, previousAnswer, history:[{question,answer}]}` | `{ok, error?, hint?}` |
-| `capture_close` | — | `{ok}` — 隐藏 overlay 窗口（保留复用）+ 清空 Session |
+| `capture_close` | — | `{ok}` — 隐藏 overlay 窗口（保留复用）+ 清空 Session + 结束 capture_active |
 | `capture_set_hotkey` | `{shortcut}` | `{ok, shortcut, error?, hint?}` — 见 10.4 |
 
 - 事件：`capture-armed {index}`（Rust → capture-*）在每次 `start_capture` 抓屏完成后发送，用于复用窗口的重新初始化（见 10.1）。
@@ -458,17 +461,17 @@ pub struct SelectionService {
   1. 从 Session 裁切矩形（无效则错误）；
   2. 把裁切图写入系统图片剪贴板（失败时 `clipboard=false`，流程继续）；
   3. 保存 `LastCapture { image, action, skillId, targetLang, label, ocrText:None }` 供重试/追问；
-  4. `windows::hide_capture_windows`（隐藏复用）；`windows::show_picker` 以**选区右下角的物理坐标**为锚点显示 picker（`text=""`、`programName="截图"`、config 同划词 picker）；
+  4. `windows::hide_capture_windows`（隐藏复用）；`windows::show_picker` 以**选区右下角的物理坐标**为锚点显示 picker（`text=""`、`programName="截图"`、config 同划词 picker）；设置/工具面板不隐藏（见 10.1）；
   5. emit `picker-image`（见 10.5）；
   6. 立即返回 `{ok:true, clipboard}`；
   7. 后台流式任务（注册到 `state.translate_task`，遵循 picker 的「同时只有一个流」与 abort 逻辑）：
-     - `ocr`：**视觉模型转写**（`engine.vision_stream(data_url, DEFAULT_OCR_PROMPT)`，收集完整文本）→ 一个 `chunk`（全文）→ `done`；视觉不可用时回退 Windows OCR；
-     - `translate`：优先视觉模型转写（结果缓存到 LastCapture.ocrText），视觉不可用时回退 Windows OCR → `engine.translate_stream(text, target)`；
+     - `ocr`：**视觉模型转写并流式输出**——`engine.vision_stream(data_url, DEFAULT_OCR_PROMPT)` 的 chunk 原样逐块 emit（不再收集后一次性输出），结束后 `done` 并把全文缓存到 LastCapture.ocrText；视觉不可用、或首个 chunk 之前失败/输出为空 → 回退 Windows OCR（单 chunk 全文 + done）；
+     - `translate`：先用视觉模型转写（收集完整文本，缓存到 LastCapture.ocrText；不可用/失败回退 Windows OCR）→ `resolve_target_lang` 得到实际目标语言 → 先 emit `translate-event {type:"target", targetLang}`（picker 用它显示真实目标语言）→ `engine.translate_stream(text, target)` 流式；
      - `explain`：`engine.vision_stream(image_data_url, DEFAULT_EXPLAIN_IMAGE_PROMPT)`；
      - `custom`：`engine.vision_stream(data_url, render_image_prompt(skill.prompt, target))`；
-     - 事件统一为 **`translate-event`**（`{requestId, type:"chunk"|"error"|"done", text?, message?, hint?}`）发往 picker 窗口。
+     - 事件统一为 **`translate-event`**（`{requestId, type:"chunk"|"target"|"error"|"done", text?, targetLang?, message?, hint?}`）发往 picker 窗口。
 - 「视觉可用」判定 = `EngineService::can_use_vision()`：在线模式要求已配置服务地址与模型；本地模式要求 Qwen2.5-VL 3B（主文件 + mmproj）已安装（未启动时请求会得到「本地模型未启动」错误，由面板展示）。
-- `capture_retry`：先 `state.abort_translate()`；按 LastCapture 重跑同一动作（ocr/translate 重新 OCR；explain/custom 重新发送图片），事件同上，requestId 用调用参数。
+- `capture_retry`：先 `state.abort_translate()`；若传入 `targetLang` 且动作为 translate，先更新 LastCapture.targetLang 再重跑；其余按 LastCapture 重跑同一动作（ocr/translate 重新提取；explain/custom 重新发送图片），事件同上，requestId 用调用参数。
 - `capture_followup`：explain/custom 用新增的 `engine.vision_followup_stream(image_data_url, previous_answer, question, history)`（system 解释提示 + 图片 + 上一轮答案 + 历史 + 新问题）；ocr/translate 用 `engine.followup_stream(ocrText, previous_answer, question, history)`；事件同上。
 - `capture_close` 不清 `LastCapture`（重试/追问仍可用），下一次 `start_capture` 或 `new capture` 时覆盖释放。
 
@@ -493,13 +496,14 @@ pub struct SelectionService {
 }
 ```
 - picker 收到后：关闭菜单/重置旧面板 → `openPanel(label)`；按 action：
-  - `ocr`：纯文本面板（loading 文案「正在识别文字…」；完成后 `<pre>` 渲染并支持朗读/复制/重试/追问）；
-  - `translate`：翻译面板（显示目标语言控件；流式 Markdown）；
+  - `ocr`：纯文本面板（loading 文案「正在识别文字…」；**流式逐块追加纯文本**，支持朗读/复制/重试/追问）；
+  - `translate`：翻译面板（**目标语言控件可用**，源语言固定显示「自动识别」）；收到 `translate-event {type:"target"}` 后把控件显示更新为实际解析出的目标语言；用户切换目标语言 → 新 requestId + `capture_retry{targetLang}` 重新翻译；
   - `explain`/`custom`：AI 面板（隐藏语言控件；流式 Markdown）。
 - 请求进行中仍有 loading；chunk 增量渲染；error 显示可操作错误 + 重试；done 后显示「继续提问」输入区；
-- 「重试」→ 新 requestId + `capture_retry`；「追问」→ `capture_followup`；关闭面板/切换技能 → abort（`picker_abort_translate` 复用 `translate_task` 机制）。
+- 「重试」→ 新 requestId + `capture_retry`（translate 带当前目标语言）；「追问」→ `capture_followup`；关闭面板/切换技能 → abort（`picker_abort_translate` 复用 `translate_task` 机制）。
 - 面板完全复用文字技能面板（`panel-head` 标题/语言/钉住/关闭、`panel-body` Markdown、`panel-foot` 朗读/复制/重试、follow-up 浮层、resize grip），不新增截图专用面板样式。
 - `picker-data` 仍会先到（`text=""`），picker 必须兼容空 text：不报错、工具栏可渲染，随后被 `picker-image` 切到面板。
+- `translate-event` 的 `type` 扩展为 `"chunk" | "target" | "error" | "done"`；`target` 携带 `targetLang`（语言代码），仅图片翻译会发。
 
 ### 10.6 本地视觉（item 5）
 - 原因：目录里的 `qwen2.5-3b` 是 **Qwen2.5-3B-Instruct（纯文本）**，不具备视觉能力；视觉需要 Qwen2.5-VL 系列 + 视觉投影器（mmproj）。
@@ -536,4 +540,5 @@ pub struct SelectionService {
 - 结果面板具备朗读/复制/重试/流式/继续提问；错误有可操作提示。
 - 在线视觉模型可解释图片；本地安装 Qwen2.5-VL 3B 后可本地解释图片；本地模式下翻译截图文字可用。
 - 设置页可录制并保存新的截图快捷键，立即生效；冲突时提示且保留旧快捷键。
+- 第三轮（§10.1/§10.3/§10.5）：截图期间设置窗口与划词工具面板保持打开、不被拍进截图；设置页工具栏技能分「文字/图片」Tab 且各自独立开关排序；提取文字流式输出；图片翻译可切换目标语言，且面板显示的目标语言与实际一致。
 - `cargo test` 通过（新增 normalize_shortcut / catalog / 参数构造单测）；`cargo check` 无错误；`node --check` 全部通过。

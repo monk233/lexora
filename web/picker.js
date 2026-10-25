@@ -84,6 +84,9 @@
     custom: "图片技能",
   };
   var IMAGE_CLIPBOARD_HINT = "截图已复制到剪贴板";
+  /* Shown in the header while the shell resolves the real target language of a
+   * screenshot translation from the recognized text (contract §10.3). */
+  var IMAGE_TARGET_PENDING = "识别中…";
 
   /* Target languages come from the shared language table (shared/constants.js)
    * so the picker dropdown stays in sync with the settings window. The fallback
@@ -427,6 +430,74 @@
     if (panelTargetSelect.value !== normalized) {
       panelTargetSelect.value = normalized;
     }
+  }
+
+  /* Screenshot translation needs a concrete target language ("自动识别" is a
+   * source-side notion only). Returns "" while the shell has not resolved it. */
+  function imageTargetLanguageCode(raw) {
+    var value = String(raw == null ? "" : raw)
+      .trim()
+      .toLowerCase();
+    if (!value || value === "auto") {
+      return "";
+    }
+    return LANGUAGE_VALUES[value] ? value : "";
+  }
+
+  /* The auto option belongs to the text pipeline only; hide it defensively while
+   * a screenshot translation panel is open (no-op when the table has none). */
+  function setAutoTargetOptionHidden(hidden) {
+    if (!panelTargetSelect) {
+      return;
+    }
+    var autoOption = panelTargetSelect.querySelector('option[value="auto"]');
+    if (!autoOption) {
+      return;
+    }
+    autoOption.hidden = !!hidden;
+    autoOption.disabled = !!hidden;
+  }
+
+  /* Placeholder for the window between opening a screenshot translation panel
+   * and the shell resolving the real target language from the text
+   * (translate-event type=target, contract §10.3). */
+  function clearPendingImageTarget() {
+    if (!panelTargetSelect) {
+      return;
+    }
+    var pending = panelTargetSelect.querySelector('option[data-pending-target="1"]');
+    if (pending && pending.parentNode) {
+      pending.parentNode.removeChild(pending);
+    }
+  }
+
+  function showPendingImageTarget() {
+    if (!panelTargetSelect) {
+      return;
+    }
+    clearPendingImageTarget();
+    var pending = document.createElement("option");
+    pending.value = "";
+    pending.textContent = IMAGE_TARGET_PENDING;
+    pending.disabled = true;
+    pending.setAttribute("data-pending-target", "1");
+    panelTargetSelect.appendChild(pending);
+    panelTargetSelect.value = "";
+    state.panelLang = "";
+    panelLangControl.hidden = false;
+  }
+
+  /* Shows the target language of a screenshot translation panel: the concrete
+   * code when known, otherwise the "识别中…" placeholder. Returns the code. */
+  function applyImageTargetLanguage(raw) {
+    var code = imageTargetLanguageCode(raw);
+    if (code) {
+      clearPendingImageTarget();
+      setPanelLanguage(code);
+      return code;
+    }
+    showPendingImageTarget();
+    return "";
   }
 
   function syncPanelFoot() {
@@ -1130,10 +1201,13 @@
     panelTitle.textContent = title;
     setPanelLanguage("");
     if (panelTargetSelect) {
-      // Screenshot translate panels disable the dropdown; every other panel
-      // starts with an editable language selector again.
+      // Every panel starts with an editable language selector; the screenshot
+      // translation panel additionally hides the "auto" option / inserts the
+      // "识别中…" placeholder (see beginImageRequest).
       panelTargetSelect.disabled = false;
       panelTargetSelect.removeAttribute("title");
+      clearPendingImageTarget();
+      setAutoTargetOptionHidden(false);
     }
     pickerEl.classList.add("panel-mode");
     syncPanelPin();
@@ -1772,6 +1846,24 @@
     if (String(event.requestId || "") !== request.id) {
       return;
     }
+    if (event.type === "target") {
+      // Screenshot translation: the shell resolved the real target language
+      // from the recognized text. Update the header only, never re-run.
+      if (request.kind !== "image" || request.imageAction !== "translate") {
+        return;
+      }
+      var resolvedTarget = imageTargetLanguageCode(event.targetLang);
+      if (!resolvedTarget) {
+        return;
+      }
+      request.targetLang = resolvedTarget;
+      if (state.image) {
+        state.image.targetLang = resolvedTarget;
+      }
+      clearPendingImageTarget();
+      setPanelLanguage(resolvedTarget);
+      return;
+    }
     if (event.type === "chunk") {
       request.sawContent = true;
       removeLoadingRow(request);
@@ -1913,15 +2005,16 @@
     state.image = image;
     state.text = "";
     if (action === "translate") {
-      // Screenshot translation shows the language that was used; changing it
-      // requires a new capture, so the selector is read-only (no stray
-      // picker_translate call from the text pipeline).
-      setPanelLanguage(image.targetLang || state.defaultTargetLang || "auto");
-      if (panelTargetSelect) {
-        panelTargetSelect.disabled = true;
-        panelTargetSelect.setAttribute("title", "截图翻译的目标语言，如需更换请重新框选截图");
-      }
+      // The language control stays editable: picking another target re-runs the
+      // stored screenshot with capture_retry (switchImageTargetLanguage). Until
+      // the shell resolves the real target from the recognized text we show a
+      // "识别中…" placeholder instead of a misleading language.
+      setAutoTargetOptionHidden(true);
+      image.targetLang = applyImageTargetLanguage(
+        image.targetLang || state.defaultTargetLang || "auto"
+      );
     } else {
+      clearPendingImageTarget();
       setPanelLanguage("");
     }
     setPanelRetry(retryImageRequest);
@@ -1965,12 +2058,22 @@
     return request;
   }
 
-  /* Footer/error "重试": new request id + `capture_retry`, which re-runs the
-   * action on the screenshot the shell kept (LastCapture). */
-  function retryImageRequest() {
+  /* Re-runs the stored screenshot with `capture_retry`. `targetOverride` is set
+   * when the user picks another language in a screenshot translation panel;
+   * footer/error retry keeps the current target language (ocr/explain/custom
+   * never send one). */
+  function retryImageRequest(targetOverride) {
     var image = state.image;
     if (!image || !state.panelOpen) {
       return;
+    }
+    var targetLang = "";
+    if (image.action === "translate") {
+      var requested = targetOverride == null ? image.targetLang : targetOverride;
+      // An unresolved ("auto") target keeps the placeholder and lets the shell
+      // resolve it again from the recognized text.
+      targetLang = imageTargetLanguageCode(requested);
+      image.targetLang = targetLang;
     }
     var requestId = makeCaptureRequestId();
     var request = beginImageRequest(image, requestId);
@@ -1980,7 +2083,7 @@
     }
     var response;
     try {
-      response = API.captureRetry(requestId);
+      response = API.captureRetry(requestId, targetLang);
     } catch (error) {
       failTranslation(request, String(error));
       return;
@@ -2015,6 +2118,28 @@
         }
       }
     );
+  }
+
+  /* The user picked another target language in a screenshot translation panel:
+   * re-run the stored screenshot through capture_retry with that language. The
+   * shell re-extracts the text and translates into it (no new screenshot). */
+  function switchImageTargetLanguage(targetLang) {
+    var image = state.image;
+    if (!image || image.action !== "translate" || !state.panelOpen) {
+      return;
+    }
+    var code = imageTargetLanguageCode(targetLang);
+    if (!code) {
+      // The placeholder option (and a stale "auto") cannot be chosen directly;
+      // restore the language that is actually being used.
+      applyImageTargetLanguage(image.targetLang);
+      return;
+    }
+    if (code === imageTargetLanguageCode(image.targetLang)) {
+      return;
+    }
+    image.targetLang = code;
+    retryImageRequest(code);
   }
 
   /* picker-image: the screenshot overlay finished and the shell copied the crop
@@ -2552,11 +2677,18 @@
   /* ---- Events ---------------------------------------------------------- */
 
   panelTargetSelect.addEventListener("change", function () {
-    // Screenshot translation panels keep the language they were captured with
-    // (the selector is disabled); never route that through the text pipeline.
-    if (state.panelOpen && !state.image) {
-      translateSkill(panelTargetSelect.value);
+    if (!state.panelOpen) {
+      return;
     }
+    if (state.image) {
+      // Screenshot translation: picking a target re-runs capture_retry instead
+      // of routing the value through the text picker_translate pipeline.
+      if (state.image.action === "translate") {
+        switchImageTargetLanguage(panelTargetSelect.value);
+      }
+      return;
+    }
+    translateSkill(panelTargetSelect.value);
   });
   panelHead.addEventListener("mousedown", beginPanelDrag);
   document.addEventListener("mousemove", handlePanelDragMove);
@@ -2692,6 +2824,40 @@
   });
 
   /* ---- Boot ------------------------------------------------------------ */
+
+  /* Browser-preview test hook (mock mode only, never in the Tauri shell):
+   * exposes the live screenshot panel state so CDP checks can push
+   * translate-events (target/chunk/done) at the running request with
+   * window.__mockTranslateEvent({requestId, ...}). */
+  if (API && API.live === false) {
+    window.__pickerImageState = function () {
+      return {
+        panelOpen: state.panelOpen,
+        panelTitle: panelTitle ? panelTitle.textContent : "",
+        image: state.image
+          ? {
+              requestId: state.image.requestId,
+              action: state.image.action,
+              targetLang: state.image.targetLang,
+              skillId: state.image.skillId,
+            }
+          : null,
+        activeRequestId: activeRequest ? activeRequest.id : null,
+        activeKind: activeRequest ? activeRequest.kind : null,
+        targetSelectValue: panelTargetSelect ? panelTargetSelect.value : "",
+        targetSelectDisabled: panelTargetSelect ? panelTargetSelect.disabled : null,
+        pendingTarget: !!(
+          panelTargetSelect &&
+          panelTargetSelect.querySelector('option[data-pending-target="1"]')
+        ),
+        targetOptionValues: panelTargetSelect
+          ? Array.prototype.map.call(panelTargetSelect.options, function (option) {
+              return option.value;
+            })
+          : [],
+      };
+    };
+  }
 
   state.panelManualSize = loadPanelSize();
   state.panelAutoResize = state.panelMode === "auto";

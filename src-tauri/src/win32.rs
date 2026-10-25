@@ -4,6 +4,7 @@
 //! and the low-level input hooks report. Tauri window positions are logical
 //! pixels, so callers divide by the monitor scale factor.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use windows::Win32::Foundation::POINT;
@@ -12,7 +13,44 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime;
-use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetCursorPos, SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE,
+};
+
+/// Confirmed support for `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)`.
+/// Starts as `false` = "not proven yet": callers then use the safe hide
+/// fallback instead of relying on the exclusion (contract §10.1).
+static CAPTURE_EXCLUSION_SUPPORTED: AtomicBool = AtomicBool::new(false);
+
+/// Excludes one of our own windows from screen captures
+/// (`WDA_EXCLUDEFROMCAPTURE`, Windows 10 2004+), so the picker/settings can stay
+/// open while the user frames a screenshot (contract §10.1). Returns `false`
+/// when the OS rejects the call; the caller then falls back to hiding the
+/// window. The result is remembered so the screenshot flow can decide between
+/// exclusion and the hide fallback without probing every time.
+pub fn exclude_from_capture(window: &tauri::WebviewWindow) -> bool {
+    let Ok(hwnd) = window.hwnd() else {
+        CAPTURE_EXCLUSION_SUPPORTED.store(false, Ordering::Release);
+        return false;
+    };
+    match unsafe { SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE) } {
+        Ok(()) => {
+            CAPTURE_EXCLUSION_SUPPORTED.store(true, Ordering::Release);
+            true
+        }
+        Err(_) => {
+            CAPTURE_EXCLUSION_SUPPORTED.store(false, Ordering::Release);
+            false
+        }
+    }
+}
+
+/// Whether `WDA_EXCLUDEFROMCAPTURE` is confirmed to work on this machine. When
+/// `false` (unsupported, rejected, or never probed) the screenshot flow hides
+/// the visible shell windows instead, which is always safe.
+pub fn capture_exclusion_supported() -> bool {
+    CAPTURE_EXCLUSION_SUPPORTED.load(Ordering::Acquire)
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct WorkArea {

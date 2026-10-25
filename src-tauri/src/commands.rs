@@ -657,10 +657,16 @@ pub fn capture_skill(
 }
 
 /// Re-runs the last screenshot action; the result is streamed into the panel
-/// that is already open (`translate-event`).
+/// that is already open (`translate-event`). For screenshot translations
+/// `targetLang` switches the target language before re-translating.
 #[tauri::command]
-pub fn capture_retry(app: AppHandle, state: State<'_, Arc<AppState>>, request_id: String) -> Value {
-    match state.capture.retry(&app, request_id) {
+pub fn capture_retry(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    request_id: String,
+    target_lang: Option<String>,
+) -> Value {
+    match state.capture.retry(&app, request_id, target_lang) {
         Ok(job) => {
             let app_state = (*state).clone();
             crate::capture::spawn_capture_job(app, app_state, job);

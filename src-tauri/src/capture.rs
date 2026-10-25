@@ -3,10 +3,14 @@
 //! panel skills streamed into the picker result panel and the configurable global
 //! screenshot hotkey.
 //!
-//! Flow (contract §10.1): [`CaptureService::start`] hides our own windows (only
-//! pausing when one of them was really visible), reuses the overlay webviews of
-//! the previous capture, grabs every monitor and pre-encodes each one as a
-//! **JPEG data URL** on blocking worker threads before arming the overlays.
+//! Flow (contract §10.1): [`CaptureService::start`] keeps the settings window
+//! and the picker open — they are excluded from screen capture via
+//! `WDA_EXCLUDEFROMCAPTURE` and only hidden when the OS rejects that — reuses the
+//! overlay webviews of the previous capture, grabs every monitor and
+//! pre-encodes each one as a **JPEG data URL** on blocking worker threads
+//! before arming the overlays. While the overlay is active
+//! [`crate::selection::SelectionService::set_capture_active`] keeps ordinary
+//! input from dismissing the picker (contract §10.1).
 //! Arming emits `capture-armed {index}`; the page resets itself, fetches the
 //! cached data URL via `capture_monitor_info`, paints it and calls
 //! `capture_ready`, which shows that overlay window (already transparent, no
@@ -19,7 +23,8 @@
 //! bottom-right corner of the selection and stream the transcription /
 //! translation / vision result to the picker through the same `translate-event`
 //! channel the text skills use (contract §10.3/§10.5). Text extraction prefers
-//! the vision model and falls back to Windows OCR (contract §10.8).
+//! the vision model, streams the transcription into the panel and falls back to
+//! Windows OCR (contract §10.8).
 //!
 //! The region hotkey (default `Win+Shift+X`) lives on its own Windows message
 //! thread so it can be re-registered at runtime (`capture_set_hotkey`, contract
@@ -222,6 +227,9 @@ pub struct CaptureService {
     /// identical layout reuses the loaded webviews; a different one destroys
     /// and recreates them (contract §10.1).
     layout: Mutex<Option<Vec<CaptureGeometry>>>,
+    /// Set when the no-exclusion fallback had to hide the settings window; it is
+    /// shown again when the capture flow ends (contract §10.1).
+    fallback_settings_hidden: AtomicBool,
     /// Bumped on every session change so a stale 2.5 s fallback show is a no-op.
     epoch: AtomicU64,
     /// Guards against two overlapping `start` calls (e.g. the hotkey pressed
@@ -235,15 +243,17 @@ impl CaptureService {
             session: Mutex::new(None),
             last: Mutex::new(None),
             layout: Mutex::new(None),
+            fallback_settings_hidden: AtomicBool::new(false),
             epoch: AtomicU64::new(0),
             starting: AtomicBool::new(false),
         }
     }
 
-    /// Prepares one screenshot: hides our own windows (only waiting when one of
-    /// them was really visible), reuses the overlay webviews when the monitor
-    /// layout is unchanged, grabs every monitor, pre-encodes the display images
-    /// in parallel and arms the overlays. Returns the number of monitors.
+    /// Prepares one screenshot: keeps the shell windows open (they are excluded
+    /// from the capture; the hide fallback is only used when the OS rejects
+    /// that), reuses the overlay webviews when the monitor layout is unchanged,
+    /// grabs every monitor, pre-encodes the display images in parallel and arms
+    /// the overlays. Returns the number of monitors.
     ///
     /// A second call while the first one is still preparing is rejected: the
     /// hotkey may be pressed twice because the overlay only appears once the
@@ -266,10 +276,25 @@ impl CaptureService {
         // Reset the flag even when the preparation panics, otherwise every
         // later screenshot would be rejected.
         let _guard = StartGuard(&self.starting);
-        self.start_inner(app, state, preset_skill_id).await
+        // The picker/settings stay open while the user frames the screenshot;
+        // the global input hook must not dismiss them until the flow ends
+        // (contract §10.1).
+        state.selection.set_capture_active(true);
+        let mut flow = CaptureFlowGuard {
+            service: self,
+            app,
+            armed: false,
+        };
+        let result = self.prepare_capture(app, state, preset_skill_id).await;
+        // A prepared overlay keeps the gate until `close` / `skill` / `copy`;
+        // an error (or panic) releases it right away.
+        flow.armed = result.is_ok();
+        result
     }
 
-    async fn start_inner(
+    /// Body of [`CaptureService::start`]: the part that can fail. On success the
+    /// capture stays active until `close` / `skill` / `copy`.
+    async fn prepare_capture(
         &self,
         app: &AppHandle,
         state: &AppState,
@@ -283,14 +308,24 @@ impl CaptureService {
         self.clear_session();
         *lock(&self.last) = None;
 
-        // Hide our own windows. Only windows that were really visible need a
-        // moment to disappear from the compositor; the common hotkey path has
-        // nothing on screen and goes straight to the grab (contract §10.7).
-        let mut hid_windows = crate::windows::hide_picker(app);
-        hid_windows |= crate::windows::hide_settings(app);
-        hid_windows |= crate::windows::hide_capture_windows(app);
-        if hid_windows {
-            tokio::time::sleep(WINDOW_HIDE_DELAY).await;
+        // Keep the settings/picker windows open: exclusion from screen capture
+        // makes hiding unnecessary (contract §10.1). Only when the OS rejects
+        // `WDA_EXCLUDEFROMCAPTURE` fall back to the old hide-and-wait behavior.
+        if !crate::windows::prepare_capture_exclusion(app) {
+            let settings_hidden = crate::windows::hide_settings(app);
+            if settings_hidden {
+                self.fallback_settings_hidden.store(true, Ordering::SeqCst);
+            }
+            let mut hid_windows = settings_hidden;
+            hid_windows |= crate::windows::hide_picker(app);
+            hid_windows |= crate::windows::hide_capture_windows(app);
+            if hid_windows {
+                tokio::time::sleep(WINDOW_HIDE_DELAY).await;
+            }
+        } else {
+            // Excluded overlay windows are never captured; only hide a stale one
+            // so the next round starts from a clean renderer.
+            crate::windows::hide_capture_windows(app);
         }
 
         let settings = state.settings.get();
@@ -702,12 +737,26 @@ impl CaptureService {
     }
 
     /// Builds (and re-validates) the job that repeats the last screenshot
-    /// action; `ocr`/`translate` re-run OCR as required by contract §10.3.
-    pub fn retry(&self, app: &AppHandle, request_id: String) -> Result<CaptureJob, EngineError> {
+    /// action; `ocr`/`translate` re-run OCR as required by contract §10.3. A
+    /// screenshot translation may switch its target language (`targetLang`):
+    /// the new value is stored on [`LastCapture`] so retries/follow-ups keep it.
+    pub fn retry(
+        &self,
+        app: &AppHandle,
+        request_id: String,
+        target_lang: Option<String>,
+    ) -> Result<CaptureJob, EngineError> {
         let settings = settings_of(app)?;
-        let last = lock(&self.last).clone().ok_or_else(|| {
+        let mut last = lock(&self.last).clone().ok_or_else(|| {
             EngineError::new("没有可重试的截图。", "请重新截图（快捷键）后再试一次。")
         })?;
+        let updated_target = retry_target_lang(last.action, &last.target_lang, target_lang);
+        if updated_target != last.target_lang {
+            last.target_lang = updated_target.clone();
+            if let Some(current) = lock(&self.last).as_mut() {
+                current.target_lang = updated_target;
+            }
+        }
         let skill_id = if last.skill_id.is_empty() {
             None
         } else {
@@ -721,9 +770,10 @@ impl CaptureService {
         }
         log_of(app).map(|log| {
             log.info(&format!(
-                "screenshot retry: action={} label={} request={request_id}",
+                "screenshot retry: action={} label={} target={} request={request_id}",
                 last.action.as_str(),
-                last.label
+                last.label,
+                last.target_lang
             ))
         });
         Ok(CaptureJob {
@@ -772,12 +822,26 @@ impl CaptureService {
         }
     }
 
+    /// Ends the capture flow: releases the input gate that kept the
+    /// picker/settings open (contract §10.1) and shows the settings window again
+    /// when the no-exclusion fallback had to hide it.
+    fn finish_capture(&self, app: &AppHandle) {
+        if let Some(state) = app_state(app) {
+            state.selection.set_capture_active(false);
+        }
+        if self.fallback_settings_hidden.swap(false, Ordering::SeqCst) {
+            crate::windows::show_settings(app);
+        }
+    }
+
     /// Hides every overlay window (they stay alive and are reused by the next
-    /// capture, contract §10.1) and forgets the session. The last capture stays
-    /// available for retry / follow-up (contract §10.3).
+    /// capture, contract §10.1), forgets the session and ends the capture input
+    /// gate. The last capture stays available for retry / follow-up
+    /// (contract §10.3).
     pub fn close(&self, app: &AppHandle) {
         self.clear_session();
         crate::windows::hide_capture_windows(app);
+        self.finish_capture(app);
     }
 }
 
@@ -787,12 +851,41 @@ impl Default for CaptureService {
     }
 }
 
+/// Target language to use for a retried screenshot action: only `translate`
+/// accepts a new target (`targetLang` on `capture_retry`), every other action
+/// keeps the stored one (contract §10.3).
+fn retry_target_lang(action: SkillAction, current: &str, requested: Option<String>) -> String {
+    if action == SkillAction::Translate {
+        if let Some(target) = trimmed(requested) {
+            return target;
+        }
+    }
+    current.to_string()
+}
+
 /// Resets [`CaptureService::starting`] on drop, including on panic.
 struct StartGuard<'a>(&'a AtomicBool);
 
 impl Drop for StartGuard<'_> {
     fn drop(&mut self) {
         self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Releases the capture input gate when the preparation did not produce an
+/// overlay (`armed == false`), including on panic, so the picker/settings can be
+/// dismissed again and a fallback-hidden settings window is restored.
+struct CaptureFlowGuard<'a> {
+    service: &'a CaptureService,
+    app: &'a AppHandle,
+    armed: bool,
+}
+
+impl Drop for CaptureFlowGuard<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            self.service.finish_capture(self.app);
+        }
     }
 }
 
@@ -851,17 +944,38 @@ async fn run_capture_job(
 ) -> Result<(), EngineError> {
     let request_id = job.request_id.clone();
     match job.action {
-        // Transcription → one chunk with the full text → done. Contract §10.8:
-        // the vision model is preferred, Windows OCR is only the fallback.
+        // Transcription is streamed chunk by chunk (contract §10.3): the vision
+        // model is preferred, Windows OCR is the fallback when no text can be
+        // produced by it (unavailable, failure before the first chunk, or an
+        // empty transcription).
         SkillAction::Ocr => {
-            let (text, source) =
-                transcribe_screenshot(&app, &state, &job.image, &job.data_url).await?;
+            let engine = engine_of(&app)?;
+            let mut streamed = false;
+            let (text, source) = if engine.can_use_vision() {
+                match stream_vision_transcription(&app, &request_id, &engine, &job.data_url).await?
+                {
+                    Some(text) => {
+                        streamed = true;
+                        (text, "vision")
+                    }
+                    None => (recognize_text(&job.image).await?, "windows-ocr"),
+                }
+            } else {
+                (recognize_text(&job.image).await?, "windows-ocr")
+            };
+            state.capture.cache_ocr_text(&job.data_url, &text);
             log_ocr_source(&app, source, &text);
-            emit_chunk(&app, &request_id, &text);
+            // The vision path already emitted its chunks; the Windows OCR
+            // fallback is emitted as one full chunk.
+            if !streamed {
+                emit_chunk(&app, &request_id, &text);
+            }
             emit_done(&app, &request_id);
             Ok(())
         }
-        // Transcription (cached when available) → text translation stream.
+        // Transcription (cached when available) → text translation stream. The
+        // resolved target language is reported before the stream starts so the
+        // picker shows the real target instead of the `auto` placeholder.
         SkillAction::Translate => {
             let (text, source) = match job.ocr_text.clone() {
                 Some(cached) => (cached, "cache"),
@@ -869,6 +983,13 @@ async fn run_capture_job(
             };
             log_ocr_source(&app, source, &text);
             let target = crate::engine::resolve_target_lang(&job.target_lang, &text);
+            emit_target_lang(&app, &request_id, &target);
+            if let Some(log) = log_of(&app) {
+                log.info(&format!(
+                    "screenshot translate: target={target} chars={}",
+                    text.chars().count()
+                ));
+            }
             let engine = engine_of(&app)?;
             let mut stream = engine.translate_stream(&text, &target).await?;
             stream_chunks(&app, &request_id, &mut stream).await?;
@@ -987,8 +1108,78 @@ async fn transcribe_screenshot(
     }
 }
 
-/// Collects a streamed model response into one string: transcription results
-/// are emitted as one full chunk instead of token by token (contract §10.3).
+/// Streams the vision-model transcription of a screenshot and returns the
+/// accumulated text (contract §10.3 `ocr`): every chunk is emitted to the result
+/// panel as it arrives, so the text panel fills in progressively.
+///
+/// Returns `Ok(None)` when the model produced nothing usable — the request
+/// failed before the first chunk or the transcription came back empty — and the
+/// caller then falls back to Windows OCR. A failure **after** at least one chunk
+/// is returned as `Err` so the already visible partial text is kept and the
+/// panel shows the error instead of silently replacing it.
+async fn stream_vision_transcription(
+    app: &AppHandle,
+    request_id: &str,
+    engine: &EngineService,
+    data_url: &str,
+) -> Result<Option<String>, EngineError> {
+    let mut stream = match engine
+        .vision_stream(data_url, crate::engine::DEFAULT_OCR_PROMPT)
+        .await
+    {
+        Ok(stream) => stream,
+        Err(error) => {
+            if let Some(log) = log_of(app) {
+                log.warn(&format!(
+                    "screenshot vision OCR failed before any output, falling back to Windows OCR: \
+                     {} / {}",
+                    error.message, error.hint
+                ));
+            }
+            return Ok(None);
+        }
+    };
+    let mut raw = String::new();
+    let mut emitted = false;
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(chunk) => {
+                if chunk.is_empty() {
+                    continue;
+                }
+                raw.push_str(&chunk);
+                emit_chunk(app, request_id, &chunk);
+                emitted = true;
+            }
+            Err(error) => {
+                if emitted {
+                    // Keep the partial transcription visible; the stream ended
+                    // with an error, which the panel shows on top of it.
+                    return Err(error);
+                }
+                if let Some(log) = log_of(app) {
+                    log.warn(&format!(
+                        "screenshot vision OCR failed before any output, falling back to Windows \
+                         OCR: {} / {}",
+                        error.message, error.hint
+                    ));
+                }
+                return Ok(None);
+            }
+        }
+    }
+    if raw.trim().is_empty() {
+        if let Some(log) = log_of(app) {
+            log.warn("screenshot vision OCR returned no text, falling back to Windows OCR");
+        }
+        return Ok(None);
+    }
+    Ok(Some(raw))
+}
+
+/// Collects a streamed model response into one string. Translation/follow-up
+/// need the complete text before the next step, unlike OCR which is streamed
+/// straight into the panel (contract §10.3).
 async fn collect_stream(stream: &mut TextStream) -> Result<String, EngineError> {
     let mut text = String::new();
     while let Some(item) = stream.next().await {
@@ -1039,6 +1230,22 @@ fn emit_chunk(app: &AppHandle, request_id: &str, text: &str) {
         app,
         json!({ "requestId": request_id, "type": "chunk", "text": text }),
     );
+}
+
+/// Reports the target language the shell resolved for a screenshot translation
+/// (`auto` is resolved from the recognized text), so the picker can display the
+/// real target instead of the placeholder (contract §10.5).
+fn emit_target_lang(app: &AppHandle, request_id: &str, target_lang: &str) {
+    emit_translate_event(app, target_event_payload(request_id, target_lang));
+}
+
+/// Payload of the `translate-event {type:"target"}` event (contract §10.5).
+fn target_event_payload(request_id: &str, target_lang: &str) -> Value {
+    json!({
+        "requestId": request_id,
+        "type": "target",
+        "targetLang": target_lang,
+    })
 }
 
 fn emit_done(app: &AppHandle, request_id: &str) {
@@ -1323,6 +1530,11 @@ fn engine_of(app: &AppHandle) -> Result<Arc<EngineService>, EngineError> {
 fn log_of(app: &AppHandle) -> Option<Logger> {
     app.try_state::<Arc<AppState>>()
         .map(|state| state.log.clone())
+}
+
+/// Shared application state (used by the capture-active input gate).
+fn app_state(app: &AppHandle) -> Option<tauri::State<'_, Arc<AppState>>> {
+    app.try_state::<Arc<AppState>>()
 }
 
 fn normalize_request_id(request_id: Option<String>) -> String {
@@ -1954,6 +2166,40 @@ mod tests {
             Some("图片技能")
         );
         assert!(image_skill(&settings, "custom-missing").is_none());
+    }
+
+    #[test]
+    fn target_event_payload_matches_the_contract_shape() {
+        let payload = target_event_payload("capture-1", "en");
+        assert_eq!(payload["requestId"], "capture-1");
+        assert_eq!(payload["type"], "target");
+        assert_eq!(payload["targetLang"], "en");
+        // Nothing else leaks into the event.
+        assert_eq!(payload.as_object().map(|object| object.len()), Some(3));
+    }
+
+    #[test]
+    fn retry_target_language_only_updates_translations() {
+        // A screenshot translation may switch its target language.
+        assert_eq!(
+            retry_target_lang(SkillAction::Translate, "auto", Some("en".to_string())),
+            "en"
+        );
+        // Missing/blank values keep the stored target.
+        assert_eq!(retry_target_lang(SkillAction::Translate, "zh", None), "zh");
+        assert_eq!(
+            retry_target_lang(SkillAction::Translate, "zh", Some("   ".to_string())),
+            "zh"
+        );
+        // Every other action ignores a renderer-provided target.
+        assert_eq!(
+            retry_target_lang(SkillAction::Ocr, "auto", Some("en".to_string())),
+            "auto"
+        );
+        assert_eq!(
+            retry_target_lang(SkillAction::Explain, "auto", Some("ja".to_string())),
+            "auto"
+        );
     }
 
     #[test]

@@ -23,8 +23,11 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 futures-util = "0.3"
 rdev = "0.5"
 zip = { version = "2", default-features = false, features = ["deflate"] }
-# Screenshot capture + on-device OCR + screenshot tools.
-xcap = "0.9"
+# Screenshot capture + on-device OCR + screenshot tools. `wgc` captures through
+# Windows Graphics Capture, so `WDA_EXCLUDEFROMCAPTURE` is honored (the open
+# settings/picker windows stay out of the frozen screenshot, contract §10.1) and
+# hardware-composited content is not grabbed as black.
+xcap = { version = "0.9", features = ["wgc"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 base64 = "0.22"
 native-ocr = "0.2"
