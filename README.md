@@ -34,12 +34,16 @@ Lexora 取自拉丁词根 *lex*（语言、文字）与 *aura*（光晕、氛围
   - 本地：应用内安装 llama.cpp 引擎，按功能自动选用腾讯混元 Hy-MT2 1.8B（翻译）或 Qwen2.5 3B（通用），断网亦可用；两个模型可同时下载。
 - **可调校到顺手**：技能可拖拽排序、可增删；内置润色与自定义技能均可改提示词；自定义技能可选 200 个图标、自定义名称与提示词，提示词支持 `{text}`、`{target}`、`{program}` 等变量。
 - **截图工具**：工具栏「截图」或可自定义的快捷键（默认 Win+Shift+X）框选屏幕；复制图片、提取文字（视觉模型优先，回退本地 OCR）、翻译、解释图片；结果在划词面板中流式显示并支持朗读/复制/重试/追问。自定义技能支持文本/图片两类。
+- **截图标注（QQ 截图风格，纯本地）**：形状（矩形 / 圆形 / 直线，描边或实心填充）、箭头（实心三角头 + 锥形尾）、画笔、文本、序号、马赛克；颜色（预设 + 自定义 HSV + 吸色器）与粗细/字号可调；拖动实时预览；点击标注可选中，支持移动 / 缩放 / 旋转与 Delete 删除，一步撤回/重做；标注自动限制在选区内并合成进导出图片。
+- **钉在桌面**：把框选（含标注）钉成无边框置顶窗口，拖动移动、复制、双击/`Esc` 关闭；超长图保持可读宽度并在窗口内滚动。
+- **长截图（手动滚动）**：选区保持实时可见，侧边预览窗口边滚边拼；支持竖向/横向与上下/左右来回滚动；完成后复制并钉图，取消返回截图界面，全程不自动滚动。
+- 截图界面可被系统截图/录屏拍到；已在截图时再次触发截图会被忽略，不会重复抓屏。
 - **继续追问**：翻译/总结/解释/润色/自定义结果下方可直接输入问题，多轮流式对话，答案保留在同一面板。
 - **单词词典**：英文单词输出音标+释义，中文词语输出拼音+释义，其他语言仅翻译；英文单词还附 3 个可点击追问建议。
 - **面板可调**：结果面板右下角可拖拽调整大小并记住，双击手柄恢复自动尺寸。
 - **技能再多也不挤**：工具栏自动收纳超出宽度的技能到「更多」面板，技能项与配置项以分隔线区分，菜单可滚动；图标选择器默认紧凑，需要时再展开 200 图标搜索面板。
 - **38 种语言**：覆盖 Hy-MT2 支持的全部语言，含繁体中文、粤语、藏语、哈萨克语、蒙古语、维吾尔语等。
-- **轻若无声**：单个 exe（约 9 MB），免安装、托盘常驻、静默启动、单实例、可选开机自启；数据留在 exe 同级 `data/` 目录。
+- **轻若无声**：单个 exe（约 10.5 MB），免安装、托盘常驻、静默启动、单实例、可选开机自启；数据留在 exe 同级 `data/` 目录。
 - **状态延续**：本地引擎的启动状态会记住，重启 Lexora 后自动恢复运行；只有主动点「停止」才会清除。
 - **更新无感**：关于页一键检查更新，自动下载新版本、替换当前 exe 并重启；免安装单文件场景也能原地升级，`data/` 目录不受影响。
 
@@ -106,11 +110,11 @@ npx tauri build --debug --no-bundle
 .\src-tauri\target\debug\lexora.exe --show
 ```
 
-更多细节见 [构建文档](docs/building.md) 与 [架构说明](docs/architecture.md)。
+更多细节见 [构建文档](docs/building.md)、[架构说明](docs/architecture.md)、[v0.3.0 发布说明](docs/release-notes-0.3.0.md)。
 
 ## 技术栈
 
-Tauri v2 + Rust（窗口、托盘、全局输入钩子、Windows UI Automation 取词）+ 原生 HTML/CSS/JS（WebView2 渲染）+ llama.cpp（本地推理）。前端零构建、零框架，整个应用为一个约 9 MB 的单文件。
+Tauri v2 + Rust（窗口、托盘、全局输入钩子、Windows UI Automation 取词、xcap 截图/长截图拼接）+ 原生 HTML/CSS/JS（WebView2 渲染）+ llama.cpp（本地推理）。前端零构建、零框架，整个应用为一个约 10.5 MB 的单文件。
 
 ## 致谢
 
@@ -140,9 +144,10 @@ Tauri v2 + Rust（窗口、托盘、全局输入钩子、Windows UI Automation �
 
 - Works with any OpenAI-compatible endpoint, or fully offline with llama.cpp + GGUF models (Hy-MT2 for translation, Qwen2.5 3B for general tasks) — the right model is picked for you.
 - Translate, summarize, explain, polish, read aloud, copy, or search the web — with Markdown-rendered results, a pinnable panel, and Google/Baidu/Bing search.
+- Screenshot tools: capture, copy, OCR, translate and explain regions; QQ-style local annotations (shapes, arrow, pen, text, numbers, mosaic) that can be selected, moved, resized, rotated and undone; pin-to-desktop windows; manual-scroll long screenshots with a live side preview.
 - 38 translation languages, Markdown-rendered results, draggable and pinnable panel.
 - Reorder, rename, re-icon and re-prompt every skill — including your own custom skills with `{text}`, `{target}` and `{program}` variables.
-- One portable ~9 MB exe, tray-resident, optional start-at-login, no installer, no admin rights.
+- One portable ~10.5 MB exe, tray-resident, optional start-at-login, no installer, no admin rights.
 
 Build from source on Windows with Node.js ≥ 20, Rust, and VS Build Tools:
 
