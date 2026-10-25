@@ -299,8 +299,9 @@
         }
       });
       dom.barCancel = dom.bar.querySelector('[data-action="cancel"]');
-      /* The last separator sits between the actions and the cancel button and
-       * is the insertion anchor for reordering (preset stays at the front). */
+      dom.barConfirm = dom.bar.querySelector('[data-action="confirm"]');
+      /* The last separator sits between the configurable actions and the
+       * confirm/cancel pair; it is hidden when every action is disabled. */
       var separators = dom.bar.querySelectorAll(".bar-sep");
       dom.barTailSep = separators.length
         ? separators[separators.length - 1]
@@ -426,8 +427,8 @@
   /* Reorder/hide the toolbar actions to mirror `state.captureSkills`. Existing
    * button elements are only moved with `appendChild`, so their listeners, ids
    * and data-actions survive; the preset button keeps the leading slot and the
-   * separator + cancel button are pinned to the tail. Idempotent by
-   * construction (no re-creation, no re-binding). */
+   * tail is always [separator?] [确认] [取消]. Idempotent by construction (no
+   * re-creation, no re-binding). */
   function renderCaptureBar() {
     if (!dom.bar) {
       return;
@@ -445,11 +446,17 @@
       }
     });
     if (dom.barTailSep) {
-      /* No lone separator when every action button is disabled. */
+      /* With every action disabled the bar is [preset?] [确认] [取消]; the
+       * separator would then be the first visible item, so hide it. */
       setHidden(dom.barTailSep, skills.length === 0);
       dom.bar.appendChild(dom.barTailSep);
     }
+    if (dom.barConfirm) {
+      setHidden(dom.barConfirm, false);
+      dom.bar.appendChild(dom.barConfirm);
+    }
     if (dom.barCancel) {
+      setHidden(dom.barCancel, false);
       dom.bar.appendChild(dom.barCancel);
     }
   }
@@ -1136,7 +1143,9 @@
   }
 
   function handleAction(action) {
-    if (action === "copy") {
+    /* "确认" accepts the crop: same flow as "复制" (the shell copies the image
+     * to the clipboard and hides the overlay). */
+    if (action === "copy" || action === "confirm") {
       copyImage();
     } else if (action === "ocr" || action === "translate" || action === "explain") {
       runSkill(action, "");
@@ -1149,6 +1158,8 @@
     if (!dom.bar) {
       return;
     }
+    /* Every action button (including 确认) is disabled while a command is in
+     * flight; 取消 stays available so the user can always bail out. */
     each(dom.bar.querySelectorAll("[data-action]"), function (button) {
       var action = button.getAttribute("data-action");
       button.disabled = state.busy && action !== "cancel";

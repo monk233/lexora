@@ -458,8 +458,9 @@ impl Settings {
             }
         };
         // Screenshot toolbar actions: drop unknown/duplicate ids, keep the
-        // configured order. An empty list falls back to all actions so the
-        // capture overlay can never end up without its buttons.
+        // configured order. An explicit empty list means "no action buttons"
+        // (the overlay then only offers 确认 / 取消); a settings file that never
+        // had the field still gets the defaults through serde.
         let mut capture_skills: Vec<String> = Vec::new();
         for skill in &self.picker.capture_skills {
             let skill = skill.trim().to_ascii_lowercase();
@@ -467,11 +468,7 @@ impl Settings {
                 capture_skills.push(skill);
             }
         }
-        self.picker.capture_skills = if capture_skills.is_empty() {
-            default_capture_skills()
-        } else {
-            capture_skills
-        };
+        self.picker.capture_skills = capture_skills;
         // Custom prompts are user-editable text: trim and cap them so a pasted
         // document cannot bloat settings.json or every request.
         self.picker.prompts.translate = truncate(&self.picker.prompts.translate, PROMPT_MAX_CHARS);
@@ -1675,12 +1672,12 @@ mod tests {
             vec!["explain".to_string(), "ocr".to_string(), "copy".to_string()]
         );
 
-        // An empty list falls back to every action (the overlay always needs a
-        // way to copy / extract text).
+        // An explicit empty list disables every toolbar action (the overlay
+        // still offers 确认 / 取消).
         let cleared = store
             .update_json(json!({ "picker": { "captureSkills": [] } }))
             .unwrap();
-        assert_eq!(cleared.picker.capture_skills.len(), 4);
+        assert!(cleared.picker.capture_skills.is_empty());
 
         // Older settings files (without the field) load the defaults.
         let parsed: Settings = serde_json::from_value(json!({ "version": 4 })).unwrap();

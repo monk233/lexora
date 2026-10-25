@@ -520,7 +520,10 @@
         captureSkills.push(value);
       }
     });
-    picker.captureSkills = captureSkills.length ? captureSkills : allowedCaptureSkills.slice();
+    // An explicit empty list means "no toolbar actions" (the overlay then only
+    // shows 确认 / 取消), matching settings.rs. Missing values were already
+    // defaulted when the mock store was created.
+    picker.captureSkills = captureSkills;
     mockStore.picker.pinned = false;
   }
 

@@ -74,12 +74,6 @@ fn main() {
             let state = AppState::new(paths, log.clone());
             app.manage(state.clone());
 
-            // Screenshots must not close or capture the settings/picker windows
-            // (contract §10.1): exclude them from the screen capture. When the
-            // OS rejects `WDA_EXCLUDEFROMCAPTURE` this logs a warning and the
-            // capture flow falls back to temporarily hiding them.
-            windows::prepare_capture_exclusion(app.handle());
-
             if let Err(error) = tray::setup(app) {
                 log.warn(&format!("tray setup failed: {error}"));
             }

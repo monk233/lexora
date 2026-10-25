@@ -68,9 +68,6 @@ impl From<&PickerPayload> for PickerData {
 static PENDING: Mutex<Option<PickerData>> = Mutex::new(None);
 /// Instant of the last `show_picker`, used to swallow the show/blur race.
 static LAST_SHOWN: Mutex<Option<Instant>> = Mutex::new(None);
-/// Set once the display-affinity probe result has been logged.
-static CAPTURE_EXCLUSION_LOGGED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
 
 // ---------------------------------------------------------------------------
 // Settings window
@@ -385,48 +382,6 @@ fn capture_active(app: &tauri::AppHandle) -> bool {
         .unwrap_or(false)
 }
 
-/// Applies `WDA_EXCLUDEFROMCAPTURE` to the shell windows that must stay visible
-/// during a screenshot (`settings` and `picker`, contract §10.1) and reports
-/// whether the OS confirmed support. Idempotent: called once from `setup` and
-/// again before each capture, so a window recreated later is covered too.
-/// Returns `false` when exclusion cannot be used; the capture flow then falls
-/// back to hiding its visible windows.
-pub fn prepare_capture_exclusion(app: &tauri::AppHandle) -> bool {
-    let mut attempted = 0usize;
-    let mut failed: Vec<&str> = Vec::new();
-    for label in [SETTINGS_LABEL, PICKER_LABEL] {
-        if let Some(window) = app.get_webview_window(label) {
-            attempted += 1;
-            if !crate::win32::exclude_from_capture(&window) {
-                failed.push(label);
-            }
-        }
-    }
-    // Only reuse the open-window behavior when every shell window that exists
-    // was excluded: a partially excluded set would still leak into the
-    // screenshot, so fall back to hiding instead.
-    let supported =
-        attempted > 0 && failed.is_empty() && crate::win32::capture_exclusion_supported();
-    // Log the probe result once; later calls are silent unless the window
-    // creation path itself reports a failure.
-    if !CAPTURE_EXCLUSION_LOGGED.swap(true, std::sync::atomic::Ordering::AcqRel) {
-        if let Some(log) = state(app).map(|state| state.log.clone()) {
-            if supported {
-                log.info(
-                    "settings/picker windows excluded from screen capture \
-                     (WDA_EXCLUDEFROMCAPTURE)",
-                );
-            } else {
-                log.warn(&format!(
-                    "screen capture exclusion unavailable (attempted={attempted}, rejected={failed:?}); \
-                     screenshots will temporarily hide the settings/picker windows"
-                ));
-            }
-        }
-    }
-    supported
-}
-
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
@@ -505,15 +460,6 @@ pub fn create_capture_window(
         geometry.width.max(1),
         geometry.height.max(1),
     ))?;
-    // The overlay itself must never show up in a later screenshot: exclude it
-    // from capture as soon as it exists (contract §10.1). When the OS rejects
-    // this, the capture flow degrades to hiding its visible windows.
-    if !crate::win32::exclude_from_capture(&window) {
-        log_warn(
-            app,
-            "capture overlay could not be excluded from screen capture",
-        );
-    }
     Ok(())
 }
 

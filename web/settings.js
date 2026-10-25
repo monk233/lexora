@@ -1428,17 +1428,6 @@
     return skill && skill.kind === "image" ? "image" : "text";
   }
 
-  function builtinSkillKind(id) {
-    var meta = LP.SKILL_MAP && LP.SKILL_MAP[id];
-    return (meta && meta.kind) || "text";
-  }
-
-  function isImageSkill(id, custom) {
-    return custom
-      ? customSkillKind(custom) === "image"
-      : builtinSkillKind(id) === "image";
-  }
-
   function findCustomSkill(id) {
     var skills = customSkillsList();
     for (var index = 0; index < skills.length; index += 1) {
@@ -1786,14 +1775,9 @@
       actions = actions.filter(function (action) {
         return action !== id;
       });
-      /* The backend treats an empty list as "all actions", so hiding the last
-       * one would flip everything back on; keep at least one enabled. */
-      if (!actions.length) {
-        toast("至少保留一个截图工具条动作", "error");
-        renderCaptureActions(true);
-        return;
-      }
     }
+    /* An empty list is valid: the screenshot toolbar then only shows
+     * confirm/cancel (fifth review round; the backend keeps [] as-is). */
     save({ picker: { captureSkills: actions } });
   }
 
@@ -1803,6 +1787,7 @@
       return;
     }
     var enabled = enabledCaptureActions();
+    setHidden(byId("capture-actions-empty"), enabled.length > 0);
     var order = captureActionOrder();
     var signature = order
       .map(function (id) {
@@ -2025,7 +2010,9 @@
     var main = el("div", "skill-main");
     var nameRow = el("div", "skill-name-row");
     nameRow.appendChild(el("span", "skill-name", meta.label));
-    if (isImageSkill(id, custom)) {
+    /* Only custom image skills carry the 「图片」badge: the built-in screenshot
+     * entry skill lives in the text-skill tab (fifth review round). */
+    if (custom && customSkillKind(custom) === "image") {
       var kindBadge = el("span", "skill-kind-badge", "图片");
       kindBadge.title = "图片技能：点击后进入截图";
       nameRow.appendChild(kindBadge);

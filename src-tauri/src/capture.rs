@@ -53,11 +53,6 @@ use crate::settings::{
 use crate::state::{lock, AppState, TranslateTask};
 use crate::windows::CaptureGeometry;
 
-/// Wait after hiding one of **our own visible** windows so it has really
-/// disappeared from the screen before the screenshot is taken. The common
-/// hotkey path has nothing visible on screen and skips this wait entirely
-/// (contract §10.7 latency: no fixed cost before the grab).
-const WINDOW_HIDE_DELAY: Duration = Duration::from_millis(100);
 /// Fallback: show every overlay this long after `start` when the renderer never
 /// called `capture_ready` (contract §10.1).
 const OVERLAY_FALLBACK_DELAY: Duration = Duration::from_millis(2_500);
@@ -227,9 +222,6 @@ pub struct CaptureService {
     /// identical layout reuses the loaded webviews; a different one destroys
     /// and recreates them (contract §10.1).
     layout: Mutex<Option<Vec<CaptureGeometry>>>,
-    /// Set when the no-exclusion fallback had to hide the settings window; it is
-    /// shown again when the capture flow ends (contract §10.1).
-    fallback_settings_hidden: AtomicBool,
     /// Bumped on every session change so a stale 2.5 s fallback show is a no-op.
     epoch: AtomicU64,
     /// Set when at least one overlay renderer reported `capture_ready`, so the
@@ -246,7 +238,6 @@ impl CaptureService {
             session: Mutex::new(None),
             last: Mutex::new(None),
             layout: Mutex::new(None),
-            fallback_settings_hidden: AtomicBool::new(false),
             epoch: AtomicU64::new(0),
             ready_signaled: AtomicBool::new(false),
             starting: AtomicBool::new(false),
@@ -258,11 +249,11 @@ impl CaptureService {
         self.ready_signaled.store(true, Ordering::SeqCst);
     }
 
-    /// Prepares one screenshot: keeps the shell windows open (they are excluded
-    /// from the capture; the hide fallback is only used when the OS rejects
-    /// that), reuses the overlay webviews when the monitor layout is unchanged,
-    /// grabs every monitor, pre-encodes the display images in parallel and arms
-    /// the overlays. Returns the number of monitors.
+    /// Prepares one screenshot: keeps the settings/picker windows open **and
+    /// inside the frozen image** (user request), reuses the overlay webviews
+    /// when the monitor layout is unchanged, grabs every monitor, pre-encodes
+    /// the display images in parallel and arms the overlays. Returns the number
+    /// of monitors.
     ///
     /// A second call while the first one is still preparing is rejected: the
     /// hotkey may be pressed twice because the overlay only appears once the
@@ -317,25 +308,11 @@ impl CaptureService {
         self.clear_session();
         *lock(&self.last) = None;
 
-        // Keep the settings/picker windows open: exclusion from screen capture
-        // makes hiding unnecessary (contract §10.1). Only when the OS rejects
-        // `WDA_EXCLUDEFROMCAPTURE` fall back to the old hide-and-wait behavior.
-        if !crate::windows::prepare_capture_exclusion(app) {
-            let settings_hidden = crate::windows::hide_settings(app);
-            if settings_hidden {
-                self.fallback_settings_hidden.store(true, Ordering::SeqCst);
-            }
-            let mut hid_windows = settings_hidden;
-            hid_windows |= crate::windows::hide_picker(app);
-            hid_windows |= crate::windows::hide_capture_windows(app);
-            if hid_windows {
-                tokio::time::sleep(WINDOW_HIDE_DELAY).await;
-            }
-        } else {
-            // Excluded overlay windows are never captured; only hide a stale one
-            // so the next round starts from a clean renderer.
-            crate::windows::hide_capture_windows(app);
-        }
+        // Keep the settings/picker windows open **and let them appear in the
+        // frozen screenshot** (user request): nothing is hidden or excluded.
+        // Only a stale overlay from the previous capture is hidden first so the
+        // next round starts from a clean renderer.
+        crate::windows::hide_capture_windows(app);
 
         let settings = state.settings.get();
         let preset = preset_skill_id
@@ -837,14 +814,10 @@ impl CaptureService {
     }
 
     /// Ends the capture flow: releases the input gate that kept the
-    /// picker/settings open (contract §10.1) and shows the settings window again
-    /// when the no-exclusion fallback had to hide it.
+    /// picker/settings open (contract §10.1).
     fn finish_capture(&self, app: &AppHandle) {
         if let Some(state) = app_state(app) {
             state.selection.set_capture_active(false);
-        }
-        if self.fallback_settings_hidden.swap(false, Ordering::SeqCst) {
-            crate::windows::show_settings(app);
         }
     }
 

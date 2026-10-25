@@ -304,6 +304,27 @@ body.is-dragging .selection-handle {
   color: var(--danger);
 }
 
+/* Primary confirmation: accepts the crop (same action as "复制", then the shell
+ * hides the overlay). Same height/typography as the other tool buttons, only
+ * indigo + semibold so it reads as the main action next to the red cancel. */
+.tool-btn-confirm {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.tool-btn-confirm .icon {
+  color: var(--primary);
+}
+
+.tool-btn-confirm:hover:not(:disabled) {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.tool-btn-confirm:hover:not(:disabled) .icon {
+  color: var(--primary);
+}
+
 .bar-sep {
   flex: 0 0 auto;
   width: 1px;
