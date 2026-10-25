@@ -40,37 +40,50 @@
 
     <div class="capture-hint" id="capture-hint" hidden>拖动选区移动 · 拖动边角调整 · Esc 取消</div>
 
-    <!-- Annotation properties. Sits above the toolbar (positioned by capture.js),
-         hidden until a drawing tool is active. -->
+    <!-- Annotation properties (QQ-style, contract §11.10). Hidden until a
+         drawing tool is active; capture.js positions it and shows only the
+         groups whose `data-tools` includes the active tool. -->
     <div class="capture-palette" id="capture-palette" role="toolbar"
          aria-label="标注属性" hidden>
-      <div class="palette-group" id="palette-colors"
-           data-tools="shape arrow pen text number mosaic" role="group" aria-label="颜色">
-        <button type="button" class="palette-color" data-color="#ef4444"
-                title="红色" aria-label="红色"></button>
-        <button type="button" class="palette-color" data-color="#f59e0b"
-                title="橙色" aria-label="橙色"></button>
-        <button type="button" class="palette-color" data-color="#84cc16"
-                title="黄绿色" aria-label="黄绿色"></button>
-        <button type="button" class="palette-color" data-color="#22c55e"
-                title="绿色" aria-label="绿色"></button>
-        <button type="button" class="palette-color" data-color="#3b82f6"
-                title="蓝色" aria-label="蓝色"></button>
-        <button type="button" class="palette-color" data-color="#ffffff"
-                title="白色" aria-label="白色"></button>
-        <button type="button" class="palette-color" data-color="#6b7280"
-                title="灰色" aria-label="灰色"></button>
-        <button type="button" class="palette-color" data-color="#111827"
-                title="黑色" aria-label="黑色"></button>
-        <label class="palette-color-custom" title="自定义颜色">
-          <input type="color" id="palette-color-input" value="#ef4444"
-                 aria-label="自定义颜色">
-        </label>
-        <span class="palette-value palette-color-value" id="palette-color-value">#ef4444</span>
+      <div class="palette-group palette-shapes-group" id="palette-shapes"
+           data-tools="shape" role="group" aria-label="形状">
+        <button type="button" class="palette-shape is-active" data-shape="rect"
+                title="矩形" aria-label="矩形" aria-pressed="true">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="4" y="4" width="16" height="16" rx="2"></rect>
+          </svg>
+        </button>
+        <button type="button" class="palette-shape" data-shape="circle"
+                title="圆形" aria-label="圆形" aria-pressed="false">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="8"></circle>
+          </svg>
+        </button>
+        <button type="button" class="palette-shape" data-shape="line"
+                title="直线" aria-label="直线" aria-pressed="false">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M5 19 19 5"></path>
+          </svg>
+        </button>
       </div>
 
-      <div class="palette-group palette-field" data-tools="shape arrow pen"
-           role="group" aria-label="粗细">
+      <div class="palette-group" id="palette-color-group"
+           data-tools="shape arrow pen text number" role="group" aria-label="颜色">
+        <button type="button" class="palette-color-button" id="palette-color-button"
+                title="颜色" aria-label="颜色" aria-haspopup="dialog">
+          <span class="palette-color-swatch" id="palette-color-swatch"></span>
+          <svg class="palette-color-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="m6 9 6 6 6-6"></path>
+          </svg>
+        </button>
+      </div>
+
+      <div class="palette-group palette-field" id="palette-width-group"
+           data-tools="shape arrow pen" role="group" aria-label="粗细">
         <span class="palette-label">粗细</span>
         <input type="range" id="palette-width" min="1" max="20" step="1" value="4"
                aria-label="线条粗细">
@@ -86,8 +99,8 @@
                 aria-pressed="false">填充</button>
       </div>
 
-      <div class="palette-group palette-field" data-tools="text number"
-           role="group" aria-label="字号">
+      <div class="palette-group palette-field" id="palette-font-size-group"
+           data-tools="text number" role="group" aria-label="字号">
         <span class="palette-label">字号</span>
         <input type="range" id="palette-font-size" min="12" max="72" step="1" value="24"
                aria-label="字号">
@@ -112,12 +125,83 @@
                 aria-pressed="false" title="黑色背景"></button>
       </div>
 
-      <div class="palette-group palette-field" data-tools="mosaic"
-           role="group" aria-label="马赛克块大小">
+      <div class="palette-group palette-field" id="palette-mosaic-size-group"
+           data-tools="mosaic" role="group" aria-label="马赛克块大小">
         <span class="palette-label">马赛克</span>
         <input type="range" id="palette-mosaic-size" min="2" max="30" step="1" value="8"
                aria-label="马赛克块大小">
         <span class="palette-value" id="palette-mosaic-size-value">8</span>
+      </div>
+    </div>
+
+    <!-- QQ-style color popover + custom color panel (contract §11.10.3).
+         Both are fixed-positioned (capture.js computes left/top) and hidden by
+         default. -->
+    <div class="palette-color-popover" id="palette-color-popover" role="dialog"
+         aria-label="预设颜色" hidden>
+      <div class="palette-color-grid" role="group" aria-label="预设颜色">
+        <button type="button" class="palette-color" data-color="#f44336"
+                title="红色" aria-label="红色"></button>
+        <button type="button" class="palette-color" data-color="#ff9800"
+                title="橙色" aria-label="橙色"></button>
+        <button type="button" class="palette-color" data-color="#ffeb3b"
+                title="黄色" aria-label="黄色"></button>
+        <button type="button" class="palette-color" data-color="#8bc34a"
+                title="绿色" aria-label="绿色"></button>
+        <button type="button" class="palette-color" data-color="#00bcd4"
+                title="青色" aria-label="青色"></button>
+        <button type="button" class="palette-color" data-color="#2196f3"
+                title="蓝色" aria-label="蓝色"></button>
+        <button type="button" class="palette-color" data-color="#9c27b0"
+                title="紫色" aria-label="紫色"></button>
+        <button type="button" class="palette-color" data-color="#ffffff"
+                title="白色" aria-label="白色"></button>
+        <button type="button" class="palette-color" data-color="#9e9e9e"
+                title="灰色" aria-label="灰色"></button>
+        <button type="button" class="palette-color" data-color="#000000"
+                title="黑色" aria-label="黑色"></button>
+      </div>
+      <button type="button" class="palette-color-custom" id="palette-color-custom"
+              title="自定义颜色">
+        <span class="palette-color-custom-rainbow" aria-hidden="true"></span>
+        <span class="palette-color-custom-label">自定义</span>
+      </button>
+    </div>
+
+    <div class="palette-custom-color" id="palette-custom-color" role="dialog"
+         aria-label="自定义颜色" hidden>
+      <div class="palette-hsv" id="palette-hsv" aria-label="饱和度与明度">
+        <span class="palette-hsv-cursor" id="palette-hsv-cursor"></span>
+      </div>
+      <div class="palette-hue" id="palette-hue" aria-label="色相">
+        <span class="palette-hue-thumb" id="palette-hue-thumb"></span>
+      </div>
+      <div class="palette-rgb-row">
+        <label class="palette-rgb-field">R
+          <input type="number" id="palette-rgb-r" min="0" max="255" step="1" value="244"
+                 aria-label="红色通道">
+        </label>
+        <label class="palette-rgb-field">G
+          <input type="number" id="palette-rgb-g" min="0" max="255" step="1" value="67"
+                 aria-label="绿色通道">
+        </label>
+        <label class="palette-rgb-field">B
+          <input type="number" id="palette-rgb-b" min="0" max="255" step="1" value="54"
+                 aria-label="蓝色通道">
+        </label>
+      </div>
+      <div class="palette-custom-footer">
+        <span class="palette-custom-preview" id="palette-custom-preview"
+              title="当前颜色" aria-label="当前颜色"></span>
+        <button type="button" class="palette-eyedropper" id="palette-eyedropper"
+                title="吸色器（点击截图取色）" aria-label="吸色器">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="m2 22 1-1h3l9-9"></path>
+            <path d="M3 21v-3l9-9"></path>
+            <path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a1 1 0 1 1-3 3l-3.8-3.8a1 1 0 1 1 3-3z"></path>
+          </svg>
+        </button>
       </div>
     </div>
 
@@ -149,19 +233,13 @@
 
         <span class="capture-tool-split" data-tool-split="shape">
           <button type="button" class="tool-btn capture-tool" data-tool="shape"
-                  title="形状（矩形 / 椭圆 / 直线）" aria-pressed="false">
+                  title="形状（矩形 / 圆形 / 直线）" aria-pressed="false">
             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
                  stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <rect x="3" y="3" width="18" height="18" rx="2"></rect>
             </svg>
             <span class="label">形状</span>
           </button>
-          <select class="capture-shape-select" id="capture-shape-mode"
-                  data-shape-mode="rect" title="形状类型" aria-label="形状类型">
-            <option value="rect" selected>矩形</option>
-            <option value="ellipse">椭圆</option>
-            <option value="line">直线</option>
-          </select>
         </span>
 
         <button type="button" class="tool-btn capture-tool" data-tool="arrow"

@@ -390,42 +390,7 @@ body.is-dragging .selection-handle {
   color: var(--primary);
 }
 
-/* Shape sub-mode: a compact white select tucked next to the shape button. */
-.capture-shape-select {
-  flex: 0 0 auto;
-  height: 26px;
-  margin: 0 2px 0 -6px;
-  padding: 0 18px 0 7px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background-color: var(--surface-muted);
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 3px center;
-  background-size: 12px 12px;
-  color: var(--text-muted);
-  font-family: inherit;
-  font-size: 12px;
-  cursor: pointer;
-  appearance: none;
-  -webkit-appearance: none;
-}
-
-.capture-shape-select:hover {
-  border-color: var(--border-strong);
-  color: var(--text);
-}
-
-.capture-shape-select:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 1px;
-}
-
-.capture-bar.compact .capture-shape-select {
-  margin-left: 2px;
-}
-
-/* ---- Annotation palette (contract §11.2) ------------------------------- */
+/* ---- Annotation palette (contract §11.2/§11.10) ------------------------ */
 
 .capture-palette {
   position: fixed;
@@ -470,17 +435,115 @@ body.is-dragging .selection-handle {
   text-align: center;
 }
 
-.palette-color-value {
-  min-width: 54px;
-  text-align: left;
-  letter-spacing: 0.01em;
+/* Shape sub-menu (contract §11.10.2): 32×32 icon buttons, active = primary. */
+.palette-shapes-group {
+  gap: 3px;
 }
 
-/* 18×18 rounded swatches; the active one gets a ring. */
-.palette-color {
+.palette-shape {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex: 0 0 auto;
-  width: 18px;
-  height: 18px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.palette-shape:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.palette-shape .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.palette-shape.is-active {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+/* Color trigger (contract §11.10.3): 32×24 button with the current swatch. */
+.palette-color-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 24px;
+  padding: 0 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.palette-color-button:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-muted);
+}
+
+.palette-color-button[aria-expanded="true"] {
+  border-color: var(--primary);
+}
+
+.palette-color-swatch {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  border: 1px solid rgba(15, 23, 42, 0.16);
+  border-radius: 4px;
+  background: #ef4444;
+}
+
+.palette-color-chevron {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  color: var(--text-faint);
+}
+
+/* ---- QQ-style color popover (contract §11.10.3) ------------------------ */
+
+.palette-color-popover {
+  position: fixed;
+  /* Fallback anchor only: capture.js computes left/top and clamps to viewport. */
+  left: 180px;
+  top: 80px;
+  z-index: 35;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 196px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-float);
+  cursor: default;
+}
+
+.palette-color-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+}
+
+.palette-color {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1 / 1;
   padding: 0;
   border: 1px solid rgba(15, 23, 42, 0.14);
   border-radius: 6px;
@@ -491,69 +554,246 @@ body.is-dragging .selection-handle {
 }
 
 .palette-color:hover {
-  transform: scale(1.12);
+  transform: scale(1.08);
 }
 
 .palette-color.is-active {
-  box-shadow: 0 0 0 2px var(--surface), 0 0 0 3.5px var(--primary);
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px var(--primary);
 }
 
-.palette-color[data-color="#ef4444"] {
-  background: #ef4444;
+.palette-color[data-color="#f44336"] {
+  background: #f44336;
 }
 
-.palette-color[data-color="#f59e0b"] {
-  background: #f59e0b;
+.palette-color[data-color="#ff9800"] {
+  background: #ff9800;
 }
 
-.palette-color[data-color="#84cc16"] {
-  background: #84cc16;
+.palette-color[data-color="#ffeb3b"] {
+  background: #ffeb3b;
 }
 
-.palette-color[data-color="#22c55e"] {
-  background: #22c55e;
+.palette-color[data-color="#8bc34a"] {
+  background: #8bc34a;
 }
 
-.palette-color[data-color="#3b82f6"] {
-  background: #3b82f6;
+.palette-color[data-color="#00bcd4"] {
+  background: #00bcd4;
+}
+
+.palette-color[data-color="#2196f3"] {
+  background: #2196f3;
+}
+
+.palette-color[data-color="#9c27b0"] {
+  background: #9c27b0;
 }
 
 .palette-color[data-color="#ffffff"] {
   background: #ffffff;
 }
 
-.palette-color[data-color="#6b7280"] {
-  background: #6b7280;
+.palette-color[data-color="#9e9e9e"] {
+  background: #9e9e9e;
 }
 
-.palette-color[data-color="#111827"] {
-  background: #111827;
+.palette-color[data-color="#000000"] {
+  background: #000000;
 }
 
 .palette-color-custom {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   justify-content: center;
-  flex: 0 0 auto;
-}
-
-#palette-color-input {
-  width: 20px;
-  height: 20px;
-  padding: 0;
+  width: 100%;
+  height: 26px;
+  padding: 0 8px;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  background: transparent;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(
+    90deg,
+    #f44336,
+    #ff9800,
+    #ffeb3b,
+    #8bc34a,
+    #00bcd4,
+    #2196f3,
+    #9c27b0
+  );
   cursor: pointer;
 }
 
-#palette-color-input::-webkit-color-swatch-wrapper {
-  padding: 0;
+.palette-color-custom:hover {
+  filter: brightness(1.05);
 }
 
-#palette-color-input::-webkit-color-swatch {
-  border: 0;
-  border-radius: 5px;
+.palette-color-custom-label {
+  color: #ffffff;
+  font-size: 11.5px;
+  font-weight: 600;
+  text-shadow: 0 1px 2px rgba(15, 23, 42, 0.45);
+}
+
+/* ---- Custom color panel (HSV + hue + RGB + eyedropper) ----------------- */
+
+.palette-custom-color {
+  position: fixed;
+  /* Fallback anchor only: capture.js computes left/top and clamps to viewport. */
+  left: 180px;
+  top: 80px;
+  z-index: 36;
+  width: 208px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-float);
+  cursor: default;
+}
+
+.palette-hsv {
+  position: relative;
+  width: 100%;
+  height: 130px;
+  border-radius: 8px;
+  background-color: #f44336;
+  background-image:
+    linear-gradient(to top, #000000, rgba(0, 0, 0, 0)),
+    linear-gradient(to right, #ffffff, rgba(255, 255, 255, 0));
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.palette-hsv-cursor {
+  position: absolute;
+  left: 100%;
+  top: 0;
+  width: 12px;
+  height: 12px;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.35), 0 1px 3px rgba(15, 23, 42, 0.4);
+  pointer-events: none;
+}
+
+.palette-hue {
+  position: relative;
+  height: 12px;
+  margin-top: 8px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    #ff0000,
+    #ffff00,
+    #00ff00,
+    #00ffff,
+    #0000ff,
+    #ff00ff,
+    #ff0000
+  );
+  cursor: pointer;
+  touch-action: none;
+}
+
+.palette-hue-thumb {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.35), 0 1px 3px rgba(15, 23, 42, 0.4);
+  pointer-events: none;
+}
+
+.palette-rgb-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.palette-rgb-field {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--text-faint);
+  font-size: 10.5px;
+}
+
+.palette-rgb-field input[type="number"] {
+  width: 100%;
+  min-width: 0;
+  height: 24px;
+  padding: 0 3px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 11.5px;
+  text-align: center;
+}
+
+.palette-rgb-field input[type="number"]:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+.palette-custom-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+}
+
+.palette-custom-preview {
+  width: 46px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #f44336;
+}
+
+.palette-eyedropper {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.palette-eyedropper:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+  color: var(--primary);
+}
+
+.palette-eyedropper .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.palette-eyedropper.is-active {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+/* Eyedropper mode: the overlay turns into a color picker (contract §11.10.3). */
+body.picking-color,
+body.picking-color * {
+  cursor: crosshair !important;
 }
 
 .palette-field input[type="range"] {
@@ -667,7 +907,11 @@ body.is-dragging .selection-handle {
 .palette-toggle:focus-visible,
 .palette-seg:focus-visible,
 .palette-color:focus-visible,
-.palette-bg:focus-visible {
+.palette-bg:focus-visible,
+.palette-shape:focus-visible,
+.palette-color-button:focus-visible,
+.palette-color-custom:focus-visible,
+.palette-eyedropper:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 1px;
 }
@@ -825,7 +1069,10 @@ body.is-dragging .selection-handle {
   .palette-color,
   .palette-bg,
   .palette-seg,
-  .palette-toggle {
+  .palette-toggle,
+  .palette-shape,
+  .palette-color-button,
+  .palette-eyedropper {
     transition: none;
   }
 

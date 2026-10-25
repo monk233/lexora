@@ -23,7 +23,10 @@
   "use strict";
 
   var TOOLS = ["shape", "arrow", "pen", "text", "number", "mosaic"];
-  var SHAPE_MODES = ["rect", "ellipse", "line"];
+  /* §11.10.2: "circle" is the renamed ellipse mode; "ellipse" stays a legacy
+   * alias so old persisted values/previews keep working. */
+  var SHAPE_MODES = ["rect", "circle", "line"];
+  var LEGACY_SHAPE_MODES = { ellipse: "circle" };
   var FILL_MODES = ["outline", "fill"];
   var MAX_HISTORY = 100; /* snapshots, i.e. far more than the required 50 steps */
   var FONT_STACK =
@@ -56,6 +59,17 @@
   function finite(value, fallback) {
     var number = Number(value);
     return isFinite(number) ? number : fallback;
+  }
+
+  /* Normalise a shape mode: "ellipse" (old name) maps to "circle" (§11.10.2). */
+  function normalizeShapeMode(value) {
+    var mode = String(value == null ? "" : value)
+      .trim()
+      .toLowerCase();
+    if (LEGACY_SHAPE_MODES[mode]) {
+      return LEGACY_SHAPE_MODES[mode];
+    }
+    return SHAPE_MODES.indexOf(mode) >= 0 ? mode : "rect";
   }
 
   function copyOptions(source) {
@@ -461,6 +475,8 @@
           drawRect(targetContext, annotation);
           break;
         case "ellipse":
+        case "circle":
+          /* "ellipse" is the legacy name of the circle shape (§11.10.2). */
           drawEllipse(targetContext, annotation);
           break;
         case "line":
@@ -671,6 +687,7 @@
       }
       if (
         annotation.type === "rect" ||
+        annotation.type === "circle" ||
         annotation.type === "ellipse" ||
         annotation.type === "line"
       ) {
@@ -993,9 +1010,7 @@
             optionsState.width = clamp(round(finite(value, 4)), 1, 20);
             break;
           case "shapeMode":
-            if (SHAPE_MODES.indexOf(String(value)) >= 0) {
-              optionsState.shapeMode = String(value);
-            }
+            optionsState.shapeMode = normalizeShapeMode(value);
             break;
           case "fill":
             if (FILL_MODES.indexOf(String(value)) >= 0) {
@@ -1099,6 +1114,47 @@
       /* Read-only copy for tests/diagnostics. */
       getAnnotations: function () {
         return currentList().slice();
+      },
+
+      /* §11.10.3 eyedropper: sample the frozen screenshot pixel under a CSS
+       * viewport point. Returns "#rrggbb" or null when the point is outside the
+       * screenshot / the image is not decodable. */
+      sampleColor: function (x, y) {
+        if (!image || !image.naturalWidth || !image.naturalHeight) {
+          return null;
+        }
+        var size = cssSize();
+        var scaleX = image.naturalWidth / size.width;
+        var scaleY = image.naturalHeight / size.height;
+        var pixelX = Math.floor(finite(x, -1) * scaleX);
+        var pixelY = Math.floor(finite(y, -1) * scaleY);
+        if (
+          pixelX < 0 ||
+          pixelY < 0 ||
+          pixelX >= image.naturalWidth ||
+          pixelY >= image.naturalHeight
+        ) {
+          return null;
+        }
+        try {
+          var buffer = createCanvas();
+          buffer.width = image.naturalWidth;
+          buffer.height = image.naturalHeight;
+          var bufferContext = buffer.getContext("2d");
+          bufferContext.drawImage(image, 0, 0);
+          var pixel = bufferContext.getImageData(pixelX, pixelY, 1, 1).data;
+          return (
+            "#" +
+            [pixel[0], pixel[1], pixel[2]]
+              .map(function (channel) {
+                var hex = Math.max(0, Math.min(255, channel)).toString(16);
+                return hex.length === 1 ? "0" + hex : hex;
+              })
+              .join("")
+          );
+        } catch (error) {
+          return null;
+        }
       },
 
       renderToPng: renderToPng

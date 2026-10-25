@@ -656,3 +656,36 @@ editor.renderToPng(rectCss) -> string|null
 - 长截图：自动滚动并拼接，结果生成 pin 窗口 + 复制到剪贴板；停止条件与日志正确。
 - 不破坏既有：选区移动/缩放、复制/提取文字/翻译/解释图片/自定义图片技能、紧凑模式、确认/取消、overlay 复用与性能。
 - `cargo test` 通过；`cargo check` 无错误；`node --check` 全部通过。
+
+## 11.10 第十一轮修订：工具子菜单、形状布局与颜色面板（权威）
+
+参考 QQ 截图的操作手感，对 §11.2/§11.3 做如下**覆盖性**修订。
+
+### 11.10.1 弹出层方向
+- 点击标注工具（shape/arrow/pen/text/number/mosaic）后，属性栏 `#capture-palette` 默认出现在 `#capture-bar` **下方**（水平对齐工具条），当下方可用高度 < 属性栏高度 + 8px 时自动改为上方。
+- 属性栏内的弹层（颜色面板 `#palette-color-popover`、自定义颜色面板 `#palette-custom-color`）默认从触发按钮**向下**展开；下方空间不足时向上展开。弹层定位需 clamp 在视口内。
+- 任何弹层点击外部关闭；Esc 优先关闭最上层弹层，再退工具，最后取消截图。
+
+### 11.10.2 形状工具布局（`capture.html` / `capture.css`）
+- 删除 `select#capture-shape-mode`，改为形状子菜单按钮组 `#palette-shapes`（位于属性栏最左）：
+  `button[data-shape="rect"]` 矩形、`button[data-shape="circle"]` 圆形、`button[data-shape="line"]` 直线；当前模式 `.is-active`。
+- **椭圆统一改名「圆形」**：内部 shapeMode 值用 `rect|circle|line`（`ellipse` 仅作为旧值别名兼容，不再展示）。
+- 直线（line）是独立可见的形状项；选择 line 时隐藏「填充」组。
+- 形状属性栏顺序（QQ 风格）：`[矩形|圆形|直线] | [颜色按钮] [粗细] | [填充]`；箭头/画笔顺序：`[颜色按钮] [粗细]`；文字：`[颜色按钮] [字号] [粗体] [文字背景]`；序号：`[颜色按钮] [字号] [粗体]`；马赛克：`[块大小]`。
+
+### 11.10.3 颜色面板（QQ 风格，所有绘图工具共用）
+- 颜色按钮 `#palette-color-button`：显示当前颜色色块 `#palette-color-swatch` + 下拉箭头；点击展开 `#palette-color-popover`（默认向下、空间不足向上）。
+- 预设色块：10 个 `button.palette-color[data-color]`（QQ 常用色：`#f44336 #ff9800 #ffeb3b #8bc34a #00bcd4 #2196f3 #9c27b0 #ffffff #9e9e9e #000000`），当前色带选中描边。
+- 自定义颜色入口 `#palette-color-custom`（彩虹色块）：点击展开自定义颜色面板 `#palette-custom-color`（默认向上/向下自适应，与 popover 同方向策略）：
+  - `#palette-hsv`：HSV 饱和度/明度渐变取色区（尺寸约 180×130，白色到纯色到黑），内部光标 `#palette-hsv-cursor`；
+  - `#palette-hue`：色相滑条（0–360，彩虹渐变），滑块 `#palette-hue-thumb`；
+  - RGB 数字输入 `#palette-rgb-r` / `#palette-rgb-g` / `#palette-rgb-b`（0–255，改动实时生效）；
+  - 预览色块 `#palette-custom-preview`；
+  - 吸色器按钮 `#palette-eyedropper`；
+  - 支持拖动取色区/色相条实时更新颜色，Esc/点击外部关闭。
+- **吸色器**：点击 `#palette-eyedropper` 进入吸色模式：`body.picking-color`、光标 crosshair、所有工具暂停绘制；点击截图任意位置用冻结截图取样（`CaptureAnnotate.sampleColor(x, y)`，返回 `#rrggbb`）并应用到当前工具颜色；Esc/右键取消吸色。
+- 颜色/面板状态在工具切换间保留（与现有 options 一致）；「无颜色」不适用。
+
+### 11.10.4 交互与验收
+- 属性栏与弹层均为白色主题（沿用现有样式 token），圆角 12、边框 `#e2e8f0`、阴影轻量；紧凑模式仍只影响工具条 label。
+- 验收：点击形状→属性栏在工具条下方，含矩形/圆形/直线三个按钮；切换三者绘图正确（圆形画圆/椭圆，直线无填充组）；颜色按钮展开面板在下方（底部空间不足时翻到上方）；面板含 10 预设色 + 自定义入口；自定义面板含 HSV 区/色相条/RGB 输入/吸色器；吸色器点截图可取到该像素颜色并应用；所有绘图工具都有颜色按钮且拖动宽度即时生效；console 无错误。

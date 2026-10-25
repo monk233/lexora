@@ -109,6 +109,11 @@
      * selection interactions are live again. */
     tool: null,
     longshotActive: false,
+    /* Colour panel state (§11.10.3): eyedropper picking mode and the two
+     * floating panels (preset popover / custom HSV panel). */
+    pickingColor: false,
+    colorPopoverOpen: false,
+    customColorOpen: false,
     targetLang: "auto",
     hintTimer: 0,
     hintFadeTimer: 0,
@@ -123,6 +128,12 @@
   var toolButtons = [];
   var longshotTimer = 0;
   var LONGSHOT_TIMEOUT_MS = 90000;
+  /* §11.10.3 colour panel: HSV state for the custom picker + drag flags. */
+  var hsvState = { hue: 0, saturation: 1, value: 1 };
+  var hsvDragging = false;
+  var hueDragging = false;
+  var PALETTE_GAP = 8;
+  var FLOATING_PANEL_GAP = 6;
 
   /* Test/debug hook used by the CDP checks in tests/ and manual QA. */
   window.__captureState = state;
@@ -347,7 +358,25 @@
       document.querySelectorAll("[data-tool]")
     );
     toolButtons = dom.toolButtons;
-    dom.shapeMode = byId("capture-shape-mode");
+    /* §11.10.2: shape sub-menu buttons replace the old <select>. */
+    dom.shapeButtons = Array.prototype.slice.call(
+      document.querySelectorAll("[data-shape]")
+    );
+    /* ---- QQ-style colour controls (§11.10.3) ---- */
+    dom.colorButton = byId("palette-color-button");
+    dom.colorSwatch = byId("palette-color-swatch");
+    dom.colorPopover = byId("palette-color-popover");
+    dom.colorCustomButton = byId("palette-color-custom");
+    dom.customColorPanel = byId("palette-custom-color");
+    dom.hsv = byId("palette-hsv");
+    dom.hsvCursor = byId("palette-hsv-cursor");
+    dom.hue = byId("palette-hue");
+    dom.hueThumb = byId("palette-hue-thumb");
+    dom.rgbR = byId("palette-rgb-r");
+    dom.rgbG = byId("palette-rgb-g");
+    dom.rgbB = byId("palette-rgb-b");
+    dom.customPreview = byId("palette-custom-preview");
+    dom.eyedropper = byId("palette-eyedropper");
     dom.undo = byId("capture-undo");
     dom.redo = byId("capture-redo");
     dom.pin =
@@ -787,9 +816,6 @@
         setHidden(node, true);
       }
     });
-    if (dom.shapeMode) {
-      setHidden(dom.shapeMode, true);
-    }
     each(dom.bar.querySelectorAll('[data-action="copy"]'), function (button) {
       setHidden(button, true);
     });
@@ -814,16 +840,6 @@
       }
       setHidden(node, false);
       container.appendChild(node);
-      /* Pages without a shape wrapper keep the select glued to its button. */
-      if (
-        entry === "shape" &&
-        dom.shapeMode &&
-        node !== dom.shapeMode &&
-        !node.contains(dom.shapeMode)
-      ) {
-        setHidden(dom.shapeMode, false);
-        container.appendChild(dom.shapeMode);
-      }
       previousGroup = group;
       placed += 1;
     });
@@ -1176,6 +1192,7 @@
     updateSizeLabel();
     layoutBar();
     layoutPalette();
+    layoutFloatingPanels();
   }
 
   function setBox(node, left, top, width, height) {
@@ -1376,8 +1393,9 @@
       return;
     }
     /* While a drawing tool is active the canvas owns the pointer; while a long
-     * screenshot runs the overlay must not react to selection gestures. */
-    if (state.tool || state.longshotActive) {
+     * screenshot runs the overlay must not react to selection gestures, and the
+     * eyedropper must sample instead of starting a drag. */
+    if (state.tool || state.longshotActive || state.pickingColor) {
       return;
     }
     if (isUiTarget(event.target)) {
@@ -1407,7 +1425,7 @@
     if (event.button !== 0 || !canInteract() || state.drag) {
       return;
     }
-    if (state.tool || state.longshotActive) {
+    if (state.tool || state.longshotActive || state.pickingColor) {
       return;
     }
     event.preventDefault();
@@ -1445,7 +1463,7 @@
       document.body.classList.remove("is-over-selection");
       return;
     }
-    if (state.tool || state.longshotActive) {
+    if (state.tool || state.longshotActive || state.pickingColor) {
       document.body.classList.remove("is-over-selection");
       return;
     }
@@ -1553,9 +1571,22 @@
     if (state.longshotActive) {
       return;
     }
-    /* Escape priority: the annotation engine already cancelled an in-progress
-     * stroke or text input during its capture-phase listener. Then leave the
-     * tool, and only then cancel the screenshot. */
+    /* §11.10.1 Escape priority: close the topmost colour panel / cancel the
+     * eyedropper first, then leave the tool, and only then cancel the capture.
+     * (The annotation engine already cancelled an in-progress stroke or text
+     * input during its capture-phase listener.) */
+    if (state.pickingColor) {
+      stopColorPicking();
+      return;
+    }
+    if (state.customColorOpen) {
+      closeCustomColor();
+      return;
+    }
+    if (state.colorPopoverOpen) {
+      closeColorPopover();
+      return;
+    }
     if (editor && state.tool) {
       setTool(null);
       editor.setTool(null);
@@ -1566,6 +1597,9 @@
 
   function onContextMenu(event) {
     event.preventDefault();
+    if (state.pickingColor) {
+      stopColorPicking();
+    }
     return false;
   }
 
@@ -1783,11 +1817,12 @@
   /* ---- Annotation engine / palette (contract §11) ---------------------- */
 
   /* Which palette groups belong to which tool. Used as a fallback when the
-   * palette markup does not carry `data-tools` attributes. */
+   * palette markup does not carry `data-tools` attributes (§11.10.2). */
   var PALETTE_ID_TOOLS = {
-    "palette-colors": ["shape", "arrow", "pen", "text", "number"],
-    "palette-color-input": ["shape", "arrow", "pen", "text", "number"],
-    "palette-color-value": ["shape", "arrow", "pen", "text", "number"],
+    "palette-shapes": ["shape"],
+    "palette-color-group": ["shape", "arrow", "pen", "text", "number"],
+    "palette-color-button": ["shape", "arrow", "pen", "text", "number"],
+    "palette-width-group": ["shape", "arrow", "pen"],
     "palette-width": ["shape", "arrow", "pen"],
     "palette-width-value": ["shape", "arrow", "pen"],
     "palette-fill": ["shape"],
@@ -1796,7 +1831,11 @@
     "palette-bold": ["text", "number"],
     "palette-text-bg": ["text"],
     "palette-mosaic-size": ["mosaic"],
-    "palette-mosaic-size-value": ["mosaic"]
+    "palette-mosaic-size-value": ["mosaic"],
+    /* Legacy markup (pre §11.10.3). */
+    "palette-colors": ["shape", "arrow", "pen", "text", "number"],
+    "palette-color-input": ["shape", "arrow", "pen", "text", "number"],
+    "palette-color-value": ["shape", "arrow", "pen", "text", "number"]
   };
 
   function initAnnotator() {
@@ -1865,7 +1904,9 @@
     hideLongshotProgress();
     window.clearTimeout(longshotTimer);
     longshotTimer = 0;
-    syncShapeModeControl();
+    stopColorPicking();
+    closeAllColorPanels();
+    syncShapeButtons();
   }
 
   function setTool(id) {
@@ -1892,29 +1933,22 @@
     document.body.classList.remove("is-over-selection");
     if (next) {
       hideHint();
+    } else {
+      stopColorPicking();
+      closeAllColorPanels();
     }
     updateCanvasVisibility();
     syncPalette();
   }
 
-  function bindShapeModeNode(node) {
-    var tag = node.tagName ? node.tagName.toLowerCase() : "";
-    if (tag === "select") {
-      node.addEventListener("change", function () {
-        applyShapeMode(node.value);
+  /* §11.10.2: shape sub-menu buttons (rect/circle/line) replace the old
+   * <select>. The active one gets `.is-active`. */
+  function bindShapeButtons() {
+    each(dom.shapeButtons, function (button) {
+      button.addEventListener("click", function (event) {
+        event.preventDefault();
+        applyShapeMode(button.getAttribute("data-shape"));
       });
-      return;
-    }
-    if (tag === "option") {
-      return;
-    }
-    node.addEventListener("click", function (event) {
-      event.preventDefault();
-      applyShapeMode(
-        node.getAttribute("data-shape-mode") ||
-          node.getAttribute("data-value") ||
-          ""
-      );
     });
   }
 
@@ -1925,40 +1959,36 @@
         setTool(button.getAttribute("data-tool"));
       });
     });
-    var shapeNodes = Array.prototype.slice.call(
-      document.querySelectorAll("[data-shape-mode], #capture-shape-mode")
-    );
-    each(shapeNodes, bindShapeModeNode);
+    bindShapeButtons();
     bindPaletteControls();
-    syncShapeModeControl();
+    syncShapeButtons();
   }
 
   function applyShapeMode(mode) {
     if (editor) {
       editor.setShapeMode(mode);
     }
-    syncShapeModeControl();
+    syncShapeButtons();
     syncPalette();
   }
 
-  function syncShapeModeControl() {
-    var node = dom.shapeMode;
-    if (!node && document.querySelector) {
-      node = document.querySelector("select[data-shape-mode]");
-    }
-    if (!node || node.value === undefined) {
-      return;
-    }
+  function syncShapeButtons() {
     var mode = editor ? editor.getOptions().shapeMode : "rect";
-    node.value = mode;
+    each(dom.shapeButtons, function (button) {
+      var active = String(button.getAttribute("data-shape")) === mode;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
   }
 
   function bindPaletteControls() {
     if (dom.palette) {
       dom.palette.addEventListener("click", onPaletteClick);
     }
+    bindColorControls();
     var colorInput = byId("palette-color-input");
     if (colorInput) {
+      /* Legacy preview markup (pre §11.10.3). */
       colorInput.addEventListener("input", function () {
         setEditorOption("color", colorInput.value);
       });
@@ -2022,6 +2052,7 @@
     }
     if (!state.tool || !editor) {
       setHidden(dom.palette, true);
+      closeAllColorPanels();
       return;
     }
     setHidden(dom.palette, false);
@@ -2034,7 +2065,9 @@
     syncMosaicColorVisibility();
     syncPaletteSwatches();
     syncPaletteValues();
+    syncColorUi();
     layoutPalette();
+    layoutFloatingPanels();
   }
 
   function applyPaletteGroupVisibility(tool) {
@@ -2070,35 +2103,21 @@
     }
   }
 
-  /* Mosaic has no colour property (contract §11.1), so the colour group is
-   * hidden for that tool even though its markup lists every tool. */
+  /* Mosaic has no colour property (§11.10.2: its palette only has the block
+   * size), so the colour group is hidden for that tool. */
   function syncMosaicColorVisibility() {
-    var group = byId("palette-colors");
-    if (!group) {
+    if (state.tool !== "mosaic") {
       return;
     }
-    if (state.tool === "mosaic") {
-      setHidden(group, true);
-    }
+    each([byId("palette-colors"), byId("palette-color-group")], function (group) {
+      if (group) {
+        setHidden(group, true);
+      }
+    });
   }
 
   function syncPaletteSwatches() {
-    if (!dom.palette || !editor) {
-      return;
-    }
-    var color = String(editor.getOptions().color || "").toLowerCase();
-    each(dom.palette.querySelectorAll("[data-color]"), function (swatch) {
-      var value = String(swatch.getAttribute("data-color") || "").toLowerCase();
-      swatch.classList.toggle("is-active", value === color);
-    });
-    var input = byId("palette-color-input");
-    if (input && /^#[0-9a-f]{6}$/i.test(color)) {
-      input.value = color;
-    }
-    var valueNode = byId("palette-color-value");
-    if (valueNode) {
-      valueNode.textContent = color;
-    }
+    syncColorUi();
   }
 
   function setRangeValue(rangeId, labelId, value) {
@@ -2136,11 +2155,12 @@
       var value = node.getAttribute("data-bg-color") || "";
       node.classList.toggle("is-active", value === (options.textBg || ""));
     });
-    syncShapeModeControl();
+    syncShapeButtons();
   }
 
-  /* The palette floats above the toolbar; when there is no room it is placed
-   * below it (§11.2). */
+  /* §11.10.1: the palette sits **below** the toolbar by default (left aligned
+   * to it, clamped to the viewport) and flips above when the space below is too
+   * small. Recomputed on tool changes, palette content changes and resize. */
   function layoutPalette() {
     if (!dom.palette || dom.palette.hidden || !dom.bar || dom.bar.hidden) {
       return;
@@ -2154,27 +2174,586 @@
       return;
     }
     var size = viewportSize();
-    var barLeft = dom.bar.offsetLeft || 0;
-    var barTop = dom.bar.offsetTop || 0;
-    var barHeight = dom.bar.offsetHeight || 40;
+    var barRect = dom.bar.getBoundingClientRect();
     var left = clamp(
-      barLeft,
+      barRect.left,
       EDGE_PAD,
       Math.max(EDGE_PAD, size.width - paletteWidth - EDGE_PAD)
     );
-    var top = barTop - paletteHeight - 6;
-    if (top < EDGE_PAD) {
-      top = barTop + barHeight + 6;
+    var belowTop = barRect.bottom + PALETTE_GAP;
+    var aboveTop = barRect.top - paletteHeight - PALETTE_GAP;
+    var top;
+    if (size.height - belowTop >= paletteHeight + EDGE_PAD) {
+      top = belowTop;
+    } else if (aboveTop >= EDGE_PAD) {
+      top = aboveTop;
+    } else {
+      top = clamp(
+        belowTop,
+        EDGE_PAD,
+        Math.max(EDGE_PAD, size.height - paletteHeight - EDGE_PAD)
+      );
     }
-    top = clamp(
-      top,
-      EDGE_PAD,
-      Math.max(EDGE_PAD, size.height - paletteHeight - EDGE_PAD)
-    );
     dom.palette.style.left = Math.round(left) + "px";
     dom.palette.style.top = Math.round(top) + "px";
     dom.palette.style.right = "";
     dom.palette.style.bottom = "";
+  }
+
+  /* ---- Colour panel (§11.10.3): preset popover, custom HSV picker, eyedropper ---- */
+
+  function numberOr(value, fallback) {
+    var number = Number(value);
+    return isFinite(number) ? number : fallback;
+  }
+
+  function parseHexColor(value) {
+    var hex = String(value == null ? "" : value).trim();
+    if (!/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(hex)) {
+      return null;
+    }
+    var body = hex.slice(1);
+    if (body.length === 3) {
+      body = body[0] + body[0] + body[1] + body[1] + body[2] + body[2];
+    }
+    return {
+      r: parseInt(body.slice(0, 2), 16),
+      g: parseInt(body.slice(2, 4), 16),
+      b: parseInt(body.slice(4, 6), 16)
+    };
+  }
+
+  function channelHex(channel) {
+    var value = Math.max(0, Math.min(255, Math.round(numberOr(channel, 0))));
+    var hex = value.toString(16);
+    return hex.length === 1 ? "0" + hex : hex;
+  }
+
+  function rgbToHex(red, green, blue) {
+    return "#" + channelHex(red) + channelHex(green) + channelHex(blue);
+  }
+
+  function rgbToHsv(red, green, blue) {
+    var r = Math.max(0, Math.min(255, numberOr(red, 0))) / 255;
+    var g = Math.max(0, Math.min(255, numberOr(green, 0))) / 255;
+    var b = Math.max(0, Math.min(255, numberOr(blue, 0))) / 255;
+    var maximum = Math.max(r, g, b);
+    var minimum = Math.min(r, g, b);
+    var delta = maximum - minimum;
+    var hue = 0;
+    if (delta > 0.00001) {
+      if (maximum === r) {
+        hue = ((g - b) / delta) % 6;
+      } else if (maximum === g) {
+        hue = (b - r) / delta + 2;
+      } else {
+        hue = (r - g) / delta + 4;
+      }
+      hue *= 60;
+      if (hue < 0) {
+        hue += 360;
+      }
+    }
+    return {
+      hue: hue,
+      saturation: maximum === 0 ? 0 : delta / maximum,
+      value: maximum
+    };
+  }
+
+  function hsvToRgb(hue, saturation, value) {
+    var h = ((numberOr(hue, 0) % 360) + 360) % 360;
+    var s = clamp(numberOr(saturation, 0), 0, 1);
+    var v = clamp(numberOr(value, 0), 0, 1);
+    var c = v * s;
+    var x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+    var m = v - c;
+    var r = 0;
+    var g = 0;
+    var b = 0;
+    if (h < 60) {
+      r = c;
+      g = x;
+    } else if (h < 120) {
+      r = x;
+      g = c;
+    } else if (h < 180) {
+      g = c;
+      b = x;
+    } else if (h < 240) {
+      g = x;
+      b = c;
+    } else if (h < 300) {
+      r = x;
+      b = c;
+    } else {
+      r = c;
+      b = x;
+    }
+    return {
+      r: Math.round((r + m) * 255),
+      g: Math.round((g + m) * 255),
+      b: Math.round((b + m) * 255)
+    };
+  }
+
+  function currentColorHex() {
+    return editor ? String(editor.getOptions().color || "#ef4444") : "#ef4444";
+  }
+
+  function positionFloatingPanel(panel, anchorRect) {
+    if (!panel) {
+      return;
+    }
+    var panelWidth = panel.offsetWidth || 0;
+    var panelHeight = panel.offsetHeight || 0;
+    if (!panelWidth || !panelHeight) {
+      return;
+    }
+    var size = viewportSize();
+    var left = clamp(
+      anchorRect.left,
+      EDGE_PAD,
+      Math.max(EDGE_PAD, size.width - panelWidth - EDGE_PAD)
+    );
+    var belowTop = anchorRect.bottom + FLOATING_PANEL_GAP;
+    var aboveTop = anchorRect.top - panelHeight - FLOATING_PANEL_GAP;
+    var top;
+    if (size.height - belowTop >= panelHeight + EDGE_PAD) {
+      top = belowTop;
+    } else if (aboveTop >= EDGE_PAD) {
+      top = aboveTop;
+    } else {
+      top = clamp(
+        belowTop,
+        EDGE_PAD,
+        Math.max(EDGE_PAD, size.height - panelHeight - EDGE_PAD)
+      );
+    }
+    panel.style.left = Math.round(left) + "px";
+    panel.style.top = Math.round(top) + "px";
+    panel.style.right = "";
+    panel.style.bottom = "";
+  }
+
+  function colorAnchorRect() {
+    var node = dom.colorButton || dom.palette || dom.bar;
+    if (!node || typeof node.getBoundingClientRect !== "function") {
+      return { left: EDGE_PAD, right: EDGE_PAD, top: EDGE_PAD, bottom: EDGE_PAD, width: 0, height: 0 };
+    }
+    return node.getBoundingClientRect();
+  }
+
+  /* Applies a colour to the shared editor state and every colour surface. */
+  function pushColor(hex) {
+    var color = String(hex || "").trim();
+    if (!parseHexColor(color)) {
+      return;
+    }
+    color = color.toLowerCase();
+    if (editor) {
+      editor.setOption("color", color);
+    }
+    if (dom.colorSwatch) {
+      dom.colorSwatch.style.background = color;
+    }
+    if (dom.customPreview) {
+      dom.customPreview.style.background = color;
+    }
+    if (dom.colorButton) {
+      dom.colorButton.title = "颜色 " + color;
+      dom.colorButton.setAttribute("aria-label", "颜色 " + color);
+    }
+    each(document.querySelectorAll(".palette-color[data-color]"), function (node) {
+      var value = String(node.getAttribute("data-color") || "").toLowerCase();
+      node.classList.toggle("is-active", value === color);
+    });
+    var legacyInput = byId("palette-color-input");
+    if (legacyInput && /^#[0-9a-f]{6}$/i.test(color)) {
+      legacyInput.value = color;
+    }
+    var legacyValue = byId("palette-color-value");
+    if (legacyValue) {
+      legacyValue.textContent = color;
+    }
+  }
+
+  function syncColorUi() {
+    pushColor(currentColorHex());
+  }
+
+  function syncHsvFromColor() {
+    var color = parseHexColor(currentColorHex());
+    if (color) {
+      hsvState = rgbToHsv(color.r, color.g, color.b);
+    }
+  }
+
+  /* Refresh the HSV square cursor, hue thumb, preview and RGB inputs. Does not
+   * touch the editor colour (callers decide when to apply it). */
+  function renderHsvUi() {
+    var rgb = hsvToRgb(hsvState.hue, hsvState.saturation, hsvState.value);
+    var hex = rgbToHex(rgb.r, rgb.g, rgb.b);
+    if (dom.hsv) {
+      dom.hsv.style.backgroundColor =
+        "hsl(" + Math.round(hsvState.hue) + ", 100%, 50%)";
+      if (dom.hsvCursor) {
+        var hsvWidth = dom.hsv.clientWidth || 0;
+        var hsvHeight = dom.hsv.clientHeight || 0;
+        dom.hsvCursor.style.left =
+          Math.round(hsvState.saturation * Math.max(1, hsvWidth)) + "px";
+        dom.hsvCursor.style.top =
+          Math.round((1 - hsvState.value) * Math.max(1, hsvHeight)) + "px";
+      }
+    }
+    if (dom.hueThumb) {
+      dom.hueThumb.style.left = (hsvState.hue / 360) * 100 + "%";
+    }
+    if (dom.customPreview) {
+      dom.customPreview.style.background = hex;
+    }
+    if (dom.rgbR) {
+      setNumberInputValue(dom.rgbR, rgb.r);
+    }
+    if (dom.rgbG) {
+      setNumberInputValue(dom.rgbG, rgb.g);
+    }
+    if (dom.rgbB) {
+      setNumberInputValue(dom.rgbB, rgb.b);
+    }
+  }
+
+  function setNumberInputValue(input, value) {
+    if (!input || document.activeElement === input) {
+      return;
+    }
+    input.value = String(value);
+  }
+
+  function applyHsvColor() {
+    var rgb = hsvToRgb(hsvState.hue, hsvState.saturation, hsvState.value);
+    pushColor(rgbToHex(rgb.r, rgb.g, rgb.b));
+    renderHsvUi();
+  }
+
+  function applyRgbColor(red, green, blue) {
+    var r = Math.round(clamp(numberOr(red, 0), 0, 255));
+    var g = Math.round(clamp(numberOr(green, 0), 0, 255));
+    var b = Math.round(clamp(numberOr(blue, 0), 0, 255));
+    hsvState = rgbToHsv(r, g, b);
+    pushColor(rgbToHex(r, g, b));
+    renderHsvUi();
+  }
+
+  /* ---- floating panels ------------------------------------------------- */
+
+  function openColorPopover() {
+    if (!dom.colorPopover) {
+      return;
+    }
+    closeCustomColor();
+    setHidden(dom.colorPopover, false);
+    state.colorPopoverOpen = true;
+    syncColorUi();
+    positionFloatingPanel(dom.colorPopover, colorAnchorRect());
+  }
+
+  function closeColorPopover() {
+    if (!dom.colorPopover) {
+      return;
+    }
+    setHidden(dom.colorPopover, true);
+    state.colorPopoverOpen = false;
+  }
+
+  function toggleColorPopover() {
+    if (state.colorPopoverOpen) {
+      closeColorPopover();
+    } else {
+      openColorPopover();
+    }
+  }
+
+  function openCustomColor() {
+    if (!dom.customColorPanel) {
+      return;
+    }
+    closeColorPopover();
+    syncHsvFromColor();
+    setHidden(dom.customColorPanel, false);
+    state.customColorOpen = true;
+    positionFloatingPanel(dom.customColorPanel, colorAnchorRect());
+    renderHsvUi();
+  }
+
+  function closeCustomColor() {
+    if (!dom.customColorPanel) {
+      return;
+    }
+    setHidden(dom.customColorPanel, true);
+    state.customColorOpen = false;
+  }
+
+  function closeAllColorPanels() {
+    closeColorPopover();
+    closeCustomColor();
+  }
+
+  function layoutFloatingPanels() {
+    var anchor = colorAnchorRect();
+    if (state.colorPopoverOpen && dom.colorPopover) {
+      positionFloatingPanel(dom.colorPopover, anchor);
+    }
+    if (state.customColorOpen && dom.customColorPanel) {
+      positionFloatingPanel(dom.customColorPanel, anchor);
+      renderHsvUi();
+    }
+  }
+
+  function onColorPopoverClick(event) {
+    var target = event.target;
+    if (!target || !target.closest) {
+      return;
+    }
+    var preset = target.closest("[data-color]");
+    if (preset) {
+      event.preventDefault();
+      pushColor(preset.getAttribute("data-color"));
+      closeColorPopover();
+      return;
+    }
+    if (target.closest("#palette-color-custom")) {
+      event.preventDefault();
+      openCustomColor();
+      return;
+    }
+    if (target.closest("#palette-eyedropper")) {
+      event.preventDefault();
+      startColorPicking();
+    }
+  }
+
+  function onCustomColorClick(event) {
+    var target = event.target;
+    if (!target || !target.closest) {
+      return;
+    }
+    if (target.closest("#palette-eyedropper")) {
+      event.preventDefault();
+      startColorPicking();
+    }
+  }
+
+  /* ---- HSV square / hue bar / RGB inputs ------------------------------- */
+
+  function updateHsvFromPointer(event) {
+    if (!dom.hsv) {
+      return;
+    }
+    var rect = dom.hsv.getBoundingClientRect();
+    if (!rect.width || !rect.height) {
+      return;
+    }
+    hsvState.saturation = clamp(
+      (numberOr(event.clientX, rect.left) - rect.left) / rect.width,
+      0,
+      1
+    );
+    hsvState.value = 1 - clamp(
+      (numberOr(event.clientY, rect.top) - rect.top) / rect.height,
+      0,
+      1
+    );
+    applyHsvColor();
+  }
+
+  function updateHueFromPointer(event) {
+    if (!dom.hue) {
+      return;
+    }
+    var rect = dom.hue.getBoundingClientRect();
+    if (!rect.width) {
+      return;
+    }
+    hsvState.hue =
+      clamp((numberOr(event.clientX, rect.left) - rect.left) / rect.width, 0, 1) *
+      360;
+    applyHsvColor();
+  }
+
+  function bindDragSurface(node, onMove, onStop) {
+    if (!node) {
+      return;
+    }
+    var dragging = false;
+    node.addEventListener("pointerdown", function (event) {
+      if (event.button !== undefined && event.button !== 0) {
+        return;
+      }
+      event.preventDefault();
+      dragging = true;
+      try {
+        node.setPointerCapture(event.pointerId);
+      } catch (error) {
+        /* pointer capture is an optimisation only */
+      }
+      onMove(event);
+    });
+    node.addEventListener("pointermove", function (event) {
+      if (!dragging) {
+        return;
+      }
+      event.preventDefault();
+      onMove(event);
+    });
+    var stop = function (event) {
+      if (!dragging) {
+        return;
+      }
+      dragging = false;
+      if (typeof onStop === "function") {
+        onStop(event);
+      }
+    };
+    node.addEventListener("pointerup", stop);
+    node.addEventListener("pointercancel", stop);
+  }
+
+  function bindColorControls() {
+    if (dom.colorButton) {
+      dom.colorButton.addEventListener("click", function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleColorPopover();
+      });
+    }
+    if (dom.colorPopover) {
+      dom.colorPopover.addEventListener("click", onColorPopoverClick);
+    }
+    if (dom.customColorPanel) {
+      dom.customColorPanel.addEventListener("click", onCustomColorClick);
+    }
+    bindDragSurface(
+      dom.hsv,
+      function (event) {
+        hsvDragging = true;
+        updateHsvFromPointer(event);
+      },
+      function () {
+        hsvDragging = false;
+      }
+    );
+    bindDragSurface(
+      dom.hue,
+      function (event) {
+        hueDragging = true;
+        updateHueFromPointer(event);
+      },
+      function () {
+        hueDragging = false;
+      }
+    );
+    bindRgbInput(dom.rgbR);
+    bindRgbInput(dom.rgbG);
+    bindRgbInput(dom.rgbB);
+    document.addEventListener("pointerdown", onDocumentPointerDownCapture, true);
+  }
+
+  function bindRgbInput(input) {
+    if (!input) {
+      return;
+    }
+    var update = function () {
+      applyRgbColor(
+        dom.rgbR ? dom.rgbR.value : 0,
+        dom.rgbG ? dom.rgbG.value : 0,
+        dom.rgbB ? dom.rgbB.value : 0
+      );
+    };
+    input.addEventListener("input", update);
+    input.addEventListener("change", update);
+    /* Re-sync the visible value after the user leaves the field so out-of-range
+     * input snaps back to the clamped 0-255 value. */
+    input.addEventListener("blur", function () {
+      renderHsvUi();
+    });
+  }
+
+  /* Click outside any colour panel closes the topmost ones (§11.10.1). Clicks
+   * inside the panels/trigger must not close them. */
+  function onDocumentPointerDownCapture(event) {
+    if (state.pickingColor) {
+      return;
+    }
+    if (!state.colorPopoverOpen && !state.customColorOpen) {
+      return;
+    }
+    var target = event.target;
+    if (target && target.closest) {
+      if (
+        target.closest(
+          "#palette-color-popover, #palette-custom-color, #palette-color-button, #palette-color-group"
+        )
+      ) {
+        return;
+      }
+    }
+    closeAllColorPanels();
+  }
+
+  /* ---- eyedropper (§11.10.3) ------------------------------------------ */
+
+  function startColorPicking() {
+    if (state.pickingColor) {
+      return;
+    }
+    if (!editor || typeof editor.sampleColor !== "function") {
+      toast("当前无法取色，请重试", "error", 2200);
+      return;
+    }
+    state.pickingColor = true;
+    closeAllColorPanels();
+    document.body.classList.add("picking-color");
+    document.addEventListener("pointerdown", onColorPickPointerDown, true);
+  }
+
+  function stopColorPicking() {
+    if (!state.pickingColor) {
+      return;
+    }
+    state.pickingColor = false;
+    document.body.classList.remove("picking-color");
+    document.removeEventListener("pointerdown", onColorPickPointerDown, true);
+    hsvDragging = false;
+    hueDragging = false;
+  }
+
+  function onColorPickPointerDown(event) {
+    if (!state.pickingColor) {
+      return;
+    }
+    if (event.button !== undefined && event.button !== 0) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    var color = null;
+    try {
+      color =
+        editor && typeof editor.sampleColor === "function"
+          ? editor.sampleColor(event.clientX, event.clientY)
+          : null;
+    } catch (error) {
+      color = null;
+    }
+    stopColorPicking();
+    if (color) {
+      pushColor(color);
+      syncHsvFromColor();
+      toast("已吸取颜色 " + color, "success", 1600);
+    } else {
+      toast("此处无法取色", "error", 2200);
+    }
   }
 
   /* Transparent annotation layer PNG for the current crop. Empty string means
