@@ -747,3 +747,6 @@ editor.renderToPng(rectCss) -> string|null
 ### 11.12.1 第二十轮修订：文字框垂直居中与变换实时反馈
 - 文字/序号标注的选中包围盒与文字块垂直居中：文字以「每行中线」为基线绘制，包围盒高度 = `lineHeight * 行数`（含背景 padding），文字在框内上下居中，不再顶部对齐留白。
 - 变换（移动/缩放/旋转）拖动过程中，选中虚线框与 8+1 个手柄必须**实时跟随**（使用变换预览几何），不再等鼠标松开才更新；`getSelectedBounds`/`getSelectionHandles` 在拖动中返回预览几何。
+### 11.13 第二十一轮修订：退出截图无闪烁
+- capture overlay 与 picker/settings 窗口创建后设置 `DWMWA_TRANSITIONS_FORCEDISABLED`（禁用 DWM 打开/关闭过渡）。否则 hide 时透明 overlay 会淡出约 150ms，表现为退出截图时闪一下/抖动。
+- 验收：屏幕录制 60fps 回放退出瞬间，overlay 应在**单帧内**消失（无多帧淡出），退出后画面稳定（除被捕获内容自身变化外）。

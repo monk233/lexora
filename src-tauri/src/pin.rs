@@ -250,6 +250,8 @@ pub fn create_pin(app: &AppHandle, image: RgbaImage) -> Result<(u64, u32, u32), 
             format!("请重试或重启程序（{error}）。"),
         ));
     }
+    // Close instantly (no DWM fade-out flash) like the capture overlay.
+    let _ = crate::win32::disable_transitions(&window);
 
     let _ = window.show();
     let _ = window.set_focus();

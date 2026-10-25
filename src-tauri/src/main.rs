@@ -81,6 +81,18 @@ fn main() {
 
             state.selection.start(app.handle().clone());
             crate::capture::start_hotkey_listener(app.handle().clone());
+
+            // The picker/settings windows are shown and hidden all the time; a
+            // DWM fade would read as a flash on capture exit (round 21). Disable
+            // their open/close transitions as well.
+            for label in [windows::SETTINGS_LABEL, windows::PICKER_LABEL] {
+                if let Some(window) = app.get_webview_window(label) {
+                    if !crate::win32::disable_transitions(&window) {
+                        log.warn(&format!("could not disable transitions for '{label}'"));
+                    }
+                }
+            }
+
             sync_autostart(&state);
             restore_local_engine(app.handle(), &state);
 

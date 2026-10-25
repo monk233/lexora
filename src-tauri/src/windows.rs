@@ -453,6 +453,11 @@ pub fn create_capture_window(
     // screenshot tools and recorders must see the Lexora capture UI (contract
     // §11.11.1). Long screenshots hide the overlay before grabbing frames, so no
     // capture exclusion is needed.
+    // Hide instantly instead of letting DWM fade the window out (~150 ms of
+    // desktop showing through, which reads as a flash on exit, round 21).
+    if !win32::disable_transitions(&window) {
+        log_warn(app, "capture overlay could not disable DWM transitions");
+    }
     Ok(())
 }
 

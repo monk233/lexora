@@ -7,6 +7,7 @@
 use std::time::Duration;
 
 use windows::Win32::Foundation::POINT;
+use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_TRANSITIONS_FORCEDISABLED};
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromPoint, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
@@ -78,6 +79,25 @@ pub fn scroll_wheel_notches(notches: i32) -> bool {
 }
 
 /// Brings the top-level window under `(x, y)` to the foreground so synthetic
+/// Disables DWM open/close transitions for one of our windows. Without this the
+/// transparent capture overlay fades out over ~150 ms when hidden, which reads as
+/// a flash/jitter on exit (round 21). Returns `false` on unsupported systems.
+pub fn disable_transitions(window: &tauri::WebviewWindow) -> bool {
+    let Ok(hwnd) = window.hwnd() else {
+        return false;
+    };
+    let value: i32 = 1;
+    unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_TRANSITIONS_FORCEDISABLED,
+            &value as *const i32 as *const core::ffi::c_void,
+            std::mem::size_of::<i32>() as u32,
+        )
+        .is_ok()
+    }
+}
+
 /// wheel input is delivered to it (Windows routes wheel events to the focused
 /// window unless "scroll inactive windows on hover" is enabled). Our own
 /// hidden overlay never appears under the cursor, so this targets the
