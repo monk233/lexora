@@ -72,6 +72,9 @@ pub struct PickerSettings {
     pub max_chars: u32,
     /// One of [`SEARCH_ENGINES`]; used by the built-in `search` skill.
     pub search_engine: String,
+    /// Remembered "pin panel" preference, restored when the picker opens.
+    #[serde(default)]
+    pub panel_pinned: bool,
     #[serde(default)]
     pub prompts: PromptSettings,
     #[serde(default)]
@@ -182,6 +185,7 @@ impl Default for PickerSettings {
             blacklist: Vec::new(),
             max_chars: MAX_SELECTION_CHARS,
             search_engine: DEFAULT_SEARCH_ENGINE.to_string(),
+            panel_pinned: false,
             prompts: PromptSettings::default(),
             custom_skills: Vec::new(),
         }
@@ -619,8 +623,33 @@ mod tests {
         assert_eq!(settings.picker.skills, expected);
         assert_eq!(settings.picker.skills.len(), 7);
         assert_eq!(settings.picker.search_engine, "google");
+        assert!(!settings.picker.panel_pinned);
         assert_eq!(settings.provider.mode, "online");
         assert!(settings.app.close_to_tray);
+    }
+
+    #[test]
+    fn panel_pinned_defaults_false_and_roundtrips() {
+        let settings = Settings::default().normalize();
+        assert!(!settings.picker.panel_pinned);
+        let value = serde_json::to_value(&settings).unwrap();
+        assert_eq!(value["picker"]["panelPinned"], false);
+        let parsed: Settings = serde_json::from_value(value).unwrap();
+        assert!(!parsed.picker.panel_pinned);
+
+        // The pin preference is persisted through the normal settings patch path.
+        let (store, dir) = store();
+        let updated = store
+            .update_json(json!({ "picker": { "panelPinned": true } }))
+            .unwrap();
+        assert!(updated.picker.panel_pinned);
+        let reloaded = SettingsStore::load(dir.path().join("settings.json"));
+        assert!(reloaded.get().picker.panel_pinned);
+
+        let cleared = store
+            .update_json(json!({ "picker": { "panelPinned": false } }))
+            .unwrap();
+        assert!(!cleared.picker.panel_pinned);
     }
 
     #[test]

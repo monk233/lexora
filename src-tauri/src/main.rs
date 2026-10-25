@@ -155,6 +155,8 @@ fn main() {
             commands::picker_ready,
             commands::picker_close,
             commands::picker_pin,
+            commands::picker_panel_state,
+            commands::picker_activate,
             commands::picker_resize,
             commands::picker_drag_panel,
             commands::picker_copy,

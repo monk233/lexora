@@ -27,11 +27,9 @@ pub const SETTINGS_LABEL: &str = "settings";
 /// Base toolbar size in logical (CSS) pixels, matching `tauri.conf.json`.
 const BASE_WIDTH: f64 = 440.0;
 const BASE_HEIGHT: f64 = 56.0;
-/// Bounds accepted by `resize_picker`, in logical pixels (contract §6.3).
-const MIN_WIDTH: f64 = 200.0;
-const MAX_WIDTH: f64 = 780.0;
-const MIN_HEIGHT: f64 = 40.0;
-const MAX_HEIGHT: f64 = 620.0;
+/// Safety ceiling for renderer-provided panel sizes (no product limit: panels
+/// may grow to whatever the screen/UI needs, this only rejects absurd values).
+const MAX_PANEL_DIMENSION: f64 = 100_000.0;
 /// Horizontal offset of the toolbar's left edge from the selection anchor.
 const ANCHOR_LEFT_OFFSET: f64 = 40.0;
 /// Vertical gap between selection and toolbar.
@@ -204,6 +202,9 @@ pub fn hide_picker(app: &tauri::AppHandle) {
     let Some(window) = app.get_webview_window(PICKER_LABEL) else {
         return;
     };
+    // The picker may have been made focusable for the follow-up input; make
+    // sure a hidden picker never keeps keyboard focus.
+    let _ = window.set_focusable(false);
     let was_visible = window.is_visible().unwrap_or(false);
     if was_visible {
         let _ = window.hide();
@@ -211,6 +212,7 @@ pub fn hide_picker(app: &tauri::AppHandle) {
     *lock(&PENDING) = None;
     let _ = app.emit_to(PICKER_LABEL, EVENT_PICKER_HIDDEN, serde_json::json!({}));
     if let Some(state) = state(app) {
+        state.selection.set_panel_open(false);
         state.selection.set_picker_visible(false);
         state.selection.set_panel_pinned(false);
         state.abort_translate();
@@ -238,9 +240,12 @@ pub fn take_pending() -> Option<PickerData> {
     lock(&PENDING).take()
 }
 
-/// Applies clamped bounds requested by the picker renderer (menus/panels need a
-/// bigger surface). `width`/`height` are logical pixels. Returns the final
-/// bounds in logical pixels.
+/// Applies renderer-requested bounds (menus/panels need a bigger surface).
+/// `width`/`height` are logical pixels; there is no product size limit anymore,
+/// only basic sanitizing (`NaN`/infinite/<=0 fall back to the base size, at
+/// least 1 px, absurd values capped by [`MAX_PANEL_DIMENSION`]). The window is
+/// kept inside the work area of the monitor under it. Returns the final bounds
+/// in logical pixels.
 pub fn resize_picker(app: &tauri::AppHandle, width: f64, height: f64) -> Option<serde_json::Value> {
     let window = app.get_webview_window(PICKER_LABEL)?;
     let scale = window
@@ -249,8 +254,8 @@ pub fn resize_picker(app: &tauri::AppHandle, width: f64, height: f64) -> Option<
         .filter(|scale| scale.is_finite() && *scale > 0.1)
         .unwrap_or(1.0);
 
-    let logical_width = clamp_dimension(width, MIN_WIDTH, MAX_WIDTH, BASE_WIDTH);
-    let logical_height = clamp_dimension(height, MIN_HEIGHT, MAX_HEIGHT, BASE_HEIGHT);
+    let logical_width = sanitize_dimension(width, BASE_WIDTH);
+    let logical_height = sanitize_dimension(height, BASE_HEIGHT);
     let physical_width = ((logical_width * scale).round() as i32).max(1);
     let physical_height = ((logical_height * scale).round() as i32).max(1);
 
@@ -335,12 +340,14 @@ pub fn move_picker_by(app: &tauri::AppHandle, dx: f64, dy: f64) -> Option<(f64, 
     Some((x as f64 / scale, y as f64 / scale))
 }
 
-/// Clamps a renderer-provided dimension; `NaN`/infinite fall back to `base`.
-fn clamp_dimension(value: f64, min: f64, max: f64, base: f64) -> f64 {
+/// Sanitizes a renderer-provided dimension. There is no product min/max: only
+/// non-finite/non-positive values fall back to `base`, the value is rounded and
+/// clamped to `1..=MAX_PANEL_DIMENSION` so it can never break the window API.
+fn sanitize_dimension(value: f64, base: f64) -> f64 {
     if !value.is_finite() || value <= 0.0 {
         return base;
     }
-    value.round().clamp(min, max)
+    value.round().clamp(1.0, MAX_PANEL_DIMENSION)
 }
 
 fn state(app: &tauri::AppHandle) -> Option<tauri::State<'_, std::sync::Arc<AppState>>> {
@@ -361,14 +368,30 @@ fn log_warn(app: &tauri::AppHandle, message: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::clamp_dimension;
+    use super::{sanitize_dimension, BASE_HEIGHT, BASE_WIDTH, MAX_PANEL_DIMENSION};
 
     #[test]
-    fn dimensions_are_clamped() {
-        assert_eq!(clamp_dimension(120.0, 200.0, 780.0, 440.0), 200.0);
-        assert_eq!(clamp_dimension(900.0, 200.0, 780.0, 440.0), 780.0);
-        assert_eq!(clamp_dimension(f64::NAN, 40.0, 620.0, 56.0), 56.0);
-        assert_eq!(clamp_dimension(-12.0, 40.0, 620.0, 56.0), 56.0);
-        assert_eq!(clamp_dimension(321.4, 200.0, 780.0, 440.0), 321.0);
+    fn dimensions_are_sanitized_without_product_limits() {
+        // Non-finite / non-positive values fall back to the base size.
+        assert_eq!(sanitize_dimension(f64::NAN, BASE_WIDTH), BASE_WIDTH);
+        assert_eq!(sanitize_dimension(f64::INFINITY, BASE_HEIGHT), BASE_HEIGHT);
+        assert_eq!(
+            sanitize_dimension(f64::NEG_INFINITY, BASE_WIDTH),
+            BASE_WIDTH
+        );
+        assert_eq!(sanitize_dimension(-12.0, BASE_HEIGHT), BASE_HEIGHT);
+        assert_eq!(sanitize_dimension(0.0, BASE_WIDTH), BASE_WIDTH);
+        // Rounding still applies.
+        assert_eq!(sanitize_dimension(321.4, BASE_WIDTH), 321.0);
+        assert_eq!(sanitize_dimension(321.6, BASE_WIDTH), 322.0);
+        // The old 780x620 / 200x40 limits are gone: any positive size is valid.
+        assert_eq!(sanitize_dimension(120.0, BASE_WIDTH), 120.0);
+        assert_eq!(sanitize_dimension(900.0, BASE_WIDTH), 900.0);
+        assert_eq!(sanitize_dimension(1200.0, BASE_HEIGHT), 1200.0);
+        assert_eq!(sanitize_dimension(100_000.0, BASE_WIDTH), 100_000.0);
+        // At least one pixel, and an absurd upper bound stays safe.
+        assert_eq!(sanitize_dimension(0.4, BASE_WIDTH), 1.0);
+        assert_eq!(sanitize_dimension(0.5, BASE_WIDTH), 1.0);
+        assert_eq!(sanitize_dimension(1e12, BASE_WIDTH), MAX_PANEL_DIMENSION);
     }
 }

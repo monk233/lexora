@@ -43,13 +43,10 @@
   var COMPACT_MAX_TOOLBAR_WIDTH = 420;
   var TOOLBAR_BUTTON_GAP = 2;
 
-  /* Result panel: remembered manual size + drag-to-resize limits (the Rust
-   * side additionally clamps the final window to 780x620). */
+  /* Result panel: remembered manual size. The webview no longer clamps panel
+   * dimensions; the shell applies the real window limits. Only valid positive
+   * numbers are accepted (invalid values fall back to the default size). */
   var PANEL_SIZE_KEY = "lexora.panelSize";
-  var PANEL_MIN_WIDTH = 360;
-  var PANEL_MIN_HEIGHT = 240;
-  var PANEL_MAX_WIDTH = 780;
-  var PANEL_MAX_HEIGHT = 620;
   var DEFAULT_PANEL_WIDTH = 520;
   var DEFAULT_PANEL_HEIGHT = 360;
 
@@ -201,6 +198,9 @@
      * following the content size (double-clicking the grip restores that). */
     panelAutoResize: true,
     panelManualSize: null,
+    /* Remembered pin preference (picker-data config.panelPinned): result
+     * panels start pinned when enabled. */
+    panelPinnedPreference: false,
     /* Follow-up conversation of the current AI panel. */
     followupHistory: [],
     followupAnswer: "",
@@ -327,7 +327,12 @@
       if (flat.length > 620) {
         width = 720;
       }
-      var height = Math.min(600, Math.max(300, panel.scrollHeight + 6));
+      // Follow the visible panel card (plus the 4px transparent window padding)
+      // instead of the scroll height, so no empty strip is left below the panel.
+      var height = Math.ceil(panel.getBoundingClientRect().height + 4);
+      if (!isFinite(height) || height <= 0) {
+        return;
+      }
       API.resize(width, height);
     });
   }
@@ -514,23 +519,19 @@
 
   /* ---- Result panel size (grip drag + remembered size) ----------------- */
 
-  function clampPanelSize(width, height) {
+  /* Sizes are not clamped on the webview side any more: only valid positive
+   * numbers are accepted (invalid values fall back to the default size). */
+  function validPanelSize(width, height) {
     var w = Math.round(Number(width));
     var h = Math.round(Number(height));
-    if (!isFinite(w)) {
-      w = DEFAULT_PANEL_WIDTH;
+    if (!isFinite(w) || !isFinite(h) || w <= 0 || h <= 0) {
+      return null;
     }
-    if (!isFinite(h)) {
-      h = DEFAULT_PANEL_HEIGHT;
-    }
-    return {
-      width: Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, w)),
-      height: Math.min(PANEL_MAX_HEIGHT, Math.max(PANEL_MIN_HEIGHT, h)),
-    };
+    return { width: w, height: h };
   }
 
-  /* localStorage may be unavailable or hold a broken/out-of-range value; none
-   * of that may prevent the panel from opening. */
+  /* localStorage may be unavailable or hold a broken value; none of that may
+   * prevent the panel from opening. */
   function loadPanelSize() {
     try {
       var raw = window.localStorage.getItem(PANEL_SIZE_KEY);
@@ -541,12 +542,7 @@
       if (!parsed || typeof parsed !== "object") {
         return null;
       }
-      var width = Number(parsed.width);
-      var height = Number(parsed.height);
-      if (!isFinite(width) || !isFinite(height) || width <= 0 || height <= 0) {
-        return null;
-      }
-      return clampPanelSize(width, height);
+      return validPanelSize(parsed.width, parsed.height);
     } catch (error) {
       return null;
     }
@@ -589,7 +585,10 @@
     if (!panelResize.active) {
       return;
     }
-    var size = clampPanelSize(panelResize.targetWidth, panelResize.targetHeight);
+    var size = validPanelSize(panelResize.targetWidth, panelResize.targetHeight);
+    if (!size) {
+      return;
+    }
     if (
       panelResize.size &&
       size.width === panelResize.size.width &&
@@ -602,6 +601,9 @@
     // Manual size wins over content-based sizing until a double-click resets it.
     state.panelAutoResize = false;
     state.panelManualSize = { width: size.width, height: size.height };
+    // A manual panel fills the whole window so no transparent strip remains
+    // below the card; the body scrolls inside.
+    panel.classList.add("is-manual-size");
     if (API && typeof API.resize === "function") {
       API.resize(size.width, size.height);
     }
@@ -625,8 +627,8 @@
     panelResize.applied = false;
     panelResize.startX = Number(event.screenX) || 0;
     panelResize.startY = Number(event.screenY) || 0;
-    panelResize.startWidth = Math.max(window.innerWidth, PANEL_MIN_WIDTH);
-    panelResize.startHeight = Math.max(window.innerHeight, PANEL_MIN_HEIGHT);
+    panelResize.startWidth = window.innerWidth || DEFAULT_PANEL_WIDTH;
+    panelResize.startHeight = window.innerHeight || DEFAULT_PANEL_HEIGHT;
     panelResize.targetWidth = panelResize.startWidth;
     panelResize.targetHeight = panelResize.startHeight;
     panelResize.size = {
@@ -686,6 +688,7 @@
     state.panelAutoResize = true;
     state.panelManualSize = null;
     clearPanelSize();
+    panel.classList.remove("is-manual-size");
     document.body.classList.remove("is-resizing-panel");
     panel.classList.remove("is-resizing-panel");
     if (state.panelOpen) {
@@ -951,7 +954,21 @@
 
   /* ---- Pin / panel lifecycle ------------------------------------------ */
 
-  function setPanelPinned(pinned, silent) {
+  /* Sticky-panel / keyboard-activation notifications for the shell. Both are
+   * no-ops when the running shell predates them (plain browser mock). */
+  function notifyPanelState(open) {
+    if (API && typeof API.panelState === "function") {
+      API.panelState(!!open);
+    }
+  }
+
+  function setInputActivated(active) {
+    if (API && typeof API.activate === "function") {
+      API.activate(!!active);
+    }
+  }
+
+  function setPanelPinned(pinned, silent, remember) {
     var next = !!pinned;
     if (state.panelPinned === next) {
       syncPanelPin();
@@ -959,7 +976,7 @@
     }
     state.panelPinned = next;
     syncPanelPin();
-    API.pin(next).then(function (result) {
+    API.pin(next, remember === true).then(function (result) {
       if (result && result.ok && typeof result.pinned === "boolean") {
         if (result.pinned !== state.panelPinned) {
           state.panelPinned = result.pinned;
@@ -973,6 +990,11 @@
         }
         return;
       }
+      if (remember === true) {
+        // Keep the local preference in sync so switching skills does not push
+        // the old preference back.
+        state.panelPinnedPreference = state.panelPinned;
+      }
       if (!silent) {
         showToast(next ? "面板已固定到桌面" : "已取消固定");
       }
@@ -980,7 +1002,8 @@
   }
 
   function togglePanelPinned() {
-    setPanelPinned(!state.panelPinned, false);
+    // Explicit user action: persist the preference (remember=true).
+    setPanelPinned(!state.panelPinned, false, true);
   }
 
   function openPanel(title) {
@@ -988,6 +1011,9 @@
     abortActiveRequest();
     stopSpeech();
     resetFollowup();
+    // A new/switched panel starts with keyboard capture off until the user
+    // focuses the follow-up field.
+    setInputActivated(false);
     state.panelOpen = true;
     state.panelRetry = null;
     state.panelSpeakText = "";
@@ -998,11 +1024,21 @@
     pickerEl.classList.add("panel-mode");
     syncPanelPin();
     syncPanelFoot();
+    // Sticky panel: the shell keeps the picker visible while a result is open
+    // (keyboard/scroll/right click do not hide it; outside clicks still do
+    // when the panel is not pinned).
+    notifyPanelState(true);
+    if (state.panelPinnedPreference) {
+      // Remembered preference: pin silently and do not persist again.
+      setPanelPinned(true, true, false);
+    }
     if (state.panelManualSize) {
-      // A manually resized panel keeps its remembered size instead of
-      // re-adapting to the content.
+      // A manually resized panel keeps its remembered size and fills the whole
+      // window instead of re-adapting to the content.
+      panel.classList.add("is-manual-size");
       API.resize(state.panelManualSize.width, state.panelManualSize.height);
     } else {
+      panel.classList.remove("is-manual-size");
       API.resize(DEFAULT_PANEL_WIDTH, DEFAULT_PANEL_HEIGHT);
       resizePanelForContent();
     }
@@ -1013,8 +1049,10 @@
       return;
     }
     if (state.panelPinned) {
-      setPanelPinned(false, true);
+      // Closing is not a preference change: cancel the pin without remembering.
+      setPanelPinned(false, true, false);
     }
+    setInputActivated(false);
     abortActiveRequest();
     stopSpeech();
     resetFollowup();
@@ -1024,6 +1062,7 @@
     state.panelSpeakText = "";
     setPanelCopyText("");
     pickerEl.classList.remove("panel-mode");
+    notifyPanelState(false);
     scheduleToolbarResize();
   }
 
@@ -2031,10 +2070,17 @@
   function resetForHidden() {
     abortActiveRequest();
     stopSpeech();
-    state.panelPinned = false;
+    setInputActivated(false);
+    if (state.panelPinned) {
+      // The shell hid the picker; cancel the transient pin (preference stays).
+      setPanelPinned(false, true, false);
+    } else {
+      state.panelPinned = false;
+      syncPanelPin();
+    }
+    notifyPanelState(false);
     state.panelSpeakText = "";
     state.panelRetry = null;
-    syncPanelPin();
     panel.hidden = true;
     state.panelOpen = false;
     pickerEl.classList.remove("panel-mode");
@@ -2060,6 +2106,14 @@
   window.addEventListener("blur", endPanelResize);
   panelFollowupSend.addEventListener("click", function () {
     submitFollowup();
+  });
+  panelFollowupInput.addEventListener("mousedown", function () {
+    // Keyboard input inside the picker is captured by the shell; allow it while
+    // the follow-up field is being used.
+    setInputActivated(true);
+  });
+  panelFollowupInput.addEventListener("focus", function () {
+    setInputActivated(true);
   });
   panelFollowupInput.addEventListener("keydown", function (event) {
     if (event.key === "Enter" && !event.shiftKey) {
@@ -2120,8 +2174,8 @@
     state.programName = String(data.programName || "");
     state.defaultTargetLang = String(config.defaultTargetLang || "auto");
     state.searchEngine = normalizeSearchEngine(config.searchEngine);
+    state.panelPinnedPreference = config.panelPinned === true;
     state.targetLang = "";
-    state.panelPinned = false;
     // Rebuild the custom-skill metadata every time: a disabled/removed skill
     // must never keep its old button or label around.
     state.customSkills = {};
