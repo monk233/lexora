@@ -514,6 +514,9 @@ fn config_from_settings(settings: &Settings) -> WorkerConfig {
             "searchEngine": &settings.picker.search_engine,
             // Remembered pin preference: the picker restores it when a panel opens.
             "panelPinned": settings.picker.panel_pinned,
+            // Panel sizing mode: "auto" grows with content, "scroll" keeps a
+            // fixed window and scrolls the panel body.
+            "panelMode": &settings.picker.panel_mode,
             // Only enabled custom skills are sent to the picker; the full
             // definition (including the prompt) stays in settings.
             "customSkills": enabled_custom_skill_metadata(settings),
@@ -679,9 +682,25 @@ mod tests {
         assert_eq!(config.picker_config["defaultTargetLang"], "zh");
         assert_eq!(config.picker_config["searchEngine"], "google");
         assert_eq!(config.picker_config["panelPinned"], false);
+        assert_eq!(config.picker_config["panelMode"], "auto");
         assert_eq!(config.picker_config["skills"][0], "translate");
         assert_eq!(config.picker_config["skills"][1], "copy");
         assert_eq!(config.picker_config["customSkills"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn picker_config_forwards_the_panel_mode() {
+        let mut settings = Settings::default();
+        assert_eq!(
+            config_from_settings(&settings).picker_config["panelMode"],
+            "auto"
+        );
+
+        settings.picker.panel_mode = "scroll".to_string();
+        assert_eq!(
+            config_from_settings(&settings).picker_config["panelMode"],
+            "scroll"
+        );
     }
 
     #[test]

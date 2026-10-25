@@ -43,10 +43,12 @@
   var COMPACT_MAX_TOOLBAR_WIDTH = 420;
   var TOOLBAR_BUTTON_GAP = 2;
 
-  /* Result panel: remembered manual size. The webview no longer clamps panel
-   * dimensions; the shell applies the real window limits. Only valid positive
-   * numbers are accepted (invalid values fall back to the default size). */
+  /* Result panel: remembered manual size (scroll mode only) + panel mode.
+   * The window follows the configuration minimum (360x240) with no maximum;
+   * the shell applies the real screen limits. */
   var PANEL_SIZE_KEY = "lexora.panelSize";
+  var PANEL_MIN_WIDTH = 360;
+  var PANEL_MIN_HEIGHT = 240;
   var DEFAULT_PANEL_WIDTH = 520;
   var DEFAULT_PANEL_HEIGHT = 360;
 
@@ -198,6 +200,12 @@
      * following the content size (double-clicking the grip restores that). */
     panelAutoResize: true,
     panelManualSize: null,
+    /* picker-data config.panelMode: "auto" (window follows the content, no
+     * scrollbar, no grip) or "scroll" (fixed window, body scrolls, grip). */
+    panelMode: "auto",
+    /* Last auto-mode window size sent to the shell, to avoid redundant resizes
+     * on every streamed chunk. */
+    lastAutoPanelSize: null,
     /* Remembered pin preference (picker-data config.panelPinned): result
      * panels start pinned when enabled. */
     panelPinnedPreference: false,
@@ -313,7 +321,9 @@
 
   function resizePanelForContent() {
     window.requestAnimationFrame(function () {
-      if (!state.panelOpen || !state.panelAutoResize) {
+      // Only auto mode follows the content; scroll mode keeps the fixed window
+      // and lets the panel body scroll instead.
+      if (!state.panelOpen || state.panelMode !== "auto") {
         return;
       }
       var flat = String(panelBody.innerText || "").replace(/\s+/g, "");
@@ -327,12 +337,21 @@
       if (flat.length > 620) {
         width = 720;
       }
-      // Follow the visible panel card (plus the 4px transparent window padding)
-      // instead of the scroll height, so no empty strip is left below the panel.
-      var height = Math.ceil(panel.getBoundingClientRect().height + 4);
-      if (!isFinite(height) || height <= 0) {
+      width = Math.max(PANEL_MIN_WIDTH, width);
+      // Measure the natural content height: while growing the auto panel fills
+      // the window, so a plain rect would keep a previously taller window alive.
+      panel.classList.add("is-auto-measuring");
+      var naturalHeight = panel.getBoundingClientRect().height;
+      panel.classList.remove("is-auto-measuring");
+      if (!isFinite(naturalHeight) || naturalHeight <= 0) {
         return;
       }
+      var height = Math.max(PANEL_MIN_HEIGHT, Math.ceil(naturalHeight + 4));
+      var previous = state.lastAutoPanelSize;
+      if (previous && previous[0] === width && previous[1] === height) {
+        return;
+      }
+      state.lastAutoPanelSize = [width, height];
       API.resize(width, height);
     });
   }
@@ -519,15 +538,26 @@
 
   /* ---- Result panel size (grip drag + remembered size) ----------------- */
 
-  /* Sizes are not clamped on the webview side any more: only valid positive
-   * numbers are accepted (invalid values fall back to the default size). */
+  function normalizePanelMode(value) {
+    return String(value == null ? "" : value)
+      .trim()
+      .toLowerCase() === "scroll"
+      ? "scroll"
+      : "auto";
+  }
+
+  /* Valid positive sizes are clamped up to the 360x240 minimum; there is no
+   * maximum on the webview side any more. */
   function validPanelSize(width, height) {
     var w = Math.round(Number(width));
     var h = Math.round(Number(height));
     if (!isFinite(w) || !isFinite(h) || w <= 0 || h <= 0) {
       return null;
     }
-    return { width: w, height: h };
+    return {
+      width: Math.max(PANEL_MIN_WIDTH, w),
+      height: Math.max(PANEL_MIN_HEIGHT, h),
+    };
   }
 
   /* localStorage may be unavailable or hold a broken value; none of that may
@@ -582,13 +612,20 @@
 
   function flushPanelResize() {
     panelResize.frame = 0;
-    if (!panelResize.active) {
+    if (!panelResize.active || state.panelMode !== "scroll") {
       return;
     }
-    var size = validPanelSize(panelResize.targetWidth, panelResize.targetHeight);
-    if (!size) {
+    var targetWidth = Number(panelResize.targetWidth);
+    var targetHeight = Number(panelResize.targetHeight);
+    if (!isFinite(targetWidth) || !isFinite(targetHeight)) {
       return;
     }
+    // Dragging past the top-left edge clamps to the 360x240 minimum (there is
+    // no maximum); invalid non-numeric targets are ignored.
+    var size = {
+      width: Math.max(PANEL_MIN_WIDTH, Math.round(targetWidth)),
+      height: Math.max(PANEL_MIN_HEIGHT, Math.round(targetHeight)),
+    };
     if (
       panelResize.size &&
       size.width === panelResize.size.width &&
@@ -618,7 +655,8 @@
   }
 
   function beginPanelResize(event) {
-    if (!state.panelOpen || event.button !== 0) {
+    // Manual resizing is a scroll-mode feature; auto panels hide the grip.
+    if (!state.panelOpen || state.panelMode !== "scroll" || event.button !== 0) {
       return;
     }
     event.preventDefault();
@@ -627,8 +665,8 @@
     panelResize.applied = false;
     panelResize.startX = Number(event.screenX) || 0;
     panelResize.startY = Number(event.screenY) || 0;
-    panelResize.startWidth = window.innerWidth || DEFAULT_PANEL_WIDTH;
-    panelResize.startHeight = window.innerHeight || DEFAULT_PANEL_HEIGHT;
+    panelResize.startWidth = Math.max(window.innerWidth, PANEL_MIN_WIDTH);
+    panelResize.startHeight = Math.max(window.innerHeight, PANEL_MIN_HEIGHT);
     panelResize.targetWidth = panelResize.startWidth;
     panelResize.targetHeight = panelResize.startHeight;
     panelResize.size = {
@@ -672,8 +710,8 @@
     panel.classList.remove("is-resizing-panel");
   }
 
-  /* Double-clicking the grip forgets the manual size and follows the content
-   * again (same as before the user ever dragged it). */
+  /* Double-clicking the grip forgets the remembered size and goes back to the
+   * default panel size (still drag-resizable in scroll mode). */
   function resetPanelSize(event) {
     if (event) {
       event.preventDefault();
@@ -685,12 +723,20 @@
       window.cancelAnimationFrame(panelResize.frame);
       panelResize.frame = 0;
     }
-    state.panelAutoResize = true;
     state.panelManualSize = null;
     clearPanelSize();
-    panel.classList.remove("is-manual-size");
     document.body.classList.remove("is-resizing-panel");
     panel.classList.remove("is-resizing-panel");
+    if (state.panelMode === "scroll") {
+      state.panelAutoResize = false;
+      panel.classList.add("is-manual-size");
+      if (state.panelOpen) {
+        API.resize(DEFAULT_PANEL_WIDTH, DEFAULT_PANEL_HEIGHT);
+      }
+      return;
+    }
+    state.panelAutoResize = true;
+    panel.classList.remove("is-manual-size");
     if (state.panelOpen) {
       API.resize(DEFAULT_PANEL_WIDTH, DEFAULT_PANEL_HEIGHT);
       resizePanelForContent();
@@ -1006,6 +1052,23 @@
     setPanelPinned(!state.panelPinned, false, true);
   }
 
+  /* Apply the configured panel mode to the card:
+   *   auto   - natural height, window follows the content, no grip.
+   *   scroll - fixed window size, body scrolls, grip is drag-resizable. */
+  function applyPanelMode() {
+    var scroll = state.panelMode === "scroll";
+    panel.classList.toggle("is-scroll-mode", scroll);
+    panel.classList.toggle("is-auto-mode", !scroll);
+    if (panelResizeGrip) {
+      panelResizeGrip.hidden = !scroll;
+    }
+    state.panelAutoResize = !scroll;
+    state.lastAutoPanelSize = null;
+    if (!scroll) {
+      panel.classList.remove("is-manual-size");
+    }
+  }
+
   function openPanel(title) {
     closeMenu();
     abortActiveRequest();
@@ -1032,12 +1095,24 @@
       // Remembered preference: pin silently and do not persist again.
       setPanelPinned(true, true, false);
     }
-    if (state.panelManualSize) {
-      // A manually resized panel keeps its remembered size and fills the whole
-      // window instead of re-adapting to the content.
+    applyPanelMode();
+    if (state.panelMode === "scroll") {
+      // Fixed window: remembered size (or the default), never below 360x240.
+      var savedSize =
+        validPanelSize(
+          state.panelManualSize ? state.panelManualSize.width : DEFAULT_PANEL_WIDTH,
+          state.panelManualSize ? state.panelManualSize.height : DEFAULT_PANEL_HEIGHT
+        ) || { width: DEFAULT_PANEL_WIDTH, height: DEFAULT_PANEL_HEIGHT };
+      state.panelManualSize = { width: savedSize.width, height: savedSize.height };
+      state.panelAutoResize = false;
+      // Fill the whole window with the card so no transparent strip remains
+      // below it; the body scrolls inside.
       panel.classList.add("is-manual-size");
-      API.resize(state.panelManualSize.width, state.panelManualSize.height);
+      API.resize(savedSize.width, savedSize.height);
     } else {
+      // Auto window: seed a sensible size, then follow the visible content.
+      state.panelAutoResize = true;
+      state.lastAutoPanelSize = null;
       panel.classList.remove("is-manual-size");
       API.resize(DEFAULT_PANEL_WIDTH, DEFAULT_PANEL_HEIGHT);
       resizePanelForContent();
@@ -1192,17 +1267,21 @@
   /* Follow-up context belongs to the current panel: closing the panel or
    * switching skills resets it so a new answer never inherits old history. */
   /* Keeps the floating follow-up overlay from covering the last lines of the
-   * result: the panel body gets bottom padding equal to the overlay height. */
-  function syncFollowupOverlay() {
+   * result: the panel body gets bottom padding equal to the overlay height.
+   * `alsoResize` re-runs the auto height after the padding change. */
+  function syncFollowupOverlay(alsoResize) {
     if (!panelFollowup || !panelBody) {
       return;
     }
     if (panelFollowup.hidden) {
       panelBody.style.paddingBottom = "";
-      return;
+    } else {
+      var height = panelFollowup.offsetHeight || 0;
+      panelBody.style.paddingBottom = Math.ceil(height + 14) + "px";
     }
-    var height = panelFollowup.offsetHeight || 0;
-    panelBody.style.paddingBottom = Math.ceil(height + 14) + "px";
+    if (alsoResize && state.panelOpen && state.panelMode === "auto") {
+      resizePanelForContent();
+    }
   }
 
   function resetFollowup() {
@@ -1221,7 +1300,9 @@
       panelFollowup.classList.remove("is-busy");
     }
     setFollowupSuggestions([]);
-    window.requestAnimationFrame(syncFollowupOverlay);
+    window.requestAnimationFrame(function () {
+      syncFollowupOverlay(true);
+    });
   }
 
   function singleEnglishWord(text) {
@@ -1275,7 +1356,9 @@
       word = singleEnglishWord(state.text);
     }
     setFollowupSuggestions(word ? wordSuggestions(word) : []);
-    window.requestAnimationFrame(syncFollowupOverlay);
+    window.requestAnimationFrame(function () {
+      syncFollowupOverlay(true);
+    });
   }
 
   function setFollowupBusy(busy) {
@@ -1570,6 +1653,8 @@
       }
       setPanelSpeakText(plainFromMarkdown(request.raw));
       setPanelCopyText(plainFromMarkdown(request.raw));
+      // Streaming text also grows the auto window.
+      resizePanelForContent();
     });
   }
 
@@ -2201,6 +2286,7 @@
     state.programName = String(data.programName || "");
     state.defaultTargetLang = String(config.defaultTargetLang || "auto");
     state.searchEngine = normalizeSearchEngine(config.searchEngine);
+    state.panelMode = normalizePanelMode(config.panelMode);
     state.panelPinnedPreference = config.panelPinned === true;
     state.targetLang = "";
     // Rebuild the custom-skill metadata every time: a disabled/removed skill
@@ -2244,7 +2330,7 @@
   /* ---- Boot ------------------------------------------------------------ */
 
   state.panelManualSize = loadPanelSize();
-  state.panelAutoResize = !state.panelManualSize;
+  state.panelAutoResize = state.panelMode === "auto";
   syncPanelPin();
   syncPanelFoot();
   populateTargetLanguages();

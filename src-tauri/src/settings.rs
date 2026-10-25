@@ -32,6 +32,14 @@ pub const CUSTOM_SKILL_DEFAULT_ICON: &str = "sparkles";
 pub const SEARCH_ENGINES: [&str; 3] = ["google", "baidu", "bing"];
 /// Engine used when `picker.searchEngine` is unknown or empty.
 pub const DEFAULT_SEARCH_ENGINE: &str = "google";
+/// Panel sizing modes accepted by `picker.panelMode`: `auto` grows the window
+/// with the content (default, historical behavior), `scroll` keeps a fixed
+/// window and scrolls the panel body instead.
+pub const PANEL_MODES: [&str; 2] = ["auto", "scroll"];
+/// Default panel sizing mode: grow with the content.
+pub fn default_panel_mode() -> String {
+    "auto".to_string()
+}
 /// Label used when a custom skill has an empty label.
 const CUSTOM_SKILL_DEFAULT_LABEL: &str = "自定义技能";
 /// Hard cap so a corrupted settings file cannot bloat the picker forever.
@@ -75,6 +83,9 @@ pub struct PickerSettings {
     /// Remembered "pin panel" preference, restored when the picker opens.
     #[serde(default)]
     pub panel_pinned: bool,
+    /// Panel sizing mode; one of [`PANEL_MODES`].
+    #[serde(default = "default_panel_mode")]
+    pub panel_mode: String,
     #[serde(default)]
     pub prompts: PromptSettings,
     #[serde(default)]
@@ -186,6 +197,7 @@ impl Default for PickerSettings {
             max_chars: MAX_SELECTION_CHARS,
             search_engine: DEFAULT_SEARCH_ENGINE.to_string(),
             panel_pinned: false,
+            panel_mode: default_panel_mode(),
             prompts: PromptSettings::default(),
             custom_skills: Vec::new(),
         }
@@ -365,6 +377,14 @@ impl Settings {
                 value
             } else {
                 DEFAULT_SEARCH_ENGINE.to_string()
+            }
+        };
+        self.picker.panel_mode = {
+            let value = self.picker.panel_mode.trim().to_ascii_lowercase();
+            if PANEL_MODES.contains(&value.as_str()) {
+                value
+            } else {
+                default_panel_mode()
             }
         };
         // Custom prompts are user-editable text: trim and cap them so a pasted
@@ -624,8 +644,53 @@ mod tests {
         assert_eq!(settings.picker.skills.len(), 7);
         assert_eq!(settings.picker.search_engine, "google");
         assert!(!settings.picker.panel_pinned);
+        assert_eq!(settings.picker.panel_mode, "auto");
         assert_eq!(settings.provider.mode, "online");
         assert!(settings.app.close_to_tray);
+    }
+
+    #[test]
+    fn panel_mode_defaults_to_auto_and_normalizes_invalid_values() {
+        let settings = Settings::default().normalize();
+        assert_eq!(settings.picker.panel_mode, "auto");
+        // camelCase serialization and JSON round-trip.
+        let value = serde_json::to_value(&settings).unwrap();
+        assert_eq!(value["picker"]["panelMode"], "auto");
+        let parsed: Settings = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.picker.panel_mode, "auto");
+        assert_eq!(default_panel_mode(), "auto");
+
+        for (input, expected) in [
+            ("auto", "auto"),
+            ("scroll", "scroll"),
+            ("SCROLL", "scroll"),
+            ("  auto  ", "auto"),
+            ("fixed", "auto"),
+            ("", "auto"),
+        ] {
+            let mut settings = Settings::default();
+            settings.picker.panel_mode = input.to_string();
+            assert_eq!(
+                settings.normalize().picker.panel_mode,
+                expected,
+                "wrong mode for {input:?}"
+            );
+        }
+
+        // Persisted through the settings patch path (camelCase key).
+        let (store, dir) = store();
+        let updated = store
+            .update_json(json!({ "picker": { "panelMode": "scroll" } }))
+            .unwrap();
+        assert_eq!(updated.picker.panel_mode, "scroll");
+        let reloaded = SettingsStore::load(dir.path().join("settings.json"));
+        assert_eq!(reloaded.get().picker.panel_mode, "scroll");
+
+        // Invalid persisted values fall back to auto on save/load.
+        let invalid = store
+            .update_json(json!({ "picker": { "panelMode": "hack" } }))
+            .unwrap();
+        assert_eq!(invalid.picker.panel_mode, "auto");
     }
 
     #[test]

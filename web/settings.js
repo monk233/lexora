@@ -1036,10 +1036,36 @@
     var picker = state.settings.picker || {};
     setChecked(byId("picker-enabled"), picker.enabled !== false);
     setChecked(byId("picker-compact"), picker.compact === true);
+    renderPanelMode();
     setSelectValue(byId("default-target-lang"), picker.defaultTargetLang || "auto");
     renderSkills();
     renderCustomSkillEditor(false);
     renderBlacklist();
+  }
+
+  /* Panel layout mode for the picker result panel: "auto" grows the window to
+   * fit the content, "scroll" keeps a fixed height with an inner scrollbar. */
+  function panelModeValue() {
+    var picker = (state && state.settings && state.settings.picker) || {};
+    return picker.panelMode === "scroll" ? "scroll" : "auto";
+  }
+
+  function renderPanelMode() {
+    var current = panelModeValue();
+    each(document.querySelectorAll("[data-panel-mode]"), function (button) {
+      var selected = button.getAttribute("data-panel-mode") === current;
+      button.setAttribute("aria-pressed", selected ? "true" : "false");
+    });
+  }
+
+  function selectPanelMode(mode) {
+    var next = mode === "scroll" ? "scroll" : "auto";
+    if (next === panelModeValue()) {
+      return;
+    }
+    /* Patch only this field; save() re-renders optimistically and the generic
+     * save-error handler refreshes state, which rolls the selection back. */
+    save({ picker: { panelMode: next } });
   }
 
   /* ---- Custom skills ----------------------------------------------------- */
@@ -2828,6 +2854,12 @@
     });
     byId("picker-compact").addEventListener("change", function (event) {
       save({ picker: { compact: event.target.checked } });
+    });
+    byId("panel-mode-scroll").addEventListener("click", function () {
+      selectPanelMode("scroll");
+    });
+    byId("panel-mode-auto").addEventListener("click", function () {
+      selectPanelMode("auto");
     });
     byId("default-target-lang").addEventListener("change", function (event) {
       save({ picker: { defaultTargetLang: event.target.value } });

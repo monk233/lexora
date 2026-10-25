@@ -355,6 +355,32 @@ body.is-dragging-panel * {
   max-height: none;
 }
 
+/* ---- Panel modes ------------------------------------------------------- */
+
+/* auto: the window follows the content. The body never scrolls and the resize
+ * grip is hidden; flex-grow keeps the card filling the window when the 360x240
+ * minimum makes the window taller than the content (no transparent strip). */
+.panel.is-auto-mode {
+  flex: 1 0 auto;
+}
+
+.panel.is-auto-mode .panel-body {
+  max-height: none;
+  overflow-y: hidden;
+}
+
+/* Temporary natural-height measurement state: while measuring, the card must
+ * not keep a previously grown window height. */
+.panel.is-auto-measuring {
+  flex: 0 0 auto;
+}
+
+/* scroll: fixed window size, the body scrolls inside and the grip is shown. */
+.panel.is-scroll-mode .panel-body {
+  max-height: none;
+  overflow-y: auto;
+}
+
 /* ---- Result panel resize grip ------------------------------------------ */
 
 .panel-resize-grip {

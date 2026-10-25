@@ -237,6 +237,25 @@
           </div>
         </div>
 
+        <div class="field field-switch panel-mode-field">
+          <div class="field-label">
+            <span class="field-name">面板模式</span>
+            <p class="field-hint">滚动：面板高度固定，内容在面板内滚动，窗口不随内容变大；自适应：面板无滚动条，窗口随内容自动变高</p>
+          </div>
+          <div class="field-control">
+            <div class="segmented panel-mode-segmented" role="group" aria-label="面板模式">
+              <button type="button" class="segment" id="panel-mode-scroll"
+                      data-panel-mode="scroll" aria-pressed="false"
+                      aria-label="滚动模式：面板高度固定，内容在面板内滚动"
+                      title="面板高度固定，内容在面板内滚动，窗口不随内容变大">滚动</button>
+              <button type="button" class="segment" id="panel-mode-auto"
+                      data-panel-mode="auto" aria-pressed="true"
+                      aria-label="自适应模式：面板无滚动条，窗口随内容自动变高"
+                      title="面板无滚动条，窗口随内容自动变高">自适应</button>
+            </div>
+          </div>
+        </div>
+
         <div class="field field-stack">
           <div class="field-label">
             <span class="field-name">工具栏技能</span>

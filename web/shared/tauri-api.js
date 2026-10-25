@@ -271,6 +271,7 @@
           prompts: { translate: "", summarize: "", explain: "", polish: "" },
           customSkills: [],
           searchEngine: "google",
+          panelMode: "auto",
         },
         provider: {
           mode: "online",
@@ -596,6 +597,7 @@
           compact: !!picker.compact,
           defaultTargetLang: picker.defaultTargetLang || "auto",
           searchEngine: picker.searchEngine || "google",
+          panelMode: picker.panelMode === "scroll" ? "scroll" : "auto",
           panelPinned: panelPinned,
         },
       });

@@ -327,6 +327,39 @@ textarea {
   text-align: right;
 }
 
+/* Panel mode: two-segment switch advanced to the right edge of its row. */
+.panel-mode-field .field-control {
+  align-items: flex-end;
+}
+
+.panel-mode-field .panel-mode-segmented {
+  align-self: flex-end;
+  margin: 0;
+}
+
+.panel-mode-field .panel-mode-segmented .segment {
+  height: 30px;
+  padding: 0 14px;
+  font-size: 12px;
+}
+
+.panel-mode-field .segment[aria-pressed="true"] {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
+}
+
+.panel-mode-field .segment[aria-pressed="false"] {
+  background: transparent;
+  color: var(--text-muted);
+  box-shadow: none;
+}
+
+.panel-mode-field .segment:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
 .inline-actions {
   display: flex;
   align-items: center;
