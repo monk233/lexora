@@ -17,9 +17,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetDoubleClickTime, SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_WHEEL, MOUSEINPUT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, GetAncestor, GetCursorPos, GetForegroundWindow, GetWindowThreadProcessId,
-    SetCursorPos, SetForegroundWindow, SetWindowPos, WindowFromPoint, GA_ROOT, HWND_TOP,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WHEEL_DELTA,
+    BringWindowToTop, GetAncestor, GetCursorPos, GetForegroundWindow, GetWindowLongPtrW,
+    GetWindowThreadProcessId, SetCursorPos, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos,
+    WindowFromPoint, GA_ROOT, GWL_EXSTYLE, HWND_TOP, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, SWP_NOZORDER, WHEEL_DELTA, WS_EX_NOACTIVATE,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -78,7 +79,6 @@ pub fn scroll_wheel_notches(notches: i32) -> bool {
     unsafe { SendInput(&[input], std::mem::size_of::<INPUT>() as i32) == 1 }
 }
 
-/// Brings the top-level window under `(x, y)` to the foreground so synthetic
 /// Disables DWM open/close transitions for one of our windows. Without this the
 /// transparent capture overlay fades out over ~150 ms when hidden, which reads as
 /// a flash/jitter on exit (round 21). Returns `false` on unsupported systems.
@@ -98,11 +98,40 @@ pub fn disable_transitions(window: &tauri::WebviewWindow) -> bool {
     }
 }
 
+/// Adds `WS_EX_NOACTIVATE` to one of our windows so showing/clicking it never
+/// takes the foreground away from the application the user is scrolling
+/// (contract §11.14). Buttons still receive mouse input; keyboard stays with the
+/// previously active window. Returns `false` when the style cannot be applied.
+pub fn set_no_activate(window: &tauri::WebviewWindow) -> bool {
+    let Ok(hwnd) = window.hwnd() else {
+        return false;
+    };
+    unsafe {
+        let current = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let style = current | WS_EX_NOACTIVATE.0 as isize;
+        if style != current {
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style);
+            // Style changes only take effect after a frame change.
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
+            );
+        }
+    }
+    true
+}
+
+/// Brings the top-level window under `(x, y)` to the foreground so synthetic
 /// wheel input is delivered to it (Windows routes wheel events to the focused
-/// window unless "scroll inactive windows on hover" is enabled). Our own
-/// hidden overlay never appears under the cursor, so this targets the
-/// application being captured. Failures are ignored (the long screenshot then
-/// relies on the hover setting).
+/// window unless "scroll inactive windows on hover" is enabled). Our own hidden
+/// overlay never appears under the cursor, so this targets the application being
+/// captured. Failures are ignored (the long screenshot then relies on the hover
+/// setting).
 pub fn focus_window_at(x: i32, y: i32) -> bool {
     unsafe {
         let hwnd = WindowFromPoint(POINT { x, y });

@@ -179,6 +179,29 @@
   var mockPickerAttempts = 0;
   var mockPins = {};
   var mockPinSeq = 0;
+  var mockLongshot = null;
+
+  /* Placeholder long-screenshot preview: a dark document whose height grows on
+   * every preview call so the browser preview window shows progress. */
+  function mockLongshotPreview(state) {
+    var width = state.width;
+    var height = state.height;
+    var lines = [];
+    for (var y = 40; y < height; y += 46) {
+      lines.push(
+        '<rect x="24" y="' + y + '" width="' + (width - 48) + '" height="10" rx="5" fill="#334155"/>'
+      );
+      lines.push(
+        '<rect x="24" y="' + (y + 16) + '" width="' + Math.round((width - 48) * 0.6) + '" height="6" rx="3" fill="#1f2937"/>'
+      );
+    }
+    var svg =
+      '<svg xmlns="http://www.w3.org/2000/svg" width="' + width + '" height="' + height + '">' +
+      '<rect width="100%" height="100%" fill="#0b1220"/>' +
+      lines.join("") +
+      "</svg>";
+    return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+  }
 
   /* Placeholder image for pinned-window previews (`pin.html` in the browser). */
   function mockPinPreview(annotations) {
@@ -1155,6 +1178,108 @@
         return { ok: true };
       case "capture_followup":
         return { ok: true };
+      case "longshot_start": {
+        mockLongshot = {
+          active: true,
+          direction: "vertical",
+          width: Math.max(120, Math.round(Number(args.rect && args.rect.width) || 640)),
+          height: Math.max(120, Math.round(Number(args.rect && args.rect.height) || 480)),
+          frames: 1,
+          stalled: false,
+        };
+        return {
+          ok: true,
+          width: mockLongshot.width,
+          height: mockLongshot.height,
+          direction: mockLongshot.direction,
+        };
+      }
+      case "longshot_state": {
+        if (!mockLongshot) {
+          // The preview window is a separate page in the browser preview, so
+          // create a synthetic session for it.
+          mockLongshot = {
+            active: true,
+            direction: "vertical",
+            width: 520,
+            height: 640,
+            frames: 1,
+            stalled: false,
+          };
+        }
+        return {
+          ok: true,
+          width: mockLongshot.width,
+          height: mockLongshot.height,
+          frames: mockLongshot.frames,
+          direction: mockLongshot.direction,
+          stalled: mockLongshot.stalled,
+          done: false,
+        };
+      }
+      case "longshot_preview": {
+        if (!mockLongshot) {
+          mockLongshot = {
+            active: true,
+            direction: "vertical",
+            width: 520,
+            height: 640,
+            frames: 1,
+            stalled: false,
+          };
+        }
+        mockLongshot.frames += 1;
+        if (mockLongshot.direction === "horizontal") {
+          mockLongshot.width += 160;
+        } else {
+          mockLongshot.height += 220;
+        }
+        return {
+          ok: true,
+          dataUrl: mockLongshotPreview(mockLongshot),
+          width: mockLongshot.width,
+          height: mockLongshot.height,
+          frames: mockLongshot.frames,
+          direction: mockLongshot.direction,
+        };
+      }
+      case "longshot_direction": {
+        var longshotDirection = String(args.direction || "vertical");
+        if (!mockLongshot) {
+          mockLongshot = {
+            active: true,
+            direction: longshotDirection,
+            width: 520,
+            height: 640,
+            frames: 1,
+            stalled: false,
+          };
+        } else {
+          mockLongshot.direction = longshotDirection;
+          mockLongshot.frames = 1;
+        }
+        return { ok: true, direction: mockLongshot.direction };
+      }
+      case "longshot_finish": {
+        mockPinSeq += 1;
+        var longshotPinId = mockPinSeq;
+        mockPins[longshotPinId] = mockPinPreview("");
+        var finished = mockLongshot || { width: 520, height: 640 };
+        mockLongshot = null;
+        return {
+          ok: true,
+          width: finished.width,
+          height: finished.height,
+          pinId: longshotPinId,
+        };
+      }
+      case "longshot_cancel": {
+        mockLongshot = null;
+        setTimeout(function () {
+          mockEmit("longshot-cancelled", {});
+        }, 100);
+        return { ok: true };
+      }
       case "capture_pin": {
         mockPinSeq += 1;
         var pinId = mockPinSeq;
@@ -2007,6 +2132,47 @@
      * (they fetch the fresh screenshot themselves and report `ready`). */
     onArmed: function (callback) {
       return subscribe("capture-armed", function (payload) {
+        if (typeof callback === "function") {
+          callback(payload);
+        }
+      });
+    },
+  };
+
+  /* Manual-scroll long-screenshot preview window API (contract §11.14). */
+  window.longshotAPI = {
+    start: function (index, rect) {
+      return safeInvoke("longshot_start", {
+        index: Number(index) || 0,
+        rect: rect || {},
+      });
+    },
+    state: function () {
+      return safeInvoke("longshot_state", {});
+    },
+    preview: function () {
+      return safeInvoke("longshot_preview", {});
+    },
+    direction: function (direction) {
+      return safeInvoke("longshot_direction", {
+        direction: String(direction == null ? "vertical" : direction),
+      });
+    },
+    finish: function () {
+      return safeInvoke("longshot_finish", {});
+    },
+    cancel: function () {
+      return safeInvoke("longshot_cancel", {});
+    },
+    onProgress: function (callback) {
+      return subscribe("longshot-progress", function (payload) {
+        if (typeof callback === "function") {
+          callback(payload);
+        }
+      });
+    },
+    onCancelled: function (callback) {
+      return subscribe("longshot-cancelled", function (payload) {
         if (typeof callback === "function") {
           callback(payload);
         }

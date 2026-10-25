@@ -1,0 +1,375 @@
+/* Lexora manual-scroll long-screenshot preview window (contract §11.14).
+ *
+ * Frameless always-on-top helper window: white controls around a dark preview
+ * canvas that shows the stitched image while the user scrolls the target app.
+ * No external dependencies; the shell sizes the window (≈360px wide).
+ */
+
+:root {
+  color-scheme: light;
+
+  --surface: #ffffff;
+  --surface-muted: #f8fafc;
+  --surface-hover: #f1f5f9;
+  --border: #e2e8f0;
+  --border-strong: #cbd5e1;
+  --text: #0f172a;
+  --text-muted: #475569;
+  --text-faint: #94a3b8;
+  --primary: #4f46e5;
+  --primary-soft: #eef2ff;
+  --success: #059669;
+  --success-strong: #047857;
+  --danger: #dc2626;
+  --danger-soft: #fef2f2;
+  --warning-bg: #fffbeb;
+  --warning-border: #fde68a;
+  --warning-text: #b45309;
+  --preview-bg: #0b1220;
+
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+  --shadow-float: 0 1px 3px rgba(15, 23, 42, 0.16);
+
+  --font-ui: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+body {
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+
+button {
+  font-family: inherit;
+}
+
+/* ---- Window layout ------------------------------------------------------ */
+
+.longshot-root {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: var(--surface);
+}
+
+.longshot-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.longshot-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+/* ---- Direction segmented control --------------------------------------- */
+
+.longshot-direction {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--surface-hover);
+}
+
+.ls-seg {
+  height: 26px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.ls-seg:hover {
+  color: var(--text);
+}
+
+.ls-seg.is-active {
+  background: var(--surface);
+  color: var(--primary);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
+}
+
+.ls-seg:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+/* ---- Buttons ------------------------------------------------------------ */
+
+.ls-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.ls-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+.ls-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.ls-btn-ghost:hover:not(:disabled) {
+  border-color: #fecaca;
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.ls-btn-primary {
+  border-color: var(--success);
+  background: var(--success);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.ls-btn-primary:hover:not(:disabled) {
+  border-color: var(--success-strong);
+  background: var(--success-strong);
+}
+
+/* ---- Preview ------------------------------------------------------------ */
+
+.longshot-preview {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 8px;
+  overflow: hidden;
+  background-color: var(--preview-bg);
+  background-image: repeating-linear-gradient(
+    45deg,
+    rgba(148, 163, 184, 0.05) 0,
+    rgba(148, 163, 184, 0.05) 8px,
+    transparent 8px,
+    transparent 16px
+  );
+}
+
+.longshot-image {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  background: transparent;
+  box-shadow: 0 2px 12px rgba(2, 6, 23, 0.5);
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+.longshot-empty {
+  position: absolute;
+  color: rgba(226, 232, 240, 0.6);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+}
+
+.longshot-error {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-float);
+}
+
+.longshot-error-text {
+  overflow: hidden;
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.longshot-error-close {
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.longshot-error-close:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+/* ---- Footer status ------------------------------------------------------ */
+
+.longshot-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.longshot-status {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+.longshot-size {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.longshot-frames {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.longshot-hint {
+  color: var(--text-faint);
+}
+
+.longshot-warning {
+  padding: 4px 8px;
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius-sm);
+  background: var(--warning-bg);
+  color: var(--warning-text);
+  font-size: 11.5px;
+}
+
+/* ---- Toast / done overlay ---------------------------------------------- */
+
+.longshot-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 12px;
+  z-index: 40;
+  max-width: calc(100vw - 16px);
+  padding: 6px 12px;
+  transform: translateX(-50%);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.97);
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+  box-shadow: var(--shadow-float);
+  pointer-events: none;
+  word-break: break-word;
+}
+
+.longshot-toast[data-tone="error"] {
+  border-color: #fecaca;
+  color: var(--danger);
+}
+
+.longshot-toast[data-tone="success"] {
+  border-color: #a7f3d0;
+  color: var(--success-strong);
+}
+
+.longshot-done {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  z-index: 50;
+  padding: 10px 16px;
+  transform: translate(-50%, -50%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.97);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+  box-shadow: var(--shadow-float);
+  pointer-events: none;
+}
+
+/* ---- Motion preferences ------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .ls-seg,
+  .ls-btn {
+    transition: none;
+  }
+}

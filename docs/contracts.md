@@ -750,3 +750,18 @@ editor.renderToPng(rectCss) -> string|null
 ### 11.13 第二十一轮修订：退出截图无闪烁
 - capture overlay 与 picker/settings 窗口创建后设置 `DWMWA_TRANSITIONS_FORCEDISABLED`（禁用 DWM 打开/关闭过渡）。否则 hide 时透明 overlay 会淡出约 150ms，表现为退出截图时闪一下/抖动。
 - 验收：屏幕录制 60fps 回放退出瞬间，overlay 应在**单帧内**消失（无多帧淡出），退出后画面稳定（除被捕获内容自身变化外）。
+## 11.14 第二十二轮修订：QQ 式手动滚动长截图（权威）
+- 交互流程：有选区时点击工具条「长截图」→ capture overlay 隐藏 → 在选区**侧边**（优先左侧，空间不足放右侧）出现长截图预览窗口；用户**手动滚动**目标应用，预览实时显示已拼接长图；预览窗口提供滚动方向（竖向/横向）、完成、取消。
+- 全程**不再自动滚动**：不使用 SendInput 滚轮 / SetCursorPos 滚屏；目标应用由用户自己滚动。
+- 预览窗口（新窗口 label `longshot`）：无边框、置顶、skip_taskbar、不抢前台焦点（WS_EX_NOACTIVATE；点击控件仍可用）；宽约 340–420 逻辑像素，高 ≤ 工作区 70%；垂直对齐选区顶部并 clamp 工作区。内容：方向 segmented（竖向/横向，默认竖向）＋ 完成/取消 ＋ 当前拼接图预览（等比缩放完整显示）＋ 尺寸/帧数/提示（如「请缓慢滚动页面以拼接长截图」，stalled 时提示滚动过快/方向不符）。
+- 命令（在 tauri-api 中暴露为 `window.longshotAPI`）：
+  - `longshot_start {index, rect} -> {ok,width,height,direction}`：隐藏 capture overlay、裁切首帧、启动后台抓帧循环、创建并显示预览窗口。
+  - `longshot_state {} -> {ok,width,height,frames,direction,stalled,done}`。
+  - `longshot_preview {} -> {ok,dataUrl,width,height}`：当前拼接图 PNG data URL（前端按需轮询，尺寸未变化可跳过）。
+  - `longshot_direction {direction:"vertical"|"horizontal"} -> {ok}`：切换方向并以当前选区帧重置拼接。
+  - `longshot_finish {} -> {ok,width,height,pinId?,error?,hint?}`：停止循环、写剪贴板、创建 pin 窗口（§11.5）、销毁预览窗口。
+  - `longshot_cancel {} -> {ok}`：停止循环、销毁预览窗口、重新显示 capture overlay，并向 capture-* emit `longshot-cancelled`。
+  - 事件：`longshot-progress {width,height,frames,stalled}` → longshot 窗口；`longshot-cancelled` → capture-*。
+- 拼接规则：循环约 8fps 抓取选区帧；与当前拼接图相同则跳过；按方向寻找 10%–90% 范围内的最佳重叠（竖向=行采样、横向=列采样，容忍平滑滚动亚像素差异），追加不重复部分；无可靠重叠时不追加并标记 `stalled=true`（继续尝试后续帧）；方向切换重置。内存/尺寸上限：竖向高度 ≤ 30000，横向宽度 ≤ 40000，总像素 ≤ 64MP，超限停止追加并提示。
+- 完成/取消兼容：完成后复制+钉图；取消恢复截图 overlay，用户可继续框选/标注/确认。旧自动滚动 `capture_longshot` 不再由 UI 调用（保留但标注 deprecated）。
+- 验收：长页面选区→点长截图→预览窗口出现在选区侧边（左/右自适应）；手动缓慢竖向滚动时预览图持续增长且拼接无缺行/重复；切横向在宽内容上滚动可横向增长；完成→剪贴板+钉图；取消→回到截图 overlay；全程无自动滚动；console/日志无错误。

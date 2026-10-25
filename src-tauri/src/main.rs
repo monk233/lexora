@@ -15,6 +15,7 @@ mod capture;
 mod commands;
 mod engine;
 mod logger;
+mod longshot;
 mod paths;
 mod pin;
 mod selection;
@@ -148,6 +149,17 @@ fn main() {
                         crate::pin::close(window.app_handle(), id);
                     }
                 }
+                label if label == crate::longshot::LONG_SHOT_LABEL => {
+                    // Closing the preview (Alt+F4 / OS close) behaves like the
+                    // cancel button: stop stitching and restore the overlay.
+                    api.prevent_close();
+                    // Defer destroying the window until after this close event
+                    // has been processed.
+                    let app = window.app_handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        crate::longshot::cancel(&app);
+                    });
+                }
                 label if label.starts_with(crate::windows::CAPTURE_PREFIX) => {
                     // Never let an overlay be destroyed behind the service's
                     // back: the single-flight guard treats an existing session
@@ -165,6 +177,11 @@ fn main() {
             WindowEvent::Destroyed => {
                 if let Some(id) = crate::pin::pin_id_from_label(window.label()) {
                     crate::pin::forget(id);
+                }
+                if window.label() == crate::longshot::LONG_SHOT_LABEL {
+                    // The preview window is gone: never leave the grab thread or
+                    // its buffered image running behind the shell's back.
+                    crate::longshot::forget_session();
                 }
             }
             WindowEvent::Focused(false) => {
@@ -204,6 +221,12 @@ fn main() {
             commands::capture_set_hotkey,
             commands::capture_pin,
             commands::capture_longshot,
+            longshot::longshot_start,
+            longshot::longshot_state,
+            longshot::longshot_preview,
+            longshot::longshot_direction,
+            longshot::longshot_finish,
+            longshot::longshot_cancel,
             commands::pin_ready,
             commands::pin_drag,
             commands::pin_copy,
@@ -340,6 +363,9 @@ fn cleanup(app: &AppHandle) {
             .info(&format!("shutdown: dropping {pinned} pinned window(s)"));
     }
     crate::pin::clear_registry();
+    // Stop the manual long-screenshot grab thread (if any); the preview window
+    // dies with the process.
+    crate::longshot::forget_session();
 
     // `shutdown_local` completes synchronously (process kill) and deliberately
     // keeps `local.keepRunning` so the next launch restores the engine; spawn +

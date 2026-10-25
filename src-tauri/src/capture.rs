@@ -37,6 +37,12 @@
 //! (`capture_copy`/`capture_skill`/`capture_pin`) and the scrolling long
 //! screenshot (`capture_longshot`), which stitches overlapping frames and hands
 //! the result to the pin module.
+//!
+//! Round 22 (contract §11.14) adds the manual-scroll long screenshot in
+//! [`crate::longshot`]; it reuses this module's stitcher helpers
+//! ([`Stitched`], [`find_overlap`], [`frames_identical`]) while the user scrolls
+//! the target application themselves. The old automatic `capture_longshot` is
+//! deprecated but kept for debugging.
 
 use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -128,6 +134,19 @@ pub struct HitRect {
     pub y: f64,
     pub width: f64,
     pub height: f64,
+}
+
+/// First frame + physical geometry of a manual-scroll long screenshot
+/// (contract §11.14). The background stitcher captures the same monitor region
+/// while the user scrolls the target application.
+pub(crate) struct LongshotSeed {
+    pub(crate) first_frame: RgbaImage,
+    pub(crate) origin_x: i32,
+    pub(crate) origin_y: i32,
+    pub(crate) monitor_width: u32,
+    pub(crate) monitor_height: u32,
+    /// `(left, top, width, height)` inside the captured monitor image.
+    pub(crate) crop: (u32, u32, u32, u32),
 }
 
 /// Optional preset chosen when the screenshot was started from a picker skill.
@@ -292,6 +311,34 @@ impl CaptureService {
     /// (contract §11.11.2, QQ behavior).
     pub fn is_active(&self) -> bool {
         lock(&self.session).is_some()
+    }
+
+    /// Crops the selected region of the active session and returns it together
+    /// with the monitor geometry: the first frame of a manual-scroll long
+    /// screenshot (contract §11.14). The capture overlay stays untouched; the
+    /// caller hides it before the user starts scrolling.
+    pub fn longshot_seed(&self, index: u32, rect: &HitRect) -> Result<LongshotSeed, EngineError> {
+        let guard = lock(&self.session);
+        let Some(session) = guard.as_ref() else {
+            return Err(not_ready_error());
+        };
+        let shot = session
+            .shots
+            .iter()
+            .find(|shot| shot.index == index)
+            .ok_or_else(|| missing_monitor_error(index))?;
+        let (left, top, width, height) = clamp_rect(&shot.image, rect)
+            .ok_or_else(|| EngineError::new("选区无效。", "请重新框选一个有效的区域后再试。"))?;
+        let first_frame =
+            image::imageops::crop_imm(&shot.image, left, top, width, height).to_image();
+        Ok(LongshotSeed {
+            first_frame,
+            origin_x: shot.x,
+            origin_y: shot.y,
+            monitor_width: shot.width,
+            monitor_height: shot.height,
+            crop: (left, top, width, height),
+        })
     }
 
     /// Prepares one screenshot: keeps the settings/picker windows open **and
@@ -920,6 +967,10 @@ impl CaptureService {
         self.finish_capture(app);
     }
 
+    /// **Deprecated** (contract §11.14): this is the old *automatic* scroll long
+    /// screenshot; the UI now uses the manual-scroll preview commands in
+    /// [`crate::longshot`]. Kept for compatibility/debugging, no UI calls it.
+    ///
     /// Runs a scrolling long screenshot of the selected region (contract §11.6).
     ///
     /// The current session crop is the first frame; the capture overlay is
@@ -1181,14 +1232,14 @@ struct LongshotCapture {
 
 /// Vertically growing RGBA buffer used while stitching: appending a frame only
 /// copies its new rows, instead of cloning the whole stitched image every time.
-struct Stitched {
+pub(crate) struct Stitched {
     width: u32,
     height: u32,
     data: Vec<u8>,
 }
 
 impl Stitched {
-    fn from_image(image: &RgbaImage) -> Self {
+    pub(crate) fn from_image(image: &RgbaImage) -> Self {
         let (width, height) = image.dimensions();
         Self {
             width,
@@ -1197,14 +1248,18 @@ impl Stitched {
         }
     }
 
-    fn height(&self) -> u32 {
+    pub(crate) fn width(&self) -> u32 {
+        self.width
+    }
+
+    pub(crate) fn height(&self) -> u32 {
         self.height
     }
 
     /// Appends the rows of `image` starting at `skip_rows` (the overlapping top
     /// part is not duplicated). Frames of a different width are ignored so the
     /// buffer can never become inconsistent.
-    fn push_rows(&mut self, image: &RgbaImage, skip_rows: u32) {
+    pub(crate) fn push_rows(&mut self, image: &RgbaImage, skip_rows: u32) {
         let width = self.width;
         if width == 0 || image.width() < width {
             return;
@@ -1220,7 +1275,41 @@ impl Stitched {
         self.height = (self.data.len() / (width as usize * 4)) as u32;
     }
 
-    fn into_image(self) -> RgbaImage {
+    /// Copy of the stitched image (keeps the buffer usable for more frames).
+    pub(crate) fn to_image(&self) -> RgbaImage {
+        RgbaImage::from_raw(self.width.max(1), self.height.max(1), self.data.clone())
+            .unwrap_or_else(|| RgbaImage::new(self.width.max(1), self.height.max(1)))
+    }
+
+    /// Nearest-neighbour downscale of the stitched image to `max_side` longest
+    /// pixels, without materialising the full-resolution copy first. Used for
+    /// the manual long-screenshot preview, where only a small on-screen image is
+    /// needed and re-encoding the full page on every poll would be expensive.
+    pub(crate) fn scaled_to_image(&self, max_side: u32) -> RgbaImage {
+        let (width, height) = (self.width.max(1), self.height.max(1));
+        let longest = width.max(height);
+        if max_side == 0 || longest <= max_side {
+            return self.to_image();
+        }
+        let scale = max_side as f64 / longest as f64;
+        let out_width = ((width as f64 * scale).round() as u32).max(1);
+        let out_height = ((height as f64 * scale).round() as u32).max(1);
+        let mut out = RgbaImage::new(out_width, out_height);
+        let out_data = out.as_mut();
+        for y in 0..out_height {
+            let source_y = ((y as u64 * height as u64) / out_height as u64) as usize;
+            for x in 0..out_width {
+                let source_x = ((x as u64 * width as u64) / out_width as u64) as usize;
+                let source_offset = (source_y * width as usize + source_x) * 4;
+                let target_offset = (y as usize * out_width as usize + x as usize) * 4;
+                out_data[target_offset..target_offset + 4]
+                    .copy_from_slice(&self.data[source_offset..source_offset + 4]);
+            }
+        }
+        out
+    }
+
+    pub(crate) fn into_image(self) -> RgbaImage {
         let width = self.width.max(1);
         let height = self.height.max(1);
         RgbaImage::from_raw(width, height, self.data)
@@ -1244,7 +1333,11 @@ fn stitched_pixel(stitched: &Stitched, x: u32, y: u32) -> [u8; 4] {
 /// lines of text) cannot produce a false large overlap; `expected` (the previous
 /// frame's overlap) breaks ties and narrows the search on the first pass.
 /// Returns `None` when no candidate matches closely enough (contract §11.6).
-fn find_overlap(stitched: &Stitched, next: &RgbaImage, expected: Option<u32>) -> Option<u32> {
+pub(crate) fn find_overlap(
+    stitched: &Stitched,
+    next: &RgbaImage,
+    expected: Option<u32>,
+) -> Option<u32> {
     let width = stitched.width.min(next.width());
     let next_height = next.height();
     if width == 0 || next_height < 2 || stitched.height() < 2 {
@@ -1347,7 +1440,7 @@ fn overlap_mean_difference(stitched: &Stitched, next: &RgbaImage, overlap: u32, 
 
 /// Sampled comparison of two equally sized frames: `true` when the application
 /// did not scroll between them (stop `same-frame`).
-fn frames_identical(first: &RgbaImage, second: &RgbaImage) -> bool {
+pub(crate) fn frames_identical(first: &RgbaImage, second: &RgbaImage) -> bool {
     if first.dimensions() != second.dimensions() {
         return false;
     }
@@ -2074,7 +2167,7 @@ fn image_skill<'a>(
 
 /// Writes an RGBA bitmap to the system image clipboard; returns whether it
 /// worked (the screenshot flow continues either way, contract §10.3).
-fn write_clipboard_image(app: &AppHandle, image: &RgbaImage) -> bool {
+pub(crate) fn write_clipboard_image(app: &AppHandle, image: &RgbaImage) -> bool {
     let (width, height) = image.dimensions();
     let clipboard_image = tauri::image::Image::new_owned(image.clone().into_raw(), width, height);
     match app.clipboard().write_image(&clipboard_image) {
@@ -2142,7 +2235,7 @@ fn map_ocr_error(error: native_ocr::Error) -> EngineError {
 
 /// Clamps a physical-pixel hit rect to `image`, rounding the edges. Returns
 /// `None` when the rectangle does not cover any pixel.
-fn clamp_rect(image: &RgbaImage, rect: &HitRect) -> Option<(u32, u32, u32, u32)> {
+pub(crate) fn clamp_rect(image: &RgbaImage, rect: &HitRect) -> Option<(u32, u32, u32, u32)> {
     let (image_width, image_height) = image.dimensions();
     if image_width == 0 || image_height == 0 {
         return None;
@@ -2804,6 +2897,65 @@ mod tests {
         let error = capture_already_active_error();
         assert_eq!(error.message, "已经在截图了。");
         assert_eq!(error.hint, "请先完成当前截图（或按 Esc 取消）后再试。");
+    }
+
+    #[test]
+    fn longshot_seed_crops_the_selection_and_keeps_the_monitor_geometry() {
+        // Contract §11.14: `longshot_start` seeds the manual stitcher with the
+        // session crop plus the physical monitor geometry.
+        let service = CaptureService::new();
+        let mut shot = test_shot();
+        shot.x = 100;
+        shot.y = 50;
+        *lock(&service.session) = Some(Session {
+            shots: vec![shot],
+            preset: None,
+        });
+        let seed = service
+            .longshot_seed(
+                0,
+                &HitRect {
+                    x: 2.0,
+                    y: 1.0,
+                    width: 4.0,
+                    height: 5.0,
+                },
+            )
+            .unwrap();
+        assert_eq!(seed.crop, (2, 1, 4, 5));
+        assert_eq!(seed.origin_x, 100);
+        assert_eq!(seed.origin_y, 50);
+        assert_eq!(seed.monitor_width, 10);
+        assert_eq!(seed.monitor_height, 10);
+        assert_eq!(seed.first_frame.dimensions(), (4, 5));
+        // Invalid rects are rejected like every other crop.
+        assert!(service
+            .longshot_seed(
+                0,
+                &HitRect {
+                    x: 100.0,
+                    y: 0.0,
+                    width: 1.0,
+                    height: 1.0,
+                }
+            )
+            .is_err());
+        // No session → not ready.
+        service.clear_session();
+        assert!(service.longshot_seed(0, &HitRect::default()).is_err());
+    }
+
+    #[test]
+    fn stitched_scaled_preview_keeps_the_aspect_ratio() {
+        let image = RgbaImage::from_fn(400, 200, |x, y| Rgba([x as u8, y as u8, 0, 255]));
+        let stitched = Stitched::from_image(&image);
+        // Longest side is capped to 100 px → 100×50.
+        let scaled = stitched.scaled_to_image(100);
+        assert_eq!(scaled.dimensions(), (100, 50));
+        // Already small enough: untouched copy.
+        let full = stitched.scaled_to_image(1000);
+        assert_eq!(full.dimensions(), (400, 200));
+        assert_eq!(full.as_raw(), image.as_raw());
     }
 
     fn image_skill_settings() -> Settings {

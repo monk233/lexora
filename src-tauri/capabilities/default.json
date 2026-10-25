@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capabilities for the settings, picker, screenshot overlay and pinned-window webviews",
-  "windows": ["settings", "picker", "capture-*", "pin-*"],
+  "description": "Capabilities for the settings, picker, screenshot overlay, pinned-window and long-screenshot preview webviews",
+  "windows": ["settings", "picker", "capture-*", "pin-*", "longshot"],
   "permissions": [
     "core:default",
     "core:event:default",

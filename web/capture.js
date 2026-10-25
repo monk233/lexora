@@ -126,8 +126,6 @@
   /* Annotation engine instance (contract §11.3) and the tool button list. */
   var editor = null;
   var toolButtons = [];
-  var longshotTimer = 0;
-  var LONGSHOT_TIMEOUT_MS = 90000;
   /* §11.10.3 colour panel: HSV state for the custom picker + drag flags. */
   var hsvState = { hue: 0, saturation: 1, value: 1 };
   var hsvDragging = false;
@@ -385,8 +383,9 @@
     dom.longshot =
       byId("capture-longshot") ||
       (dom.bar ? dom.bar.querySelector('[data-action="longshot"]') : null);
+    /* Legacy progress pill (§11.14 removed the automatic long screenshot): the
+     * element may still exist in old pages, so keep it permanently hidden. */
     dom.longshotProgress = byId("capture-longshot-progress");
-    dom.longshotFrame = byId("capture-longshot-frame");
     dom.barItems = byId("capture-bar-items");
     handles = Array.prototype.slice.call(
       document.querySelectorAll(".selection-handle")
@@ -1707,8 +1706,6 @@
     state.drag = null;
     window.clearTimeout(state.pollTimer);
     state.pollTimer = 0;
-    window.clearTimeout(longshotTimer);
-    longshotTimer = 0;
     document.body.classList.remove(
       "is-dragging",
       "is-over-selection",
@@ -1919,9 +1916,7 @@
       dom.canvas.hidden = true;
     }
     setHidden(dom.palette, true);
-    hideLongshotProgress();
-    window.clearTimeout(longshotTimer);
-    longshotTimer = 0;
+    hideLegacyLongshotProgress();
     stopColorPicking();
     closeAllColorPanels();
     syncShapeButtons();
@@ -2836,148 +2831,113 @@
     );
   }
 
-  /* ---- Long screenshot (§11.6) ---------------------------------------- */
+  /* ---- Manual long screenshot (§11.14) -------------------------------- */
 
-  function showLongshotProgress(frame) {
-    if (dom.longshotProgress) {
-      setHidden(dom.longshotProgress, false);
-    }
-    if (dom.longshotFrame) {
-      dom.longshotFrame.textContent = frame
-        ? "第 " + frame + " 帧"
-        : "正在拼接…";
-    }
+  function getLongshotApi() {
+    return window.longshotAPI || null;
   }
 
-  function hideLongshotProgress() {
+  function hideLegacyLongshotProgress() {
+    /* The automatic long screenshot (and its progress pill) is gone; keep the
+     * DOM element hidden if an older page still ships it. */
     if (dom.longshotProgress) {
       setHidden(dom.longshotProgress, true);
     }
   }
 
+  /* Restore this overlay's UI after the shell re-shows it (cancel path). */
+  function restoreAfterLongshot() {
+    state.longshotActive = false;
+    state.busy = false;
+    document.body.classList.remove("is-longshot");
+    hideLegacyLongshotProgress();
+    if (state.closed) {
+      return;
+    }
+    setHidden(dom.bar, false);
+    setHidden(dom.palette, true);
+    syncPalette();
+    updateBarState();
+    render();
+  }
+
   function subscribeLongshotEvents() {
-    if (!API) {
+    var api = getLongshotApi();
+    if (!api || typeof api.onCancelled !== "function") {
       return;
     }
     try {
-      if (typeof API.onLongshotProgress === "function") {
-        API.onLongshotProgress(handleLongshotProgress);
-      }
-      if (typeof API.onLongshotDone === "function") {
-        API.onLongshotDone(handleLongshotDone);
-      }
+      api.onCancelled(handleLongshotCancelled);
     } catch (error) {
-      /* progress UI is optional; the command result still settles the UI */
+      /* every other overlay action still works without this event */
     }
   }
 
+  function handleLongshotCancelled() {
+    if (!state.longshotActive && !state.busy) {
+      return;
+    }
+    restoreAfterLongshot();
+    toast("已取消长截图", "info", 1800);
+  }
+
+  /* §11.14: the longshot button hands the frozen crop over to the shell, which
+   * hides this overlay and opens the manual-scroll preview window. */
   function startLongshot() {
     if (!isConfigEnabled("longshot")) {
-      /* The longshot button is hidden by the toolbar configuration. */
       return;
     }
     if (!canInteract() || state.busy || state.longshotActive) {
       return;
     }
-    if (!API || typeof API.longshot !== "function") {
-      toast("截图服务不可用，请重启 Lexora 后再试", "error", TOAST_MS);
+    var api = getLongshotApi();
+    if (!api || typeof api.start !== "function") {
+      toast("长截图功能不可用，请重启 Lexora 后再试", "error", TOAST_MS);
       return;
     }
-    if (state.tool) {
-      setTool(null);
-    }
-    state.longshotActive = true;
     state.busy = true;
-    document.body.classList.add("is-longshot");
-    setHidden(dom.bar, true);
-    setHidden(dom.palette, true);
-    showLongshotProgress(0);
     updateBarState();
     var generation = state.captureGeneration;
     var request;
     try {
-      request = API.longshot(state.monitor, physicalRect());
+      request = api.start(state.monitor, physicalRect());
     } catch (error) {
       request = Promise.reject(error);
     }
-    window.clearTimeout(longshotTimer);
-    longshotTimer = window.setTimeout(function () {
-      longshotTimer = 0;
-      if (!state.longshotActive || generation !== state.captureGeneration) {
-        return;
-      }
-      failLongshot({ error: "长截图超时" });
-    }, LONGSHOT_TIMEOUT_MS);
     Promise.resolve(request).then(
       function (result) {
-        if (generation !== state.captureGeneration) {
+        if (state.closed || generation !== state.captureGeneration) {
           return;
         }
+        state.busy = false;
         if (result && result.ok === false) {
-          failLongshot(result);
+          updateBarState();
+          toast(
+            "长截图启动失败：" + failureText(result, "未知错误"),
+            "error",
+            TOAST_MS
+          );
+          return;
         }
-        /* On success the shell finishes with `capture-longshot-done`. */
+        /* Success: the shell hides this overlay (the preview window takes
+         * over). Keep the selection/annotations intact for the cancel path. */
+        state.longshotActive = true;
+        document.body.classList.add("is-longshot");
+        setHidden(dom.bar, true);
+        setHidden(dom.palette, true);
+        closeAllColorPanels();
+        stopColorPicking();
+        hideLegacyLongshotProgress();
+        updateBarState();
       },
       function (error) {
-        if (generation !== state.captureGeneration) {
+        if (state.closed || generation !== state.captureGeneration) {
           return;
         }
-        failLongshot({ error: errorText(error) });
+        state.busy = false;
+        updateBarState();
+        toast("长截图启动失败：" + errorText(error), "error", TOAST_MS);
       }
-    );
-  }
-
-  function failLongshot(result) {
-    if (state.closed || !state.longshotActive) {
-      /* The shell may report the failure both through the command result and
-       * the `capture-longshot-done` event; settle the UI only once. */
-      return;
-    }
-    state.longshotActive = false;
-    state.busy = false;
-    window.clearTimeout(longshotTimer);
-    longshotTimer = 0;
-    hideLongshotProgress();
-    document.body.classList.remove("is-longshot");
-    setHidden(dom.bar, false);
-    updateBarState();
-    render();
-    toast(
-      "长截图失败：" + failureText(result || {}, "未知错误"),
-      "error",
-      TOAST_MS
-    );
-  }
-
-  function handleLongshotProgress(payload) {
-    if (!state.longshotActive) {
-      return;
-    }
-    showLongshotProgress(payload && payload.frame);
-  }
-
-  function handleLongshotDone(payload) {
-    if (!state.longshotActive || state.closed) {
-      return;
-    }
-    state.longshotActive = false;
-    state.busy = false;
-    window.clearTimeout(longshotTimer);
-    longshotTimer = 0;
-    hideLongshotProgress();
-    document.body.classList.remove("is-longshot");
-    if (payload && payload.ok) {
-      toast("长截图完成，已复制并钉在桌面", "success", 2000);
-      closeOverlay();
-      return;
-    }
-    setHidden(dom.bar, false);
-    updateBarState();
-    render();
-    toast(
-      "长截图失败：" + failureText(payload || {}, "未知错误"),
-      "error",
-      TOAST_MS
     );
   }
 
