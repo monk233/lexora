@@ -29,10 +29,8 @@ pub const DEFAULT_POLISH_PROMPT: &str = "You are a professional editor. Polish t
 /// instead of always being a Chinese-English dictionary entry.
 pub const DEFAULT_DICTIONARY_PROMPT: &str = "你是一名严谨的多语言词典助手。用户会给出一个英文单词，请使用目标语言（{target}）输出词典式释义，使用 Markdown 排版，依次包含：\n1. 常见释义：使用目标语言按词性分别列出该词的译法/释义；\n2. 发音：给出该词的英语 IPA 音标（英式/美式，若确定；不确定则省略），并给出目标语言中的常见读法（如适用）；\n3. 核心含义及用法：用目标语言按词性说明，给出常见搭配与例句（英文例句附目标语言翻译）；\n4. 高频场景：用目标语言说明该词最常见的语境或搭配场景。\n不要编造不存在的义项或音标，信息不确定时如实说明。";
 
-/// Dictionary prompt for targets other than Chinese/English: the user asked for
-/// the entry in the selected language, so do not force an English IPA
-/// pronunciation block (e.g. Japanese uses katakana readings instead).
-pub const NON_IPA_DICTIONARY_PROMPT: &str = "你是一名严谨的多语言词典助手。用户会给出一个英文单词，请使用目标语言（{target}）输出词典式释义，使用 Markdown 排版，依次包含：\n1. 常见释义：使用目标语言按词性分别列出该词的译法/释义；\n2. 发音：给出该词在目标语言中的常见读法/转写（如片假名、韩文转写等；若不确定则省略），不要输出英语 IPA 音标；\n3. 核心含义及用法：用目标语言按词性说明，给出常见搭配与例句（英文例句附目标语言翻译）；\n4. 高频场景：用目标语言说明该词最常见的语境或搭配场景。\n不要编造不存在的义项或音标，信息不确定时如实说明。";
+/// System prompt for a Chinese single-word lookup: pinyin plus meanings.
+pub const CHINESE_DICTIONARY_PROMPT: &str = "你是一名严谨的中文词典助手。用户会给出一个中文词语，请使用目标语言（{target}）输出词典式释义，使用 Markdown 排版，依次包含：\n1. 拼音：给出带声调的汉语拼音；\n2. 常见释义：使用目标语言按词性分别列出该词语的释义；\n3. 核心含义及用法：用目标语言按词性说明，给出常见搭配与例句（例句附目标语言翻译）；\n4. 高频场景：用目标语言说明该词语最常见的语境或搭配场景。\n不要输出英语 IPA 音标；不要编造不存在的义项，信息不确定时如实说明。";
 
 /// System prompt for the picker's follow-up ("继续提问") question mode.
 pub const FOLLOWUP_SYSTEM_PROMPT: &str = "你是 Lexora AI 助手的继续提问模式。用户先从应用中划选了一段文本，助手已经给出了回答，现在用户想基于这段文本和之前的回答继续提问。请用简体中文回答，聚焦用户当前的问题，可以使用 Markdown 排版；不要复述原文或之前的回答，除非用户明确要求。";
@@ -138,6 +136,50 @@ pub fn truncate_chars(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect()
 }
 
+/// What kind of single-word lookup a selection deserves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SingleWordKind {
+    /// Latin word: dictionary entry with IPA and meanings.
+    English,
+    /// Chinese word: dictionary entry with pinyin and meanings.
+    Chinese,
+    /// Any other language: a plain translation, no dictionary extras.
+    Other,
+}
+
+/// Classifies a one-token text for dictionary behaviour. English words keep
+/// IPA/explanation, Chinese words use pinyin/explanation, and other languages
+/// are translated only.
+pub fn single_word_kind(text: &str) -> Option<SingleWordKind> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if is_single_word(trimmed) {
+        return Some(SingleWordKind::English);
+    }
+    let chars: Vec<char> = trimmed.chars().collect();
+    if (1..=12).contains(&chars.len()) && chars.iter().all(|character| is_cjk(*character)) {
+        return Some(SingleWordKind::Chinese);
+    }
+    if chars.len() > 40 || chars.iter().any(|character| character.is_whitespace()) {
+        return None;
+    }
+    let mut letters = 0usize;
+    for character in chars {
+        if character.is_alphabetic() {
+            letters += 1;
+        } else if character.is_ascii_punctuation() {
+            return None;
+        }
+    }
+    if letters > 0 {
+        Some(SingleWordKind::Other)
+    } else {
+        None
+    }
+}
+
 /// `true` when `text` is a single Latin word worth a dictionary lookup:
 /// 1–40 characters, letters plus optional `'` / `-`, at least one letter.
 /// Chinese text, multiple words, numbers and punctuation return `false`.
@@ -224,19 +266,18 @@ pub fn polish_messages(text: &str, custom_prompt: &str) -> (String, String) {
 /// entry (meanings, IPA, usage, common contexts).
 pub fn dictionary_messages(word: &str, target_lang: &str) -> (String, String) {
     let target_name = language_name(target_lang);
-    let code = target_lang.trim().to_ascii_lowercase();
-    let keep_ipa = code.is_empty()
-        || code == "yue"
-        || code.starts_with("zh")
-        || code == "en"
-        || code.starts_with("en-");
-    let template = if keep_ipa {
-        DEFAULT_DICTIONARY_PROMPT
-    } else {
-        NON_IPA_DICTIONARY_PROMPT
-    };
     (
-        template.replace("{target}", &target_name),
+        DEFAULT_DICTIONARY_PROMPT.replace("{target}", &target_name),
+        word.trim().to_string(),
+    )
+}
+
+/// Builds the chat messages for a single Chinese-word lookup: pinyin plus
+/// meanings/usage in the requested target language (no English IPA).
+pub fn chinese_dictionary_messages(word: &str, target_lang: &str) -> (String, String) {
+    let target_name = language_name(target_lang);
+    (
+        CHINESE_DICTIONARY_PROMPT.replace("{target}", &target_name),
         word.trim().to_string(),
     )
 }
@@ -248,10 +289,10 @@ pub fn translate_or_dictionary_messages(
     target_lang: &str,
     custom_prompt: &str,
 ) -> (String, String) {
-    if is_single_word(text) {
-        dictionary_messages(text, target_lang)
-    } else {
-        translate_messages(text, target_lang, custom_prompt)
+    match single_word_kind(text) {
+        Some(SingleWordKind::English) => dictionary_messages(text, target_lang),
+        Some(SingleWordKind::Chinese) => chinese_dictionary_messages(text, target_lang),
+        _ => translate_messages(text, target_lang, custom_prompt),
     }
 }
 
@@ -267,8 +308,12 @@ pub fn assist_or_dictionary_messages(
         action.trim().to_ascii_lowercase().as_str(),
         "explain" | "解释"
     );
-    if is_explain && is_single_word(text) {
-        return Ok(dictionary_messages(text, "zh"));
+    if is_explain {
+        match single_word_kind(text) {
+            Some(SingleWordKind::English) => return Ok(dictionary_messages(text, "zh")),
+            Some(SingleWordKind::Chinese) => return Ok(chinese_dictionary_messages(text, "zh")),
+            _ => {}
+        }
     }
     assist_messages(action, text, custom_prompt)
 }
@@ -679,17 +724,41 @@ mod tests {
             );
         }
 
-        // The dictionary entry must be localized to the selected target
-        // language instead of always being a Chinese/English entry.
+        // English words keep IPA, but the explanation is localized to the
+        // selected target language instead of always being Chinese.
         let (japanese, _) = dictionary_messages("minutes", "ja");
         assert!(japanese.contains("Japanese"));
         assert!(!japanese.contains("{target}"));
-        assert!(japanese.contains("不要输出英语 IPA"));
-        assert!(!japanese.contains("给出该词的英语 IPA"));
-        assert!(japanese.contains("片假名"));
+        assert!(japanese.contains("英语 IPA"));
         let (english, _) = dictionary_messages("minutes", "en");
         assert!(english.contains("English"));
         assert!(english.contains("英语 IPA"));
+    }
+
+    #[test]
+    fn chinese_words_use_pinyin_instead_of_ipa() {
+        let expected = CHINESE_DICTIONARY_PROMPT.replace("{target}", "Japanese");
+        let (system, user) = translate_or_dictionary_messages("发布", "ja", "custom");
+        assert_eq!(system, expected);
+        assert_eq!(user, "发布");
+        assert!(system.contains("拼音"));
+        assert!(system.contains("不要输出英语 IPA"));
+        assert!(!system.contains("给出该词的英语 IPA"));
+
+        let expected_zh = CHINESE_DICTIONARY_PROMPT.replace("{target}", "Simplified Chinese");
+        let (explained, _) =
+            assist_or_dictionary_messages("explain", "发布", "custom explain").unwrap();
+        assert_eq!(explained, expected_zh);
+    }
+
+    #[test]
+    fn other_language_single_words_are_translated_only() {
+        let (system, _) = translate_or_dictionary_messages("こんにちは", "zh", "");
+        assert_eq!(system, "You are a professional translation engine. Translate the user's text into Simplified Chinese. Output only the translation, without explanations, quotes, or the source text.");
+        assert_eq!(single_word_kind("こんにちは"), Some(SingleWordKind::Other));
+        assert_eq!(single_word_kind("发布"), Some(SingleWordKind::Chinese));
+        assert_eq!(single_word_kind("release"), Some(SingleWordKind::English));
+        assert_eq!(single_word_kind("hello world"), None);
     }
 
     #[test]

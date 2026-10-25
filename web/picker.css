@@ -347,6 +347,14 @@ body.is-dragging-panel * {
   height: 100%;
 }
 
+/* When the user makes the window taller, the result body must consume the
+ * extra space so the footer (and the floating follow-up overlay above it)
+ * stays pinned to the bottom instead of leaving empty space in between. */
+.panel.is-manual-size .panel-body {
+  flex: 1 1 auto;
+  max-height: none;
+}
+
 /* ---- Result panel resize grip ------------------------------------------ */
 
 .panel-resize-grip {
