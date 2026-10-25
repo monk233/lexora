@@ -20,12 +20,30 @@
   var LP = window.LP || {};
 
   var MIN_SIZE = 8;
-  /* Built-in screenshot toolbar actions. The toolbar order and the enabled set
-   * come from `settings.picker.captureSkills` (contract §7.2 / §10.2); that
-   * list may also reference enabled custom `kind=image` skills (ids starting
-   * with `custom-`), which are rendered as buttons created at runtime. */
-  var CAPTURE_ACTIONS = ["copy", "ocr", "translate", "explain"];
-  var DEFAULT_CAPTURE_SKILLS = CAPTURE_ACTIONS.slice();
+  /* Every configurable screenshot-toolbar entry (contract §4/§11.2). Their
+   * order and enabled set come from `settings.picker.captureSkills`; the list
+   * may also reference enabled custom `kind=image` skills (ids starting with
+   * `custom-`), which are rendered as buttons created at runtime. "copy" is
+   * deliberately not an entry any more: "确认" copies and exits, and the shell
+   * keeps `capture_copy` for that. */
+  var CONFIG_ENTRIES = [
+    "pin",
+    "shape",
+    "arrow",
+    "pen",
+    "text",
+    "number",
+    "mosaic",
+    "ocr",
+    "translate",
+    "explain",
+    "longshot"
+  ];
+  var DEFAULT_CAPTURE_SKILLS = CONFIG_ENTRIES.slice();
+  /* Annotation drawing tools (canvas + palette state). */
+  var ANNOTATION_TOOLS = ["shape", "arrow", "pen", "text", "number", "mosaic"];
+  /* AI/action buttons that exist as static elements in `#capture-bar-items`. */
+  var STATIC_ACTIONS = ["ocr", "translate", "explain"];
   var CUSTOM_SKILL_PREFIX = "custom-";
   var DEFAULT_CUSTOM_SKILL_LABEL = "图片技能";
   /* Fallback glyph for custom skills whose icon key is unknown. */
@@ -34,6 +52,21 @@
     'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
     '<path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"></path>' +
     "</svg>";
+  /* Grouping used only to draw separators between adjacent entries of different
+   * kinds (pin | drawing tools | actions/custom | longshot). No leading/trailing
+   * separators are ever inserted. */
+  function configGroup(id) {
+    if (id === "pin") {
+      return "pin";
+    }
+    if (id === "longshot") {
+      return "longshot";
+    }
+    if (ANNOTATION_TOOLS.indexOf(id) >= 0) {
+      return "tools";
+    }
+    return "actions";
+  }
   /* The shell captures/encodes while the reused overlay window is being armed,
    * so the session is not necessarily ready on the first poll. Keep polling
    * with an attempt budget (~9 s at 120 ms) instead of a fixed retry count;
@@ -85,7 +118,6 @@
 
   var dom = {};
   var handles = [];
-  var barButtons = {};
   /* Annotation engine instance (contract §11.3) and the tool button list. */
   var editor = null;
   var toolButtons = [];
@@ -318,29 +350,45 @@
     dom.shapeMode = byId("capture-shape-mode");
     dom.undo = byId("capture-undo");
     dom.redo = byId("capture-redo");
-    dom.pin = byId("capture-pin");
-    dom.longshot = byId("capture-longshot");
+    dom.pin =
+      byId("capture-pin") ||
+      (dom.bar ? dom.bar.querySelector('[data-action="pin"]') : null);
+    dom.longshot =
+      byId("capture-longshot") ||
+      (dom.bar ? dom.bar.querySelector('[data-action="longshot"]') : null);
     dom.longshotProgress = byId("capture-longshot-progress");
     dom.longshotFrame = byId("capture-longshot-frame");
+    dom.barItems = byId("capture-bar-items");
     handles = Array.prototype.slice.call(
       document.querySelectorAll(".selection-handle")
     );
+    dom.toolMap = Object.create(null);
+    each(toolButtons, function (button) {
+      var toolId = String(button.getAttribute("data-tool") || "")
+        .trim()
+        .toLowerCase();
+      if (toolId) {
+        dom.toolMap[toolId] = button;
+      }
+    });
+    dom.actionMap = Object.create(null);
     if (dom.bar) {
-      barButtons = {};
       each(dom.bar.querySelectorAll("[data-action]"), function (button) {
-        var action = button.getAttribute("data-action");
-        if (CAPTURE_ACTIONS.indexOf(action) >= 0) {
-          barButtons[action] = button;
+        var action = String(button.getAttribute("data-action") || "")
+          .trim()
+          .toLowerCase();
+        if (STATIC_ACTIONS.indexOf(action) >= 0) {
+          dom.actionMap[action] = button;
         }
       });
       dom.barCancel = dom.bar.querySelector('[data-action="cancel"]');
       dom.barConfirm = dom.bar.querySelector('[data-action="confirm"]');
-      /* The last separator sits between the configurable actions and the
-       * confirm/cancel pair; it is hidden when every action is disabled. */
-      var separators = dom.bar.querySelectorAll(".bar-sep");
-      dom.barTailSep = separators.length
-        ? separators[separators.length - 1]
-        : null;
+      /* Leftovers from the previous toolbar version: the page removes the
+       * "复制" button now ("确认" copies and exits), but previews may still ship
+       * it - keep it hidden instead of letting it show up as an orphan. */
+      each(dom.bar.querySelectorAll('[data-action="copy"]'), function (button) {
+        setHidden(button, true);
+      });
       renderCaptureBar();
     }
   }
@@ -479,11 +527,12 @@
     return result;
   }
 
-  /* Validate the configured toolbar list: built-in ids always pass, custom ids
-   * only when the skill definition exists. Unknown values are dropped, repeats
-   * are ignored and the configuration order is preserved. A missing/invalid
-   * value falls back to the four default actions; an explicit empty list means
-   * "no action buttons" (取消/确认 only). */
+  /* Validate the configured toolbar list: built-in entries always pass, custom
+   * ids only when the skill definition exists. Unknown values (including the
+   * retired "copy" entry) are dropped, repeats are ignored and the configured
+   * order is preserved. A missing/invalid value falls back to every default
+   * entry; an explicit empty list means "no configurable buttons" - only
+   * undo/redo/cancel/confirm remain. */
   function normalizeCaptureSkills(raw, customSkills) {
     if (!Array.isArray(raw)) {
       return DEFAULT_CAPTURE_SKILLS.slice();
@@ -497,7 +546,7 @@
         return;
       }
       if (
-        CAPTURE_ACTIONS.indexOf(value) >= 0 ||
+        CONFIG_ENTRIES.indexOf(value) >= 0 ||
         (customSkills && customSkills[value])
       ) {
         result.push(value);
@@ -506,9 +555,22 @@
     return result;
   }
 
+  /* True when the entry is enabled by the current toolbar configuration. */
+  function isConfigEnabled(id) {
+    return (
+      Array.isArray(state.captureSkills) &&
+      state.captureSkills.indexOf(String(id || "").trim().toLowerCase()) >= 0
+    );
+  }
+
   function applyToolbarSettings(rawSkills, rawCustomSkills) {
     state.customSkills = collectCustomImageSkills(rawCustomSkills);
     state.captureSkills = normalizeCaptureSkills(rawSkills, state.customSkills);
+    /* A drawing tool can be disabled while it is active (settings changed in
+     * another window): leave annotation mode so the hidden tool cannot be used. */
+    if (state.tool && !isConfigEnabled(state.tool)) {
+      setTool(null);
+    }
     renderCaptureBar();
   }
 
@@ -555,52 +617,144 @@
     return button;
   }
 
-  /* Rebuild the toolbar from `state.captureSkills`/`state.customSkills`. Static
-   * built-in buttons are moved, runtime custom buttons are removed and created
-   * fresh (so an expired custom id never lingers), the preset button keeps the
-   * leading slot (suppressing a duplicate entry for the same skill) and the tail
-   * is always [separator?] [取消] [确认]. Idempotent: no re-binding, clicks are
-   * delegated. */
-  /* The annotation toolbar (§11.2) adds static groups around the configurable
-   * actions, so the action buttons are inserted before the longshot/undo block
-   * instead of being appended to the end of `#capture-bar`. */
-  function usesAnnotationBar() {
-    return !!(
-      dom.longshot ||
-      dom.canvas ||
-      toolButtons.length ||
-      document.querySelector("[data-tool]")
-    );
+  /* Target container for every configurable button (contract §11.2).
+   * `capture.html` ships `#capture-bar-items`; when a page without it is loaded
+   * (browser preview against an older html) a container is created and the
+   * static buttons are migrated into it so the toolbar keeps working. */
+  function ensureBarItems() {
+    if (dom.barItems) {
+      return dom.barItems;
+    }
+    if (!dom.bar) {
+      return null;
+    }
+    var existing = byId("capture-bar-items");
+    if (existing) {
+      dom.barItems = existing;
+      return existing;
+    }
+    var container = document.createElement("div");
+    container.className = "capture-bar-items";
+    container.id = "capture-bar-items";
+    container.setAttribute("role", "group");
+    container.setAttribute("aria-label", "截图工具");
+    /* The shipped CSS styles `#capture-bar-items`; inline fallbacks keep an
+     * older page usable. */
+    container.style.display = "flex";
+    container.style.alignItems = "center";
+    container.style.flexWrap = "wrap";
+    container.style.gap = "2px";
+    var anchor = null;
+    var fixedCandidates = [dom.undo, dom.redo, dom.barCancel, dom.barConfirm];
+    for (var index = 0; index < fixedCandidates.length && !anchor; index += 1) {
+      var fixedNode = fixedCandidates[index];
+      if (fixedNode && fixedNode.parentNode === dom.bar) {
+        anchor = fixedNode;
+      }
+    }
+    dom.bar.insertBefore(container, anchor);
+    dom.barItems = container;
+    if (anchor) {
+      /* Keep one separator between the container and the fixed region. */
+      var tailSeparator = document.createElement("span");
+      tailSeparator.className = "bar-sep capture-bar-sep capture-bar-items-sep";
+      dom.bar.insertBefore(tailSeparator, anchor);
+    }
+    /* Legacy page: hide the separators that lose their neighbours once pin /
+     * tools / actions / longshot move into the new container. */
+    each(dom.bar.querySelectorAll(".bar-sep"), function (separator) {
+      if (separator === dom.presetSep || separator === tailSeparator) {
+        return;
+      }
+      if (container.compareDocumentPosition(separator) & 4) {
+        /* The separator follows the container (fixed undo/cancel region). */
+        return;
+      }
+      setHidden(separator, true);
+    });
+    return container;
   }
 
-  function findBarActionAnchor() {
-    var marker = dom.longshot || dom.undo || dom.redo;
-    if (marker) {
-      var node = marker;
-      while (node && node.parentNode !== dom.bar) {
-        node = node.parentNode;
-      }
-      if (node) {
-        return node;
+  /* The shape button travels together with its shape-mode <select> (§11.2):
+   * capture.html wraps both in `[data-tool-split="shape"]`; older pages keep
+   * them in a `.capture-tool-split` span. */
+  function shapeUnit() {
+    var button = dom.toolMap.shape;
+    if (!button) {
+      return null;
+    }
+    var explicit = document.querySelector('[data-tool-split="shape"]');
+    if (explicit && explicit.contains(button)) {
+      return explicit;
+    }
+    var parent = button.parentNode;
+    if (parent && parent !== dom.bar && parent !== dom.barItems) {
+      var tools = parent.querySelectorAll
+        ? parent.querySelectorAll("[data-tool]")
+        : [];
+      if (tools.length === 1) {
+        return parent;
       }
     }
-    if (dom.barTailSep && dom.barTailSep.parentNode === dom.bar) {
-      return dom.barTailSep;
+    return button;
+  }
+
+  /* Static DOM node for a built-in configurable entry. */
+  function configNode(entry) {
+    if (entry === "pin") {
+      return dom.pin;
     }
-    if (dom.barCancel && dom.barCancel.parentNode === dom.bar) {
-      return dom.barCancel;
+    if (entry === "longshot") {
+      return dom.longshot;
+    }
+    if (entry === "shape") {
+      return shapeUnit();
+    }
+    if (ANNOTATION_TOOLS.indexOf(entry) >= 0) {
+      return dom.toolMap[entry] || null;
+    }
+    if (STATIC_ACTIONS.indexOf(entry) >= 0) {
+      return dom.actionMap[entry] || null;
     }
     return null;
   }
 
+  /* Rebuild `#capture-bar-items` from `state.captureSkills` (order + visibility).
+   * Runtime custom-skill buttons are recreated on every render so an expired id
+   * never lingers; the preset button keeps its own leading slot (a duplicate
+   * entry for the same skill is suppressed). Undo/redo/cancel/confirm are never
+   * touched: they live outside the container and always stay visible.
+   * Idempotent: clicks are delegated, nothing is re-bound here. */
   function renderCaptureBar() {
     if (!dom.bar) {
       return;
     }
     dom.bar.classList.toggle("compact", state.compact === true);
-    /* Drop the previous runtime buttons before rebuilding. */
-    each(dom.bar.querySelectorAll('[data-action="custom"]'), function (button) {
-      dom.bar.removeChild(button);
+    var container = ensureBarItems();
+    if (!container) {
+      return;
+    }
+
+    /* Drop runtime buttons and the separators inserted by the previous render. */
+    each(container.querySelectorAll('[data-action="custom"]'), function (button) {
+      if (button.parentNode) {
+        button.parentNode.removeChild(button);
+      }
+    });
+    each(
+      container.querySelectorAll(".capture-bar-items-sep"),
+      function (separator) {
+        if (separator.parentNode) {
+          separator.parentNode.removeChild(separator);
+        }
+      }
+    );
+    /* Separators shipped inside the container are ignored: the order is data
+     * driven now and groups get fresh separators below. */
+    each(container.children, function (child) {
+      if (child.classList && child.classList.contains("bar-sep")) {
+        setHidden(child, true);
+      }
     });
 
     var skills = Array.isArray(state.captureSkills)
@@ -620,51 +774,72 @@
         /* Already rendered by the preset button at the front. */
         return;
       }
-      if (CAPTURE_ACTIONS.indexOf(value) >= 0 || customSkills[value]) {
+      if (CONFIG_ENTRIES.indexOf(value) >= 0 || customSkills[value]) {
         entries.push(value);
       }
     });
-    each(CAPTURE_ACTIONS, function (action) {
-      setHidden(barButtons[action], entries.indexOf(action) < 0);
-    });
 
-    var annotationBar = usesAnnotationBar();
-    var anchor = annotationBar ? findBarActionAnchor() : null;
-    each(entries, function (id) {
-      var button = barButtons[id];
-      if (!button) {
-        button = createCustomToolButton(customSkills[id]);
+    /* Hide every static configurable node first; the loop re-shows the enabled
+     * ones in the configured order. */
+    each(CONFIG_ENTRIES, function (entry) {
+      var node = configNode(entry);
+      if (node) {
+        setHidden(node, true);
       }
-      if (!button) {
-        return;
-      }
-      setHidden(button, false);
-      if (annotationBar) {
-        if (anchor && anchor.parentNode === dom.bar) {
-          dom.bar.insertBefore(button, anchor);
-        } else {
-          dom.bar.appendChild(button);
-        }
-        return;
-      }
-      dom.bar.appendChild(button);
     });
-
-    if (!annotationBar) {
-      /* Legacy toolbar (before §11.2): [preset?] actions [sep] [取消] [确认]. */
-      if (dom.barTailSep) {
-        setHidden(dom.barTailSep, entries.length === 0);
-        dom.bar.appendChild(dom.barTailSep);
-      }
-      if (dom.barCancel) {
-        setHidden(dom.barCancel, false);
-        dom.bar.appendChild(dom.barCancel);
-      }
-      if (dom.barConfirm) {
-        setHidden(dom.barConfirm, false);
-        dom.bar.appendChild(dom.barConfirm);
-      }
+    if (dom.shapeMode) {
+      setHidden(dom.shapeMode, true);
     }
+    each(dom.bar.querySelectorAll('[data-action="copy"]'), function (button) {
+      setHidden(button, true);
+    });
+
+    var previousGroup = null;
+    var placed = 0;
+    each(entries, function (entry) {
+      var node;
+      if (customSkills[entry]) {
+        node = createCustomToolButton(customSkills[entry]);
+      } else {
+        node = configNode(entry);
+      }
+      if (!node) {
+        return;
+      }
+      var group = configGroup(entry);
+      if (placed > 0 && previousGroup !== group) {
+        var separator = document.createElement("span");
+        separator.className = "bar-sep capture-bar-sep capture-bar-items-sep";
+        container.appendChild(separator);
+      }
+      setHidden(node, false);
+      container.appendChild(node);
+      /* Pages without a shape wrapper keep the select glued to its button. */
+      if (
+        entry === "shape" &&
+        dom.shapeMode &&
+        node !== dom.shapeMode &&
+        !node.contains(dom.shapeMode)
+      ) {
+        setHidden(dom.shapeMode, false);
+        container.appendChild(dom.shapeMode);
+      }
+      previousGroup = group;
+      placed += 1;
+    });
+
+    /* Wrappers that used to hold the drawing tools become empty once the single
+     * buttons are moved into the container. */
+    each(dom.bar.querySelectorAll(".capture-tools"), function (wrapper) {
+      if (!wrapper.querySelector("[data-tool]")) {
+        setHidden(wrapper, true);
+      }
+    });
+    each([dom.undo, dom.redo, dom.barCancel, dom.barConfirm], function (node) {
+      if (node) {
+        setHidden(node, false);
+      }
+    });
     updateBarState();
     layoutPalette();
   }
@@ -1418,9 +1593,9 @@
   }
 
   function handleAction(action, skillId) {
-    /* "确认" accepts the crop: same flow as "复制" (the shell copies the image
-     * to the clipboard and hides the overlay). */
-    if (action === "copy" || action === "confirm") {
+    /* "确认" accepts the crop: the shell copies the image to the clipboard and
+     * hides the overlay. There is no separate "复制" toolbar entry any more. */
+    if (action === "confirm") {
       copyImage();
     } else if (action === "ocr" || action === "translate" || action === "explain") {
       runSkill(action, "");
@@ -1621,8 +1796,7 @@
     "palette-bold": ["text", "number"],
     "palette-text-bg": ["text"],
     "palette-mosaic-size": ["mosaic"],
-    "palette-mosaic-size-value": ["mosaic"],
-    "palette-clear": ["shape", "arrow", "pen", "text", "number", "mosaic"]
+    "palette-mosaic-size-value": ["mosaic"]
   };
 
   function initAnnotator() {
@@ -1696,6 +1870,11 @@
 
   function setTool(id) {
     var next = id ? String(id).trim().toLowerCase() : null;
+    if (next && !isConfigEnabled(next)) {
+      /* The tool button is hidden by `picker.captureSkills`; a hidden drawing
+       * tool must never become active (also guards programmatic calls). */
+      return;
+    }
     if (next && next === state.tool) {
       /* Clicking the active tool leaves annotation mode. */
       next = null;
@@ -1802,11 +1981,6 @@
   function onPaletteClick(event) {
     var target = event.target;
     if (!target || !target.closest) {
-      return;
-    }
-    if (target.closest("#palette-clear")) {
-      event.preventDefault();
-      clearAnnotations();
       return;
     }
     var colorNode = target.closest("[data-color]");
@@ -2016,18 +2190,13 @@
     }
   }
 
-  function clearAnnotations() {
-    if (!editor || !editor.hasAnnotations()) {
-      return;
-    }
-    editor.clear();
-    toast("已清除标注，可撤销", "info", 2000);
-    updateBarState();
-  }
-
   /* ---- Pin to desktop (§11.5) ----------------------------------------- */
 
   function pinImage() {
+    if (!isConfigEnabled("pin")) {
+      /* The pin button is hidden by the toolbar configuration. */
+      return;
+    }
     if (!canInteract() || state.busy || state.longshotActive) {
       return;
     }
@@ -2106,6 +2275,10 @@
   }
 
   function startLongshot() {
+    if (!isConfigEnabled("longshot")) {
+      /* The longshot button is hidden by the toolbar configuration. */
+      return;
+    }
     if (!canInteract() || state.busy || state.longshotActive) {
       return;
     }

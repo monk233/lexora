@@ -27,6 +27,8 @@
     error: "",
     imageWidth: 0,
     imageHeight: 0,
+    scrollable: false,
+    expectedScrollable: null,
     dragging: false,
     readyCalls: 0,
     dragCalls: 0,
@@ -109,6 +111,7 @@
     }
     bindEvents();
     subscribeClose();
+    window.addEventListener("resize", syncScrollable);
     load();
   }
 
@@ -227,6 +230,11 @@
   function showImage(payload) {
     state.imageWidth = positiveNumber(payload && payload.width);
     state.imageHeight = positiveNumber(payload && payload.height);
+    /* The shell knows the display size, so it tells us whether the image is
+     * taller than its window (long screenshot). Fall back to measuring in the
+     * browser preview, where there is no shell. */
+    state.expectedScrollable =
+      payload && typeof payload.scrollable === "boolean" ? payload.scrollable : null;
     state.error = "";
     hideError();
 
@@ -255,11 +263,32 @@
     if (dom.toolbar) {
       dom.toolbar.hidden = false;
     }
+    syncScrollable();
+  }
+
+  /* A normal pin shows the whole image (window sized to the image): no
+   * scrollbar. A long screenshot is taller than the window and scrolls inside
+   * it. Only then is `is-scrollable` added; the scrollbar uses the project
+   * styling from pin.css. */
+  function syncScrollable() {
+    var scrollable = false;
+    if (state.loaded) {
+      if (state.expectedScrollable === true || state.expectedScrollable === false) {
+        scrollable = state.expectedScrollable;
+      } else if (dom.image && dom.image.naturalHeight > 0) {
+        var rect = dom.image.getBoundingClientRect();
+        scrollable = rect.height > window.innerHeight + 1;
+      }
+    }
+    state.scrollable = scrollable;
+    document.body.classList.toggle("is-scrollable", scrollable);
   }
 
   function showError(message) {
     state.loaded = false;
     state.error = String(message || "钉图加载失败");
+    state.scrollable = false;
+    document.body.classList.remove("is-scrollable");
     if (dom.image) {
       dom.image.hidden = true;
     }

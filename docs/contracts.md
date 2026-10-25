@@ -64,7 +64,7 @@ lexora/
 
 ```jsonc
 {
-  "version": 4,                              // v1→v2 补 polish/search；v2→v3 补 screenshot；v3→v4 补 capture；保留 custom
+  "version": 6,                              // v1→v2 补 polish/search；v2→v3 补 screenshot；v3→v4 补 capture；v4→v5 补 captureSkills/capturePrompts；v5→v6 把本地工具（pin/形状/箭头/画笔/文字/序号/马赛克/长截图）纳入 captureSkills 并移除 copy；保留 custom
   "picker": {
     "enabled": true,
     "skills": ["translate","summarize","explain","polish","read","copy","screenshot","search","custom-mvmei8cru1n5"],
@@ -74,7 +74,7 @@ lexora/
     "maxChars": 5000,
     "searchEngine": "google",             // google | baidu | bing（搜索技能）
     "panelMode": "auto",                  // auto = 无滚动条、窗口随内容变高；scroll = 固定窗口、面板内滚动
-    "captureSkills": ["copy","ocr","translate","explain"], // 截图工具条有序条目：内置动作 copy/ocr/translate/explain + 已启用自定义图片技能 id（custom-*）；显式 [] = 全部关闭，只保留取消/确认
+    "captureSkills": ["pin","shape","arrow","pen","text","number","mosaic","ocr","translate","explain","longshot"], // 截图工具条有序条目（放在工具条上的全部按钮，可任意开关/排序）：本地工具 pin/shape/arrow/pen/text/number/mosaic/longshot + AI/动作 ocr/translate/explain + 已启用自定义图片技能 id（custom-*）；copy 不再是工具条条目（确认=复制并退出）；显式 [] = 只保留撤销/重做/取消/确认
     "capturePrompts": {                    // 截图「翻译」「解释图片」的系统提示词覆写；空=系统默认
       "translate": "",                     // 支持 {target} / {language}
       "explain": ""
@@ -384,7 +384,7 @@ pub struct SelectionService {
   - 分段控件「在线 API / 本地模型」立即保存 mode。
   - 在线：预设下拉（DeepSeek/OpenAI/Moonshot/智谱/Ollama/LM Studio/自定义）、服务地址、API Key（password + 显示切换）、模型名下拉（[拉取模型] 通过 `list_online_models` 拉取 `/models`，并保留「自定义模型…」手填兜底）、[测试连接]（显示延迟/模型列表/错误）、状态徽标。切换预设必须清空上一个服务商的 API Key / 模型名与模型缓存，且**不再自动填充模型名**；已知预设只填服务地址。
   - 本地：引擎状态（未安装→[下载引擎]，显示进度/取消；已安装→版本状态）、已安装模型列表（显示名称、大小、角色徽标：翻译模型/通用模型/**视觉模型**/自定义模型；不再有模型下拉选择）、[下载模型]（弹目录列表：名称/大小/量化/协议/下载按钮+各自进度；多个模型可同时下载、可分别取消；不显示「推荐」标签；视觉模型显示「视觉」徽标，下载时先主模型后投影器）、[导入 GGUF]、[启动]/[停止]、当前状态徽标与错误提示。运行状态不再显示当前模型名；状态 badge 与启动/停止按钮靠该行最右并与左侧标签垂直居中。启动时后端自动选择模型；停止后翻译/总结不会自动启动；应用重启会恢复上次运行状态（keepRunning）。本地模式图片理解使用 Qwen2.5-VL 3B（含 mmproj）。
-- 划词行为：启用开关、紧凑模式开关（紧跟启用开关、右对齐）、面板模式（紧跟紧凑模式：滚动/自适应，保存 `picker.panelMode`）、技能开关 + 拖拽排序（无上下箭头）…（其余同前）。**技能按「文字技能 / 图片技能」两个 Tab 分类展示（第四轮修正）：文字技能 Tab = 内置文字技能 + 「截图」入口技能 + 自定义文字技能；图片技能 Tab = 单一列表（截图工具条有序条目：复制/提取文字/翻译/解释图片 + 自定义图片技能，顺序与开关保存 `picker.captureSkills`，可全部关闭；“翻译/解释图片”可编辑系统提示词 `picker.capturePrompts`）；文字技能 Tab 的「截图」行不带「图片」徽标**；两个分类各自独立开关与排序，Tab 内拖动只重排该分类并保留另一分类相对顺序）、每行显示技能图标（内置用 `LP.SKILL_MAP[id].icon`，自定义用自定义图标）、技能提示词编辑（行内展开 textarea，默认填充系统默认英文提示词，支持重置默认；translate 支持 `{target}` 占位符；支持 translate/summarize/explain/polish）、自定义技能管理（[添加技能] 打开内联表单：**图标选择器默认紧凑显示当前图标预览 +「更换图标」，点击展开 200 个 Lucide 图标 + 名称搜索过滤**；名称 ≤20、提示词必填 ≤4000、变量提示 `{text}/{target}/{language}/{program}/{app}`；支持编辑、删除二次确认）、搜索配置（搜索行「配置」按钮展开 Google/百度/Bing，保存 `picker.searchEngine`）、默认目标语言（auto 显示「自动识别」，共 38 种语言）、黑名单 chip 输入（回车添加/可删除）。截图快捷键可配置（见 §10.4）。恢复默认设置保留自定义技能与已下载模型/引擎。「开机自启」「关闭窗口后驻留托盘」两个开关行与划词开关一致：标签/开关垂直居中、开关靠右。
+- 划词行为：启用开关、紧凑模式开关（紧跟启用开关、右对齐）、面板模式（紧跟紧凑模式：滚动/自适应，保存 `picker.panelMode`）、技能开关 + 拖拽排序（无上下箭头）…（其余同前）。**技能按「文字技能 / 图片技能」两个 Tab 分类展示（第四轮修正）：文字技能 Tab = 内置文字技能 + 「截图」入口技能 + 自定义文字技能；图片技能 Tab = 单一列表（截图工具条全部有序条目：钉在桌面 / 形状 / 箭头 / 画笔 / 文字 / 序号 / 马赛克 / 提取文字 / 翻译 / 解释图片 / 长截图 + 自定义图片技能，顺序与开关保存 `picker.captureSkills`，可全部关闭；“翻译/解释图片”可编辑系统提示词 `picker.capturePrompts`，其余条目无提示词按钮；不再有「复制」条目）；文字技能 Tab 的「截图」行不带「图片」徽标**；两个分类各自独立开关与排序，Tab 内拖动只重排该分类并保留另一分类相对顺序）、每行显示技能图标（内置用 `LP.SKILL_MAP[id].icon`，自定义用自定义图标）、技能提示词编辑（行内展开 textarea，默认填充系统默认英文提示词，支持重置默认；translate 支持 `{target}` 占位符；支持 translate/summarize/explain/polish）、自定义技能管理（[添加技能] 打开内联表单：**图标选择器默认紧凑显示当前图标预览 +「更换图标」，点击展开 200 个 Lucide 图标 + 名称搜索过滤**；名称 ≤20、提示词必填 ≤4000、变量提示 `{text}/{target}/{language}/{program}/{app}`；支持编辑、删除二次确认）、搜索配置（搜索行「配置」按钮展开 Google/百度/Bing，保存 `picker.searchEngine`）、默认目标语言（auto 显示「自动识别」，共 38 种语言）、黑名单 chip 输入（回车添加/可删除）。截图快捷键可配置（见 §10.4）。恢复默认设置保留自定义技能与已下载模型/引擎。「开机自启」「关闭窗口后驻留托盘」两个开关行与划词开关一致：标签/开关垂直居中、开关靠右。
 - 快捷键（第二轮反馈起独立成卡片，不再放在「划词行为」内）：卡片头「快捷键」+ 说明「配置 Lexora 的全局快捷键。」；内含「截图快捷键」录制器——显示当前组合（如「Win + Shift + X」），点击后提示「请按下新的快捷键…（Esc 取消）」，按下「修饰键 + 主键」即调用 `capture_set_hotkey` 保存并立即生效；Esc 取消；冲突时内联提示并保留旧值；「恢复默认」还原 `Win+Shift+X`；保存 `capture.regionShortcut`。
 - 应用与启动：开机自启（portable 不支持时置灰说明）、关闭窗口后驻留托盘、打开数据/模型/日志/引擎目录、退出程序。
 - 关于：版本、Tauri/Rust 版本、MIT、GitHub 链接、引擎与模型状态。
@@ -444,7 +444,7 @@ pub struct SelectionService {
 - hint：「拖动选区移动 · 拖动边角调整 · Esc 取消」，3.2s 后淡出。
 - 紧凑模式（`picker.compact`）同样作用于截图工具条：只显示图标、隐藏文字标签。
 - 工具条样式与 `picker.css` 的 `.toolbar` 完全一致（白色卡片）：白底 `#fff`、1px `#e2e8f0`、圆角 12px、按钮高 32、字号 12.5、文字 `#475569`、hover `#f1f5f9`、主色 `#4f46e5`、取消按钮红色 `#dc2626`；阴影收敛（参考 picker `--shadow-float`）。尺寸标签/hint/toast 同样白色主题。
-- 工具条条目：按设置 `picker.captureSkills` 顺序渲染——内置动作（复制/提取文字/翻译/解释图片）与**已启用的自定义图片技能**（custom-*，图标/名称来自技能定义，点击=以 `action:"custom"` 执行该技能）；preset 图片技能（若有）显示在最前且不重复。末尾固定「取消」+「确认」（确认在最右，绿色）：确认 = 裁切图写入剪贴板并退出截图（`capture_copy`），取消 = 直接退出。所有条目都可关闭，此时只显示取消/确认。
+- 工具条条目：**可配置按钮全部按设置 `picker.captureSkills` 顺序渲染**——本地工具（钉在桌面/形状/箭头/画笔/文字/序号/马赛克/长截图）、AI 动作（提取文字/翻译/解释图片）与**已启用的自定义图片技能**（custom-*，图标/名称来自技能定义，点击=以 `action:"custom"` 执行该技能）；preset 图片技能（若有）显示在最前且不重复。撤销/重做/取消/确认固定显示（确认在最右，绿色）：确认 = 裁切图写入剪贴板并退出截图（`capture_copy`），取消 = 直接退出。所有可配置条目都可关闭，此时只显示撤销/重做/取消/确认。
   - 「复制」→ `capture_copy`：裁切图写系统图片剪贴板并关闭全部 overlay（不打开面板）。
   - 「提取文字」「翻译」「解释图片」、preset 图片技能 → `capture_skill`（见 10.3）；Rust 关闭 overlay 并打开 picker 结果面板，**不允许出现截图框选与面板同时显示**。
 
@@ -550,6 +550,7 @@ pub struct SelectionService {
 - 第四轮（§10.1/§10.2）：从工具面板点击「截图」后工具面板不再自行关闭，截图结束后保持可见；截图工具条按钮顺序/启用由设置 `picker.captureSkills` 控制；设置页「截图」入口技能归入文字技能分类，图片技能分类改为「复制/提取文字/翻译/解释图片」+ 自定义图片技能；隐藏截图窗口不再触发 2.5s 兜底（WebView2 后台节流被禁用）。
 - 第五轮（§10.1/§10.2）：设置窗口与划词工具面板会出现在冻结截图里（不再排除、不隐藏）；文字技能 Tab 的「截图」行不再显示「图片」徽标；截图工具条可关闭全部 4 个动作，此时仅显示「确认 / 取消」，确认 = 复制图片并退出截图、取消 = 直接退出。
 - 第六轮（§4/§7.2/§10.2）：截图工具条条目由 `picker.captureSkills` 统一有序管理（内置动作 + 自定义图片技能，自定义图片技能不再出现在文字工具栏）；图片技能 Tab 为单一列表、不区分自带/自定义；紧凑模式对截图工具条生效；「翻译」「解释图片」支持编辑系统提示词（`picker.capturePrompts`）；工具条末尾为「取消」「确认」，确认绿色且最右。
+- 第七轮（§4/§7.2/§11.2/§11.5）：钉在桌面普通图片不再出现滚动条（长图才可在窗口内滚动，滚动条复用项目样式）；移除「清除标注」按钮；形状/箭头/画笔/文字/序号/马赛克/长截图/钉在桌面 全部纳入「图片技能」分类（可开关、拖动排序，toolbar 按 captureSkills 渲染）；「复制」从图片技能分类移除（确认=复制并退出仍保留）。
 - `cargo test` 通过（新增 normalize_shortcut / catalog / 参数构造单测）；`cargo check` 无错误；`node --check` 全部通过。
 
 ## 11. 截图标注与基础工具（v0.3，权威契约）
@@ -574,6 +575,7 @@ pub struct SelectionService {
 
 ### 11.2 工具条 / 属性栏 DOM 契约（`web/capture.html`）
 工具条仍是 `#capture-bar`，children 顺序（从左到右）：
+0. 工具条可配置按钮全部由 `picker.captureSkills` 决定顺序与显隐（pin、标注工具、ocr/translate/explain、longshot、custom-*）；`undo/redo/cancel/confirm` 固定显示。以下为默认顺序：
 1. `#capture-pin`（钉在桌面，`data-action="pin"`，label「钉在桌面」）
 2. `.capture-bar-sep`
 3. 标注工具按钮组（`data-tool`）：`shape`（含 `data-shape-mode` 下拉：矩形/椭圆/直线）、`arrow`、`pen`、`text`、`number`、`mosaic`；class `tool-btn capture-tool`；当前激活的工具加 `.is-active`。
@@ -592,7 +594,7 @@ pub struct SelectionService {
 - `#palette-fill`（形状专用 segmented）：`[data-fill="outline"]` 描边 / `[data-fill="fill"]` 填充；形状模式为 line 时隐藏。
 - `#palette-font-size`（range 12–72）+ `#palette-font-size-value`；`#palette-bold`（文本/序号开关按钮）；`#palette-text-bg`（文本背景色按钮组，含「无背景」，data-bg-color=""）。
 - `#palette-mosaic-size`（range 2–30）+ `#palette-mosaic-size-value`。
-- 控件显隐由当前工具决定；属性栏与工具条同为白色主题、圆角 12、1px `#e2e8f0` 边框。
+- 控件显隐由当前工具决定；属性栏与工具条同为白色主题、圆角 12、1px `#e2e8f0` 边框。**不提供「清除标注」按钮**（撤回/重做即可；切截图时自动清空）。
 - 紧凑模式（`picker.compact`）只影响工具条按钮 label；属性栏不受影响。
 - 工具激活时 `body.annotating`；画布 `#capture-annotations` 位于截图 `<img>` 之上、遮罩之下，透明、覆盖整个视口。
 
@@ -625,11 +627,12 @@ editor.renderToPng(rectCss) -> string|null
 - `capture_skill {requestId, index, rect, action, skillId?, targetLang?, annotations?}`：同上合成后的图片用于剪贴板与 AI（OCR/转写/视觉均使用合成图）。
 - `capture_pin {index, rect, annotations?} -> {ok, id, width, height, error?, hint?}`：合成 → 存入内存 registry（可多个）→ 创建 pin 窗口（见 11.5）。
 - `capture_longshot {index, rect} -> {ok, width, height, pinId?, frames?, error?, hint?}`：见 11.6。长截图忽略标注（v1 文档注明）。
-- pin 命令：`pin_ready {id} -> {ok, dataUrl, width, height, error?}`、`pin_drag {id, dx, dy} -> {ok}`、`pin_copy {id} -> {ok, error?, hint?}`、`pin_close {id} -> {ok}`。
+- pin 命令：`pin_ready {id} -> {ok, dataUrl, width, height, scrollable, error?}`（`scrollable` = 图片高于窗口、需窗口内滚动，用于 pin.js 精确控制滚动条，普通图片为 false）、`pin_drag {id, dx, dy} -> {ok}`、`pin_copy {id} -> {ok, error?, hint?}`、`pin_close {id} -> {ok}`。
 - 事件（Rust → capture-*）：`capture-longshot-progress {frame, height}`、`capture-longshot-done {ok, width, height, pinId?, error?}`；Rust → pin-*：`pin-close {id}`。
 
 ### 11.5 钉在桌面
 - 每个 pin 一个窗口 label `pin-<id>`：无边框、透明、always on top、skip_taskbar、resizable=false、visible=false（先建后显示）。宽度 = 图片物理宽度 / DPI，最大不超过工作区宽 70%；高度 = min(图片逻辑高度, 工作区高 70%)——超长图（长截图）保持可读宽度、窗口内容可滚动，不整体缩成细条；位置在鼠标附近并 clamp 到工作区。
+- 普通图片（高度未超出窗口）**不显示滚动条**：`body` 默认 `overflow: hidden`，仅当图片实际高度大于窗口时由 `pin.js` 加 `is-scrollable` 类启用滚动；滚动条复用项目现有样式（8px、透明轨道、圆角 999 的 `--border-strong` 滑块，hover `--text-faint`）。
 - `pin.html`（新文件）：加载后调用 `pinAPI.ready(id)` 取图并显示；鼠标按住任意位置拖动窗口（`pin_drag` 增量）；双击关闭；Esc 关闭；悬停右上角显示两个小按钮「复制」「关闭」；右键菜单含「复制」「关闭」。
 - `window.pinAPI = { ready(id), drag(id,dx,dy), copy(id), close(id) }`（tauri-api.js 提供 + mock）。
 - 关闭 pin 不退出截图流程（截图 overlay 已关闭）。

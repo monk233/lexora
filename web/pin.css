@@ -44,12 +44,38 @@ body {
   background: transparent;
 }
 
-/* Long screenshots are taller than the work area: the window keeps a readable
- * width and the image scrolls vertically inside it (contract §11.5). */
+/* Normal pins are sized to the image, so there is nothing to scroll. Long
+ * screenshots (taller than the window) add `is-scrollable` in pin.js and then
+ * scroll vertically inside the window (contract §11.5). */
 html,
 body {
-  overflow-x: hidden;
+  overflow: hidden;
+}
+
+body.is-scrollable {
   overflow-y: auto;
+}
+
+/* Scrollbars match the settings/picker windows. */
+body.is-scrollable::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+body.is-scrollable::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+body.is-scrollable::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: var(--border-strong);
+  background-clip: content-box;
+}
+
+body.is-scrollable::-webkit-scrollbar-thumb:hover {
+  background: var(--text-faint);
+  background-clip: content-box;
 }
 
 body {

@@ -36,6 +36,9 @@ struct PinEntry {
     image: RgbaImage,
     /// Lazily encoded `data:image/png;base64,...` handed to `pin.html`.
     data_url: Option<String>,
+    /// `true` when the image is taller than its window (long screenshot): the
+    /// pin scrolls inside the window, and only then a scrollbar may appear.
+    scrollable: bool,
 }
 
 /// In-memory pin images plus the forward-only id counter.
@@ -46,7 +49,7 @@ struct PinRegistry {
 }
 
 impl PinRegistry {
-    fn insert(&mut self, image: RgbaImage) -> u64 {
+    fn insert(&mut self, image: RgbaImage, scrollable: bool) -> u64 {
         self.next_id += 1;
         let id = self.next_id;
         self.entries.insert(
@@ -54,6 +57,7 @@ impl PinRegistry {
             PinEntry {
                 image,
                 data_url: None,
+                scrollable,
             },
         );
         id
@@ -92,6 +96,11 @@ fn label_for(id: u64) -> String {
     format!("{PIN_PREFIX}{id}")
 }
 
+/// Height/width ratio above which an image counts as a "long screenshot": it
+/// keeps a readable width and scrolls inside the pin window. Anything less
+/// extreme is scaled uniformly to fit the work area (no scrollbar).
+const TALL_IMAGE_ASPECT: f64 = 3.0;
+
 /// Logical display size of a pinned image: physical pixels divided by the DPI
 /// scale, scaled down to at most 70% of the work area, tiny snippets enlarged
 /// so they stay readable (capped, and never above the work-area cap).
@@ -111,19 +120,25 @@ fn pin_display_size(
     let logical_h = (height.max(1) as f64 / scale).max(1.0);
     let max_w = ((work_width.max(1) as f64) * MAX_WORK_AREA_RATIO / scale).max(1.0);
     let max_h = ((work_height.max(1) as f64) * MAX_WORK_AREA_RATIO / scale).max(1.0);
-    // Fit the width to the work area and keep the image at its natural pixel
-    // size otherwise. A very tall (long-screenshot) image is windowed to the
-    // work-area height and scrolls inside the pin window instead of being shrunk
-    // to an unreadable strip.
-    let mut factor = (max_w / logical_w).min(1.0);
+    let fit_w = (max_w / logical_w).min(1.0);
+    let fit_h = (max_h / logical_h).min(1.0);
+    let uniform = fit_w.min(fit_h);
+    let tall = logical_h / logical_w >= TALL_IMAGE_ASPECT;
+    // Ordinary images (including big screenshots) scale uniformly so the whole
+    // image is visible without a scrollbar. Long screenshots keep the readable
+    // width and are windowed to the work-area height (pin.js enables scrolling).
+    let mut factor = if tall { fit_w } else { uniform };
     let smallest = logical_w.min(logical_h);
-    if factor >= 1.0 && smallest < MIN_READABLE_LOGICAL {
+    if !tall && uniform >= 1.0 && smallest < MIN_READABLE_LOGICAL {
         factor = (MIN_READABLE_LOGICAL / smallest).min(MAX_READABLE_UPSCALE);
     }
-    (
-        (logical_w * factor).round().max(1.0),
-        (logical_h * factor).round().min(max_h).max(1.0),
-    )
+    let display_h = (logical_h * factor).round();
+    let display_h = if tall {
+        display_h.min(max_h)
+    } else {
+        display_h
+    };
+    ((logical_w * factor).round().max(1.0), display_h.max(1.0))
 }
 
 /// Physical top-left position of a pin: centred on the cursor, then clamped into
@@ -146,6 +161,17 @@ fn pin_window_position(
 
 fn pin_missing_error() -> EngineError {
     EngineError::new("钉图不存在或已关闭。", "请重新截图后再点击「钉在桌面」。")
+}
+
+/// Whether the pinned image is taller than its window (the window keeps the
+/// width, so the image is rendered at `display_w`; a long screenshot overflows
+/// and scrolls). Ordinary images are scaled to fit and never scroll.
+fn pin_is_scrollable(display_w: f64, display_h: f64, width: u32, height: u32) -> bool {
+    if width == 0 || height == 0 {
+        return false;
+    }
+    let rendered = display_w * (height as f64 / width as f64);
+    rendered > display_h + 1.0
 }
 
 fn log_info(app: &AppHandle, message: &str) {
@@ -173,6 +199,9 @@ pub fn create_pin(app: &AppHandle, image: RgbaImage) -> Result<(u64, u32, u32), 
     };
     let physical_w = ((logical_w * scale).round() as u32).max(1);
     let physical_h = ((logical_h * scale).round() as u32).max(1);
+    // The image is rendered at the window width; if that makes it taller than
+    // the window (long screenshot), the pin scrolls inside the window.
+    let scrollable = pin_is_scrollable(logical_w, logical_h, width, height);
     let position = pin_window_position(
         cursor.0,
         cursor.1,
@@ -181,7 +210,7 @@ pub fn create_pin(app: &AppHandle, image: RgbaImage) -> Result<(u64, u32, u32), 
         &work,
     );
 
-    let id = lock_registry().insert(image);
+    let id = lock_registry().insert(image, scrollable);
     let label = label_for(id);
     let window = match WebviewWindowBuilder::new(
         app,
@@ -246,10 +275,12 @@ pub fn ready(id: u64) -> Result<Value, EngineError> {
     }
     let (width, height) = entry.image.dimensions();
     let data_url = entry.data_url.clone().unwrap_or_default();
+    let scrollable = entry.scrollable;
     Ok(json!({
         "dataUrl": data_url,
         "width": width,
         "height": height,
+        "scrollable": scrollable,
     }))
 }
 
@@ -326,7 +357,8 @@ pub fn pin_count() -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        pin_display_size, pin_id_from_label, pin_window_position, PinRegistry, MAX_WORK_AREA_RATIO,
+        pin_display_size, pin_id_from_label, pin_is_scrollable, pin_window_position, PinRegistry,
+        MAX_WORK_AREA_RATIO,
     };
     use crate::win32::WorkArea;
     use image::{Rgba, RgbaImage};
@@ -357,8 +389,8 @@ mod tests {
     #[test]
     fn pin_ids_are_monotonic_and_removal_cleans_up() {
         let mut registry = PinRegistry::default();
-        let first = registry.insert(image(4, 4));
-        let second = registry.insert(image(5, 5));
+        let first = registry.insert(image(4, 4), false);
+        let second = registry.insert(image(5, 5), false);
         assert_eq!((first, second), (1, 2));
         assert_eq!(registry.len(), 2);
         assert!(registry.get_mut(first).is_some());
@@ -366,7 +398,7 @@ mod tests {
         assert_eq!(registry.len(), 1);
         assert!(registry.remove(first).is_none());
         // Ids are never reused, even after a closed pin.
-        let third = registry.insert(image(6, 6));
+        let third = registry.insert(image(6, 6), false);
         assert_eq!(third, 3);
         assert!(registry.get_mut(second).is_some());
         // Removing everything leaves an empty registry that keeps counting.
@@ -374,7 +406,7 @@ mod tests {
         assert_eq!(registry.len(), 1);
         assert!(registry.remove(third).is_some());
         assert_eq!(registry.len(), 0);
-        assert_eq!(registry.insert(image(1, 1)), 4);
+        assert_eq!(registry.insert(image(1, 1), false), 4);
     }
 
     #[test]
@@ -404,6 +436,30 @@ mod tests {
         let (width, height) = pin_display_size(4000, 30000, 1.0, 1920, 1080);
         assert!((width - 1344.0).abs() < 0.01, "width={width}");
         assert!((height - 756.0).abs() < 0.01, "height={height}");
+        // Big non-long images (aspect < 3) scale uniformly: the pin shows the
+        // whole image and never needs a scrollbar.
+        let (width, height) = pin_display_size(4000, 4000, 1.0, 1920, 1080);
+        assert_eq!((width, height), (756.0, 756.0));
+        // Wide screenshots whose height also exceeds the cap fit both axes.
+        let (width, height) = pin_display_size(2560, 1440, 1.5, 3840, 2088);
+        assert!(
+            height <= 2088.0 * MAX_WORK_AREA_RATIO / 1.5 + 0.01,
+            "height={height}"
+        );
+        assert!(
+            (width / height - 2560.0 / 1440.0).abs() < 0.02,
+            "{width}x{height}"
+        );
+    }
+
+    #[test]
+    fn pin_scrollable_only_for_tall_images() {
+        // Uniformly fitted screenshot: rendered height equals the window height.
+        assert!(!pin_is_scrollable(1792.0, 1008.0, 3840, 2160));
+        // Long screenshot: the width is kept, the window height is capped.
+        assert!(pin_is_scrollable(1000.0, 756.0, 1000, 30000));
+        assert!(!pin_is_scrollable(320.0, 200.0, 320, 200));
+        assert!(!pin_is_scrollable(320.0, 200.0, 0, 0));
     }
 
     #[test]

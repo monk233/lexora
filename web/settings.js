@@ -146,20 +146,63 @@
       '支持变量：<code>{target}</code> / <code>{language}</code> 目标语言、<code>{program}</code> / <code>{app}</code> 当前应用（图片内容由截图提供，不使用 {text}）',
   };
 
-  /* Screenshot toolbar skills (contract §7.2, sixth review round). Stored in
-   * `picker.captureSkills`: one ordered list that mixes the built-in actions and
-   * custom `kind=image` skills. A missing id means the row is hidden; an empty
-   * list means the screenshot toolbar has no actions. The built-in screenshot
-   * entry skill stays in `picker.skills` (text-skill tab). */
-  var CAPTURE_ACTION_ORDER = ["copy", "ocr", "translate", "explain"];
+  /* Screenshot toolbar skills (contract §7.2/§11.2, tenth review round). Stored
+   * in `picker.captureSkills`: one ordered list that mixes the built-in capture
+   * tools/actions and custom `kind=image` skills. A missing id means the row is
+   * hidden; an empty list means the toolbar only keeps undo/redo/cancel/confirm.
+   * The built-in screenshot entry skill stays in `picker.skills` (text tab);
+   * `copy` is no longer a toolbar entry (confirm = copy and exit). */
+  var CAPTURE_ACTION_ORDER = [
+    "pin",
+    "shape",
+    "arrow",
+    "pen",
+    "text",
+    "number",
+    "mosaic",
+    "ocr",
+    "translate",
+    "explain",
+    "longshot",
+  ];
   /* Built-in actions whose system prompt can be overridden in the settings
    * page (`picker.capturePrompts`). */
   var CAPTURE_PROMPT_ACTIONS = ["translate", "explain"];
   var CAPTURE_ACTION_META = {
-    copy: {
-      label: "复制",
-      description: "把框选区域图片复制到剪贴板",
-      icon: "copy",
+    pin: {
+      label: "钉在桌面",
+      description: "把框选区域钉成置顶窗口",
+      icon: "pin",
+    },
+    shape: {
+      label: "形状",
+      description: "添加矩形、椭圆或直线",
+      icon: "square",
+    },
+    arrow: {
+      label: "箭头",
+      description: "添加箭头",
+      icon: "arrow-up-right",
+    },
+    pen: {
+      label: "画笔",
+      description: "自由绘制笔迹",
+      icon: "pen",
+    },
+    text: {
+      label: "文字",
+      description: "添加文字",
+      icon: "type",
+    },
+    number: {
+      label: "序号",
+      description: "添加自动递增序号",
+      icon: "hash",
+    },
+    mosaic: {
+      label: "马赛克",
+      description: "涂抹打码",
+      icon: "layout-grid",
     },
     ocr: {
       label: "提取文字",
@@ -175,6 +218,11 @@
       label: "解释图片",
       description: "用视觉模型解释图片内容",
       icon: "lightbulb",
+    },
+    longshot: {
+      label: "长截图",
+      description: "自动滚动并拼接长图",
+      icon: "scroll",
     },
   };
 

@@ -12,7 +12,7 @@ use std::sync::{Arc, RwLock};
 
 /// Version of the on-disk settings schema. Bumped whenever defaults or fields
 /// change so [`Settings::normalize`] can migrate an older file in place.
-pub const SETTINGS_VERSION: u32 = 5;
+pub const SETTINGS_VERSION: u32 = 6;
 /// Default global shortcut that starts a region screenshot.
 pub const DEFAULT_REGION_SHORTCUT: &str = "Win+Shift+X";
 /// Built-in picker skills, in their canonical toolbar order.
@@ -43,16 +43,76 @@ pub const PANEL_MODES: [&str; 2] = ["auto", "scroll"];
 pub fn default_panel_mode() -> String {
     "auto".to_string()
 }
-/// Built-in actions of the screenshot toolbar, in their canonical order. They
-/// are configured independently from the picker skills: `picker.captureSkills`
-/// holds the enabled subset in toolbar order.
-pub const CAPTURE_SKILLS: [&str; 4] = ["copy", "ocr", "translate", "explain"];
+/// Built-in screenshot toolbar entries, in their canonical (default) order.
+/// They are configured independently from the picker skills:
+/// `picker.captureSkills` holds the enabled subset in toolbar order. `copy` is
+/// no longer an entry (确认 = copy and exit); it stays a command only.
+pub const CAPTURE_SKILLS: [&str; 11] = [
+    "pin",
+    "shape",
+    "arrow",
+    "pen",
+    "text",
+    "number",
+    "mosaic",
+    "ocr",
+    "translate",
+    "explain",
+    "longshot",
+];
+/// Toolbar entries introduced by schema version 6. Migrating a pre-v6 file
+/// inserts exactly these into the user's existing list; the pre-existing
+/// `ocr`/`translate`/`explain` entries keep whatever enabled state the user
+/// chose, and `copy` is dropped by normalization.
+const NEW_CAPTURE_SKILLS_V6: [&str; 8] = [
+    "pin", "shape", "arrow", "pen", "text", "number", "mosaic", "longshot",
+];
+/// Schema version that introduced the local/AI screenshot-toolbar entries.
+const CAPTURE_SKILLS_V6_VERSION: u32 = 6;
 /// Default screenshot toolbar actions (all of them, canonical order).
 pub fn default_capture_skills() -> Vec<String> {
     CAPTURE_SKILLS
         .iter()
         .map(|skill| skill.to_string())
         .collect()
+}
+
+/// Merges the v6 local/AI toolbar entries into an existing `captureSkills`
+/// list: the user's order is preserved, `copy` is dropped and every missing new
+/// id is inserted at its canonical position. The old `ocr`/`translate`/`explain`
+/// ids are never re-added, so a tool the user disabled stays disabled.
+fn merge_capture_skills_v6(existing: &[String]) -> Vec<String> {
+    let mut merged: Vec<String> = Vec::new();
+    for skill in existing {
+        let skill = skill.trim().to_ascii_lowercase();
+        if skill != "copy" && !skill.is_empty() && !merged.contains(&skill) {
+            merged.push(skill);
+        }
+    }
+    for tool in NEW_CAPTURE_SKILLS_V6 {
+        if merged.iter().any(|current| current == tool) {
+            continue;
+        }
+        let rank = CAPTURE_SKILLS
+            .iter()
+            .position(|candidate| *candidate == tool)
+            .unwrap_or(usize::MAX);
+        // Insert before the first existing built-in that comes later in the
+        // canonical order (unknown/custom ids are ignored for positioning and
+        // keep their relative order).
+        let insert_at = merged
+            .iter()
+            .position(|current| {
+                CAPTURE_SKILLS
+                    .iter()
+                    .position(|candidate| candidate == current)
+                    .map(|current_rank| current_rank > rank)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(merged.len());
+        merged.insert(insert_at, tool.to_string());
+    }
+    merged
 }
 /// Input kinds accepted by `picker.customSkills[].kind`: `text` runs the custom
 /// skill on the selected text, `image` runs it on a screenshot region.
@@ -126,9 +186,12 @@ pub struct PickerSettings {
     /// Panel sizing mode; one of [`PANEL_MODES`].
     #[serde(default = "default_panel_mode")]
     pub panel_mode: String,
-    /// Screenshot toolbar entries in toolbar order: the built-in actions
-    /// ([`CAPTURE_SKILLS`]) and enabled custom `kind=image` skill ids. The
-    /// screenshot entry skill itself stays in `skills` (text toolbar).
+    /// Screenshot toolbar entries in toolbar order: the local/AI tools
+    /// ([`CAPTURE_SKILLS`], v6: pin + annotation tools + ocr/translate/explain +
+    /// longshot) and enabled custom `kind=image` skill ids. `copy` is not a
+    /// toolbar entry anymore. The screenshot entry skill itself stays in
+    /// `skills` (text toolbar). An explicit empty list means "fixed buttons
+    /// only" (undo/redo/cancel/confirm).
     #[serde(default = "default_capture_skills")]
     pub capture_skills: Vec<String>,
     /// System prompt overrides for the two built-in screenshot actions that use
@@ -359,7 +422,8 @@ impl Settings {
         // original built-in skills; version 2 adds `polish` and `search`;
         // version 3 adds `screenshot`. New entries are appended after the
         // existing entries so enabled custom ids keep their original position
-        // in the toolbar.
+        // in the toolbar. (Version 6 adds screenshot-toolbar entries instead;
+        // that migration runs on `captureSkills` further down.)
         if self.version < SETTINGS_VERSION {
             let mut existing: Vec<String> = self
                 .picker
@@ -490,11 +554,12 @@ impl Settings {
                 default_panel_mode()
             }
         };
-        // Screenshot toolbar entries: built-in actions plus enabled custom
+        // Screenshot toolbar entries: local/AI tools plus enabled custom
         // `kind=image` skills, in toolbar order. Unknown/duplicate ids are
-        // dropped. An explicit empty list means "no action buttons" (the
-        // overlay then only offers 确认 / 取消); a settings file that never had
-        // the field still gets the defaults through serde.
+        // dropped, and `copy` is no longer a toolbar entry. An explicit empty
+        // list means "fixed buttons only" (the overlay then only offers
+        // undo/redo/取消/确认); a settings file that never had the field still
+        // gets the defaults through serde.
         let mut capture_skills: Vec<String> = Vec::new();
         for skill in &self.picker.capture_skills {
             let skill = skill.trim().to_ascii_lowercase();
@@ -510,6 +575,15 @@ impl Settings {
             if is_builtin || is_image_custom {
                 capture_skills.push(skill);
             }
+        }
+        // Version 6 migration: the toolbar now hosts the local annotation tools,
+        // pin and longshot as well. Only the *new* ids are merged in (the user's
+        // choice for ocr/translate/explain is preserved), their canonical order
+        // decides where they appear, and an explicitly empty pre-v6 list stays
+        // empty. The version gate makes this a one-time migration: once the file
+        // is v6, disabling a tool never brings it back.
+        if self.version < CAPTURE_SKILLS_V6_VERSION && !capture_skills.is_empty() {
+            capture_skills = merge_capture_skills_v6(&capture_skills);
         }
         // Migration from older files: a custom image skill may still be listed in
         // the text toolbar; move it to the screenshot toolbar exactly once. An
@@ -952,10 +1026,28 @@ mod tests {
     fn defaults_are_normalized() {
         let settings = Settings::default().normalize();
         assert_eq!(settings.version, SETTINGS_VERSION);
-        assert_eq!(settings.version, 5);
+        assert_eq!(settings.version, 6);
         let expected: Vec<String> = SKILLS.iter().map(|skill| skill.to_string()).collect();
         assert_eq!(settings.picker.skills, expected);
         assert_eq!(settings.picker.skills.len(), 8);
+        // The v6 screenshot toolbar defaults to all local/AI tools, no `copy`.
+        assert_eq!(
+            settings.picker.capture_skills,
+            vec![
+                "pin",
+                "shape",
+                "arrow",
+                "pen",
+                "text",
+                "number",
+                "mosaic",
+                "ocr",
+                "translate",
+                "explain",
+                "longshot"
+            ]
+        );
+        assert!(!settings.picker.capture_skills.contains(&"copy".to_string()));
         assert_eq!(settings.picker.search_engine, "google");
         assert!(!settings.picker.panel_pinned);
         assert_eq!(settings.picker.panel_mode, "auto");
@@ -1706,40 +1798,104 @@ mod tests {
     #[test]
     fn capture_skills_are_normalized_and_keep_their_order() {
         let settings = Settings::default().normalize();
-        assert_eq!(
-            settings.picker.capture_skills,
-            vec![
-                "copy".to_string(),
-                "ocr".to_string(),
-                "translate".to_string(),
-                "explain".to_string()
-            ]
-        );
+        assert_eq!(settings.picker.capture_skills, default_capture_skills());
+        assert_eq!(settings.picker.capture_skills.len(), 11);
 
         let (store, dir) = store();
+        // Unknown ids and the removed `copy` entry are dropped; duplicates
+        // collapse; the user's order is preserved.
         let updated = store
             .update_json(json!({ "picker": { "captureSkills": ["explain", "ocr", "explain", "hack", "copy"] } }))
             .unwrap();
         assert_eq!(
             updated.picker.capture_skills,
-            vec!["explain".to_string(), "ocr".to_string(), "copy".to_string()]
+            vec!["explain".to_string(), "ocr".to_string()]
         );
         let reloaded = SettingsStore::load(dir.path().join("settings.json"));
         assert_eq!(
             reloaded.get().picker.capture_skills,
-            vec!["explain".to_string(), "ocr".to_string(), "copy".to_string()]
+            vec!["explain".to_string(), "ocr".to_string()]
         );
 
-        // An explicit empty list disables every toolbar action (the overlay
-        // still offers 确认 / 取消).
+        // An explicit empty list disables every configurable toolbar entry (the
+        // overlay still offers undo/redo/取消/确认) and stays empty on reload.
         let cleared = store
             .update_json(json!({ "picker": { "captureSkills": [] } }))
             .unwrap();
         assert!(cleared.picker.capture_skills.is_empty());
+        let reloaded = SettingsStore::load(dir.path().join("settings.json"));
+        assert!(reloaded.get().picker.capture_skills.is_empty());
 
-        // Older settings files (without the field) load the defaults.
+        // Older settings files (without the field) load the full v6 defaults.
         let parsed: Settings = serde_json::from_value(json!({ "version": 4 })).unwrap();
-        assert_eq!(parsed.normalize().picker.capture_skills.len(), 4);
+        assert_eq!(
+            parsed.normalize().picker.capture_skills,
+            default_capture_skills()
+        );
+    }
+
+    #[test]
+    fn version_five_capture_skills_gain_the_v6_tools() {
+        // The v5 default list was ["copy","ocr","translate","explain"].
+        let legacy: Settings = serde_json::from_value(json!({
+            "version": 5,
+            "picker": { "captureSkills": ["copy", "ocr", "explain"] }
+        }))
+        .unwrap();
+        let migrated = legacy.normalize();
+        assert_eq!(migrated.version, SETTINGS_VERSION);
+        // `copy` is removed, the disabled `translate` stays disabled and the new
+        // local/AI tools are inserted in canonical order.
+        assert_eq!(
+            migrated.picker.capture_skills,
+            vec![
+                "pin", "shape", "arrow", "pen", "text", "number", "mosaic", "ocr", "explain",
+                "longshot"
+            ]
+        );
+        // Idempotent: the migrated (v6) settings are not merged again.
+        assert_eq!(migrated.clone().normalize(), migrated);
+
+        // A custom toolbar order is preserved; new ids are inserted around the
+        // existing entries according to the default order.
+        let reordered: Settings = serde_json::from_value(json!({
+            "version": 5,
+            "picker": { "captureSkills": ["explain", "ocr"] }
+        }))
+        .unwrap();
+        assert_eq!(
+            reordered.normalize().picker.capture_skills,
+            vec![
+                "pin", "shape", "arrow", "pen", "text", "number", "mosaic", "explain", "ocr",
+                "longshot"
+            ]
+        );
+
+        // An explicitly empty pre-v6 toolbar stays empty: the user disabled every
+        // entry on purpose, so the new tools are not force-enabled.
+        let cleared: Settings = serde_json::from_value(json!({
+            "version": 5,
+            "picker": { "captureSkills": [] }
+        }))
+        .unwrap();
+        assert!(cleared.normalize().picker.capture_skills.is_empty());
+    }
+
+    #[test]
+    fn disabled_v6_capture_tools_do_not_rebound() {
+        // A v6 file that only enables `ocr` (the user turned the other tools
+        // off) must stay that way on every later normalization.
+        let parsed: Settings = serde_json::from_value(json!({
+            "version": 6,
+            "picker": { "captureSkills": ["ocr"] }
+        }))
+        .unwrap();
+        let normalized = parsed.normalize();
+        assert_eq!(normalized.picker.capture_skills, vec!["ocr".to_string()]);
+        assert_eq!(
+            normalized.clone().normalize().picker.capture_skills,
+            vec!["ocr".to_string()]
+        );
     }
 
     #[test]
@@ -1781,7 +1937,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             updated.picker.capture_skills,
-            vec!["custom-image".to_string(), "copy".to_string()]
+            vec!["custom-image".to_string()]
         );
 
         // A text custom skill id in captureSkills is dropped (it belongs to the
@@ -1791,6 +1947,35 @@ mod tests {
             .update_json(json!({ "picker": { "captureSkills": ["custom-text", "ocr"] } }))
             .unwrap();
         assert_eq!(updated.picker.capture_skills, vec!["ocr".to_string()]);
+
+        // v5 file: the legacy text-toolbar image skill is appended after the
+        // migrated v6 tools.
+        let legacy_v5: Settings = serde_json::from_value(json!({
+            "version": 5,
+            "picker": {
+                "skills": ["translate", "screenshot", "custom-image"],
+                "customSkills": [
+                    { "id": "custom-image", "label": "读图", "icon": "image", "kind": "image", "prompt": "描述图片" }
+                ],
+                "captureSkills": ["copy", "ocr"]
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            legacy_v5.normalize().picker.capture_skills,
+            vec![
+                "pin",
+                "shape",
+                "arrow",
+                "pen",
+                "text",
+                "number",
+                "mosaic",
+                "ocr",
+                "longshot",
+                "custom-image"
+            ]
+        );
     }
 
     #[test]

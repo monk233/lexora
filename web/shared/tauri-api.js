@@ -259,7 +259,7 @@
   /* Screenshot toolbar actions of the preview: `?captureSkills=explain,ocr`. */
   function mockCaptureSkills(query) {
     var match = /[?&]captureSkills=([^&]+)/.exec(String(query || ""));
-    var allowed = ["copy", "ocr", "translate", "explain"];
+    var allowed = ["pin", "shape", "arrow", "pen", "text", "number", "mosaic", "ocr", "translate", "explain", "longshot"];
     if (!match) {
       return allowed.slice();
     }
@@ -307,7 +307,7 @@
         license: "MIT",
       },
       settings: {
-        version: 4,
+        version: 6,
         picker: {
           enabled: true,
           skills: ["translate", "summarize", "explain", "polish", "read", "copy", "screenshot", "search"],
@@ -558,10 +558,24 @@
     settings.capture = {
       regionShortcut: normalizeMockShortcut(capture.regionShortcut) || "Win+Shift+X",
     };
-    // Screenshot toolbar: built-in actions + custom image skills, in toolbar
-    // order. An explicit empty list means "no toolbar actions" (the overlay
-    // then only shows 确认 / 取消), matching settings.rs.
-    var allowedCaptureSkills = ["copy", "ocr", "translate", "explain"].concat(imageCustomIds);
+    // Screenshot toolbar: built-in tools/actions + custom image skills, in
+    // toolbar order. An explicit empty list means "no toolbar items" (the
+    // overlay then only shows undo/redo/取消/确认), matching settings.rs.
+    var builtinCaptureSkills = [
+      "pin",
+      "shape",
+      "arrow",
+      "pen",
+      "text",
+      "number",
+      "mosaic",
+      "ocr",
+      "translate",
+      "explain",
+      "longshot",
+    ];
+    var settingsVersion = Number(settings.version) || 0;
+    var allowedCaptureSkills = builtinCaptureSkills.concat(imageCustomIds);
     var captureSkills = [];
     (Array.isArray(picker.captureSkills) ? picker.captureSkills : []).forEach(function (item) {
       var value = String(item || "").trim().toLowerCase();
@@ -569,6 +583,25 @@
         captureSkills.push(value);
       }
     });
+    // Version 6: the local annotation tools and the long screenshot moved into
+    // the configurable list, and `copy` was removed (确认 = 复制并退出). Merge
+    // missing defaults into the user's order exactly once.
+    if (settingsVersion < 6) {
+      builtinCaptureSkills.forEach(function (id, index) {
+        if (captureSkills.indexOf(id) >= 0) {
+          return;
+        }
+        var insertAt = captureSkills.length;
+        for (var next = index + 1; next < builtinCaptureSkills.length; next += 1) {
+          var position = captureSkills.indexOf(builtinCaptureSkills[next]);
+          if (position >= 0) {
+            insertAt = position;
+            break;
+          }
+        }
+        captureSkills.splice(insertAt, 0, id);
+      });
+    }
     // Migration: a custom image skill still listed in the text toolbar belongs
     // to the screenshot toolbar.
     imageCustomIds.forEach(function (id) {
@@ -577,6 +610,7 @@
       }
     });
     picker.captureSkills = captureSkills;
+    settings.version = 6;
     var capturePrompts =
       picker.capturePrompts && typeof picker.capturePrompts === "object"
         ? picker.capturePrompts
@@ -1170,6 +1204,7 @@
           dataUrl: readyPin.dataUrl,
           width: readyPin.width,
           height: readyPin.height,
+          scrollable: false,
         };
       }
       case "pin_drag":

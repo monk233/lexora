@@ -242,6 +242,17 @@ body.is-dragging .selection-handle {
   cursor: default;
 }
 
+/* Configurable buttons (pin / annotation tools / capture actions / longshot /
+ * custom-*): capture.js reorders and hides them from picker.captureSkills. */
+.capture-bar-items {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
 .tool-btn {
   display: inline-flex;
   align-items: center;
@@ -362,16 +373,11 @@ body.is-dragging .selection-handle {
 
 /* ---- Annotation tools (contract §11.2) --------------------------------- */
 
-.capture-tools {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  flex: 0 0 auto;
-}
-
+/* Shape button + its sub-mode select move as one unit inside the toolbar. */
 .capture-tool-split {
   display: inline-flex;
   align-items: center;
+  flex: 0 0 auto;
 }
 
 .capture-tool.is-active {
@@ -658,25 +664,6 @@ body.is-dragging .selection-handle {
   background: #111827;
 }
 
-.palette-clear {
-  flex: 0 0 auto;
-  height: 26px;
-  padding: 0 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-  color: var(--danger);
-  font-size: 12px;
-  cursor: pointer;
-  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
-}
-
-.palette-clear:hover {
-  border-color: #fecaca;
-  background: var(--danger-soft);
-}
-
-.palette-clear:focus-visible,
 .palette-toggle:focus-visible,
 .palette-seg:focus-visible,
 .palette-color:focus-visible,
@@ -838,8 +825,7 @@ body.is-dragging .selection-handle {
   .palette-color,
   .palette-bg,
   .palette-seg,
-  .palette-toggle,
-  .palette-clear {
+  .palette-toggle {
     transition: none;
   }
 
