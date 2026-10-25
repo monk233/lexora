@@ -744,3 +744,6 @@ editor.renderToPng(rectCss) -> string|null
 - 缩放几何规则：rect/circle 改 x/y/w/h；line/arrow 缩放两端点；pen/mosaic 对点集按包围盒缩放；text/number 按包围盒缩放位置与字号（保持可读比例）。
 - 所有变换（移动/缩放/旋转/删除）都提交为一步 undo；redo 正常。导出（renderToPng）与画布显示一致（含 rotation 后的几何）。
 - 与 §11.11.5 裁剪的关系：标注本身仍裁剪到选区；选中手柄与边框可画在选区外且不裁剪。
+### 11.12.1 第二十轮修订：文字框垂直居中与变换实时反馈
+- 文字/序号标注的选中包围盒与文字块垂直居中：文字以「每行中线」为基线绘制，包围盒高度 = `lineHeight * 行数`（含背景 padding），文字在框内上下居中，不再顶部对齐留白。
+- 变换（移动/缩放/旋转）拖动过程中，选中虚线框与 8+1 个手柄必须**实时跟随**（使用变换预览几何），不再等鼠标松开才更新；`getSelectedBounds`/`getSelectionHandles` 在拖动中返回预览几何。

@@ -582,7 +582,10 @@
       targetContext.save();
       targetContext.font = textFont(annotation);
       targetContext.textAlign = "left";
-      targetContext.textBaseline = "top";
+      /* Middle baseline per line: the glyphs sit centred in their line boxes, so
+       * the selection box (lineHeight * lines) is vertically centred around the
+       * text (round 20). */
+      targetContext.textBaseline = "middle";
       var widest = 0;
       for (var index = 0; index < lines.length; index += 1) {
         widest = Math.max(widest, targetContext.measureText(lines[index]).width);
@@ -601,7 +604,7 @@
         targetContext.fillText(
           lines[lineIndex],
           annotation.x,
-          annotation.y + lineIndex * lineHeight
+          annotation.y + lineIndex * lineHeight + lineHeight / 2
         );
       }
       targetContext.restore();
@@ -761,6 +764,9 @@
       context.restore();
       var padX = annotation.bg ? TEXT_PAD_X : 0;
       var padY = annotation.bg ? TEXT_PAD_Y : 0;
+      /* Text is drawn with a middle baseline per line (see drawText), so the
+       * selection box is exactly the block of line boxes and the glyphs are
+       * vertically centred inside it (round 20). */
       return {
         x: annotation.x - padX,
         y: annotation.y - padY,
@@ -972,7 +978,7 @@
     }
 
     function selectionHandlePoints() {
-      var annotation = selectedAnnotation();
+      var annotation = selectionDisplayAnnotation();
       if (!annotation) {
         return [];
       }
@@ -1066,8 +1072,18 @@
     }
 
     /* Selection UI is painted on the canvas (not exported, not clipped). */
+    /* Annotation used to draw the selection box/handles: while a transform drag
+     * is in progress this is the live preview, so the box follows the pointer
+     * instead of only updating on pointerup (round 20). */
+    function selectionDisplayAnnotation() {
+      if (transformState && transformState.preview) {
+        return transformState.preview;
+      }
+      return selectedAnnotation();
+    }
+
     function drawSelectionUi(targetContext) {
-      var annotation = selectedAnnotation();
+      var annotation = selectionDisplayAnnotation();
       if (!annotation) {
         return;
       }
@@ -2142,7 +2158,7 @@
       },
 
       getSelectedBounds: function () {
-        var annotation = selectedAnnotation();
+        var annotation = selectionDisplayAnnotation();
         return annotation ? annotationBounds(annotation) : null;
       },
 
