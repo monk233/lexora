@@ -54,6 +54,13 @@
       description: "把选中文本复制到剪贴板",
     },
     {
+      id: "screenshot",
+      label: "截图",
+      icon: "scan-eye",
+      description: "框选屏幕区域，复制、提取文字、翻译或解释图片",
+      kind: "image",
+    },
+    {
       id: "search",
       label: "搜索",
       icon: "search",

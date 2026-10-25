@@ -538,6 +538,7 @@ fn enabled_custom_skill_metadata(settings: &Settings) -> Vec<serde_json::Value> 
                 "id": skill.id,
                 "label": skill.label,
                 "icon": skill.icon,
+                "kind": skill.kind,
             })
         })
         .collect()
@@ -749,12 +750,14 @@ mod tests {
                 id: "custom-disabled".to_string(),
                 label: "未启用".to_string(),
                 icon: "star".to_string(),
+                kind: crate::settings::default_custom_skill_kind(),
                 prompt: "disabled {text}".to_string(),
             },
             crate::settings::CustomSkill {
                 id: "custom-enabled".to_string(),
                 label: "已启用".to_string(),
                 icon: "wand".to_string(),
+                kind: "image".to_string(),
                 prompt: "Explain {text} for {program} in {target}".to_string(),
             },
         ];
@@ -767,6 +770,7 @@ mod tests {
         assert_eq!(custom[0]["id"], "custom-enabled");
         assert_eq!(custom[0]["label"], "已启用");
         assert_eq!(custom[0]["icon"], "wand");
+        assert_eq!(custom[0]["kind"], "image");
         // Prompts stay in settings; the picker never receives them.
         assert!(custom[0].get("prompt").is_none());
     }

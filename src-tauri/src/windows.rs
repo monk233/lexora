@@ -15,7 +15,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize};
+use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
 
 use crate::selection::PickerPayload;
 use crate::state::AppState;
@@ -23,6 +23,8 @@ use crate::win32;
 
 pub const PICKER_LABEL: &str = "picker";
 pub const SETTINGS_LABEL: &str = "settings";
+/// Label prefix of the screenshot overlay windows (`capture-<monitor index>`).
+pub const CAPTURE_PREFIX: &str = "capture-";
 
 /// Base toolbar size in logical (CSS) pixels, matching `tauri.conf.json`.
 const BASE_WIDTH: f64 = 440.0;
@@ -363,6 +365,49 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 fn log_warn(app: &tauri::AppHandle, message: &str) {
     if let Some(state) = state(app) {
         state.log.warn(message);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Screenshot overlay windows
+// ---------------------------------------------------------------------------
+
+/// Creates one full-monitor overlay window hosting `capture.html?monitor=<index>`.
+/// Coordinates/sizes are physical pixels coming from `xcap`.
+pub fn create_capture_window(
+    app: &tauri::AppHandle,
+    index: u32,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> tauri::Result<()> {
+    let label = format!("{CAPTURE_PREFIX}{index}");
+    let window = WebviewWindowBuilder::new(
+        app,
+        label.as_str(),
+        WebviewUrl::App(format!("capture.html?monitor={index}").into()),
+    )
+    .title("Lexora 截图")
+    .decorations(false)
+    .resizable(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .visible(false)
+    .focused(index == 0)
+    .build()?;
+    window.set_position(PhysicalPosition::new(x, y))?;
+    window.set_size(PhysicalSize::new(width.max(1), height.max(1)))?;
+    window.show()?;
+    Ok(())
+}
+
+/// Destroys every screenshot overlay window (`capture-*` labels).
+pub fn close_capture_windows(app: &tauri::AppHandle) {
+    for (label, window) in app.webview_windows() {
+        if label.starts_with(CAPTURE_PREFIX) {
+            let _ = window.destroy();
+        }
     }
 }
 

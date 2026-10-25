@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rdev::{listen, Button, Event, EventType};
+use rdev::{listen, Button, Event, EventType, Key};
 
 use super::{ActionRequest, Inner, TriggerSource};
 
@@ -25,6 +25,11 @@ struct HookState {
     mouse: Option<(f64, f64)>,
     press_origin: Option<(f64, f64)>,
     clicks: ClickChain,
+    /// Modifier state for the Win+Shift+X screenshot shortcut.
+    meta: bool,
+    shift: bool,
+    /// `true` once the shortcut fired, so auto-repeat only starts one capture.
+    capture_fired: bool,
 }
 
 /// Tracks consecutive non-drag clicks so double/triple click selections can
@@ -96,9 +101,8 @@ fn run(inner: Arc<Inner>) {
 
 fn on_event(inner: &Arc<Inner>, state: &mut HookState, event: Event) {
     match event.event_type {
-        // The global shortcut was removed: keyboard input only dismisses the
-        // toolbar and always continues to reach the foreground application.
-        EventType::KeyPress(_) => dismiss_picker_on_input(inner, "键盘操作"),
+        EventType::KeyPress(key) => handle_key_press(inner, state, key),
+        EventType::KeyRelease(key) => handle_key_release(state, key),
         EventType::MouseMove { x, y } => state.mouse = Some((x, y)),
         EventType::ButtonPress(Button::Left) => handle_left_press(inner, state),
         EventType::ButtonRelease(Button::Left) => handle_left_release(inner, state),
@@ -111,6 +115,34 @@ fn on_event(inner: &Arc<Inner>, state: &mut HookState, event: Event) {
         // way of normal scrolling). While a result panel is open the shell vetoes
         // this dismissal via `panel_open`, so long content stays scrollable.
         EventType::Wheel { .. } => dismiss_picker_on_input(inner, "滚轮"),
+        _ => {}
+    }
+}
+
+/// Keyboard input: track the Win/Shift modifiers, start a screenshot on
+/// Win+Shift+X, and otherwise keep the legacy "typing dismisses the toolbar"
+/// behavior.
+fn handle_key_press(inner: &Arc<Inner>, state: &mut HookState, key: Key) {
+    match key {
+        Key::MetaLeft | Key::MetaRight => state.meta = true,
+        Key::ShiftLeft | Key::ShiftRight => state.shift = true,
+        Key::KeyX => {}
+        _ => {}
+    }
+    dismiss_picker_on_input(inner, "键盘操作");
+}
+
+fn handle_key_release(state: &mut HookState, key: Key) {
+    match key {
+        Key::MetaLeft | Key::MetaRight => {
+            state.meta = false;
+            state.capture_fired = false;
+        }
+        Key::ShiftLeft | Key::ShiftRight => {
+            state.shift = false;
+            state.capture_fired = false;
+        }
+        Key::KeyX => state.capture_fired = false,
         _ => {}
     }
 }

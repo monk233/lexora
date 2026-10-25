@@ -11,6 +11,7 @@
 //! startup, window events, autostart synchronization and shutdown cleanup.
 
 mod autostart;
+mod capture;
 mod commands;
 mod engine;
 mod logger;
@@ -77,6 +78,7 @@ fn main() {
             }
 
             state.selection.start(app.handle().clone());
+            crate::capture::start_hotkey_listener(app.handle().clone());
             sync_autostart(&state);
             restore_local_engine(app.handle(), &state);
 
@@ -152,6 +154,12 @@ fn main() {
             commands::quit_app,
             commands::check_update,
             commands::install_update,
+            commands::start_capture,
+            commands::capture_monitor_info,
+            commands::capture_copy,
+            commands::capture_ocr,
+            commands::capture_ai,
+            commands::capture_close,
             commands::picker_ready,
             commands::picker_close,
             commands::picker_pin,

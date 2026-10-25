@@ -263,7 +263,7 @@
         version: 1,
         picker: {
           enabled: true,
-          skills: ["translate", "summarize", "explain", "polish", "read", "copy", "search"],
+          skills: ["translate", "summarize", "explain", "polish", "read", "copy", "screenshot", "search"],
           compact: compactToolbar,
           defaultTargetLang: "auto",
           blacklist: ["vscode.exe"],
@@ -395,7 +395,7 @@
   function normalizeMockSettings() {
     var settings = mockStore.settings;
     var picker = settings.picker;
-    var known = ["translate", "summarize", "explain", "polish", "read", "copy", "search"];
+    var known = ["translate", "summarize", "explain", "polish", "read", "copy", "screenshot", "search"];
     var customSkills = [];
     (Array.isArray(picker.customSkills) ? picker.customSkills : []).forEach(function (entry) {
       if (!entry || customSkills.length >= 20) {
@@ -419,6 +419,7 @@
         label: String(entry.label || "自定义技能").trim().slice(0, 20) || "自定义技能",
         icon: icons.indexOf(icon) >= 0 ? icon : "sparkles",
         prompt: prompt,
+        kind: entry.kind === "image" ? "image" : "text",
       });
     });
     picker.customSkills = customSkills;
@@ -584,7 +585,7 @@
       var customSkills = [];
       (Array.isArray(picker.customSkills) ? picker.customSkills : []).forEach(function (skill) {
         if (enabledIds.indexOf(skill.id) >= 0) {
-          customSkills.push({ id: skill.id, label: skill.label, icon: skill.icon });
+          customSkills.push({ id: skill.id, label: skill.label, icon: skill.icon, kind: skill.kind === "image" ? "image" : "text" });
         }
       });
       var panelPinned = !!picker.panelPinned;
@@ -722,6 +723,58 @@
     return { ok: true };
   }
 
+
+  /* ------------------------------------------------------------------ */
+  /* Screenshot capture (browser preview)                               */
+  /* ------------------------------------------------------------------ */
+
+  function mockCaptureMonitorInfo(index) {
+    var width = 1280;
+    var height = 720;
+    var svg =
+      '<svg xmlns="http://www.w3.org/2000/svg" width="' + width + '" height="' + height + '">' +
+      '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">' +
+      '<stop offset="0" stop-color="#1e293b"/><stop offset="1" stop-color="#0f172a"/>' +
+      '</linearGradient></defs>' +
+      '<rect width="100%" height="100%" fill="url(#g)"/>' +
+      '<rect x="120" y="100" width="1040" height="520" rx="16" fill="#334155"/>' +
+      '<text x="170" y="200" fill="#e2e8f0" font-family="Segoe UI, sans-serif" font-size="42">Lexora screenshot preview</text>' +
+      '<text x="170" y="270" fill="#94a3b8" font-family="Segoe UI, sans-serif" font-size="26">Drag a rectangle to select an area.</text>' +
+      '<text x="170" y="330" fill="#94a3b8" font-family="Segoe UI, sans-serif" font-size="26">复制 / 提取文字 / 翻译 / 解释图片</text>' +
+      '</svg>';
+    return {
+      ok: true,
+      index: Number(index) || 0,
+      width: width,
+      height: height,
+      dataUrl: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg),
+      preset: null,
+    };
+  }
+
+  function startMockCaptureAi(requestId, action) {
+    var text =
+      action === 'translate'
+        ? '[MOCK] 图片中的文字已翻译为中文。'
+        : action === 'ocr'
+          ? '[MOCK] 这是从图片中提取的文字。'
+          : '[MOCK] 这是对图片内容的解释：画面包含一段说明文字和一个矩形区域。';
+    var chunks = [];
+    for (var i = 0; i < text.length; i += 4) {
+      chunks.push(text.slice(i, i + 4));
+    }
+    var index = 0;
+    var timer = window.setInterval(function () {
+      if (index >= chunks.length) {
+        window.clearInterval(timer);
+        mockEmit('capture-event', { requestId: requestId, type: 'done' });
+        return;
+      }
+      mockEmit('capture-event', { requestId: requestId, type: 'chunk', text: chunks[index] });
+      index += 1;
+    }, 42);
+  }
+
   function mockHandle(command, args) {
     if (!mockStore) {
       initMockStore();
@@ -731,6 +784,19 @@
       /* ---- picker ---- */
       case "picker_ready":
         scheduleMockPickerData(120);
+        return { ok: true };
+      case "start_capture":
+        return { ok: true, monitors: 1 };
+      case "capture_monitor_info":
+        return mockCaptureMonitorInfo(args.index);
+      case "capture_copy":
+        return { ok: true };
+      case "capture_ocr":
+        return { ok: true, text: "这是从图片中提取的模拟文字。", hint: "" };
+      case "capture_ai":
+        startMockCaptureAi(String(args.requestId || ""), String(args.action || ""));
+        return { ok: true };
+      case "capture_close":
         return { ok: true };
       case "picker_close":
         mockEmit("picker-hidden", {});
@@ -1398,4 +1464,48 @@
       "[tauri-api] window.__TAURI__ 不可用，picker/settings 使用浏览器预览 mock 数据。"
     );
   }
+
+  window.captureAPI = {
+    start: function (presetSkillId) {
+      return safeInvoke("start_capture", {
+        presetSkillId: String(presetSkillId == null ? "" : presetSkillId),
+      });
+    },
+    monitor: function (index) {
+      return safeInvoke("capture_monitor_info", { index: Number(index) || 0 });
+    },
+    copy: function (index, rect) {
+      return safeInvoke("capture_copy", {
+        index: Number(index) || 0,
+        rect: rect || {},
+      });
+    },
+    ocr: function (index, rect) {
+      return safeInvoke("capture_ocr", {
+        index: Number(index) || 0,
+        rect: rect || {},
+      });
+    },
+    ai: function (requestId, index, rect, action, skillId, targetLang) {
+      return safeInvoke("capture_ai", {
+        requestId: String(requestId == null ? "" : requestId),
+        index: Number(index) || 0,
+        rect: rect || {},
+        action: String(action == null ? "" : action),
+        skillId: String(skillId == null ? "" : skillId),
+        targetLang: String(targetLang == null ? "" : targetLang),
+      });
+    },
+    close: function () {
+      return safeInvoke("capture_close", {});
+    },
+    onEvent: function (callback) {
+      return subscribe("capture-event", function (payload) {
+        if (typeof callback === "function") {
+          callback(payload);
+        }
+      });
+    },
+  };
+
 })();

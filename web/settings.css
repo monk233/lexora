@@ -1059,6 +1059,31 @@ textarea {
   line-height: 1.4;
 }
 
+.skill-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.skill-kind-badge {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.skill-item.is-disabled .skill-kind-badge {
+  opacity: 0.6;
+}
+
 .skill-desc {
   overflow: hidden;
   color: var(--text-muted);
@@ -1241,6 +1266,35 @@ textarea {
   color: var(--text);
   font-size: 12.5px;
   font-weight: 550;
+}
+
+/* Text/image skill type switch inside the custom skill editor. */
+.custom-skill-field .custom-skill-kind-segmented {
+  align-self: flex-start;
+  margin: 0;
+}
+
+.custom-skill-kind-segmented .segment {
+  height: 30px;
+  padding: 0 14px;
+  font-size: 12px;
+}
+
+.custom-skill-kind-segmented .segment[aria-pressed="true"] {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
+}
+
+.custom-skill-kind-segmented .segment[aria-pressed="false"] {
+  background: transparent;
+  color: var(--text-muted);
+  box-shadow: none;
+}
+
+.custom-skill-kind-segmented .segment:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
 }
 
 .custom-skill-hint {

@@ -25,9 +25,18 @@
 
   var API = window.pickerAPI;
   var LP = window.LP || {};
-  /* Shared LP.DEFAULT_SKILLS is the source of truth (seven built-ins); the
+  /* Shared LP.DEFAULT_SKILLS is the source of truth (built-in skills); the
    * local list only keeps the toolbar usable if the shared script failed. */
-  var FALLBACK_SKILLS = ["translate", "summarize", "explain", "polish", "read", "copy", "search"];
+  var FALLBACK_SKILLS = [
+    "translate",
+    "summarize",
+    "explain",
+    "polish",
+    "read",
+    "copy",
+    "screenshot",
+    "search",
+  ];
   var DEFAULT_SKILLS =
     LP && Array.isArray(LP.DEFAULT_SKILLS) && LP.DEFAULT_SKILLS.length
       ? LP.DEFAULT_SKILLS.slice()
@@ -61,6 +70,7 @@
     polish: "润色",
     read: "朗读",
     copy: "复制",
+    screenshot: "截图",
     search: "搜索",
   };
 
@@ -157,7 +167,8 @@
   }
 
   /* Built-in skill metadata from the shared table. `icon` is an icon key (for
-   * example translate -> "languages"), never the skill id. */
+   * example translate -> "languages"), never the skill id. `kind` is "image"
+   * for skills that open the screenshot overlay instead of a text panel. */
   function builtinSkillMeta(skill) {
     var map = LP.SKILL_MAP || {};
     var entry = hasOwn(map, skill) ? map[skill] : null;
@@ -165,6 +176,7 @@
       id: skill,
       label: (entry && entry.label) || SKILL_LABELS[skill] || skill,
       icon: (entry && entry.icon) || defaultCustomIcon(),
+      kind: (entry && entry.kind) || (skill === "screenshot" ? "image" : "text"),
       builtin: true,
     };
   }
@@ -745,9 +757,9 @@
 
   /* ---- Toolbar --------------------------------------------------------- */
 
-  /* Label + icon for one toolbar skill. Built-in ids come from LP.SKILL_MAP
-   * (icon keys like "languages"); custom ids from `config.customSkills`;
-   * unknown ids fall back to the id itself and the default sparkles icon. */
+  /* Label + icon + kind for one toolbar skill. Built-in ids come from
+   * LP.SKILL_MAP (icon keys like "languages"); custom ids from
+   * `config.customSkills`; unknown ids fall back to text + sparkles icon. */
   function skillMeta(skill) {
     if (isBuiltinSkill(skill)) {
       return builtinSkillMeta(skill);
@@ -755,7 +767,7 @@
     if (hasOwn(state.customSkills, skill)) {
       return state.customSkills[skill];
     }
-    return { id: skill, label: skill, icon: defaultCustomIcon() };
+    return { id: skill, label: skill, icon: defaultCustomIcon(), kind: "text" };
   }
 
   function skillButton(skill) {
@@ -763,6 +775,10 @@
     var button = el("button", "tool-btn");
     button.type = "button";
     button.setAttribute("data-skill", skill);
+    button.setAttribute("data-kind", meta.kind === "image" ? "image" : "text");
+    if (meta.kind === "image") {
+      button.classList.add("is-image-skill");
+    }
     button.title = meta.label;
     button.setAttribute("aria-label", meta.label);
     button.innerHTML = skillIconSvg(meta.icon);
@@ -875,6 +891,10 @@
     item.type = "button";
     item.setAttribute("role", "menuitem");
     item.setAttribute("data-skill", skill);
+    item.setAttribute("data-kind", meta.kind === "image" ? "image" : "text");
+    if (meta.kind === "image") {
+      item.classList.add("is-image-skill");
+    }
     var icon = el("span", "menu-item-icon");
     icon.innerHTML = skillIconSvg(meta.icon);
     var text = el("span", "menu-item-text");
@@ -2152,6 +2172,50 @@
     });
   }
 
+  /* Image skills (built-in screenshot / custom kind=image) hand off to the
+   * screenshot overlay: no text result panel is opened, the shell creates the
+   * capture window and the picker hides itself. */
+  function startImageCapture(presetSkillId) {
+    var captureAPI = window.captureAPI;
+    if (!captureAPI || typeof captureAPI.start !== "function") {
+      showToast("当前版本不支持截图");
+      return;
+    }
+    var result;
+    try {
+      result = captureAPI.start(String(presetSkillId || ""));
+    } catch (error) {
+      showToast("截图失败：" + friendlyError(String(error)));
+      return;
+    }
+    function closePickerForCapture() {
+      closeMenu();
+      abortActiveRequest();
+      stopSpeech();
+      if (API && typeof API.close === "function") {
+        API.close();
+      } else {
+        scheduleToolbarResize();
+      }
+    }
+    if (!result || typeof result.then !== "function") {
+      closePickerForCapture();
+      return;
+    }
+    result.then(
+      function (response) {
+        if (response && response.ok === false) {
+          showToast("截图失败：" + friendlyError(response.error || "未知错误"));
+          return;
+        }
+        closePickerForCapture();
+      },
+      function (error) {
+        showToast("截图失败：" + friendlyError(String(error)));
+      }
+    );
+  }
+
   function runSkill(skill) {
     if (skill === "translate") {
       translateSkill();
@@ -2165,9 +2229,18 @@
       copyToClipboard(state.text, "已复制选中文本", true);
     } else if (skill === "search") {
       searchSkill();
+    } else if (skill === "screenshot") {
+      // Built-in screenshot skill: plain capture, no preset image skill.
+      startImageCapture("");
     } else if (skill) {
-      // User-defined skill (or an unknown id from config.skills): the shell
-      // reports a disabled/missing skill through the stream error event.
+      var meta = skillMeta(skill);
+      if (meta.kind === "image") {
+        // Custom image skill: capture with that skill preselected.
+        startImageCapture(skill);
+        return;
+      }
+      // Text skill (or an unknown id from config.skills): the shell reports a
+      // disabled/missing skill through the stream error event.
       startCustomSkill(skill);
     }
   }
@@ -2304,6 +2377,8 @@
         id: id,
         label: String(entry.label || "").trim() || id,
         icon: String(entry.icon || "").trim() || defaultCustomIcon(),
+        // Custom skills default to text; "image" skills open the capture overlay.
+        kind: String(entry.kind || "").trim().toLowerCase() === "image" ? "image" : "text",
       };
     });
     var seen = {};

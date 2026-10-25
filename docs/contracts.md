@@ -64,10 +64,10 @@ lexora/
 
 ```jsonc
 {
-  "version": 2,                              // v1 配置自动迁移：补 polish/search，保留 custom
+  "version": 3,                              // v1→v2 补 polish/search；v2→v3 补 screenshot；保留 custom
   "picker": {
     "enabled": true,
-    "skills": ["translate","summarize","explain","polish","read","copy","search","custom-mvmei8cru1n5"],
+    "skills": ["translate","summarize","explain","polish","read","copy","screenshot","search","custom-mvmei8cru1n5"],
     "compact": false,
     "defaultTargetLang": "auto",          // auto + Hy-MT2 支持的 38 种语言（zh/en/zh-hant/yue/ja/…/ug）；auto 显示为「自动识别」
     "blacklist": [],                      // 进程名，可含 .exe
@@ -86,6 +86,7 @@ lexora/
         "id": "custom-mvmei8cru1n5",       // ^custom-[a-z0-9_-]{1,40}$，全局唯一
         "label": "提取关键词",              // <=20 字符
         "icon": "sparkles",                // 任意 Lucide key（^[a-z0-9-]{1,40}$，200 个可选）或旧 12 别名
+        "kind": "text",                    // text | image；图片技能在截图中执行
         "prompt": "请从用户选中的文本中提取 5 个关键词：{text}"  // <=4000；支持 {text}/{target}/{language}/{program}/{app}
       }
     ]
@@ -146,6 +147,12 @@ lexora/
 | `picker_polish` | `{requestId, text}` | `{ok, error?, hint?}`（随后 `translate-event` 流；内置润色技能） |
 | `picker_abort_translate` | `{requestId}` | `{ok}` |
 | `picker_assist` | `{requestId, action: "summarize"|"explain", text}` | `{ok, error?, hint?}`（随后 `translate-event` 流；总结/解释不再一次性返回） |
+| `start_capture` | `{presetSkillId?: string}` | `{ok, monitors?, error?, hint?}`（隐藏 picker/设置，抓取所有显示器并创建 capture-* overlay） |
+| `capture_monitor_info` | `{index: number}` | `{ok, dataUrl, width, height, index, preset?: {skillId,label}}`（PNG data URL，物理像素） |
+| `capture_copy` | `{index, rect: {x,y,width,height}}` | `{ok, error?, hint?}`（crop→图片剪贴板→关闭 overlay） |
+| `capture_ocr` | `{index, rect}` | `{ok, text?, error?, hint?}`（Windows.Media.Ocr 本地 OCR） |
+| `capture_ai` | `{requestId, index, rect, action: "translate"|"explain"|"custom", skillId?, targetLang?}` | `{ok, error?, hint?}`（随后 `capture-event`：chunk/error/done；translate=OCR+翻译，explain/custom=在线视觉模型） |
+| `capture_close` | — | `{ok}`（销毁所有 capture-* overlay） |
 | `picker_followup` | `{requestId, text, previousAnswer, question, history: [{question,answer}]}` | `{ok, error?, hint?}`（随后 `translate-event` 流；面板继续提问） |
 | `picker_status` | — | `{mode, ready, configured, providerLabel, localState, hint}` |
 | `picker_disable_in_app` | `{programName}` | `{ok, error?}` |
@@ -391,3 +398,14 @@ pub struct SelectionService {
 - 在线模式：填 mock/真实 OpenAI 兼容服务后「测试连接」成功；picker 翻译流式显示。
 - 本地模式：安装引擎 + 下载/导入 Qwen2.5 GGUF 后启动成功，翻译流式返回；总结/解释可用。
 - 构建 release：`scripts/build-portable.ps1` 产出单个 `dist/Lexora-<version>-win-x64.exe`；双击运行后静默驻留托盘，数据写入 exe 同级 data/；Release 正文由 `scripts/release-notes.ps1` 生成排版化 changelog。
+
+
+## 10. 截图（v0.2.x 新增）
+
+- 入口：内置技能 `screenshot`（工具栏「截图」）、全局快捷键 **Win+Shift+X**、`start_capture` 命令；图片类自定义技能点击时带 presetSkillId 进入截图。
+- 窗口：Rust 用 `xcap` 抓取所有显示器（物理像素），为每块屏创建无边框置顶 overlay `capture-<index>`，加载 `web/capture.html?monitor=<index>`；`capabilities/default.json` 的 windows 包含 `capture-*`。
+- overlay 行为：首次加载轮询 `capture_monitor_info` 直到截图就绪；默认全屏选区，可拖拽重画矩形/8 个手柄调整（最小 8×8），尺寸标签实时更新；Esc 或「取消」关闭。
+- 工具条：复制 / 提取文字 / 翻译 / 解释图片 / 取消；图片技能 preset 额外显示技能按钮。复制写入系统图片剪贴板并关闭全部 overlay；OCR 使用系统 OCR（语言包缺失时提示）；翻译 = OCR 文本 + 现有翻译流；解释/图片技能 = 在线 OpenAI 兼容视觉模型（本地模型不支持看图）。
+- 设置：`picker.skills` 默认包含 screenshot；`picker.customSkills[].kind = "text" | "image"`（默认 text）；旧配置 version<3 自动补 screenshot。设置页编辑器有「文本/图片」切换，图片技能列表带「图片」徽标。
+- 结果：截图 overlay 内嵌深色结果面板，流式 Markdown、复制、重试；不关闭原截图窗口直到用户关闭或执行复制。
+- 已知限制：图片理解需要配置支持视觉的在线模型；OCR 依赖 Windows OCR 语言包；本地 GGUF 文本模型不支持图片。

@@ -259,7 +259,7 @@
         <div class="field field-stack">
           <div class="field-label">
             <span class="field-name">工具栏技能</span>
-            <p class="field-hint">勾选要显示在工具栏的技能，拖动调整顺序</p>
+            <p class="field-hint">勾选要显示在工具栏的技能，拖动调整顺序；图片技能点击后进入截图</p>
           </div>
           <div class="field-control">
             <ul class="skill-list" id="skill-list"></ul>
@@ -300,6 +300,19 @@
               </div>
 
               <div class="custom-skill-field">
+                <span class="custom-skill-label">技能类型</span>
+                <div class="segmented custom-skill-kind-segmented" role="group" aria-label="技能类型">
+                  <button type="button" class="segment" id="custom-skill-kind-text"
+                          data-skill-kind="text" aria-pressed="true"
+                          aria-label="文本技能">文本</button>
+                  <button type="button" class="segment" id="custom-skill-kind-image"
+                          data-skill-kind="image" aria-pressed="false"
+                          aria-label="图片技能">图片</button>
+                </div>
+                <p class="custom-skill-hint" id="custom-skill-kind-hint">文本技能处理选中文字：点击后直接执行提示词。</p>
+              </div>
+
+              <div class="custom-skill-field">
                 <label class="custom-skill-label" for="custom-skill-name">名称</label>
                 <input class="input" id="custom-skill-name" type="text" maxlength="20"
                        placeholder="例如：提取关键词" autocomplete="off" spellcheck="false">
@@ -310,7 +323,7 @@
                 <textarea class="textarea" id="custom-skill-prompt" rows="6" maxlength="4000"
                           spellcheck="false"
                           placeholder="例如：请从用户选中的文本中提取 5 个关键词，用逗号分隔输出：&#10;{text}"></textarea>
-                <p class="custom-skill-hint">
+                <p class="custom-skill-hint" id="custom-skill-vars-hint">
                   支持变量：<code>{text}</code> 选中文本、<code>{target}</code> / <code>{language}</code> 目标语言、<code>{program}</code> / <code>{app}</code> 当前应用
                 </p>
               </div>

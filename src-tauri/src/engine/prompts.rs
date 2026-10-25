@@ -23,6 +23,11 @@ pub const DEFAULT_EXPLAIN_PROMPT: &str = "You are a knowledge assistant. Explain
 
 pub const DEFAULT_POLISH_PROMPT: &str = "You are a professional editor. Polish the user's text so it reads naturally and fluently while keeping the original meaning. Output only the polished text, without explanations, quotes, or the source text.";
 
+/// Built-in system prompt for the `explain` skill when the input is an image
+/// (a screenshot region); used by `capture`/`engine` for image requests.
+pub const DEFAULT_EXPLAIN_IMAGE_PROMPT: &str =
+    "你是一名视觉助手。请用简体中文解释图片的内容、文字信息与关键细节，使用 Markdown，不要编造。";
+
 /// System prompt template for a single-word dictionary lookup (translate/explain
 /// on a single English word). `{target}` is replaced with the request's target
 /// language name so the entry is explained in the language the user picked,
@@ -377,6 +382,28 @@ pub fn followup_messages(
 /// Placeholder used in prompts when the source application is unknown.
 pub const UNKNOWN_PROGRAM_NAME: &str = "未知应用";
 
+/// What `{text}` becomes for image prompts: a screenshot has no selectable
+/// text, so the model is told the input is an image.
+pub const IMAGE_TEXT_PLACEHOLDER: &str = "（图片）";
+
+/// Renders a user-defined or built-in prompt for an image (screenshot) input.
+///
+/// `{target}` / `{language}` become the target language name, `{text}` becomes
+/// [`IMAGE_TEXT_PLACEHOLDER`], and `{program}` / `{app}` fall back to
+/// [`UNKNOWN_PROGRAM_NAME`] because a screenshot has no source application.
+/// Unknown placeholders are kept verbatim; the result is trimmed.
+pub fn render_image_prompt(template: &str, target_lang: &str) -> String {
+    let language = language_name(target_lang);
+    template
+        .replace("{target}", &language)
+        .replace("{language}", &language)
+        .replace("{text}", IMAGE_TEXT_PLACEHOLDER)
+        .replace("{program}", UNKNOWN_PROGRAM_NAME)
+        .replace("{app}", UNKNOWN_PROGRAM_NAME)
+        .trim()
+        .to_string()
+}
+
 /// Renders a user-defined skill prompt.
 ///
 /// Supported placeholders: `{text}` (selected text), `{target}` / `{language}`
@@ -670,6 +697,55 @@ mod tests {
             render_custom_prompt("Translate into {language}", "hi", "de", "Code"),
             "Translate into German"
         );
+    }
+
+    #[test]
+    fn image_prompt_replaces_known_variables() {
+        let rendered = render_image_prompt(
+            "Explain the image in {target} ({language}). Fake text: {text}.",
+            "ja",
+        );
+        assert_eq!(
+            rendered,
+            "Explain the image in Japanese (Japanese). Fake text: （图片）."
+        );
+        // A screenshot has no source application: app placeholders fall back to
+        // the unknown-application label instead of leaking into the prompt.
+        assert_eq!(
+            render_image_prompt("{app}: explain for {target}", "en"),
+            "未知应用: explain for English"
+        );
+        assert_eq!(render_image_prompt("{program}", "zh"), UNKNOWN_PROGRAM_NAME);
+        // Trimmed like every other rendered prompt.
+        assert_eq!(render_image_prompt("  {text}  ", "en"), "（图片）");
+        assert_eq!(render_image_prompt("   ", "en"), "");
+    }
+
+    #[test]
+    fn image_prompt_keeps_unknown_variables() {
+        assert_eq!(
+            render_image_prompt("Use {tone} for {target}.", "de"),
+            "Use {tone} for German."
+        );
+        // An unclosed brace is text, not a placeholder.
+        assert_eq!(
+            render_image_prompt("Unclosed {text", "en"),
+            "Unclosed {text"
+        );
+    }
+
+    #[test]
+    fn image_default_prompt_is_locked_to_contract() {
+        assert_eq!(
+            DEFAULT_EXPLAIN_IMAGE_PROMPT,
+            "你是一名视觉助手。请用简体中文解释图片的内容、文字信息与关键细节，使用 Markdown，不要编造。"
+        );
+        for expected in ["视觉助手", "简体中文", "Markdown", "不要编造"] {
+            assert!(
+                DEFAULT_EXPLAIN_IMAGE_PROMPT.contains(expected),
+                "image prompt must mention {expected}"
+            );
+        }
     }
 
     #[test]

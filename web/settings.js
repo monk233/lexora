@@ -111,6 +111,22 @@
 
   var CUSTOM_ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 
+  /* Custom skill types: "text" processes the selected text, "image" is used
+   * in the screenshot overlay (capture first, then run the prompt on the
+   * cropped image with a vision model). */
+  var CUSTOM_KIND_HINTS = {
+    text: "文本技能处理选中文字：点击后直接执行提示词。",
+    image:
+      "图片技能在截图中使用：选中文字后点击会先进入截图，再对框选图片执行该提示词（需要在线视觉模型）。",
+  };
+
+  var CUSTOM_VARS_HINTS = {
+    text:
+      '支持变量：<code>{text}</code> 选中文本、<code>{target}</code> / <code>{language}</code> 目标语言、<code>{program}</code> / <code>{app}</code> 当前应用',
+    image:
+      '支持变量：<code>{target}</code> / <code>{language}</code> 目标语言、<code>{program}</code> / <code>{app}</code> 当前应用（图片内容由截图提供，不使用 {text}）',
+  };
+
   /* ---- DOM helpers ----------------------------------------------------- */
 
   function byId(id) {
@@ -1070,8 +1086,8 @@
 
   /* ---- Custom skills ----------------------------------------------------- */
 
-  /* Custom skills are stored as {id,label,icon,prompt}. Return copies so a
-   * patch never mutates the state object in place. */
+  /* Custom skills are stored as {id,label,icon,prompt,kind}. Return copies so
+   * a patch never mutates the state object in place. */
   function customSkillsList() {
     var picker = state && state.settings && state.settings.picker;
     var stored = picker && Array.isArray(picker.customSkills) ? picker.customSkills : [];
@@ -1091,9 +1107,25 @@
         label: String(entry.label || "").trim() || "自定义技能",
         icon: validCustomIcon(entry.icon),
         prompt: String(entry.prompt || ""),
+        kind: customSkillKind(entry),
       });
     });
     return result;
+  }
+
+  function customSkillKind(skill) {
+    return skill && skill.kind === "image" ? "image" : "text";
+  }
+
+  function builtinSkillKind(id) {
+    var meta = LP.SKILL_MAP && LP.SKILL_MAP[id];
+    return (meta && meta.kind) || "text";
+  }
+
+  function isImageSkill(id, custom) {
+    return custom
+      ? customSkillKind(custom) === "image"
+      : builtinSkillKind(id) === "image";
   }
 
   function findCustomSkill(id) {
@@ -1244,7 +1276,13 @@
       .map(function (id) {
         var custom = customMap[id];
         var detail = custom
-          ? custom.label + "\u0003" + custom.icon + "\u0003" + custom.prompt
+          ? custom.label +
+            "\u0003" +
+            custom.icon +
+            "\u0003" +
+            custom.prompt +
+            "\u0003" +
+            custom.kind
           : id === "search"
             ? "search:" + currentSearchEngine()
             : "";
@@ -1298,7 +1336,14 @@
     line.appendChild(icon);
 
     var main = el("div", "skill-main");
-    main.appendChild(el("span", "skill-name", meta.label));
+    var nameRow = el("div", "skill-name-row");
+    nameRow.appendChild(el("span", "skill-name", meta.label));
+    if (isImageSkill(id, custom)) {
+      var kindBadge = el("span", "skill-kind-badge", "图片");
+      kindBadge.title = "图片技能：点击后进入截图";
+      nameRow.appendChild(kindBadge);
+    }
+    main.appendChild(nameRow);
     if (meta.description) {
       main.appendChild(el("span", "skill-desc", meta.description));
     }
@@ -1625,6 +1670,35 @@
     setIconPickerOpen(!iconPickerOpen);
   }
 
+  /* Skill type (text/image) segmented control in the custom skill editor. */
+  function currentCustomKind() {
+    return customDraft ? customSkillKind(customDraft) : "text";
+  }
+
+  function renderCustomSkillKind() {
+    var kind = currentCustomKind();
+    each(document.querySelectorAll("[data-skill-kind]"), function (button) {
+      var selected = button.getAttribute("data-skill-kind") === kind;
+      button.setAttribute("aria-pressed", selected ? "true" : "false");
+    });
+    var hint = byId("custom-skill-kind-hint");
+    if (hint) {
+      hint.textContent = CUSTOM_KIND_HINTS[kind] || CUSTOM_KIND_HINTS.text;
+    }
+    var varsHint = byId("custom-skill-vars-hint");
+    if (varsHint) {
+      varsHint.innerHTML = CUSTOM_VARS_HINTS[kind] || CUSTOM_VARS_HINTS.text;
+    }
+  }
+
+  function selectCustomSkillKind(kind) {
+    if (!customEditorOpen || !customDraft) {
+      return;
+    }
+    customDraft.kind = kind === "image" ? "image" : "text";
+    renderCustomSkillKind();
+  }
+
   function renderCustomIconGrid(ensureSelectedVisible) {
     var grid = byId("custom-skill-icons");
     if (!grid) {
@@ -1683,6 +1757,7 @@
     }
     setHidden(byId("delete-custom-skill"), !customEditingId);
     renderIconPreview();
+    renderCustomSkillKind();
     setHidden(byId("custom-skill-icon-panel"), !iconPickerOpen);
     var iconToggle = byId("toggle-icon-picker");
     if (iconToggle) {
@@ -1721,6 +1796,7 @@
       icon: custom ? custom.icon : validCustomIcon(LP.CUSTOM_SKILL_DEFAULT_ICON),
       label: custom ? custom.label : "",
       prompt: custom ? custom.prompt : "",
+      kind: custom ? customSkillKind(custom) : "text",
     };
     iconSearchQuery = "";
     assignFieldValue(byId("custom-skill-icon-search"), "");
@@ -1806,7 +1882,9 @@
     if (!prompt) {
       showInlineError(
         errorNode,
-        "请填写提示词，可使用 {text}、{target}、{language}、{program}、{app} 变量"
+        customDraft.kind === "image"
+          ? "请填写提示词，可使用 {target}、{language}、{program}、{app} 变量"
+          : "请填写提示词，可使用 {text}、{target}、{language}、{program}、{app} 变量"
       );
       if (promptInput && promptInput.focus) {
         promptInput.focus();
@@ -1821,6 +1899,7 @@
       return;
     }
     var icon = validCustomIcon(customDraft.icon);
+    var kind = customDraft.kind === "image" ? "image" : "text";
     var customs = customSkillsList();
     var skills = enabledSkills();
     var editingId = customEditingId;
@@ -1842,11 +1921,18 @@
         label: label,
         icon: icon,
         prompt: prompt,
+        kind: kind,
       };
       labelText = "已保存技能「" + label + "」";
     } else {
       var id = generateCustomSkillId(customs);
-      customs.push({ id: id, label: label, icon: icon, prompt: prompt });
+      customs.push({
+        id: id,
+        label: label,
+        icon: icon,
+        prompt: prompt,
+        kind: kind,
+      });
       if (skills.indexOf(id) < 0) {
         skills.push(id);
       }
@@ -2947,6 +3033,12 @@
         customDraft.prompt = this.value;
       }
       hideInlineError(byId("custom-skill-error"));
+    });
+    byId("custom-skill-kind-text").addEventListener("click", function () {
+      selectCustomSkillKind("text");
+    });
+    byId("custom-skill-kind-image").addEventListener("click", function () {
+      selectCustomSkillKind("image");
     });
     byId("custom-skill-editor").addEventListener("keydown", function (event) {
       if (event.key === "Escape") {

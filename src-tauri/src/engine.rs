@@ -35,7 +35,9 @@ mod openai;
 mod prompts;
 
 pub use llama::LocalState;
-pub use prompts::default_prompts;
+pub use prompts::{
+    default_prompts, render_image_prompt, resolve_target_lang, DEFAULT_EXPLAIN_IMAGE_PROMPT,
+};
 
 /// Pinned llama.cpp Windows CPU release used when the user installs the engine.
 /// Verified to exist and to contain `llama-server.exe`; the archive is ~23 MB.
@@ -579,6 +581,48 @@ impl EngineService {
             } else {
                 "translate"
             }
+        ));
+        openai::stream_chat(&self.http, &config, messages, config.header_timeout()).await
+    }
+
+    /// Streams a vision (screenshot) request through an online vision model.
+    ///
+    /// `image_data_url` is a `data:image/png;base64,...` URL; `system` is the
+    /// rendered instruction. Local llama.cpp models cannot see images, so this
+    /// always requires an online OpenAI-compatible endpoint with a vision model.
+    pub async fn vision_stream(
+        &self,
+        image_data_url: &str,
+        system: &str,
+    ) -> Result<BoxStream<'static, Result<String, EngineError>>, EngineError> {
+        let settings = self.settings.get();
+        if settings.is_local_mode() {
+            return Err(EngineError::new(
+                "本地模型不支持图片理解。",
+                "请在「设置 → 翻译服务」切换到在线 API，并使用支持视觉的模型（如 GPT-4o / Qwen-VL）；也可以改用「提取文字」。",
+            ));
+        }
+        let config = self.chat_config(&settings, LocalRole::General).await?;
+        let instruction = system.trim();
+        let system_content = if instruction.is_empty() {
+            "请用简体中文解释这张截图的内容、文字信息和关键细节，使用 Markdown。"
+        } else {
+            instruction
+        };
+        let messages = vec![
+            json!({"role": "system", "content": system_content}),
+            json!({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "请分析这张截图。"},
+                    {"type": "image_url", "image_url": {"url": image_data_url}},
+                ],
+            }),
+        ];
+        self.logger.info(&format!(
+            "vision stream start: model={} bytes={}",
+            config.model,
+            image_data_url.len()
         ));
         openai::stream_chat(&self.http, &config, messages, config.header_timeout()).await
     }
@@ -1898,6 +1942,41 @@ mod tests {
         let error = block_on(env.service.polish_stream("hello"))
             .err()
             .expect("expected engine error");
+        assert!(error.message.contains("配置"), "message: {}", error.message);
+    }
+
+    #[test]
+    fn vision_requires_online_mode() {
+        let env = test_env();
+        env.store
+            .update_json(json!({"provider": {"mode": "local"}}))
+            .unwrap();
+        let error = block_on(
+            env.service
+                .vision_stream("data:image/png;base64,AA", "解释这张图"),
+        )
+        .err()
+        .expect("expected engine error");
+        assert!(
+            error.message.contains("本地模型不支持图片理解"),
+            "message: {}",
+            error.message
+        );
+        assert!(!error.hint.is_empty());
+    }
+
+    #[test]
+    fn vision_online_requires_configuration() {
+        let env = test_env();
+        env.store
+            .update_json(json!({"provider": {"online": {"baseUrl": ""}}}))
+            .unwrap();
+        let error = block_on(
+            env.service
+                .vision_stream("data:image/png;base64,AA", "解释这张图"),
+        )
+        .err()
+        .expect("expected engine error");
         assert!(error.message.contains("配置"), "message: {}", error.message);
     }
 

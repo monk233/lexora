@@ -524,6 +524,101 @@ pub async fn install_update(app: AppHandle) -> Value {
 }
 
 // ---------------------------------------------------------------------------
+// Screenshot capture commands
+// ---------------------------------------------------------------------------
+
+/// Starts a region screenshot: hides our own windows, grabs every monitor and
+/// opens one overlay window per monitor. The capture page then polls
+/// `capture_monitor_info` until the session is ready.
+#[tauri::command]
+pub async fn start_capture(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    preset_skill_id: Option<String>,
+) -> Result<Value, String> {
+    let app_state = (*state).clone();
+    match crate::capture::start_capture(&app, app_state.as_ref(), preset_skill_id).await {
+        Ok(monitors) => Ok(json!({ "ok": true, "monitors": monitors })),
+        Err(error) => Ok(json!({ "ok": false, "error": error.message, "hint": error.hint })),
+    }
+}
+
+/// PNG data URL + size (+ preset) of one captured monitor.
+#[tauri::command]
+pub fn capture_monitor_info(state: State<'_, Arc<AppState>>, index: u32) -> Value {
+    match state.capture.monitor_info(index) {
+        Ok(mut info) => {
+            if let Some(object) = info.as_object_mut() {
+                object.insert("ok".to_string(), json!(true));
+            }
+            info
+        }
+        Err(error) => json!({ "ok": false, "error": error.message, "hint": error.hint }),
+    }
+}
+
+/// Copies the selected screenshot region to the clipboard and closes the overlays.
+#[tauri::command]
+pub fn capture_copy(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    index: u32,
+    rect: crate::capture::HitRect,
+) -> Value {
+    match state.capture.copy(&app, index, &rect) {
+        Ok(()) => json!({ "ok": true }),
+        Err(error) => json!({ "ok": false, "error": error.message, "hint": error.hint }),
+    }
+}
+
+/// Recognizes the text in the selected screenshot region (on-device OCR).
+#[tauri::command]
+pub async fn capture_ocr(
+    state: State<'_, Arc<AppState>>,
+    index: u32,
+    rect: crate::capture::HitRect,
+) -> Result<Value, String> {
+    match state.capture.ocr(index, &rect).await {
+        Ok(text) => Ok(json!({ "ok": true, "text": text })),
+        Err(error) => Ok(json!({ "ok": false, "error": error.message, "hint": error.hint })),
+    }
+}
+
+/// Streams a screenshot AI action (`translate` / `explain` / `custom`); chunks
+/// arrive as `capture-event` messages on the capture windows.
+#[tauri::command]
+pub fn capture_ai(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    request_id: String,
+    index: u32,
+    rect: crate::capture::HitRect,
+    action: String,
+    skill_id: Option<String>,
+    target_lang: Option<String>,
+) -> Value {
+    match state.capture.ai(
+        &app,
+        index,
+        &rect,
+        &action,
+        skill_id,
+        target_lang,
+        Some(request_id),
+    ) {
+        Ok(()) => json!({ "ok": true }),
+        Err(error) => json!({ "ok": false, "error": error.message, "hint": error.hint }),
+    }
+}
+
+/// Closes the capture overlays and forgets the session.
+#[tauri::command]
+pub fn capture_close(app: AppHandle, state: State<'_, Arc<AppState>>) -> Value {
+    state.capture.close(&app);
+    json!({ "ok": true })
+}
+
+// ---------------------------------------------------------------------------
 // Picker window commands (§5.2)
 // ---------------------------------------------------------------------------
 

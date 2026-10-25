@@ -145,6 +145,30 @@ body {
   letter-spacing: 0.01em;
 }
 
+/* Image skills (built-in screenshot / custom kind=image): a subtle corner dot
+ * marks them as capture entries while keeping the normal tool-button layout. */
+.tool-btn.is-image-skill {
+  position: relative;
+}
+
+.tool-btn.is-image-skill::after {
+  content: "";
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--primary);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.tool-btn.is-image-skill:hover::after,
+.tool-btn.is-image-skill:focus-visible::after {
+  opacity: 0.9;
+}
+
 /* Compact mode: icons only; width is measured from the real content. */
 .toolbar.compact .tool-btn {
   padding: 0 9px;

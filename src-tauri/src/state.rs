@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use crate::capture::CaptureService;
 use crate::engine::EngineService;
 use crate::logger::Logger;
 use crate::paths::AppPaths;
@@ -28,6 +29,8 @@ pub struct AppState {
     pub settings: Arc<SettingsStore>,
     pub engine: Arc<EngineService>,
     pub selection: SelectionService,
+    /// Screenshot sessions + overlay windows (xcap/OCR/vision).
+    pub capture: CaptureService,
     pub translate_task: Mutex<Option<TranslateTask>>,
     pub started_at: std::time::Instant,
     /// Set when the process is shutting down, so late UI events are skipped.
@@ -49,6 +52,7 @@ impl AppState {
             settings,
             engine,
             selection,
+            capture: CaptureService::new(),
             translate_task: Mutex::new(None),
             started_at: std::time::Instant::now(),
             quitting: AtomicBool::new(false),

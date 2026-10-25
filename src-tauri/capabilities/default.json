@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capabilities for the settings and picker webviews",
-  "windows": ["settings", "picker"],
+  "description": "Capabilities for the settings, picker and screenshot overlay webviews",
+  "windows": ["settings", "picker", "capture-*"],
   "permissions": [
     "core:default",
     "core:event:default",

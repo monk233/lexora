@@ -12,15 +12,16 @@ use std::sync::{Arc, RwLock};
 
 /// Version of the on-disk settings schema. Bumped whenever defaults or fields
 /// change so [`Settings::normalize`] can migrate an older file in place.
-pub const SETTINGS_VERSION: u32 = 2;
+pub const SETTINGS_VERSION: u32 = 3;
 /// Built-in picker skills, in their canonical toolbar order.
-pub const SKILLS: [&str; 7] = [
+pub const SKILLS: [&str; 8] = [
     "translate",
     "summarize",
     "explain",
     "polish",
     "read",
     "copy",
+    "screenshot",
     "search",
 ];
 /// Icon used when a custom skill has an unknown or empty icon. Valid icon keys
@@ -39,6 +40,13 @@ pub const PANEL_MODES: [&str; 2] = ["auto", "scroll"];
 /// Default panel sizing mode: grow with the content.
 pub fn default_panel_mode() -> String {
     "auto".to_string()
+}
+/// Input kinds accepted by `picker.customSkills[].kind`: `text` runs the custom
+/// skill on the selected text, `image` runs it on a screenshot region.
+pub const CUSTOM_SKILL_KINDS: [&str; 2] = ["text", "image"];
+/// Kind used when a custom skill's `kind` is empty or unknown.
+pub fn default_custom_skill_kind() -> String {
+    "text".to_string()
 }
 /// Label used when a custom skill has an empty label.
 const CUSTOM_SKILL_DEFAULT_LABEL: &str = "自定义技能";
@@ -105,6 +113,10 @@ pub struct CustomSkill {
     /// Icon key matching `^[a-z0-9-]{1,40}$`; unknown keys fall back to
     /// [`CUSTOM_SKILL_DEFAULT_ICON`].
     pub icon: String,
+    /// Input kind, one of [`CUSTOM_SKILL_KINDS`]: `text` acts on the selected
+    /// text, `image` acts on a screenshot region. Defaults to `text`.
+    #[serde(default = "default_custom_skill_kind")]
+    pub kind: String,
     /// Model instruction; supports `{text}` `{target}` `{language}`
     /// `{program}` `{app}` placeholders.
     pub prompt: String,
@@ -116,6 +128,7 @@ impl Default for CustomSkill {
             id: String::new(),
             label: String::new(),
             icon: CUSTOM_SKILL_DEFAULT_ICON.to_string(),
+            kind: default_custom_skill_kind(),
             prompt: String::new(),
         }
     }
@@ -274,18 +287,27 @@ impl Settings {
     /// Clamps every field into a sane range and drops unknown skills/languages.
     pub fn normalize(mut self) -> Self {
         // Migrate older files before validating. Version 1 shipped only the
-        // five original built-in skills; version 2 adds `polish` and `search`.
-        // They are appended after the existing entries so enabled custom ids
-        // keep their original position in the toolbar.
+        // original built-in skills; version 2 adds `polish` and `search`;
+        // version 3 adds `screenshot`. New entries are appended after the
+        // existing entries so enabled custom ids keep their original position
+        // in the toolbar.
         if self.version < SETTINGS_VERSION {
-            let existing: Vec<String> = self
+            let mut existing: Vec<String> = self
                 .picker
                 .skills
                 .iter()
                 .map(|skill| skill.trim().to_ascii_lowercase())
                 .collect();
-            for skill in ["polish", "search"] {
+            let mut new_skills: Vec<&str> = Vec::new();
+            if self.version < 2 {
+                new_skills.extend(["polish", "search"]);
+            }
+            if self.version < 3 {
+                new_skills.push("screenshot");
+            }
+            for skill in new_skills {
                 if !existing.iter().any(|current| current == skill) {
+                    existing.push(skill.to_string());
                     self.picker.skills.push(skill.to_string());
                 }
             }
@@ -319,10 +341,19 @@ impl Settings {
                     CUSTOM_SKILL_DEFAULT_ICON.to_string()
                 }
             };
+            let kind = {
+                let kind = skill.kind.trim().to_ascii_lowercase();
+                if CUSTOM_SKILL_KINDS.contains(&kind.as_str()) {
+                    kind
+                } else {
+                    default_custom_skill_kind()
+                }
+            };
             custom_skills.push(CustomSkill {
                 id,
                 label,
                 icon,
+                kind,
                 prompt,
             });
         }
@@ -638,10 +669,10 @@ mod tests {
     fn defaults_are_normalized() {
         let settings = Settings::default().normalize();
         assert_eq!(settings.version, SETTINGS_VERSION);
-        assert_eq!(settings.version, 2);
+        assert_eq!(settings.version, 3);
         let expected: Vec<String> = SKILLS.iter().map(|skill| skill.to_string()).collect();
         assert_eq!(settings.picker.skills, expected);
-        assert_eq!(settings.picker.skills.len(), 7);
+        assert_eq!(settings.picker.skills.len(), 8);
         assert_eq!(settings.picker.search_engine, "google");
         assert!(!settings.picker.panel_pinned);
         assert_eq!(settings.picker.panel_mode, "auto");
@@ -872,36 +903,42 @@ mod tests {
                 id: "  CUSTOM-Test-1  ".to_string(),
                 label: format!("  {long_label}  "),
                 icon: "dragon".to_string(),
+                kind: default_custom_skill_kind(),
                 prompt: "  Translate {text} into {target}.  ".to_string(),
             },
             CustomSkill {
                 id: "custom-empty-prompt".to_string(),
                 label: "空提示词".to_string(),
                 icon: "star".to_string(),
+                kind: default_custom_skill_kind(),
                 prompt: "   ".to_string(),
             },
             CustomSkill {
                 id: "skill-invalid".to_string(),
                 label: "非法".to_string(),
                 icon: "star".to_string(),
+                kind: default_custom_skill_kind(),
                 prompt: "prompt".to_string(),
             },
             CustomSkill {
                 id: "custom-test-1".to_string(),
                 label: "重复".to_string(),
                 icon: "star".to_string(),
+                kind: default_custom_skill_kind(),
                 prompt: "prompt".to_string(),
             },
             CustomSkill {
                 id: "custom-defaults".to_string(),
                 label: "   ".to_string(),
                 icon: String::new(),
+                kind: default_custom_skill_kind(),
                 prompt: "  Some prompt  ".to_string(),
             },
             CustomSkill {
                 id: "custom-long-prompt".to_string(),
                 label: "长提示词".to_string(),
                 icon: " WAND ".to_string(),
+                kind: default_custom_skill_kind(),
                 prompt: long_prompt,
             },
         ];
@@ -940,6 +977,7 @@ mod tests {
                 id: format!("custom-{index}"),
                 label: format!("技能{index}"),
                 icon: "star".to_string(),
+                kind: default_custom_skill_kind(),
                 prompt: "prompt".to_string(),
             })
             .collect();
@@ -1010,6 +1048,7 @@ mod tests {
             id: "custom-x".to_string(),
             label: "解释".to_string(),
             icon: "book".to_string(),
+            kind: default_custom_skill_kind(),
             prompt: "{text}".to_string(),
         }];
         let value = serde_json::to_value(&settings).unwrap();
@@ -1079,7 +1118,8 @@ mod tests {
                 "copy",
                 "custom-abc",
                 "polish",
-                "search"
+                "search",
+                "screenshot"
             ]
         );
         assert_eq!(settings.picker.custom_skills.len(), 1);
@@ -1102,6 +1142,7 @@ mod tests {
             id: "custom-x".to_string(),
             label: "自定义".to_string(),
             icon: "star".to_string(),
+            kind: default_custom_skill_kind(),
             prompt: "prompt".to_string(),
         }];
 
@@ -1109,10 +1150,106 @@ mod tests {
         assert_eq!(migrated.version, SETTINGS_VERSION);
         assert_eq!(
             migrated.picker.skills,
-            vec!["translate", "polish", "custom-x", "search"]
+            vec!["translate", "polish", "custom-x", "search", "screenshot"]
         );
         // Idempotent: a second pass changes nothing.
         assert_eq!(migrated.clone().normalize(), migrated);
+    }
+
+    #[test]
+    fn version_two_settings_gain_the_screenshot_skill() {
+        let mut settings = Settings::default();
+        settings.version = 2;
+        settings.picker.skills = SKILLS
+            .iter()
+            .filter(|skill| **skill != "screenshot")
+            .map(|skill| skill.to_string())
+            .collect();
+
+        let migrated = settings.normalize();
+        assert_eq!(migrated.version, SETTINGS_VERSION);
+        // Version 3 only appends the new built-in; settings that already list
+        // it are left untouched (covered by the idempotency check below).
+        let mut expected: Vec<String> = SKILLS
+            .iter()
+            .filter(|skill| **skill != "screenshot")
+            .map(|skill| skill.to_string())
+            .collect();
+        expected.push("screenshot".to_string());
+        assert_eq!(migrated.picker.skills, expected);
+        assert_eq!(
+            migrated
+                .picker
+                .skills
+                .iter()
+                .filter(|skill| *skill == "screenshot")
+                .count(),
+            1
+        );
+        // Idempotent: a second pass changes nothing.
+        assert_eq!(migrated.clone().normalize(), migrated);
+    }
+
+    #[test]
+    fn custom_skill_kind_defaults_to_text() {
+        assert_eq!(CustomSkill::default().kind, "text");
+        assert_eq!(default_custom_skill_kind(), "text");
+
+        // Old settings.json files have no `kind`: they deserialize as `text`.
+        let settings: Settings = serde_json::from_str(
+            r#"{
+                "picker": {
+                    "customSkills": [{
+                        "id": "custom-old",
+                        "label": "旧技能",
+                        "icon": "star",
+                        "prompt": "Explain {text}"
+                    }]
+                }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(settings.picker.custom_skills[0].kind, "text");
+    }
+
+    #[test]
+    fn custom_skill_kind_normalizes_to_text_or_image() {
+        fn normalize_kind(kind: &str) -> String {
+            let mut settings = Settings::default();
+            settings.picker.custom_skills = vec![CustomSkill {
+                id: "custom-kind".to_string(),
+                label: "类型".to_string(),
+                icon: "star".to_string(),
+                kind: kind.to_string(),
+                prompt: "prompt".to_string(),
+            }];
+            settings.normalize().picker.custom_skills[0].kind.clone()
+        }
+
+        assert_eq!(normalize_kind("text"), "text");
+        assert_eq!(normalize_kind("image"), "image");
+        assert_eq!(normalize_kind(" IMAGE "), "image");
+        for invalid in ["", "   ", "video", "audio", "图片"] {
+            assert_eq!(
+                normalize_kind(invalid),
+                "text",
+                "wrong fallback for {invalid:?}"
+            );
+        }
+
+        // camelCase serialization and JSON round-trip.
+        let mut settings = Settings::default();
+        settings.picker.custom_skills = vec![CustomSkill {
+            id: "custom-image".to_string(),
+            label: "截图解释".to_string(),
+            icon: "scan-eye".to_string(),
+            kind: "image".to_string(),
+            prompt: "解释图片".to_string(),
+        }];
+        let value = serde_json::to_value(&settings).unwrap();
+        assert_eq!(value["picker"]["customSkills"][0]["kind"], "image");
+        let parsed: Settings = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.picker.custom_skills[0].kind, "image");
     }
 
     #[test]
@@ -1148,6 +1285,7 @@ mod tests {
                 id: "custom-icon".to_string(),
                 label: "图标".to_string(),
                 icon: icon.to_string(),
+                kind: default_custom_skill_kind(),
                 prompt: "prompt".to_string(),
             }];
             settings.normalize().picker.custom_skills[0].icon.clone()
