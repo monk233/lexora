@@ -322,7 +322,7 @@ pub struct SelectionService {
 - `scripts/fetch-llama.ps1`：下载/解压引擎到 `src-tauri/../data/engine`（dev 用）或指定目录；支持 `-FromDir <已有llama.cpp目录>`；SHA 不校验但校验 zip 大小/解压后存在 llama-server.exe。
 - `scripts/build-portable.ps1`：`npx tauri build --no-bundle` → 取 `src-tauri/target/release/lexora.exe`；复制为 `dist/Lexora-<version>-win-x64.exe`（单个 exe，不压缩、不打 zip；支持 `-SkipBuild`）。
 - `scripts/release-notes.ps1`：从 `CHANGELOG.md` 对应版本小节生成排版化 Release 正文（缺失时退化为按 conventional-commit 分组的 git 提交列表）；`-OutputPath` 写出 Markdown。
-- `.github/workflows/ci.yml`：push/PR：windows-latest，setup node 22 + Rust stable，`npm ci`（无 lock 则 npm install），`cargo test`，`tauri build --no-bundle`（不下载大模型）。
+- `.github/workflows/ci.yml`：仅 master/main 的 push 触发（PR 与非 master 推送不跑）；windows-latest，setup node 22 + Rust stable，`npm ci`（无 lock 则 npm install），`cargo test`，`tauri build --no-bundle`（不下载大模型）。
 - `release.yml`：tag `v*` 触发；校验 tag 与 `tauri.conf.json` 版本一致，构建单 exe、生成 release notes、上传 exe 到 GitHub Release。
 
 ## 7. 前端规范（T3）
