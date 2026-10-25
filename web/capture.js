@@ -20,11 +20,20 @@
   var LP = window.LP || {};
 
   var MIN_SIZE = 8;
-  /* Screenshot toolbar actions, in their canonical order. The visible order and
-   * the enabled set come from `settings.picker.captureSkills` (contract §7.2 /
-   * §10.2); `copy`/`ocr`/`translate`/`explain` all enabled is the default. */
+  /* Built-in screenshot toolbar actions. The toolbar order and the enabled set
+   * come from `settings.picker.captureSkills` (contract §7.2 / §10.2); that
+   * list may also reference enabled custom `kind=image` skills (ids starting
+   * with `custom-`), which are rendered as buttons created at runtime. */
   var CAPTURE_ACTIONS = ["copy", "ocr", "translate", "explain"];
   var DEFAULT_CAPTURE_SKILLS = CAPTURE_ACTIONS.slice();
+  var CUSTOM_SKILL_PREFIX = "custom-";
+  var DEFAULT_CUSTOM_SKILL_LABEL = "图片技能";
+  /* Fallback glyph for custom skills whose icon key is unknown. */
+  var FALLBACK_TOOL_ICON =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" ' +
+    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"></path>' +
+    "</svg>";
   /* The shell captures/encodes while the reused overlay window is being armed,
    * so the session is not necessarily ready on the first poll. Keep polling
    * with an attempt budget (~9 s at 120 ms) instead of a fixed retry count;
@@ -50,8 +59,11 @@
     captureGeneration: 0,
     pollAttempt: 0,
     preset: null,
-    /* Effective `captureSkills` order (validated against CAPTURE_ACTIONS). */
+    /* Effective `captureSkills` order and the custom image skill definitions
+     * available to the toolbar (ids referenced by `captureSkills`). */
     captureSkills: DEFAULT_CAPTURE_SKILLS.slice(),
+    customSkills: Object.create(null),
+    compact: false,
     imageWidth: 0,
     imageHeight: 0,
     rect: null,
@@ -375,90 +387,210 @@
     }
   }
 
-  /* Load the picker settings the overlay needs: translation target language
-   * and the toolbar action order/visibility (`picker.captureSkills`). Called on
-   * boot and on every capture, so a changed setting reaches the reused window. */
-  function loadPickerSettings() {
+  /* Load the picker settings the overlay needs: translation target language,
+   * the toolbar order/visibility (`picker.captureSkills` plus the custom image
+   * skill definitions) and compact mode. Called on boot and on every capture, so
+   * a changed setting reaches the reused window; a stale response from a
+   * previous capture generation is ignored. */
+  function loadPickerSettings(generation) {
     var api = window.settingsAPI;
     if (!api || typeof api.getState !== "function") {
       return;
     }
     api.getState().then(
       function (result) {
+        if (
+          typeof generation === "number" &&
+          generation !== state.captureGeneration
+        ) {
+          return;
+        }
         var payload = result && (result.state || result);
         var picker = payload && payload.settings && payload.settings.picker;
         if (!picker) {
           return;
         }
+        state.compact = picker.compact === true;
         if (picker.defaultTargetLang) {
           state.targetLang = String(picker.defaultTargetLang);
         }
-        applyCaptureSkills(normalizeCaptureSkills(picker.captureSkills));
+        applyToolbarSettings(picker.captureSkills, picker.customSkills);
       },
       function () {
-        /* keep "auto" and the default toolbar order */
+        /* keep "auto", the default toolbar order and the previous compact mode */
       }
     );
   }
 
-  /* Validate the configured action list: unknown values are dropped, repeats
+  /* Enabled custom image skills (`kind: "image"`) keyed by id. Only those may
+   * appear in the screenshot toolbar; the text toolbar ignores them. */
+  function collectCustomImageSkills(rawList) {
+    var result = Object.create(null);
+    each(rawList, function (entry) {
+      if (!entry || typeof entry !== "object") {
+        return;
+      }
+      var id = String(entry.id == null ? "" : entry.id)
+        .trim()
+        .toLowerCase();
+      if (!id || id.indexOf(CUSTOM_SKILL_PREFIX) !== 0) {
+        return;
+      }
+      if (
+        String(entry.kind == null ? "" : entry.kind)
+          .trim()
+          .toLowerCase() !== "image"
+      ) {
+        return;
+      }
+      var label = String(entry.label == null ? "" : entry.label).trim();
+      result[id] = {
+        id: id,
+        label: label.slice(0, 20) || DEFAULT_CUSTOM_SKILL_LABEL,
+        icon: String(entry.icon == null ? "" : entry.icon).trim()
+      };
+    });
+    return result;
+  }
+
+  /* Validate the configured toolbar list: built-in ids always pass, custom ids
+   * only when the skill definition exists. Unknown values are dropped, repeats
    * are ignored and the configuration order is preserved. A missing/invalid
    * value falls back to the four default actions; an explicit empty list means
-   * "no action buttons" (cancel/preset only). */
-  function normalizeCaptureSkills(raw) {
+   * "no action buttons" (取消/确认 only). */
+  function normalizeCaptureSkills(raw, customSkills) {
     if (!Array.isArray(raw)) {
       return DEFAULT_CAPTURE_SKILLS.slice();
     }
     var result = [];
     each(raw, function (item) {
-      var value = String(item == null ? "" : item).trim().toLowerCase();
-      if (CAPTURE_ACTIONS.indexOf(value) >= 0 && result.indexOf(value) < 0) {
+      var value = String(item == null ? "" : item)
+        .trim()
+        .toLowerCase();
+      if (!value || result.indexOf(value) >= 0) {
+        return;
+      }
+      if (
+        CAPTURE_ACTIONS.indexOf(value) >= 0 ||
+        (customSkills && customSkills[value])
+      ) {
         result.push(value);
       }
     });
     return result;
   }
 
-  function applyCaptureSkills(skills) {
-    state.captureSkills = Array.isArray(skills) ? skills : DEFAULT_CAPTURE_SKILLS.slice();
+  function applyToolbarSettings(rawSkills, rawCustomSkills) {
+    state.customSkills = collectCustomImageSkills(rawCustomSkills);
+    state.captureSkills = normalizeCaptureSkills(rawSkills, state.customSkills);
     renderCaptureBar();
   }
 
-  /* Reorder/hide the toolbar actions to mirror `state.captureSkills`. Existing
-   * button elements are only moved with `appendChild`, so their listeners, ids
-   * and data-actions survive; the preset button keeps the leading slot and the
-   * tail is always [separator?] [确认] [取消]. Idempotent by construction (no
-   * re-creation, no re-binding). */
+  /* Back to the built-in toolbar while the next capture's settings load. */
+  function setToolbarSkillsDefault() {
+    state.captureSkills = DEFAULT_CAPTURE_SKILLS.slice();
+    state.customSkills = Object.create(null);
+  }
+
+  function skillIconMarkup(key) {
+    if (LP && typeof LP.skillIconSvg === "function") {
+      try {
+        var svg = String(LP.skillIconSvg(key) || "");
+        if (svg) {
+          return svg;
+        }
+      } catch (error) {
+        /* fall through to the generic icon */
+      }
+    }
+    return FALLBACK_TOOL_ICON;
+  }
+
+  /* Runtime button for an enabled custom image skill. Clicks are handled by the
+   * bar's delegated listener (`data-action="custom"` + `data-skill-id`). */
+  function createCustomToolButton(skill) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "tool-btn tool-btn-custom";
+    button.setAttribute("data-action", "custom");
+    button.setAttribute("data-skill-id", skill.id);
+    button.title = skill.label;
+    button.setAttribute("aria-label", skill.label);
+    button.innerHTML = skillIconMarkup(skill.icon) + '<span class="label"></span>';
+    var icon = button.querySelector("svg");
+    if (icon) {
+      icon.setAttribute("class", "icon");
+      icon.setAttribute("aria-hidden", "true");
+    }
+    var label = button.querySelector(".label");
+    if (label) {
+      label.textContent = skill.label;
+    }
+    return button;
+  }
+
+  /* Rebuild the toolbar from `state.captureSkills`/`state.customSkills`. Static
+   * built-in buttons are moved, runtime custom buttons are removed and created
+   * fresh (so an expired custom id never lingers), the preset button keeps the
+   * leading slot (suppressing a duplicate entry for the same skill) and the tail
+   * is always [separator?] [取消] [确认]. Idempotent: no re-binding, clicks are
+   * delegated. */
   function renderCaptureBar() {
     if (!dom.bar) {
       return;
     }
+    dom.bar.classList.toggle("compact", state.compact === true);
+    /* Drop the previous runtime buttons before rebuilding. */
+    each(dom.bar.querySelectorAll('[data-action="custom"]'), function (button) {
+      dom.bar.removeChild(button);
+    });
+
     var skills = Array.isArray(state.captureSkills)
       ? state.captureSkills
       : DEFAULT_CAPTURE_SKILLS;
-    each(CAPTURE_ACTIONS, function (action) {
-      setHidden(barButtons[action], skills.indexOf(action) < 0);
-    });
-    each(skills, function (action) {
-      var button = barButtons[action];
-      if (button) {
-        dom.bar.appendChild(button);
+    var presetId =
+      state.preset && state.preset.skillId
+        ? String(state.preset.skillId).trim().toLowerCase()
+        : "";
+    var customSkills = state.customSkills || Object.create(null);
+    var entries = [];
+    each(skills, function (id) {
+      var value = String(id == null ? "" : id)
+        .trim()
+        .toLowerCase();
+      if (!value || value === presetId) {
+        /* Already rendered by the preset button at the front. */
+        return;
+      }
+      if (CAPTURE_ACTIONS.indexOf(value) >= 0 || customSkills[value]) {
+        entries.push(value);
       }
     });
+    each(CAPTURE_ACTIONS, function (action) {
+      setHidden(barButtons[action], entries.indexOf(action) < 0);
+    });
+    each(entries, function (id) {
+      var button = barButtons[id];
+      if (!button) {
+        button = createCustomToolButton(customSkills[id]);
+      }
+      dom.bar.appendChild(button);
+    });
     if (dom.barTailSep) {
-      /* With every action disabled the bar is [preset?] [确认] [取消]; the
-       * separator would then be the first visible item, so hide it. */
-      setHidden(dom.barTailSep, skills.length === 0);
+      /* With no action buttons the bar is [preset?] [取消] [确认]; the separator
+       * would then be the first visible item, so hide it. */
+      setHidden(dom.barTailSep, entries.length === 0);
       dom.bar.appendChild(dom.barTailSep);
-    }
-    if (dom.barConfirm) {
-      setHidden(dom.barConfirm, false);
-      dom.bar.appendChild(dom.barConfirm);
     }
     if (dom.barCancel) {
       setHidden(dom.barCancel, false);
       dom.bar.appendChild(dom.barCancel);
     }
+    if (dom.barConfirm) {
+      setHidden(dom.barConfirm, false);
+      dom.bar.appendChild(dom.barConfirm);
+    }
+    updateBarState();
   }
 
   /* ---- Screenshot loading (no visible loading UI, §10.1) --------------- */
@@ -501,11 +633,12 @@
     document.body.classList.remove("is-dragging", "is-over-selection");
     /* Render the default toolbar first; the (async) settings response reorders
      * it a few milliseconds later, while the window is still hidden. */
-    state.captureSkills = DEFAULT_CAPTURE_SKILLS.slice();
+    setToolbarSkillsDefault();
     renderCaptureBar();
     /* The overlay window lives for the whole session, so refresh the picker
-     * settings (target language + toolbar order) on every capture. */
-    loadPickerSettings();
+     * settings (target language, toolbar entries, compact mode) on every
+     * capture. */
+    loadPickerSettings(generation);
 
     if (!API || typeof API.monitor !== "function") {
       showLoadError(generation, { error: "截图服务不可用，请重启 Lexora 后再试。" });
@@ -634,7 +767,9 @@
     setHidden(dom.size, false);
     setHidden(dom.bar, false);
     renderPresetButton();
-    updateBarState();
+    /* The preset id arrives with the screenshot, so rebuild once more to drop a
+     * duplicate entry for it from the configured toolbar. */
+    renderCaptureBar();
     render();
     showHint();
     afterPaint(function () {
@@ -1132,7 +1267,10 @@
     if (!button || button.disabled) {
       return;
     }
-    handleAction(button.getAttribute("data-action"));
+    handleAction(
+      button.getAttribute("data-action"),
+      button.getAttribute("data-skill-id") || ""
+    );
   }
 
   function onPresetClick() {
@@ -1142,13 +1280,16 @@
     runSkill("custom", state.preset.skillId);
   }
 
-  function handleAction(action) {
+  function handleAction(action, skillId) {
     /* "确认" accepts the crop: same flow as "复制" (the shell copies the image
      * to the clipboard and hides the overlay). */
     if (action === "copy" || action === "confirm") {
       copyImage();
     } else if (action === "ocr" || action === "translate" || action === "explain") {
       runSkill(action, "");
+    } else if (action === "custom") {
+      /* Runtime button of an enabled custom image skill. */
+      runSkill("custom", String(skillId || ""));
     } else if (action === "cancel") {
       cancelCapture();
     }

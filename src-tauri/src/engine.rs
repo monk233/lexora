@@ -657,6 +657,46 @@ impl EngineService {
         openai::stream_chat(&self.http, &config, messages, config.header_timeout()).await
     }
 
+    /// Streams the translation of a screenshot region's text with the
+    /// screenshot-specific system prompt (`picker.capturePrompts.translate`).
+    /// An empty prompt falls back to the normal text translation pipeline
+    /// (single-word dictionary handling included).
+    pub async fn translate_stream_with_prompt(
+        &self,
+        text: &str,
+        target_lang: &str,
+        custom_prompt: &str,
+    ) -> Result<BoxStream<'static, Result<String, EngineError>>, EngineError> {
+        let custom = custom_prompt.trim();
+        if custom.is_empty() {
+            return self.translate_stream(text, target_lang).await;
+        }
+        let settings = self.settings.get();
+        let cleaned = text.trim();
+        if cleaned.is_empty() {
+            return Err(EngineError::new(
+                "没有可翻译的文本。",
+                "截图中没有识别到文字，请重新框选后再试。",
+            ));
+        }
+        let truncated = prompts::truncate_chars(cleaned, settings.picker.max_chars as usize);
+        let target = prompts::resolve_target_lang(target_lang, &truncated);
+        let (system, user) = prompts::translate_messages(&truncated, &target, custom);
+        let messages = vec![
+            json!({"role": "system", "content": system}),
+            json!({"role": "user", "content": user}),
+        ];
+        let config = self.chat_config(&settings, LocalRole::Translate).await?;
+        self.logger.info(&format!(
+            "screenshot translate stream start: provider={} model={} chars={} target={} custom_prompt=true",
+            if config.local { "local" } else { "online" },
+            config.model,
+            truncated.chars().count(),
+            target
+        ));
+        openai::stream_chat(&self.http, &config, messages, config.header_timeout()).await
+    }
+
     /// Streams a vision (screenshot) request.
     ///
     /// `image_data_url` is a `data:image/png;base64,...` URL; `system` is the

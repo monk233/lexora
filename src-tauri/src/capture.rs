@@ -978,7 +978,9 @@ async fn run_capture_job(
                 ));
             }
             let engine = engine_of(&app)?;
-            let mut stream = engine.translate_stream(&text, &target).await?;
+            let mut stream = engine
+                .translate_stream_with_prompt(&text, &target, &job.system_prompt)
+                .await?;
             stream_chunks(&app, &request_id, &mut stream).await?;
             emit_done(&app, &request_id);
             Ok(())
@@ -1272,13 +1274,21 @@ fn resolve_skill_meta(
         SkillAction::Translate => Ok(SkillMeta {
             label: "翻译".to_string(),
             skill_id: String::new(),
-            system_prompt: String::new(),
+            // Screenshot-specific translate prompt (`picker.capturePrompts`).
+            system_prompt: settings.picker.capture_prompts.translate.clone(),
         }),
-        SkillAction::Explain => Ok(SkillMeta {
-            label: "解释图片".to_string(),
-            skill_id: String::new(),
-            system_prompt: crate::engine::DEFAULT_EXPLAIN_IMAGE_PROMPT.to_string(),
-        }),
+        SkillAction::Explain => {
+            let custom = settings.picker.capture_prompts.explain.trim();
+            Ok(SkillMeta {
+                label: "解释图片".to_string(),
+                skill_id: String::new(),
+                system_prompt: if custom.is_empty() {
+                    crate::engine::DEFAULT_EXPLAIN_IMAGE_PROMPT.to_string()
+                } else {
+                    custom.to_string()
+                },
+            })
+        }
         SkillAction::Custom => {
             let Some(skill_id) = skill_id.map(str::trim).filter(|id| !id.is_empty()) else {
                 return Err(EngineError::new(
@@ -1289,13 +1299,18 @@ fn resolve_skill_meta(
             let Some(skill) = image_skill(settings, skill_id) else {
                 return Err(EngineError::new(
                     "技能不存在（可能已被删除）",
-                    "请在设置 → 划词行为中重新添加该技能。",
+                    "请在设置 → 图片技能中重新添加该技能。",
                 ));
             };
-            if !settings.picker.skills.iter().any(|id| id == &skill.id) {
+            if !settings
+                .picker
+                .capture_skills
+                .iter()
+                .any(|id| id == &skill.id)
+            {
                 return Err(EngineError::new(
                     "技能未启用",
-                    "请在设置 → 划词行为中启用该技能。",
+                    "请在设置 → 图片技能中启用该技能。",
                 ));
             }
             let target = crate::engine::resolve_target_lang(target_lang, "");
@@ -1961,7 +1976,9 @@ mod tests {
                 prompt: "Extract {text} in {target}".to_string(),
             },
         ];
-        settings.picker.skills = vec!["custom-image".to_string()];
+        settings.picker.skills = vec!["custom-text".to_string()];
+        // Custom image skills are enabled through the screenshot toolbar list.
+        settings.picker.capture_skills = vec!["custom-image".to_string()];
         settings
     }
 
@@ -2190,6 +2207,29 @@ mod tests {
     }
 
     #[test]
+    fn capture_prompts_override_the_builtin_action_prompts() {
+        let mut settings = Settings::default();
+        settings.picker.capture_prompts.translate = "Translate into {target}.".to_string();
+        settings.picker.capture_prompts.explain = "Describe the UI text.".to_string();
+        let translate =
+            resolve_skill_meta(&settings, SkillAction::Translate, None, "auto").unwrap();
+        assert_eq!(translate.system_prompt, "Translate into {target}.");
+        let explain = resolve_skill_meta(&settings, SkillAction::Explain, None, "auto").unwrap();
+        assert_eq!(explain.system_prompt, "Describe the UI text.");
+
+        // Empty overrides fall back to the built-in defaults.
+        let defaults = Settings::default();
+        let explain = resolve_skill_meta(&defaults, SkillAction::Explain, None, "auto").unwrap();
+        assert_eq!(
+            explain.system_prompt,
+            crate::engine::DEFAULT_EXPLAIN_IMAGE_PROMPT
+        );
+        let translate =
+            resolve_skill_meta(&defaults, SkillAction::Translate, None, "auto").unwrap();
+        assert!(translate.system_prompt.is_empty());
+    }
+
+    #[test]
     fn skill_actions_parse_the_contract_values() {
         assert_eq!(SkillAction::parse("ocr"), Some(SkillAction::Ocr));
         assert_eq!(
@@ -2241,7 +2281,7 @@ mod tests {
                 .is_err()
         );
         let mut disabled = settings;
-        disabled.picker.skills = vec!["translate".to_string()];
+        disabled.picker.capture_skills = vec!["translate".to_string()];
         assert!(
             resolve_skill_meta(&disabled, SkillAction::Custom, Some("custom-image"), target)
                 .is_err()

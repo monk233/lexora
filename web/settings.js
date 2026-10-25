@@ -64,6 +64,11 @@
   var promptTimers = {};
   var promptDrafts = {};
 
+  /* Screenshot-toolbar prompt editors (built-in translate / explain rows). */
+  var capturePromptExpanded = {};
+  var capturePromptTimers = {};
+  var capturePromptDrafts = {};
+
   /* Skill id currently being dragged in the toolbar-order list. */
   var dragSkillId = "";
 
@@ -141,11 +146,15 @@
       '支持变量：<code>{target}</code> / <code>{language}</code> 目标语言、<code>{program}</code> / <code>{app}</code> 当前应用（图片内容由截图提供，不使用 {text}）',
   };
 
-  /* Screenshot toolbar actions (contract §7.2, fourth review round). Stored in
-   * `picker.captureSkills`: the array order is the toolbar button order and a
-   * missing id hides that action. The built-in screenshot entry skill stays in
-   * `picker.skills` (text-skill tab) and is unrelated to this list. */
+  /* Screenshot toolbar skills (contract §7.2, sixth review round). Stored in
+   * `picker.captureSkills`: one ordered list that mixes the built-in actions and
+   * custom `kind=image` skills. A missing id means the row is hidden; an empty
+   * list means the screenshot toolbar has no actions. The built-in screenshot
+   * entry skill stays in `picker.skills` (text-skill tab). */
   var CAPTURE_ACTION_ORDER = ["copy", "ocr", "translate", "explain"];
+  /* Built-in actions whose system prompt can be overridden in the settings
+   * page (`picker.capturePrompts`). */
+  var CAPTURE_PROMPT_ACTIONS = ["translate", "explain"];
   var CAPTURE_ACTION_META = {
     copy: {
       label: "复制",
@@ -168,6 +177,12 @@
       icon: "lightbulb",
     },
   };
+
+  /* Inline SVG markup shared by the skill rows (pencil / trash). */
+  var SKILL_PENCIL_SVG =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>';
+  var SKILL_TRASH_SVG =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"></path><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path></svg>';
 
   /* ---- DOM helpers ----------------------------------------------------- */
 
@@ -1629,10 +1644,9 @@
     if (!list) {
       return;
     }
-    /* The toolbar actions live outside #skill-list, so refresh them before the
-     * skill-list signature short-circuit: toggling one action must repaint the
-     * action rows even when the skill rows themselves did not change. */
-    renderCaptureActions();
+    /* The image-tab list lives outside #skill-list, so refresh it before the
+     * text-list signature short-circuit. */
+    renderCaptureSkills();
     var customs = customSkillsList();
     var customMap = {};
     customs.forEach(function (skill) {
@@ -1650,7 +1664,13 @@
         order.push(skill.id);
       }
     });
-    var signature = order
+    /* The text tab lists text-category rows only: built-in skills (screenshot
+     * included) and custom text skills. Custom image skills live in the
+     * screenshot toolbar instead (sixth review round). */
+    var textOrder = order.filter(function (id) {
+      return skillCategory(id, customMap) === "text";
+    });
+    var signature = textOrder
       .map(function (id) {
         var custom = customMap[id];
         var detail = custom
@@ -1670,7 +1690,7 @@
     /* Tab chrome, counters and section visibility also depend on the
      * screenshot-toolbar actions (not part of this signature), so refresh them
      * before the skill-list short-circuit. */
-    renderSkillTabs(order, customMap, customs);
+    renderSkillTabs(textOrder);
     if (
       !force &&
       skillTab === list.getAttribute("data-active-tab") &&
@@ -1681,29 +1701,16 @@
     list.setAttribute("data-active-tab", skillTab);
     list.setAttribute("data-signature", signature);
     list.innerHTML = "";
-    order.forEach(function (id) {
-      if (skillCategory(id, customMap) !== skillTab) {
-        return;
-      }
+    textOrder.forEach(function (id) {
       list.appendChild(skillRow(id, enabled.indexOf(id) >= 0, customMap[id]));
     });
   }
 
-  /* Tab chrome: selected state, per-category counts, the image-tab note and
-   * the empty hint shown while the image tab has no custom skills. */
-  function renderSkillTabs(order, customMap, customs) {
-    var counts = { text: 0, image: 0 };
-    order.forEach(function (id) {
-      if (skillCategory(id, customMap) === "text") {
-        counts.text += 1;
-      }
-    });
-    var customImageCount = customs.filter(function (skill) {
-      return customSkillKind(skill) === "image";
-    }).length;
-    /* Image-tab count = enabled screenshot-toolbar actions + custom image
-     * skills; text-tab count = rows listed there (screenshot included). */
-    counts.image = enabledCaptureActions().length + customImageCount;
+  /* Tab chrome: selected state, counts and which list is visible. The text tab
+   * shows #skill-list (text skills + screenshot entry); the image tab shows the
+   * unified #capture-action-list built from picker.captureSkills. */
+  function renderSkillTabs(textOrder) {
+    var enabledCaptureCount = enabledCaptureSkills().length;
     var textTab = byId("skill-tab-text");
     if (textTab) {
       textTab.setAttribute(
@@ -1720,78 +1727,112 @@
     }
     var textCount = byId("skill-tab-text-count");
     if (textCount) {
-      textCount.textContent = "(" + counts.text + ")";
+      textCount.textContent = "(" + textOrder.length + ")";
     }
     var imageCount = byId("skill-tab-image-count");
     if (imageCount) {
-      imageCount.textContent = "(" + counts.image + ")";
+      imageCount.textContent = "(" + enabledCaptureCount + ")";
     }
     var imageTabActive = skillTab === "image";
-    setHidden(byId("capture-actions-section"), !imageTabActive);
-    setHidden(byId("custom-image-head"), !imageTabActive);
-    setHidden(byId("skill-kind-note"), !imageTabActive);
-    setHidden(byId("skill-list-empty"), !imageTabActive || customImageCount > 0);
+    setHidden(byId("capture-action-list"), !imageTabActive);
+    setHidden(byId("skill-list"), imageTabActive);
+    setHidden(
+      byId("capture-actions-empty"),
+      !imageTabActive || enabledCaptureCount > 0
+    );
   }
 
-  /* ---- Screenshot toolbar actions (图片技能 Tab 的截图工具条) ------------ */
+  /* ---- Screenshot toolbar skills (图片技能 Tab 统一列表) ----------------- */
 
-  /* Enabled action ids in saved toolbar order; a missing id means hidden. */
-  function enabledCaptureActions() {
+  /* Custom image skills by id; a row with a `custom-` id renders as a custom
+   * skill row instead of a built-in action row. */
+  function captureSkillMap() {
+    var map = {};
+    customSkillsList().forEach(function (skill) {
+      if (customSkillKind(skill) === "image") {
+        map[skill.id] = skill;
+      }
+    });
+    return map;
+  }
+
+  /* Enabled ids in saved toolbar order: built-in actions and custom image
+   * skills, freely interleaved. A missing id means the row is hidden. */
+  function enabledCaptureSkills() {
     var picker = state && state.settings && state.settings.picker;
     var stored =
       picker && Array.isArray(picker.captureSkills) ? picker.captureSkills : [];
+    var customMap = captureSkillMap();
     var result = [];
     stored.forEach(function (value) {
-      var id = String(value || "");
-      if (CAPTURE_ACTION_META[id] && result.indexOf(id) < 0) {
+      var id = String(value || "").toLowerCase();
+      if (!id || result.indexOf(id) >= 0) {
+        return;
+      }
+      if (CAPTURE_ACTION_META[id] || customMap[id]) {
         result.push(id);
       }
     });
     return result;
   }
 
-  /* Saved order first, then disabled actions in default order so every action
-   * stays reachable from the list. */
-  function captureActionOrder() {
-    var order = enabledCaptureActions();
+  /* Enabled ids first, then hidden built-in actions in default order and hidden
+   * custom image skills last, so every row stays reachable from the list. */
+  function captureSkillOrder() {
+    var order = enabledCaptureSkills();
     CAPTURE_ACTION_ORDER.forEach(function (id) {
       if (order.indexOf(id) < 0) {
         order.push(id);
       }
     });
+    customSkillsList().forEach(function (skill) {
+      if (customSkillKind(skill) === "image" && order.indexOf(skill.id) < 0) {
+        order.push(skill.id);
+      }
+    });
     return order;
   }
 
-  function toggleCaptureAction(id, enabled) {
-    if (!CAPTURE_ACTION_META[id]) {
+  function toggleCaptureSkill(id, enabled) {
+    var custom = CAPTURE_ACTION_META[id] ? null : findCustomSkill(id);
+    if (
+      !CAPTURE_ACTION_META[id] &&
+      !(custom && customSkillKind(custom) === "image")
+    ) {
       return;
     }
-    var actions = enabledCaptureActions();
+    var skills = enabledCaptureSkills();
     if (enabled) {
-      if (actions.indexOf(id) < 0) {
-        actions.push(id);
+      if (skills.indexOf(id) < 0) {
+        skills.push(id);
       }
     } else {
-      actions = actions.filter(function (action) {
-        return action !== id;
+      skills = skills.filter(function (skillId) {
+        return skillId !== id;
       });
     }
     /* An empty list is valid: the screenshot toolbar then only shows
-     * confirm/cancel (fifth review round; the backend keeps [] as-is). */
-    save({ picker: { captureSkills: actions } });
+     * confirm/cancel (the backend keeps [] as-is). */
+    save({ picker: { captureSkills: skills } });
   }
 
-  function renderCaptureActions(force) {
+  function renderCaptureSkills(force) {
     var list = byId("capture-action-list");
     if (!list) {
       return;
     }
-    var enabled = enabledCaptureActions();
-    setHidden(byId("capture-actions-empty"), enabled.length > 0);
-    var order = captureActionOrder();
+    var customMap = captureSkillMap();
+    var enabled = enabledCaptureSkills();
+    var order = captureSkillOrder();
     var signature = order
       .map(function (id) {
-        return id + ":" + (enabled.indexOf(id) >= 0 ? 1 : 0);
+        var custom = customMap[id];
+        var detail = custom
+          ? custom.label + "\u0003" + custom.icon + "\u0003" + custom.prompt
+          : CAPTURE_ACTION_META[id]
+            ? CAPTURE_ACTION_META[id].description
+            : "";
+        return id + ":" + (enabled.indexOf(id) >= 0 ? 1 : 0) + ":" + detail;
       })
       .join("\u0001");
     if (!force && signature === list.getAttribute("data-signature")) {
@@ -1800,24 +1841,18 @@
     list.setAttribute("data-signature", signature);
     list.innerHTML = "";
     order.forEach(function (id) {
-      list.appendChild(captureActionRow(id, enabled.indexOf(id) >= 0));
+      if (CAPTURE_ACTION_META[id]) {
+        list.appendChild(captureActionRow(id, enabled.indexOf(id) >= 0));
+      } else if (customMap[id]) {
+        list.appendChild(
+          captureSkillRow(id, enabled.indexOf(id) >= 0, customMap[id])
+        );
+      }
     });
   }
 
-  function captureActionRow(id, enabled) {
-    var meta = CAPTURE_ACTION_META[id] || {
-      label: id,
-      description: "",
-      icon: "sparkles",
-    };
-    var row = el("li", "skill-item" + (enabled ? "" : " is-disabled"));
-    row.setAttribute("data-capture-action", id);
-
-    var line = el("div", "skill-row");
-    if (enabled) {
-      line.setAttribute("draggable", "true");
-    }
-
+  /* Row pieces shared by built-in and custom image-skill rows. */
+  function skillDragHandle(enabled) {
     var drag = el("span", "skill-drag");
     drag.setAttribute("role", "img");
     drag.setAttribute("aria-label", enabled ? "拖动排序" : "启用后可拖动排序");
@@ -1828,7 +1863,34 @@
       '<circle cx="9" cy="12" r="1.5"></circle><circle cx="15" cy="12" r="1.5"></circle>' +
       '<circle cx="9" cy="18" r="1.5"></circle><circle cx="15" cy="18" r="1.5"></circle>' +
       "</svg>";
-    line.appendChild(drag);
+    return drag;
+  }
+
+  function skillSwitchNode(attribute, id, enabled, label) {
+    var toggle = el("label", "switch");
+    var input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = enabled;
+    input.setAttribute(attribute, id);
+    input.setAttribute("aria-label", "启用" + label);
+    var track = el("span", "switch-track");
+    var thumb = el("span", "switch-thumb");
+    track.appendChild(thumb);
+    toggle.appendChild(input);
+    toggle.appendChild(track);
+    return toggle;
+  }
+
+  function captureActionRow(id, enabled) {
+    var meta = CAPTURE_ACTION_META[id];
+    var row = el("li", "skill-item" + (enabled ? "" : " is-disabled"));
+    row.setAttribute("data-capture-skill", id);
+
+    var line = el("div", "skill-row");
+    if (enabled) {
+      line.setAttribute("draggable", "true");
+    }
+    line.appendChild(skillDragHandle(enabled));
 
     var icon = el("span", "skill-icon");
     icon.setAttribute("aria-hidden", "true");
@@ -1842,21 +1904,259 @@
     main.appendChild(el("span", "skill-desc", meta.description));
     line.appendChild(main);
 
-    var toggle = el("label", "switch");
-    var input = document.createElement("input");
-    input.type = "checkbox";
-    input.checked = enabled;
-    input.setAttribute("data-capture-toggle", id);
-    input.setAttribute("aria-label", "启用" + meta.label);
-    var track = el("span", "switch-track");
-    var thumb = el("span", "switch-thumb");
-    track.appendChild(thumb);
-    toggle.appendChild(input);
-    toggle.appendChild(track);
-    line.appendChild(toggle);
+    if (isCapturePromptSkill(id)) {
+      var editButton = el("button", "skill-edit");
+      editButton.type = "button";
+      editButton.setAttribute("data-capture-prompt-toggle", id);
+      editButton.setAttribute("aria-label", "编辑提示词");
+      editButton.setAttribute(
+        "aria-expanded",
+        capturePromptExpanded[id] ? "true" : "false"
+      );
+      editButton.title = "编辑提示词";
+      editButton.innerHTML = SKILL_PENCIL_SVG;
+      line.appendChild(editButton);
+    }
 
+    line.appendChild(
+      skillSwitchNode("data-capture-toggle", id, enabled, meta.label)
+    );
+    row.appendChild(line);
+    if (isCapturePromptSkill(id) && capturePromptExpanded[id]) {
+      row.appendChild(capturePromptPanel(id, meta));
+    }
+    return row;
+  }
+
+  /* Custom image skill row: editable / deletable, same toggle and drag
+   * behaviour as the built-in action rows. */
+  function captureSkillRow(id, enabled, custom) {
+    var row = el("li", "skill-item" + (enabled ? "" : " is-disabled"));
+    row.setAttribute("data-capture-skill", id);
+
+    var line = el("div", "skill-row");
+    if (enabled) {
+      line.setAttribute("draggable", "true");
+    }
+    line.appendChild(skillDragHandle(enabled));
+
+    var icon = el("span", "skill-icon");
+    icon.setAttribute("aria-hidden", "true");
+    icon.innerHTML = LP.skillIconSvg(custom.icon);
+    line.appendChild(icon);
+
+    var main = el("div", "skill-main");
+    var nameRow = el("div", "skill-name-row");
+    nameRow.appendChild(el("span", "skill-name", custom.label));
+    var badge = el("span", "skill-kind-badge", "图片");
+    badge.title = "图片技能：点击后进入截图";
+    nameRow.appendChild(badge);
+    main.appendChild(nameRow);
+    var description = String(custom.prompt || "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (description) {
+      main.appendChild(el("span", "skill-desc", description));
+    }
+    line.appendChild(main);
+
+    var customEdit = el("button", "skill-edit");
+    customEdit.type = "button";
+    customEdit.setAttribute("data-custom-edit", id);
+    customEdit.setAttribute(
+      "aria-expanded",
+      customEditorOpen && customEditingId === id ? "true" : "false"
+    );
+    customEdit.setAttribute("aria-label", "编辑技能");
+    customEdit.title = "编辑技能";
+    customEdit.innerHTML = SKILL_PENCIL_SVG;
+    line.appendChild(customEdit);
+
+    var customDelete = el("button", "skill-delete");
+    customDelete.type = "button";
+    customDelete.setAttribute("data-custom-delete", id);
+    customDelete.setAttribute("aria-label", "删除技能" + custom.label);
+    customDelete.title = "删除技能";
+    customDelete.innerHTML = SKILL_TRASH_SVG;
+    line.appendChild(customDelete);
+
+    line.appendChild(
+      skillSwitchNode("data-capture-toggle", id, enabled, custom.label)
+    );
     row.appendChild(line);
     return row;
+  }
+
+  /* ---- Screenshot-toolbar prompts (built-in translate / explain) -------- */
+
+  function isCapturePromptSkill(id) {
+    return CAPTURE_PROMPT_ACTIONS.indexOf(id) >= 0;
+  }
+
+  function capturePromptDefaultKey(id) {
+    if (id === "translate") {
+      return "captureTranslate";
+    }
+    if (id === "explain") {
+      return "captureExplain";
+    }
+    return "";
+  }
+
+  function capturePromptCustomValue(id) {
+    var picker = state && state.settings && state.settings.picker;
+    var prompts = (picker && picker.capturePrompts) || {};
+    var value = prompts[id];
+    return typeof value === "string" ? value : "";
+  }
+
+  function capturePromptDefault(id) {
+    var defaults = (state && state.promptDefaults) || {};
+    var key = capturePromptDefaultKey(id);
+    var value = key ? defaults[key] : "";
+    return typeof value === "string" ? value : "";
+  }
+
+  /* Textarea value: pending draft wins, then custom prompt, then the default. */
+  function capturePromptEditorValue(id) {
+    if (Object.prototype.hasOwnProperty.call(capturePromptDrafts, id)) {
+      return capturePromptDrafts[id];
+    }
+    return capturePromptCustomValue(id) || capturePromptDefault(id);
+  }
+
+  function capturePromptPanel(id, meta) {
+    var panel = el("div", "skill-prompt");
+    var textarea = document.createElement("textarea");
+    textarea.className = "textarea";
+    textarea.rows = 5;
+    textarea.spellcheck = false;
+    textarea.setAttribute("data-capture-prompt-input", id);
+    textarea.setAttribute("aria-label", meta.label + "提示词");
+    textarea.value = capturePromptEditorValue(id);
+    textarea.addEventListener("input", function () {
+      capturePromptDrafts[id] = textarea.value;
+      if (capturePromptTimers[id]) {
+        window.clearTimeout(capturePromptTimers[id]);
+      }
+      capturePromptTimers[id] = window.setTimeout(function () {
+        capturePromptTimers[id] = null;
+        saveCapturePromptDraft(id);
+      }, 500);
+    });
+    textarea.addEventListener("blur", function () {
+      flushCapturePromptDraft(id);
+    });
+    textarea.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        textarea.blur();
+      }
+    });
+    panel.appendChild(textarea);
+
+    var foot = el("div", "skill-prompt-foot");
+    foot.appendChild(
+      el(
+        "p",
+        "skill-prompt-hint",
+        id === "translate"
+          ? "留空或重置后使用系统默认提示词；支持 {target} 占位符"
+          : "留空或重置后使用系统默认提示词"
+      )
+    );
+    var reset = el("button", "btn btn-ghost skill-prompt-reset", "重置为默认");
+    reset.type = "button";
+    reset.setAttribute("data-capture-prompt-reset", id);
+    foot.appendChild(reset);
+    panel.appendChild(foot);
+    return panel;
+  }
+
+  function saveCapturePromptDraft(id) {
+    if (!Object.prototype.hasOwnProperty.call(capturePromptDrafts, id)) {
+      return;
+    }
+    var value = capturePromptDrafts[id];
+    delete capturePromptDrafts[id];
+    saveCapturePromptValue(id, value);
+  }
+
+  function flushCapturePromptDraft(id) {
+    if (capturePromptTimers[id]) {
+      window.clearTimeout(capturePromptTimers[id]);
+      capturePromptTimers[id] = null;
+    }
+    saveCapturePromptDraft(id);
+  }
+
+  function saveCapturePromptValue(id, rawValue) {
+    var text = String(rawValue === null || rawValue === undefined ? "" : rawValue);
+    var trimmed = text.trim();
+    var stored = "";
+    if (trimmed && trimmed !== capturePromptDefault(id).trim()) {
+      stored = trimmed;
+    }
+    var patch = { picker: { capturePrompts: {} } };
+    patch.picker.capturePrompts[id] = stored;
+    save(patch);
+  }
+
+  function toggleCapturePromptPanel(id) {
+    if (capturePromptExpanded[id]) {
+      flushCapturePromptDraft(id);
+      delete capturePromptExpanded[id];
+    } else {
+      capturePromptExpanded[id] = true;
+    }
+    renderCaptureSkills(true);
+  }
+
+  function resetCapturePromptValue(id) {
+    flushCapturePromptDraft(id);
+    saveCapturePromptValue(id, "");
+    var list = byId("capture-action-list");
+    var row = list && list.querySelector('[data-capture-skill="' + id + '"]');
+    var textarea = row && row.querySelector(".skill-prompt .textarea");
+    if (textarea) {
+      textarea.value = capturePromptDefault(id);
+    }
+    toast("已重置为默认提示词", "success");
+  }
+
+  /* Click handler for the unified image-skill list: prompt editors plus custom
+   * skill edit / delete. */
+  function handleCaptureListClick(event) {
+    var target = event.target;
+    if (!target || !target.closest) {
+      return;
+    }
+    var promptToggle = target.closest("[data-capture-prompt-toggle]");
+    if (promptToggle) {
+      toggleCapturePromptPanel(
+        promptToggle.getAttribute("data-capture-prompt-toggle")
+      );
+      return;
+    }
+    var promptReset = target.closest("[data-capture-prompt-reset]");
+    if (promptReset) {
+      resetCapturePromptValue(
+        promptReset.getAttribute("data-capture-prompt-reset")
+      );
+      return;
+    }
+    var customEdit = target.closest("[data-custom-edit]");
+    if (customEdit) {
+      openCustomEditor(customEdit.getAttribute("data-custom-edit"));
+      return;
+    }
+    var customDelete = target.closest("[data-custom-delete]");
+    if (customDelete) {
+      var deletedId = customDelete.getAttribute("data-custom-delete");
+      armSkillDelete(customDelete, function () {
+        deleteCustomSkill(deletedId);
+      });
+    }
   }
 
   /* Drag ordering for the screenshot-toolbar actions. Kept separate from the
@@ -1866,7 +2166,7 @@
     if (!target || !target.closest) {
       return null;
     }
-    return target.closest(".skill-item[data-capture-action]");
+    return target.closest(".skill-item[data-capture-skill]");
   }
 
   function clearCaptureDropMarks() {
@@ -1897,11 +2197,11 @@
     if (!row || row.classList.contains("is-disabled") || !target.closest) {
       return;
     }
-    if (target.closest("button, input, label, textarea, .switch")) {
+    if (target.closest("button, input, label, textarea, .switch, .skill-prompt")) {
       event.preventDefault();
       return;
     }
-    var id = row.getAttribute("data-capture-action");
+    var id = row.getAttribute("data-capture-skill");
     if (!id) {
       event.preventDefault();
       return;
@@ -1931,7 +2231,7 @@
       event.dataTransfer.dropEffect = "move";
     }
     clearCaptureDropMarks();
-    if (row.getAttribute("data-capture-action") === dragCaptureAction) {
+    if (row.getAttribute("data-capture-skill") === dragCaptureAction) {
       return;
     }
     var rect = row.getBoundingClientRect();
@@ -1946,14 +2246,14 @@
       return;
     }
     event.preventDefault();
-    var targetId = row.getAttribute("data-capture-action");
+    var targetId = row.getAttribute("data-capture-skill");
     var after = row.classList.contains("drop-after");
     var movedId = dragCaptureAction;
     clearCaptureDragMarks();
     if (!targetId || targetId === movedId) {
       return;
     }
-    var original = enabledCaptureActions();
+    var original = enabledCaptureSkills();
     var from = original.indexOf(movedId);
     if (from < 0) {
       return;
@@ -2010,13 +2310,6 @@
     var main = el("div", "skill-main");
     var nameRow = el("div", "skill-name-row");
     nameRow.appendChild(el("span", "skill-name", meta.label));
-    /* Only custom image skills carry the 「图片」badge: the built-in screenshot
-     * entry skill lives in the text-skill tab (fifth review round). */
-    if (custom && customSkillKind(custom) === "image") {
-      var kindBadge = el("span", "skill-kind-badge", "图片");
-      kindBadge.title = "图片技能：点击后进入截图";
-      nameRow.appendChild(kindBadge);
-    }
     main.appendChild(nameRow);
     if (meta.description) {
       main.appendChild(el("span", "skill-desc", meta.description));
@@ -2478,6 +2771,7 @@
     hideInlineError(byId("custom-skill-error"));
     disarmSkillDelete(byId("delete-custom-skill"));
     renderCustomSkillEditor(true);
+    renderCaptureSkills(true);
     renderSkills(true);
     var editor = byId("custom-skill-editor");
     if (editor && editor.scrollIntoView) {
@@ -2498,6 +2792,7 @@
     disarmSkillDelete(byId("delete-custom-skill"));
     hideInlineError(byId("custom-skill-error"));
     renderCustomSkillEditor(false);
+    renderCaptureSkills(true);
     renderSkills(true);
   }
 
@@ -2575,8 +2870,8 @@
     var icon = validCustomIcon(customDraft.icon);
     var kind = customDraft.kind === "image" ? "image" : "text";
     var customs = customSkillsList();
-    var skills = enabledSkills();
     var editingId = customEditingId;
+    var id;
     var labelText;
     if (editingId) {
       var index = -1;
@@ -2597,9 +2892,10 @@
         prompt: prompt,
         kind: kind,
       };
+      id = editingId;
       labelText = "已保存技能「" + label + "」";
     } else {
-      var id = generateCustomSkillId(customs);
+      id = generateCustomSkillId(customs);
       customs.push({
         id: id,
         label: label,
@@ -2607,16 +2903,39 @@
         prompt: prompt,
         kind: kind,
       });
+      labelText = "已添加技能「" + label + "」";
+    }
+    /* Keep picker.skills (text toolbar) and picker.captureSkills (screenshot
+     * toolbar) in sync with the skill kind. An id already in its container
+     * keeps its position, so edits never reorder the list. */
+    var skills = enabledSkills();
+    var captureSkills = enabledCaptureSkills();
+    if (kind === "image") {
+      skills = skills.filter(function (skillId) {
+        return skillId !== id;
+      });
+      if (captureSkills.indexOf(id) < 0) {
+        captureSkills.push(id);
+      }
+    } else {
+      captureSkills = captureSkills.filter(function (skillId) {
+        return skillId !== id;
+      });
       if (skills.indexOf(id) < 0) {
         skills.push(id);
       }
-      labelText = "已添加技能「" + label + "」";
     }
     /* Land on the tab that holds the saved skill so a new or re-typed row is
      * visible immediately (contract §7.2). */
     skillTab = kind;
     closeCustomEditor();
-    save({ picker: { customSkills: customs, skills: skills } });
+    save({
+      picker: {
+        customSkills: customs,
+        skills: skills,
+        captureSkills: captureSkills,
+      },
+    });
     toast(labelText, "success");
   }
 
@@ -2636,10 +2955,21 @@
     if (!skills.length) {
       skills = DEFAULT_SKILLS.slice();
     }
+    /* Custom image skills live in picker.captureSkills; remove the id from both
+     * toolbars so a delete never leaves a dangling toolbar action. */
+    var captureSkills = enabledCaptureSkills().filter(function (skillId) {
+      return skillId !== id;
+    });
     if (customEditingId === id) {
       closeCustomEditor();
     }
-    save({ picker: { customSkills: remaining, skills: skills } });
+    save({
+      picker: {
+        customSkills: remaining,
+        skills: skills,
+        captureSkills: captureSkills,
+      },
+    });
     toast("已删除技能「" + custom.label + "」", "success");
   }
 
@@ -3706,9 +4036,10 @@
       var input = event.target;
       var id = input && input.getAttribute("data-capture-toggle");
       if (id) {
-        toggleCaptureAction(id, input.checked);
+        toggleCaptureSkill(id, input.checked);
       }
     });
+    byId("capture-action-list").addEventListener("click", handleCaptureListClick);
     byId("capture-action-list").addEventListener("dragstart", startCaptureActionDrag);
     byId("capture-action-list").addEventListener("dragover", overCaptureActionDrop);
     byId("capture-action-list").addEventListener("drop", dropCaptureAction);

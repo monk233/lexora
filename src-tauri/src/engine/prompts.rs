@@ -472,6 +472,9 @@ pub fn default_prompts() -> serde_json::Value {
         "summarize": DEFAULT_SUMMARIZE_PROMPT,
         "explain": DEFAULT_EXPLAIN_PROMPT,
         "polish": DEFAULT_POLISH_PROMPT,
+        // Screenshot toolbar actions (contract §4 `picker.capturePrompts`).
+        "captureTranslate": DEFAULT_TRANSLATE_PROMPT,
+        "captureExplain": DEFAULT_EXPLAIN_IMAGE_PROMPT,
     })
 }
 
@@ -578,7 +581,10 @@ mod tests {
         assert_eq!(defaults["summarize"], DEFAULT_SUMMARIZE_PROMPT);
         assert_eq!(defaults["explain"], DEFAULT_EXPLAIN_PROMPT);
         assert_eq!(defaults["polish"], DEFAULT_POLISH_PROMPT);
-        assert_eq!(defaults.as_object().unwrap().len(), 4);
+        // Screenshot toolbar actions (contract §4 `picker.capturePrompts`).
+        assert_eq!(defaults["captureTranslate"], DEFAULT_TRANSLATE_PROMPT);
+        assert_eq!(defaults["captureExplain"], DEFAULT_EXPLAIN_IMAGE_PROMPT);
+        assert_eq!(defaults.as_object().unwrap().len(), 6);
     }
 
     #[test]

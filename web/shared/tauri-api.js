@@ -295,6 +295,7 @@
           searchEngine: "google",
           panelMode: "auto",
           captureSkills: mockCaptureSkills(query),
+          capturePrompts: { translate: "", explain: "" },
         },
         provider: {
           mode: "online",
@@ -379,6 +380,11 @@
           "You are a knowledge assistant. Explain the user's text in Simplified Chinese, covering its meaning, background and key concepts, with short examples when helpful.",
         polish:
           "You are a professional editor. Polish the user's text so it reads naturally and fluently while keeping the original meaning. Output only the polished text, without explanations, quotes, or the source text.",
+        // Screenshot toolbar actions (contract §4 `picker.capturePrompts`).
+        captureTranslate:
+          "You are a professional translation engine. Translate the user's text into {target}. Output only the translation, without explanations, quotes, or the source text.",
+        captureExplain:
+          "你是一名视觉助手。请用简体中文解释图片的内容、文字信息与关键细节，使用 Markdown，不要编造。",
       },
     };
     refreshMockDerived();
@@ -431,6 +437,12 @@
   function normalizeMockSettings() {
     var settings = mockStore.settings;
     var picker = settings.picker;
+    /* Text-toolbar entries before migration: a custom image skill is moved to
+     * `captureSkills` only when it was still listed here (legacy data), so a
+     * disabled image skill is not re-added on every update. */
+    var legacySkills = (Array.isArray(picker.skills) ? picker.skills : []).map(function (value) {
+      return String(value || "").toLowerCase();
+    });
     var known = ["translate", "summarize", "explain", "polish", "read", "copy", "screenshot", "search"];
     var customSkills = [];
     (Array.isArray(picker.customSkills) ? picker.customSkills : []).forEach(function (entry) {
@@ -459,11 +471,20 @@
       });
     });
     picker.customSkills = customSkills;
-    var knownIds = known.concat(customSkills.map(function (skill) { return skill.id; }));
+    // Text toolbar: built-in text skills + custom text skills only. Custom
+    // image skills belong to the screenshot toolbar (`captureSkills`).
+    var imageCustomIds = customSkills
+      .filter(function (skill) { return skill.kind === "image"; })
+      .map(function (skill) { return skill.id; });
+    var textKnownIds = known.concat(
+      customSkills
+        .filter(function (skill) { return skill.kind !== "image"; })
+        .map(function (skill) { return skill.id; })
+    );
     var skills = [];
     (Array.isArray(picker.skills) ? picker.skills : []).forEach(function (skill) {
       var value = String(skill || "").toLowerCase();
-      if (knownIds.indexOf(value) >= 0 && skills.indexOf(value) < 0) {
+      if (textKnownIds.indexOf(value) >= 0 && skills.indexOf(value) < 0) {
         skills.push(value);
       }
     });
@@ -512,7 +533,10 @@
     settings.capture = {
       regionShortcut: normalizeMockShortcut(capture.regionShortcut) || "Win+Shift+X",
     };
-    var allowedCaptureSkills = ["copy", "ocr", "translate", "explain"];
+    // Screenshot toolbar: built-in actions + custom image skills, in toolbar
+    // order. An explicit empty list means "no toolbar actions" (the overlay
+    // then only shows 确认 / 取消), matching settings.rs.
+    var allowedCaptureSkills = ["copy", "ocr", "translate", "explain"].concat(imageCustomIds);
     var captureSkills = [];
     (Array.isArray(picker.captureSkills) ? picker.captureSkills : []).forEach(function (item) {
       var value = String(item || "").trim().toLowerCase();
@@ -520,10 +544,22 @@
         captureSkills.push(value);
       }
     });
-    // An explicit empty list means "no toolbar actions" (the overlay then only
-    // shows 确认 / 取消), matching settings.rs. Missing values were already
-    // defaulted when the mock store was created.
+    // Migration: a custom image skill still listed in the text toolbar belongs
+    // to the screenshot toolbar.
+    imageCustomIds.forEach(function (id) {
+      if (legacySkills.indexOf(id) >= 0 && captureSkills.indexOf(id) < 0) {
+        captureSkills.push(id);
+      }
+    });
     picker.captureSkills = captureSkills;
+    var capturePrompts =
+      picker.capturePrompts && typeof picker.capturePrompts === "object"
+        ? picker.capturePrompts
+        : {};
+    picker.capturePrompts = {
+      translate: String(capturePrompts.translate || "").trim().slice(0, 4000),
+      explain: String(capturePrompts.explain || "").trim().slice(0, 4000),
+    };
     mockStore.picker.pinned = false;
   }
 

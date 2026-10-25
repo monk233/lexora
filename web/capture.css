@@ -31,6 +31,9 @@
   --primary-soft: #eef2ff;
   --danger: #dc2626;
   --danger-soft: #fef2f2;
+  --success: #059669;
+  --success-strong: #047857;
+  --success-soft: #ecfdf5;
 
   --radius-lg: 12px;
   --radius-md: 9px;
@@ -305,24 +308,34 @@ body.is-dragging .selection-handle {
 }
 
 /* Primary confirmation: accepts the crop (same action as "复制", then the shell
- * hides the overlay). Same height/typography as the other tool buttons, only
- * indigo + semibold so it reads as the main action next to the red cancel. */
+ * hides the overlay). Same height/typography as the other tool buttons; green +
+ * semibold so it reads as the main action and sits right of the red cancel. */
 .tool-btn-confirm {
-  color: var(--primary);
+  color: var(--success);
   font-weight: 600;
 }
 
 .tool-btn-confirm .icon {
-  color: var(--primary);
+  color: var(--success);
 }
 
 .tool-btn-confirm:hover:not(:disabled) {
-  background: var(--primary-soft);
-  color: var(--primary);
+  background: var(--success-soft);
+  color: var(--success-strong);
 }
 
 .tool-btn-confirm:hover:not(:disabled) .icon {
-  color: var(--primary);
+  color: var(--success-strong);
+}
+
+/* ---- Compact mode (mirrors picker.css `.toolbar.compact`) --------------- */
+
+.capture-bar.compact .tool-btn {
+  padding: 0 9px;
+}
+
+.capture-bar.compact .tool-btn .label {
+  display: none;
 }
 
 .bar-sep {

@@ -12,7 +12,7 @@ use std::sync::{Arc, RwLock};
 
 /// Version of the on-disk settings schema. Bumped whenever defaults or fields
 /// change so [`Settings::normalize`] can migrate an older file in place.
-pub const SETTINGS_VERSION: u32 = 4;
+pub const SETTINGS_VERSION: u32 = 5;
 /// Default global shortcut that starts a region screenshot.
 pub const DEFAULT_REGION_SHORTCUT: &str = "Win+Shift+X";
 /// Built-in picker skills, in their canonical toolbar order.
@@ -126,15 +126,39 @@ pub struct PickerSettings {
     /// Panel sizing mode; one of [`PANEL_MODES`].
     #[serde(default = "default_panel_mode")]
     pub panel_mode: String,
-    /// Built-in screenshot toolbar actions (order = toolbar order); a subset of
-    /// [`CAPTURE_SKILLS`]. The screenshot skill itself is part of `skills`; these
-    /// are the actions shown inside the capture overlay.
+    /// Screenshot toolbar entries in toolbar order: the built-in actions
+    /// ([`CAPTURE_SKILLS`]) and enabled custom `kind=image` skill ids. The
+    /// screenshot entry skill itself stays in `skills` (text toolbar).
     #[serde(default = "default_capture_skills")]
     pub capture_skills: Vec<String>,
+    /// System prompt overrides for the two built-in screenshot actions that use
+    /// a model directly. Empty = built-in default. `translate` supports the
+    /// `{target}` placeholder like the text translate prompt.
+    #[serde(default)]
+    pub capture_prompts: CapturePrompts,
     #[serde(default)]
     pub prompts: PromptSettings,
     #[serde(default)]
     pub custom_skills: Vec<CustomSkill>,
+}
+
+/// Prompt overrides for the screenshot toolbar actions (contract §4).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CapturePrompts {
+    /// System prompt for "翻译" on a screenshot region.
+    pub translate: String,
+    /// System prompt for "解释图片" on a screenshot region.
+    pub explain: String,
+}
+
+impl Default for CapturePrompts {
+    fn default() -> Self {
+        Self {
+            translate: String::new(),
+            explain: String::new(),
+        }
+    }
 }
 
 /// A user-defined picker skill: the user picks an icon and a short label and
@@ -250,6 +274,7 @@ impl Default for PickerSettings {
             panel_pinned: false,
             panel_mode: default_panel_mode(),
             capture_skills: default_capture_skills(),
+            capture_prompts: CapturePrompts::default(),
             prompts: PromptSettings::default(),
             custom_skills: Vec::new(),
         }
@@ -325,6 +350,11 @@ impl Settings {
 
     /// Clamps every field into a sane range and drops unknown skills/languages.
     pub fn normalize(mut self) -> Self {
+        // Text-toolbar skills before validation/migration. Used to move legacy
+        // custom image skills into `captureSkills` exactly once: an image skill
+        // the user later disables must stay disabled instead of being re-added
+        // on every normalization.
+        let legacy_skills = self.picker.skills.clone();
         // Migrate older files before validating. Version 1 shipped only the
         // original built-in skills; version 2 adds `polish` and `search`;
         // version 3 adds `screenshot`. New entries are appended after the
@@ -401,12 +431,15 @@ impl Settings {
         let mut skills: Vec<String> = Vec::new();
         for skill in &self.picker.skills {
             let skill = skill.trim().to_ascii_lowercase();
-            let is_custom = self
+            let custom = self
                 .picker
                 .custom_skills
                 .iter()
-                .any(|custom| custom.id == skill);
-            if (SKILLS.contains(&skill.as_str()) || is_custom) && !skills.contains(&skill) {
+                .find(|custom| custom.id == skill);
+            let is_text_custom = custom.map(|custom| custom.kind != "image").unwrap_or(false);
+            // Custom image skills live in `captureSkills` (screenshot toolbar),
+            // never in the text toolbar.
+            if (SKILLS.contains(&skill.as_str()) || is_text_custom) && !skills.contains(&skill) {
                 skills.push(skill);
             }
         }
@@ -457,20 +490,45 @@ impl Settings {
                 default_panel_mode()
             }
         };
-        // Screenshot toolbar actions: drop unknown/duplicate ids, keep the
-        // configured order. An explicit empty list means "no action buttons"
-        // (the overlay then only offers 确认 / 取消); a settings file that never
-        // had the field still gets the defaults through serde.
+        // Screenshot toolbar entries: built-in actions plus enabled custom
+        // `kind=image` skills, in toolbar order. Unknown/duplicate ids are
+        // dropped. An explicit empty list means "no action buttons" (the
+        // overlay then only offers 确认 / 取消); a settings file that never had
+        // the field still gets the defaults through serde.
         let mut capture_skills: Vec<String> = Vec::new();
         for skill in &self.picker.capture_skills {
             let skill = skill.trim().to_ascii_lowercase();
-            if CAPTURE_SKILLS.contains(&skill.as_str()) && !capture_skills.contains(&skill) {
+            if capture_skills.contains(&skill) {
+                continue;
+            }
+            let is_builtin = CAPTURE_SKILLS.contains(&skill.as_str());
+            let is_image_custom = self
+                .picker
+                .custom_skills
+                .iter()
+                .any(|custom| custom.id == skill && custom.kind == "image");
+            if is_builtin || is_image_custom {
                 capture_skills.push(skill);
+            }
+        }
+        // Migration from older files: a custom image skill may still be listed in
+        // the text toolbar; move it to the screenshot toolbar exactly once. An
+        // image skill the user disables later keeps its place out of the list.
+        for custom in &self.picker.custom_skills {
+            if custom.kind == "image"
+                && legacy_skills.contains(&custom.id)
+                && !capture_skills.contains(&custom.id)
+            {
+                capture_skills.push(custom.id.clone());
             }
         }
         self.picker.capture_skills = capture_skills;
         // Custom prompts are user-editable text: trim and cap them so a pasted
         // document cannot bloat settings.json or every request.
+        self.picker.capture_prompts.translate =
+            truncate(&self.picker.capture_prompts.translate, PROMPT_MAX_CHARS);
+        self.picker.capture_prompts.explain =
+            truncate(&self.picker.capture_prompts.explain, PROMPT_MAX_CHARS);
         self.picker.prompts.translate = truncate(&self.picker.prompts.translate, PROMPT_MAX_CHARS);
         self.picker.prompts.summarize = truncate(&self.picker.prompts.summarize, PROMPT_MAX_CHARS);
         self.picker.prompts.explain = truncate(&self.picker.prompts.explain, PROMPT_MAX_CHARS);
@@ -894,7 +952,7 @@ mod tests {
     fn defaults_are_normalized() {
         let settings = Settings::default().normalize();
         assert_eq!(settings.version, SETTINGS_VERSION);
-        assert_eq!(settings.version, 4);
+        assert_eq!(settings.version, 5);
         let expected: Vec<String> = SKILLS.iter().map(|skill| skill.to_string()).collect();
         assert_eq!(settings.picker.skills, expected);
         assert_eq!(settings.picker.skills.len(), 8);
@@ -1682,6 +1740,94 @@ mod tests {
         // Older settings files (without the field) load the defaults.
         let parsed: Settings = serde_json::from_value(json!({ "version": 4 })).unwrap();
         assert_eq!(parsed.normalize().picker.capture_skills.len(), 4);
+    }
+
+    #[test]
+    fn custom_image_skills_live_in_the_capture_toolbar() {
+        // A legacy file lists the image skill in the text toolbar and has no
+        // capturePrompts; normalization moves it to `captureSkills` and keeps
+        // the text toolbar free of image skills.
+        let legacy = json!({
+            "version": 4,
+            "picker": {
+                "skills": ["translate", "screenshot", "custom-image", "custom-text"],
+                "customSkills": [
+                    { "id": "custom-image", "label": "读图", "icon": "image", "kind": "image", "prompt": "描述图片" },
+                    { "id": "custom-text", "label": "关键词", "icon": "tag", "kind": "text", "prompt": "提取 {text}" }
+                ]
+            }
+        });
+        let parsed: Settings = serde_json::from_value(legacy).unwrap();
+        let settings = parsed.normalize();
+        assert!(!settings.picker.skills.contains(&"custom-image".to_string()));
+        assert!(settings.picker.skills.contains(&"custom-text".to_string()));
+        assert!(settings
+            .picker
+            .capture_skills
+            .contains(&"custom-image".to_string()));
+
+        // The toolbar order can interleave built-ins and custom image skills.
+        let (store, _dir) = store();
+        let updated = store
+            .update_json(json!({
+                "picker": {
+                    "customSkills": [
+                        { "id": "custom-image", "label": "读图", "icon": "image", "kind": "image", "prompt": "描述图片" },
+                        { "id": "custom-text", "label": "关键词", "icon": "tag", "kind": "text", "prompt": "提取 {text}" }
+                    ],
+                    "captureSkills": ["custom-image", "copy"]
+                }
+            }))
+            .unwrap();
+        assert_eq!(
+            updated.picker.capture_skills,
+            vec!["custom-image".to_string(), "copy".to_string()]
+        );
+
+        // A text custom skill id in captureSkills is dropped (it belongs to the
+        // text toolbar only). The image skill is not re-appended: it was already
+        // migrated once, so an explicit removal is respected.
+        let updated = store
+            .update_json(json!({ "picker": { "captureSkills": ["custom-text", "ocr"] } }))
+            .unwrap();
+        assert_eq!(updated.picker.capture_skills, vec!["ocr".to_string()]);
+    }
+
+    #[test]
+    fn capture_prompts_are_trimmed_and_roundtrip() {
+        let settings = Settings::default().normalize();
+        assert_eq!(settings.picker.capture_prompts.translate, "");
+        assert_eq!(settings.picker.capture_prompts.explain, "");
+
+        let (store, dir) = store();
+        let updated = store
+            .update_json(json!({
+                "picker": {
+                    "capturePrompts": {
+                        "translate": "  Translate the screenshot text into {target}.  ",
+                        "explain": "Describe the UI in the screenshot."
+                    }
+                }
+            }))
+            .unwrap();
+        assert_eq!(
+            updated.picker.capture_prompts.translate,
+            "Translate the screenshot text into {target}."
+        );
+        assert_eq!(
+            updated.picker.capture_prompts.explain,
+            "Describe the UI in the screenshot."
+        );
+        let reloaded = SettingsStore::load(dir.path().join("settings.json"));
+        assert_eq!(
+            reloaded.get().picker.capture_prompts,
+            updated.picker.capture_prompts
+        );
+
+        // Resetting clears both overrides.
+        let reset = store.reset();
+        assert_eq!(reset.picker.capture_prompts.translate, "");
+        assert_eq!(reset.picker.capture_prompts.explain, "");
     }
 
     #[test]
