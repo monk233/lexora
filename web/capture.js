@@ -1392,6 +1392,16 @@
     if (event.button !== 0 || !canInteract() || state.drag) {
       return;
     }
+    /* §11.12: clicking an annotation or one of its transform handles on the
+     * canvas must not start a crop-selection drag. The annotation engine sets
+     * this flag during its pointerdown, which runs before mousedown. */
+    if (
+      editor &&
+      typeof editor.isInteracting === "function" &&
+      editor.isInteracting()
+    ) {
+      return;
+    }
     /* While a drawing tool is active the canvas owns the pointer; while a long
      * screenshot runs the overlay must not react to selection gestures, and the
      * eyedropper must sample instead of starting a drag. */
@@ -1460,6 +1470,14 @@
       return;
     }
     if (!canInteract()) {
+      document.body.classList.remove("is-over-selection");
+      return;
+    }
+    if (
+      editor &&
+      typeof editor.isInteracting === "function" &&
+      editor.isInteracting()
+    ) {
       document.body.classList.remove("is-over-selection");
       return;
     }

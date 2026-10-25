@@ -149,6 +149,22 @@
     var stampContext = stampCanvas.getContext("2d");
 
     /* -------------------------------------------------------------- */
+    /* Selection / transform state (§11.12)                            */
+    /* -------------------------------------------------------------- */
+
+    var MIN_ANNOTATION_SIZE = 6;
+    var HANDLE_HIT_SLOP = 9;
+    var HANDLE_DRAW_SIZE = 8;
+    var ROTATE_HANDLE_OFFSET = 26;
+    var SELECT_COLOR = "#4f46e5";
+    var HANDLE_IDS = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
+
+    var nextUid = 1;
+    var selectedUid = null;
+    var transformState = null;
+    var hoverCursor = "";
+
+    /* -------------------------------------------------------------- */
     /* Canvas measurement / rendering                                  */
     /* -------------------------------------------------------------- */
 
@@ -216,15 +232,50 @@
         context.rect(box.x, box.y, box.width, box.height);
         context.clip();
       }
-      drawList(context, history[historyIndex], size);
+      drawRenderedList(context, size);
       if (draft) {
         /* Live preview (§11.11): the uncommitted op is painted above the
          * committed annotations and never enters history until pointerup. */
-        drawAnnotation(context, draftToAnnotation(draft), size);
+        drawAnnotationWithRotation(context, draftToAnnotation(draft), size);
       }
       if (box) {
         context.restore();
       }
+      /* Selection handles/border are not clipped by the selection rectangle
+       * (§11.12). */
+      drawSelectionUi(context);
+    }
+
+    /* Committed annotations plus the live transform preview (drag in progress).
+     * Rotation is applied around each annotation's bounding-box centre, in the
+     * canvas and in renderToPng alike. */
+    function drawRenderedList(targetContext, size) {
+      var list = currentList();
+      var previewIndex = transformState ? findSelectedIndex() : -1;
+      for (var index = 0; index < list.length; index += 1) {
+        var annotation =
+          index === previewIndex ? transformState.preview : list[index];
+        drawAnnotationWithRotation(targetContext, annotation, size);
+      }
+    }
+
+    function drawAnnotationWithRotation(targetContext, annotation, size) {
+      if (!annotation) {
+        return;
+      }
+      var rotation = finite(annotation.rotation, 0);
+      if (!rotation) {
+        drawAnnotation(targetContext, annotation, size);
+        return;
+      }
+      var box = annotationBounds(annotation);
+      var center = box ? { x: box.x + box.w / 2, y: box.y + box.h / 2 } : { x: 0, y: 0 };
+      targetContext.save();
+      targetContext.translate(center.x, center.y);
+      targetContext.rotate(rotation);
+      targetContext.translate(-center.x, -center.y);
+      drawAnnotation(targetContext, annotation, size);
+      targetContext.restore();
     }
 
     /* Selection rectangle in CSS pixels, or null when the user has not framed
@@ -270,7 +321,7 @@
 
     function drawList(targetContext, list, size) {
       for (var index = 0; index < list.length; index += 1) {
-        drawAnnotation(targetContext, list[index], size);
+        drawAnnotationWithRotation(targetContext, list[index], size);
       }
     }
 
@@ -556,10 +607,16 @@
       targetContext.restore();
     }
 
+    function numberRadius(annotation) {
+      var number = String(annotation.n == null ? "" : annotation.n);
+      var fontSize = Math.max(8, annotation.fontSize || 24);
+      return Math.max(9, fontSize * 0.62 + 3 * Math.max(1, number.length));
+    }
+
     function drawNumber(targetContext, annotation) {
       var number = String(annotation.n == null ? "" : annotation.n);
       var fontSize = Math.max(8, annotation.fontSize || 24);
-      var radius = Math.max(9, fontSize * 0.62 + 3 * Math.max(1, number.length));
+      var radius = numberRadius(annotation);
       targetContext.save();
       targetContext.beginPath();
       targetContext.arc(annotation.x, annotation.y, radius, 0, Math.PI * 2);
@@ -614,6 +671,693 @@
     }
 
     /* -------------------------------------------------------------- */
+    /* Selection, hit testing & transforms (§11.12)                    */
+    /* -------------------------------------------------------------- */
+
+    function cloneAnnotation(annotation) {
+      if (!annotation) {
+        return null;
+      }
+      return JSON.parse(JSON.stringify(annotation));
+    }
+
+    function ensureUid(annotation) {
+      if (annotation && annotation.uid === undefined) {
+        annotation.uid = nextUid;
+        nextUid += 1;
+      }
+      return annotation;
+    }
+
+    function findSelectedIndex() {
+      if (selectedUid === null) {
+        return -1;
+      }
+      var list = currentList();
+      for (var index = 0; index < list.length; index += 1) {
+        if (list[index] && list[index].uid === selectedUid) {
+          return index;
+        }
+      }
+      return -1;
+    }
+
+    function selectedAnnotation() {
+      var index = findSelectedIndex();
+      return index >= 0 ? currentList()[index] : null;
+    }
+
+    function clearSelection() {
+      if (selectedUid === null) {
+        return;
+      }
+      selectedUid = null;
+      requestRender();
+    }
+
+    function cancelTransform() {
+      if (!transformState) {
+        return false;
+      }
+      transformState = null;
+      requestRender();
+      return true;
+    }
+
+    function rotateVector(x, y, angle) {
+      var cos = Math.cos(angle);
+      var sin = Math.sin(angle);
+      return { x: x * cos - y * sin, y: x * sin + y * cos };
+    }
+
+    function pointInRotatedBox(point, box, rotation) {
+      var centerX = box.x + box.w / 2;
+      var centerY = box.y + box.h / 2;
+      var local = rotateVector(
+        point.x - centerX,
+        point.y - centerY,
+        -(rotation || 0)
+      );
+      return (
+        Math.abs(local.x) <= box.w / 2 + 2 &&
+        Math.abs(local.y) <= box.h / 2 + 2
+      );
+    }
+
+    function measureTextBounds(annotation) {
+      var text = String(annotation.text == null ? "" : annotation.text);
+      if (!text) {
+        return null;
+      }
+      var lines = text.replace(/\r/g, "").split("\n");
+      var fontSize = Math.max(8, annotation.fontSize || 24);
+      var lineHeight = fontSize * TEXT_LINE_RATIO;
+      var widest = 0;
+      context.save();
+      context.font = textFont(annotation);
+      for (var index = 0; index < lines.length; index += 1) {
+        widest = Math.max(widest, context.measureText(lines[index]).width);
+      }
+      context.restore();
+      var padX = annotation.bg ? TEXT_PAD_X : 0;
+      var padY = annotation.bg ? TEXT_PAD_Y : 0;
+      return {
+        x: annotation.x - padX,
+        y: annotation.y - padY,
+        w: widest + padX * 2,
+        h: lineHeight * lines.length + padY * 2
+      };
+    }
+
+    /* Unrotated bounding box of an annotation in CSS pixels. */
+    function annotationBounds(annotation) {
+      if (!annotation) {
+        return null;
+      }
+      var type = annotation.type === "ellipse" ? "circle" : annotation.type;
+      var box = null;
+      var index;
+      if (type === "rect" || type === "circle") {
+        box = { x: annotation.x, y: annotation.y, w: annotation.w, h: annotation.h };
+      } else if (type === "line" || type === "arrow") {
+        var minimumX = Math.min(annotation.x1, annotation.x2);
+        var minimumY = Math.min(annotation.y1, annotation.y2);
+        var expand = Math.max(4, (annotation.width || 1) * 1.5);
+        box = {
+          x: minimumX - expand,
+          y: minimumY - expand,
+          w: Math.abs(annotation.x2 - annotation.x1) + expand * 2,
+          h: Math.abs(annotation.y2 - annotation.y1) + expand * 2
+        };
+      } else if (type === "pen" || type === "mosaic") {
+        var points = annotation.points || [];
+        if (!points.length) {
+          return null;
+        }
+        var pad =
+          type === "mosaic"
+            ? Math.max(6, (annotation.mosaicSize || 8) * 2)
+            : Math.max(4, (annotation.width || 1) / 2 + 3);
+        var left = points[0].x;
+        var top = points[0].y;
+        var right = points[0].x;
+        var bottom = points[0].y;
+        for (index = 1; index < points.length; index += 1) {
+          left = Math.min(left, points[index].x);
+          top = Math.min(top, points[index].y);
+          right = Math.max(right, points[index].x);
+          bottom = Math.max(bottom, points[index].y);
+        }
+        box = {
+          x: left - pad,
+          y: top - pad,
+          w: right - left + pad * 2,
+          h: bottom - top + pad * 2
+        };
+      } else if (type === "text") {
+        box = measureTextBounds(annotation);
+      } else if (type === "number") {
+        var radius = numberRadius(annotation);
+        box = {
+          x: annotation.x - radius,
+          y: annotation.y - radius,
+          w: radius * 2,
+          h: radius * 2
+        };
+      }
+      if (!box) {
+        return null;
+      }
+      /* Keep tiny/linear annotations usable: handles need a minimum box. */
+      if (box.w < 10) {
+        box.x -= (10 - box.w) / 2;
+        box.w = 10;
+      }
+      if (box.h < 10) {
+        box.y -= (10 - box.h) / 2;
+        box.h = 10;
+      }
+      return box;
+    }
+
+    function boxCenter(box) {
+      return { x: box.x + box.w / 2, y: box.y + box.h / 2 };
+    }
+
+    function distanceToSegment(point, start, end) {
+      var dx = end.x - start.x;
+      var dy = end.y - start.y;
+      var lengthSquared = dx * dx + dy * dy;
+      if (lengthSquared === 0) {
+        return Math.sqrt(
+          Math.pow(point.x - start.x, 2) + Math.pow(point.y - start.y, 2)
+        );
+      }
+      var t = clamp(
+        ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared,
+        0,
+        1
+      );
+      return Math.sqrt(
+        Math.pow(point.x - (start.x + t * dx), 2) +
+          Math.pow(point.y - (start.y + t * dy), 2)
+      );
+    }
+
+    /* Hit test one annotation; rotated annotations are tested in their local
+     * (unrotated) frame. */
+    function hitTestAnnotation(annotation, point) {
+      var box = annotationBounds(annotation);
+      if (!box) {
+        return false;
+      }
+      var rotation = annotation.rotation || 0;
+      var center = boxCenter(box);
+      var local = rotateVector(point.x - center.x, point.y - center.y, -rotation);
+      var type = annotation.type === "ellipse" ? "circle" : annotation.type;
+      var index;
+      if (type === "rect" || type === "circle") {
+        return (
+          Math.abs(local.x) <= box.w / 2 + 2 &&
+          Math.abs(local.y) <= box.h / 2 + 2
+        );
+      }
+      if (type === "line" || type === "arrow") {
+        var tolerance = Math.max(9, (annotation.width || 1) / 2 + 6);
+        var start = rotateVector(
+          annotation.x1 - center.x,
+          annotation.y1 - center.y,
+          -rotation
+        );
+        var end = rotateVector(
+          annotation.x2 - center.x,
+          annotation.y2 - center.y,
+          -rotation
+        );
+        return distanceToSegment(local, start, end) <= tolerance;
+      }
+      if (type === "pen") {
+        var points = annotation.points || [];
+        var penTolerance = Math.max(7, (annotation.width || 1) / 2 + 5);
+        if (points.length === 1) {
+          var single = rotateVector(
+            points[0].x - center.x,
+            points[0].y - center.y,
+            -rotation
+          );
+          return distanceToSegment(local, single, single) <= penTolerance;
+        }
+        for (index = 1; index < points.length; index += 1) {
+          var penStart = rotateVector(
+            points[index - 1].x - center.x,
+            points[index - 1].y - center.y,
+            -rotation
+          );
+          var penEnd = rotateVector(
+            points[index].x - center.x,
+            points[index].y - center.y,
+            -rotation
+          );
+          if (distanceToSegment(local, penStart, penEnd) <= penTolerance) {
+            return true;
+          }
+        }
+        return false;
+      }
+      if (type === "mosaic") {
+        return Math.abs(local.x) <= box.w / 2 && Math.abs(local.y) <= box.h / 2;
+      }
+      if (type === "text" || type === "number") {
+        return Math.abs(local.x) <= box.w / 2 && Math.abs(local.y) <= box.h / 2;
+      }
+      return false;
+    }
+
+    function hitTestTopmost(point) {
+      var list = currentList();
+      for (var index = list.length - 1; index >= 0; index -= 1) {
+        if (hitTestAnnotation(list[index], point)) {
+          return { index: index, annotation: list[index] };
+        }
+      }
+      return null;
+    }
+
+    /* Handle positions in world coordinates (already rotated). */
+    function handleLocalPosition(id, box) {
+      var halfWidth = box.w / 2;
+      var halfHeight = box.h / 2;
+      switch (id) {
+        case "nw":
+          return { x: -halfWidth, y: -halfHeight };
+        case "n":
+          return { x: 0, y: -halfHeight };
+        case "ne":
+          return { x: halfWidth, y: -halfHeight };
+        case "e":
+          return { x: halfWidth, y: 0 };
+        case "se":
+          return { x: halfWidth, y: halfHeight };
+        case "s":
+          return { x: 0, y: halfHeight };
+        case "sw":
+          return { x: -halfWidth, y: halfHeight };
+        case "w":
+          return { x: -halfWidth, y: 0 };
+        case "rotate":
+          return { x: 0, y: -halfHeight - ROTATE_HANDLE_OFFSET };
+        default:
+          return { x: 0, y: 0 };
+      }
+    }
+
+    function selectionHandlePoints() {
+      var annotation = selectedAnnotation();
+      if (!annotation) {
+        return [];
+      }
+      var box = annotationBounds(annotation);
+      if (!box) {
+        return [];
+      }
+      var center = boxCenter(box);
+      var rotation = annotation.rotation || 0;
+      var ids = HANDLE_IDS.concat(["rotate"]);
+      var result = [];
+      for (var index = 0; index < ids.length; index += 1) {
+        var local = handleLocalPosition(ids[index], box);
+        var world = rotateVector(local.x, local.y, rotation);
+        result.push({
+          id: ids[index],
+          x: center.x + world.x,
+          y: center.y + world.y,
+          rotate: ids[index] === "rotate"
+        });
+      }
+      return result;
+    }
+
+    function hitTestHandle(point) {
+      var handles = selectionHandlePoints();
+      for (var index = 0; index < handles.length; index += 1) {
+        var handle = handles[index];
+        var dx = point.x - handle.x;
+        var dy = point.y - handle.y;
+        if (Math.sqrt(dx * dx + dy * dy) <= HANDLE_HIT_SLOP + HANDLE_DRAW_SIZE / 2) {
+          return handle.id;
+        }
+      }
+      return null;
+    }
+
+    function handleCursor(id) {
+      if (id === "rotate") {
+        return "grab";
+      }
+      if (id === "nw" || id === "se") {
+        return "nwse-resize";
+      }
+      if (id === "ne" || id === "sw") {
+        return "nesw-resize";
+      }
+      if (id === "n" || id === "s") {
+        return "ns-resize";
+      }
+      return "ew-resize";
+    }
+
+    function drawHandle(targetContext, x, y, isRotate) {
+      targetContext.save();
+      targetContext.translate(x, y);
+      targetContext.fillStyle = "#ffffff";
+      targetContext.strokeStyle = SELECT_COLOR;
+      targetContext.lineWidth = 1.5;
+      if (isRotate) {
+        targetContext.beginPath();
+        targetContext.arc(0, 0, HANDLE_DRAW_SIZE / 2 + 1.5, 0, Math.PI * 2);
+        targetContext.fill();
+        targetContext.stroke();
+        targetContext.beginPath();
+        targetContext.lineWidth = 1.3;
+        targetContext.arc(0, 0, 3.4, -Math.PI * 0.15, Math.PI * 1.25);
+        targetContext.stroke();
+        targetContext.beginPath();
+        targetContext.moveTo(-1.2, -4.4);
+        targetContext.lineTo(2.4, -3.4);
+        targetContext.lineTo(-0.6, -1.6);
+        targetContext.closePath();
+        targetContext.fillStyle = SELECT_COLOR;
+        targetContext.fill();
+      } else {
+        targetContext.fillRect(
+          -HANDLE_DRAW_SIZE / 2,
+          -HANDLE_DRAW_SIZE / 2,
+          HANDLE_DRAW_SIZE,
+          HANDLE_DRAW_SIZE
+        );
+        targetContext.strokeRect(
+          -HANDLE_DRAW_SIZE / 2,
+          -HANDLE_DRAW_SIZE / 2,
+          HANDLE_DRAW_SIZE,
+          HANDLE_DRAW_SIZE
+        );
+      }
+      targetContext.restore();
+    }
+
+    /* Selection UI is painted on the canvas (not exported, not clipped). */
+    function drawSelectionUi(targetContext) {
+      var annotation = selectedAnnotation();
+      if (!annotation) {
+        return;
+      }
+      var box = annotationBounds(annotation);
+      if (!box) {
+        return;
+      }
+      var center = boxCenter(box);
+      var rotation = annotation.rotation || 0;
+      targetContext.save();
+      targetContext.translate(center.x, center.y);
+      targetContext.rotate(rotation);
+      targetContext.strokeStyle = SELECT_COLOR;
+      targetContext.lineWidth = 1.2;
+      targetContext.setLineDash([5, 3]);
+      targetContext.strokeRect(-box.w / 2, -box.h / 2, box.w, box.h);
+      targetContext.setLineDash([]);
+      var rotateY = -box.h / 2 - ROTATE_HANDLE_OFFSET;
+      targetContext.beginPath();
+      targetContext.moveTo(0, -box.h / 2);
+      targetContext.lineTo(0, rotateY);
+      targetContext.stroke();
+      for (var index = 0; index < HANDLE_IDS.length; index += 1) {
+        var local = handleLocalPosition(HANDLE_IDS[index], box);
+        drawHandle(targetContext, local.x, local.y, false);
+      }
+      drawHandle(targetContext, 0, rotateY, true);
+      targetContext.restore();
+    }
+
+    /* ---- annotation geometry transforms ---- */
+
+    function translateAnnotation(source, dx, dy) {
+      var copy = cloneAnnotation(source);
+      var type = copy.type === "ellipse" ? "circle" : copy.type;
+      if (
+        type === "rect" ||
+        type === "circle" ||
+        type === "text" ||
+        type === "number"
+      ) {
+        copy.x += dx;
+        copy.y += dy;
+      } else if (type === "line" || type === "arrow") {
+        copy.x1 += dx;
+        copy.y1 += dy;
+        copy.x2 += dx;
+        copy.y2 += dy;
+      } else if (type === "pen" || type === "mosaic") {
+        copy.points = (copy.points || []).map(function (point) {
+          return { x: point.x + dx, y: point.y + dy };
+        });
+      }
+      return copy;
+    }
+
+    function rotateAnnotation(source, rotation) {
+      var copy = cloneAnnotation(source);
+      copy.rotation = rotation;
+      return copy;
+    }
+
+    function computeScaleBox(origin, bounds, pointer, handle) {
+      var rotation = origin.rotation || 0;
+      var center = boxCenter(bounds);
+      var local = rotateVector(pointer.x - center.x, pointer.y - center.y, -rotation);
+      var left = -bounds.w / 2;
+      var right = bounds.w / 2;
+      var top = -bounds.h / 2;
+      var bottom = bounds.h / 2;
+      if (handle.indexOf("w") >= 0) {
+        left = Math.min(local.x, right - MIN_ANNOTATION_SIZE);
+      }
+      if (handle.indexOf("e") >= 0) {
+        right = Math.max(local.x, left + MIN_ANNOTATION_SIZE);
+      }
+      if (handle.indexOf("n") >= 0) {
+        top = Math.min(local.y, bottom - MIN_ANNOTATION_SIZE);
+      }
+      if (handle.indexOf("s") >= 0) {
+        bottom = Math.max(local.y, top + MIN_ANNOTATION_SIZE);
+      }
+      return {
+        rotation: rotation,
+        center: center,
+        left: left,
+        right: right,
+        top: top,
+        bottom: bottom,
+        oldWidth: bounds.w,
+        oldHeight: bounds.h
+      };
+    }
+
+    function scaleAnnotation(source, geometry) {
+      var copy = cloneAnnotation(source);
+      var newWidth = geometry.right - geometry.left;
+      var newHeight = geometry.bottom - geometry.top;
+      var scaleX = newWidth / Math.max(1, geometry.oldWidth);
+      var scaleY = newHeight / Math.max(1, geometry.oldHeight);
+      var fontScale = Math.sqrt(Math.abs(scaleX * scaleY));
+      var newLocalCenter = {
+        x: (geometry.left + geometry.right) / 2,
+        y: (geometry.top + geometry.bottom) / 2
+      };
+      var rotatedCenter = rotateVector(
+        newLocalCenter.x,
+        newLocalCenter.y,
+        geometry.rotation
+      );
+      var newCenter = {
+        x: geometry.center.x + rotatedCenter.x,
+        y: geometry.center.y + rotatedCenter.y
+      };
+      function mapPoint(point) {
+        var local = rotateVector(
+          point.x - geometry.center.x,
+          point.y - geometry.center.y,
+          -geometry.rotation
+        );
+        var mapped = {
+          x: geometry.left + (local.x + geometry.oldWidth / 2) * scaleX,
+          y: geometry.top + (local.y + geometry.oldHeight / 2) * scaleY
+        };
+        var world = rotateVector(mapped.x, mapped.y, geometry.rotation);
+        return {
+          x: geometry.center.x + world.x,
+          y: geometry.center.y + world.y
+        };
+      }
+      var type = copy.type === "ellipse" ? "circle" : copy.type;
+      if (type === "rect" || type === "circle") {
+        copy.x = newCenter.x - newWidth / 2;
+        copy.y = newCenter.y - newHeight / 2;
+        copy.w = newWidth;
+        copy.h = newHeight;
+      } else if (type === "line" || type === "arrow") {
+        var start = mapPoint({ x: copy.x1, y: copy.y1 });
+        var end = mapPoint({ x: copy.x2, y: copy.y2 });
+        copy.x1 = start.x;
+        copy.y1 = start.y;
+        copy.x2 = end.x;
+        copy.y2 = end.y;
+      } else if (type === "pen" || type === "mosaic") {
+        copy.points = (copy.points || []).map(mapPoint);
+      } else if (type === "text" || type === "number") {
+        var anchor = mapPoint({ x: copy.x, y: copy.y });
+        copy.x = anchor.x;
+        copy.y = anchor.y;
+        copy.fontSize = clamp(
+          Math.round((copy.fontSize || 24) * fontScale),
+          8,
+          200
+        );
+      }
+      return copy;
+    }
+
+    function startTransform(mode, point, handle, event) {
+      var index = findSelectedIndex();
+      if (index < 0) {
+        return false;
+      }
+      var origin = cloneAnnotation(currentList()[index]);
+      var bounds = annotationBounds(origin);
+      if (!bounds) {
+        return false;
+      }
+      var center = boxCenter(bounds);
+      transformState = {
+        mode: mode,
+        handle: handle || "",
+        origin: origin,
+        bounds: bounds,
+        startPoint: point,
+        preview: origin,
+        changed: false,
+        startAngle: Math.atan2(point.y - center.y, point.x - center.x),
+        rotation0: origin.rotation || 0
+      };
+      activePointerId =
+        event && event.pointerId !== undefined ? event.pointerId : null;
+      try {
+        if (canvas.setPointerCapture && event && event.pointerId !== undefined) {
+          canvas.setPointerCapture(event.pointerId);
+        }
+      } catch (error) {
+        /* pointer capture is an optimisation only */
+      }
+      return true;
+    }
+
+    function updateTransform(point, event) {
+      var transform = transformState;
+      if (!transform) {
+        return;
+      }
+      if (transform.mode === "move") {
+        var dx = point.x - transform.startPoint.x;
+        var dy = point.y - transform.startPoint.y;
+        if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+          transform.changed = true;
+        }
+        transform.preview = translateAnnotation(transform.origin, dx, dy);
+      } else if (transform.mode === "scale") {
+        transform.changed = true;
+        transform.preview = scaleAnnotation(
+          transform.origin,
+          computeScaleBox(
+            transform.origin,
+            transform.bounds,
+            point,
+            transform.handle
+          )
+        );
+      } else {
+        var center = boxCenter(transform.bounds);
+        var angle = Math.atan2(point.y - center.y, point.x - center.x);
+        var rotation = transform.rotation0 + (angle - transform.startAngle);
+        if (event && event.shiftKey) {
+          var snap = Math.PI / 12;
+          rotation = Math.round(rotation / snap) * snap;
+        }
+        if (Math.abs(angle - transform.startAngle) > 0.005) {
+          transform.changed = true;
+        }
+        transform.preview = rotateAnnotation(transform.origin, rotation);
+      }
+      requestRender();
+    }
+
+    function endTransform(commit) {
+      var transform = transformState;
+      transformState = null;
+      activePointerId = null;
+      if (commit && transform && transform.changed && findSelectedIndex() >= 0) {
+        var index = findSelectedIndex();
+        var next = currentList().slice();
+        next[index] = transform.preview;
+        pushState(next);
+        notifyHistory();
+      }
+      requestRender();
+    }
+
+    function deleteSelected() {
+      var index = findSelectedIndex();
+      if (index < 0) {
+        return false;
+      }
+      var next = currentList().slice();
+      next.splice(index, 1);
+      pushState(next);
+      selectedUid = null;
+      notifyHistory();
+      requestRender();
+      return true;
+    }
+
+    function updateCanvasCursor(point) {
+      var cursor = tool ? "crosshair" : "inherit";
+      var selected = selectedAnnotation();
+      if (selected) {
+        var handle = hitTestHandle(point);
+        if (handle) {
+          cursor = handleCursor(handle);
+        } else {
+          var box = annotationBounds(selected);
+          if (box && pointInRotatedBox(point, box, selected.rotation || 0)) {
+            cursor = "move";
+          } else {
+            var hovered = hitTestTopmost(point);
+            if (hovered) {
+              cursor = "pointer";
+            }
+          }
+        }
+      } else if (!tool) {
+        var topmost = hitTestTopmost(point);
+        if (topmost) {
+          cursor = "pointer";
+        }
+      }
+      if (cursor !== hoverCursor) {
+        hoverCursor = cursor;
+        canvas.style.cursor = cursor;
+      }
+    }
+
+    /* -------------------------------------------------------------- */
     /* History                                                         */
     /* -------------------------------------------------------------- */
 
@@ -644,10 +1388,15 @@
       if (!annotation) {
         return;
       }
+      ensureUid(annotation);
+      annotation.rotation = finite(annotation.rotation, 0);
       var next = currentList().slice();
       next.push(annotation);
       pushState(next);
       notifyHistory();
+      /* New drawings are selected immediately so the transform handles show up
+       * (§11.12). */
+      selectedUid = annotation.uid;
       requestRender();
     }
 
@@ -684,32 +1433,37 @@
       return true;
     }
 
-    function onPointerDown(event) {
-      if (!tool || (event.button !== undefined && event.button !== 0)) {
-        return;
+    function releaseCanvasPointer(event) {
+      try {
+        if (
+          typeof canvas.releasePointerCapture === "function" &&
+          event &&
+          event.pointerId !== undefined
+        ) {
+          canvas.releasePointerCapture(event.pointerId);
+        }
+      } catch (error) {
+        /* ignore */
       }
-      if (textSession) {
-        /* Clicking outside the textarea blurs (commits) it first; do not start
-         * another annotation from the same press. */
+    }
+
+    function startNewAnnotation(event, point) {
+      if (!insideSelection(point)) {
         return;
       }
       event.preventDefault();
       try {
-        if (typeof canvas.setPointerCapture === "function") {
+        if (
+          canvas.setPointerCapture &&
+          event.pointerId !== undefined
+        ) {
           canvas.setPointerCapture(event.pointerId);
         }
       } catch (error) {
         /* pointer capture is an optimisation only */
       }
-      var point = pointFromEvent(event);
-      /* Starting an annotation outside the selection does nothing: drawing is
-       * confined to the framed region (contract §11.11.5). */
-      if (!insideSelection(point)) {
-        return;
-      }
       point = clampToSelection(point);
       activePointerId = event.pointerId;
-
       if (tool === "text") {
         activePointerId = null;
         openTextEditor(point);
@@ -775,29 +1529,100 @@
       }
     }
 
-    function onPointerMove(event) {
-      if (activePointerId === null || !draft) {
+    function onPointerDown(event) {
+      if (event.button !== undefined && event.button !== 0) {
         return;
       }
-      event.preventDefault();
-      /* Keep the drag inside the selection: the pointer may leave the box while
-       * the user keeps dragging, but the annotation stops at the edges. */
-      var point = clampToSelection(pointFromEvent(event));
-      if (draft.type === "pen" || draft.type === "mosaic") {
-        var points = draft.points;
-        var last = points[points.length - 1];
-        var minimum =
-          draft.type === "mosaic"
-            ? Math.max(1.5, (draft.mosaicSize || 8) * 1.5)
-            : 1;
-        if (distance(last, point) >= minimum) {
-          points.push(point);
-        }
-      } else {
-        draft.x2 = point.x;
-        draft.y2 = point.y;
+      if (textSession) {
+        /* Clicking outside the textarea blurs (commits) it first; do not start
+         * another interaction from the same press. */
+        return;
       }
-      requestRender();
+      var point = pointFromEvent(event);
+
+      /* 1) Transform handles / selected annotation body. Handles stay usable
+       * even while a drawing tool is active (§11.12). */
+      var selected = selectedAnnotation();
+      if (selected) {
+        var handle = hitTestHandle(point);
+        if (
+          handle &&
+          startTransform(
+            handle === "rotate" ? "rotate" : "scale",
+            point,
+            handle,
+            event
+          )
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+        var selectedBox = annotationBounds(selected);
+        if (
+          selectedBox &&
+          pointInRotatedBox(point, selectedBox, selected.rotation || 0) &&
+          startTransform("move", point, "", event)
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+          requestRender();
+          return;
+        }
+      }
+
+      /* 2) No tool: click another annotation to select it (drag = move), or let
+       * the event bubble so capture.js can move/redraw the crop selection. */
+      if (!tool) {
+        var topmost = hitTestTopmost(point);
+        if (topmost) {
+          ensureUid(topmost.annotation);
+          selectedUid = topmost.annotation.uid;
+          startTransform("move", point, "", event);
+          event.preventDefault();
+          event.stopPropagation();
+          requestRender();
+          return;
+        }
+        clearSelection();
+        return;
+      }
+
+      /* 3) A drawing tool is active: start a new annotation. */
+      clearSelection();
+      startNewAnnotation(event, point);
+    }
+
+    function onPointerMove(event) {
+      var point = pointFromEvent(event);
+      if (transformState) {
+        event.preventDefault();
+        updateTransform(point, event);
+        return;
+      }
+      if (activePointerId !== null && draft) {
+        event.preventDefault();
+        /* Keep the drag inside the selection: the pointer may leave the box while
+         * the user keeps dragging, but the annotation stops at the edges. */
+        var clamped = clampToSelection(point);
+        if (draft.type === "pen" || draft.type === "mosaic") {
+          var points = draft.points;
+          var last = points[points.length - 1];
+          var minimum =
+            draft.type === "mosaic"
+              ? Math.max(1.5, (draft.mosaicSize || 8) * 1.5)
+              : 1;
+          if (distance(last, clamped) >= minimum) {
+            points.push(clamped);
+          }
+        } else {
+          draft.x2 = clamped.x;
+          draft.y2 = clamped.y;
+        }
+        requestRender();
+        return;
+      }
+      updateCanvasCursor(point);
     }
 
     function finalizeAnnotation(annotation) {
@@ -869,19 +1694,13 @@
     }
 
     function onPointerUp(event) {
-      if (activePointerId === null) {
+      releaseCanvasPointer(event);
+      if (transformState) {
+        endTransform(true);
         return;
       }
-      try {
-        if (
-          typeof canvas.releasePointerCapture === "function" &&
-          event &&
-          event.pointerId !== undefined
-        ) {
-          canvas.releasePointerCapture(event.pointerId);
-        }
-      } catch (error) {
-        /* ignore */
+      if (activePointerId === null) {
+        return;
       }
       activePointerId = null;
       var annotation = finalizeAnnotation(draft);
@@ -896,6 +1715,9 @@
     function onPointerCancel() {
       activePointerId = null;
       draft = null;
+      if (transformState) {
+        transformState = null;
+      }
       requestRender();
     }
 
@@ -1021,10 +1843,35 @@
       requestRender();
     }
 
-    /* Escape priority (§11.7): cancel the in-progress stroke / text input first
-     * and keep the event from reaching the screenshot overlay handler. */
+    function isTypingTarget(target) {
+      var tag = target && target.tagName ? String(target.tagName).toLowerCase() : "";
+      return (
+        tag === "textarea" ||
+        tag === "input" ||
+        tag === "select" ||
+        !!(target && target.isContentEditable)
+      );
+    }
+
+    /* Escape priority (§11.12): cancel the in-progress transform/stroke/text
+     * input, then clear the selection; otherwise let `capture.js` handle the
+     * colour panels / tool / capture cancellation. Delete/Backspace removes the
+     * selected annotation. */
     function onKeyDownCapture(event) {
-      if (event.key !== "Escape") {
+      var key = String(event.key || "");
+      if (key === "Delete" || key === "Backspace") {
+        if (textSession || isTypingTarget(event.target)) {
+          return;
+        }
+        if (!selectedAnnotation()) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        deleteSelected();
+        return;
+      }
+      if (key !== "Escape") {
         return;
       }
       if (textSession) {
@@ -1033,10 +1880,23 @@
         cancelTextSession();
         return;
       }
+      if (transformState) {
+        event.preventDefault();
+        event.stopPropagation();
+        transformState = null;
+        requestRender();
+        return;
+      }
       if (draft) {
         event.preventDefault();
         event.stopPropagation();
         cancelStroke();
+        return;
+      }
+      if (selectedAnnotation()) {
+        event.preventDefault();
+        event.stopPropagation();
+        clearSelection();
       }
     }
 
@@ -1079,7 +1939,9 @@
       outputContext.save();
       outputContext.translate(-rect.x * scaleX, -rect.y * scaleY);
       outputContext.scale(scaleX, scaleY);
-      drawList(outputContext, list, size);
+      for (var index = 0; index < list.length; index += 1) {
+        drawAnnotationWithRotation(outputContext, list[index], size);
+      }
       outputContext.restore();
       return output.toDataURL("image/png");
     }
@@ -1102,10 +1964,14 @@
         }
         cancelStroke();
         cancelTextSession();
+        cancelTransform();
         tool = next;
         if (canvas) {
-          canvas.style.pointerEvents = tool ? "auto" : "none";
-          canvas.style.cursor = tool ? "crosshair" : "";
+          /* The canvas must stay interactive even without a drawing tool so
+           * existing annotations can be selected/moved (§11.12); capture.js
+           * hides it when there is nothing to draw or select. */
+          canvas.style.pointerEvents = "auto";
+          canvas.style.cursor = tool ? "crosshair" : "inherit";
           canvas.style.touchAction = "none";
           if (tool) {
             canvas.hidden = false;
@@ -1179,7 +2045,11 @@
           return false;
         }
         cancelStroke();
+        cancelTransform();
         historyIndex -= 1;
+        if (selectedUid !== null && findSelectedIndex() < 0) {
+          selectedUid = null;
+        }
         notifyHistory();
         requestRender();
         return true;
@@ -1190,7 +2060,11 @@
           return false;
         }
         cancelStroke();
+        cancelTransform();
         historyIndex += 1;
+        if (selectedUid !== null && findSelectedIndex() < 0) {
+          selectedUid = null;
+        }
         notifyHistory();
         requestRender();
         return true;
@@ -1207,7 +2081,10 @@
       clear: function () {
         cancelStroke();
         cancelTextSession();
+        cancelTransform();
+        selectedUid = null;
         if (!currentList().length) {
+          requestRender();
           return;
         }
         pushState([]);
@@ -1220,6 +2097,8 @@
       reset: function () {
         cancelStroke();
         cancelTextSession();
+        cancelTransform();
+        selectedUid = null;
         history = [[]];
         historyIndex = 0;
         notifyHistory();
@@ -1238,6 +2117,46 @@
       /* The uncommitted live-preview op (null when not dragging). */
       getDraft: function () {
         return draft ? draftToAnnotation(draft) : null;
+      },
+
+      /* §11.12 selection diagnostics used by tests/QA. */
+      isInteracting: function () {
+        return !!(transformState || activePointerId !== null);
+      },
+
+      getSelected: function () {
+        var annotation = selectedAnnotation();
+        return annotation ? cloneAnnotation(annotation) : null;
+      },
+
+      getSelectedBounds: function () {
+        var annotation = selectedAnnotation();
+        return annotation ? annotationBounds(annotation) : null;
+      },
+
+      getSelectionHandles: function () {
+        return selectionHandlePoints();
+      },
+
+      selectAnnotationAt: function (x, y) {
+        var hit = hitTestTopmost({ x: finite(x, 0), y: finite(y, 0) });
+        if (hit) {
+          ensureUid(hit.annotation);
+          selectedUid = hit.annotation.uid;
+          requestRender();
+          return cloneAnnotation(hit.annotation);
+        }
+        selectedUid = null;
+        requestRender();
+        return null;
+      },
+
+      clearSelection: function () {
+        clearSelection();
+      },
+
+      deleteSelection: function () {
+        return deleteSelected();
       },
 
       /* §11.10.3 eyedropper: sample the frozen screenshot pixel under a CSS
@@ -1291,8 +2210,12 @@
     document.addEventListener("keydown", onKeyDownCapture, true);
     window.addEventListener("resize", requestRender);
 
-    canvas.style.pointerEvents = "none";
+    canvas.style.pointerEvents = "auto";
     canvas.style.touchAction = "none";
+    /* Keep the annotation/selection layer above the dimming mask (z10) but below
+     * the crop selection handles (z12) so the transform handles are not dimmed
+     * and the crop handles still receive their events (§11.12). */
+    canvas.style.zIndex = "11";
     notifyHistory();
     requestRender();
 
