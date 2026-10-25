@@ -16,6 +16,7 @@ mod commands;
 mod engine;
 mod logger;
 mod paths;
+mod pin;
 mod selection;
 mod settings;
 mod state;
@@ -127,8 +128,21 @@ fn main() {
                     api.prevent_close();
                     windows::hide_picker(window.app_handle());
                 }
+                label if label.starts_with(crate::pin::PIN_PREFIX) => {
+                    // A pinned window is closed through `pin_close` (buttons,
+                    // double click, Esc, Alt+F4) so the registry is cleaned up.
+                    api.prevent_close();
+                    if let Some(id) = crate::pin::pin_id_from_label(label) {
+                        crate::pin::close(window.app_handle(), id);
+                    }
+                }
                 _ => {}
             },
+            WindowEvent::Destroyed => {
+                if let Some(id) = crate::pin::pin_id_from_label(window.label()) {
+                    crate::pin::forget(id);
+                }
+            }
             WindowEvent::Focused(false) => {
                 if window.label() == windows::PICKER_LABEL {
                     windows::handle_picker_blur(window.app_handle());
@@ -164,6 +178,12 @@ fn main() {
             commands::capture_followup,
             commands::capture_close,
             commands::capture_set_hotkey,
+            commands::capture_pin,
+            commands::capture_longshot,
+            commands::pin_ready,
+            commands::pin_drag,
+            commands::pin_copy,
+            commands::pin_close,
             commands::picker_ready,
             commands::picker_close,
             commands::picker_pin,
@@ -289,6 +309,13 @@ fn cleanup(app: &AppHandle) {
     state.set_quitting();
     state.abort_translate();
     state.selection.set_picker_visible(false);
+    let pinned = crate::pin::pin_count();
+    if pinned > 0 {
+        state
+            .log
+            .info(&format!("shutdown: dropping {pinned} pinned window(s)"));
+    }
+    crate::pin::clear_registry();
 
     // `shutdown_local` completes synchronously (process kill) and deliberately
     // keeps `local.keepRunning` so the next launch restores the engine; spawn +

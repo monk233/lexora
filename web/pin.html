@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src ipc: http://ipc.localhost">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lexora 钉图</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="pin.css">
+</head>
+<body>
+  <div class="pin-root" id="pin-root">
+    <img class="pin-image" id="pin-image" alt="" draggable="false" hidden>
+
+    <!-- Hover toolbar: copy / close (contract §11.5). -->
+    <div class="pin-toolbar" id="pin-toolbar" hidden>
+      <button type="button" class="pin-btn" id="pin-copy" title="复制图片">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="9" y="9" width="11" height="11" rx="2"></rect>
+          <path d="M5 15V5a2 2 0 0 1 2-2h10"></path>
+        </svg>
+        <span class="pin-btn-label">复制</span>
+      </button>
+      <button type="button" class="pin-btn pin-btn-close" id="pin-close" title="关闭（Esc）">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M18 6 6 18"></path>
+          <path d="m6 6 12 12"></path>
+        </svg>
+        <span class="pin-btn-label">关闭</span>
+      </button>
+    </div>
+
+    <div class="pin-toast" id="pin-toast" role="status" aria-live="polite" hidden></div>
+
+    <div class="pin-error" id="pin-error" role="alert" hidden>
+      <span class="pin-error-text" id="pin-error-text">钉图加载失败</span>
+      <button type="button" class="pin-error-btn" id="pin-error-close">关闭</button>
+    </div>
+
+    <!-- Right-click menu (copy / close). -->
+    <div class="pin-menu" id="pin-context-menu" role="menu" hidden>
+      <button type="button" class="pin-menu-item" data-pin-action="copy" role="menuitem">复制</button>
+      <button type="button" class="pin-menu-item" data-pin-action="close" role="menuitem">关闭</button>
+    </div>
+  </div>
+
+  <script src="shared/tauri-api.js"></script>
+  <script src="pin.js"></script>
+</body>
+</html>

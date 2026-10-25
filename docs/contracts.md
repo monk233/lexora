@@ -551,3 +551,105 @@ pub struct SelectionService {
 - 第五轮（§10.1/§10.2）：设置窗口与划词工具面板会出现在冻结截图里（不再排除、不隐藏）；文字技能 Tab 的「截图」行不再显示「图片」徽标；截图工具条可关闭全部 4 个动作，此时仅显示「确认 / 取消」，确认 = 复制图片并退出截图、取消 = 直接退出。
 - 第六轮（§4/§7.2/§10.2）：截图工具条条目由 `picker.captureSkills` 统一有序管理（内置动作 + 自定义图片技能，自定义图片技能不再出现在文字工具栏）；图片技能 Tab 为单一列表、不区分自带/自定义；紧凑模式对截图工具条生效；「翻译」「解释图片」支持编辑系统提示词（`picker.capturePrompts`）；工具条末尾为「取消」「确认」，确认绿色且最右。
 - `cargo test` 通过（新增 normalize_shortcut / catalog / 参数构造单测）；`cargo check` 无错误；`node --check` 全部通过。
+
+## 11. 截图标注与基础工具（v0.3，权威契约）
+
+参考 QQ 截图的基础工具：形状、箭头、画笔、文本/序号、马赛克、长截图、钉在桌面、撤回/重做。**全部为本地操作，不涉及 AI**。标注在截图 overlay 内完成，导出时把标注栅格化进图片（复制/确认/图片技能/钉在桌面都带标注）。
+
+### 11.1 工具清单
+| tool id | 名称 | 行为 | 可调属性 |
+| --- | --- | --- | --- |
+| `shape` | 形状 | 拖动绘制：矩形/椭圆/直线（形状子模式 `rect`/`ellipse`/`line`）；矩形/椭圆支持描边/填充两种模式，直线仅描边 | 颜色、粗细 1–20、填充模式 |
+| `arrow` | 箭头 | 拖动绘制带箭头的直线 | 颜色、粗细 1–20 |
+| `pen` | 画笔 | 按住自由绘制折线路径 | 颜色、粗细 1–20 |
+| `text` | 文本 | 单击定位输入文字（textarea 浮层），Enter 或点击别处确认、Esc 取消 | 颜色、字号 12–72、粗体、文字背景色（可关闭） |
+| `number` | 序号 | 单击放置自动递增的数字（圆形底色） | 序号颜色/底色、字号、粗体 |
+| `mosaic` | 马赛克 | 按住涂抹像素化区域（块大小可调） | 块大小 2–30 |
+| `longshot` | 长截图 | 见 11.6（按钮，不是绘制工具） | — |
+| `pin` | 钉在桌面 | 见 11.5（按钮） | — |
+
+- 撤回/重做：至少 50 步；`Ctrl+Z` / `Ctrl+Y`（文本输入中不拦截）。
+- 默认属性：颜色 `#ef4444`、粗细 4、填充模式 `outline`、字号 24、非粗体、文字背景关闭、马赛克块 8。
+- 颜色面板固定 8 个色块：`#ef4444 #f59e0b #84cc16 #3b82f6 #ffffff #6b7280 #111827` + 自定义取色器（`input[type=color]`）。
+
+### 11.2 工具条 / 属性栏 DOM 契约（`web/capture.html`）
+工具条仍是 `#capture-bar`，children 顺序（从左到右）：
+1. `#capture-pin`（钉在桌面，`data-action="pin"`，label「钉在桌面」）
+2. `.capture-bar-sep`
+3. 标注工具按钮组（`data-tool`）：`shape`（含 `data-shape-mode` 下拉：矩形/椭圆/直线）、`arrow`、`pen`、`text`、`number`、`mosaic`；class `tool-btn capture-tool`；当前激活的工具加 `.is-active`。
+4. `.capture-bar-sep`
+5. 现有 `picker.captureSkills` 动作按钮（copy/ocr/translate/explain/custom，动态渲染，保持顺序/显隐/compact 逻辑）。
+6. `#capture-longshot`（`data-action="longshot"`，label「长截图」）
+7. `.capture-bar-sep`
+8. `#capture-undo`（`data-action="undo"`）与 `#capture-redo`（`data-action="redo"`），disabled 由 JS 控制。
+9. `.capture-bar-sep`
+10. `data-action="cancel"`（取消，红）
+11. `data-action="confirm"`（确认，绿色，最右，复制并退出）
+
+属性栏 `#capture-palette`（位于工具条**上方**，默认 `hidden`；放不下时放工具条下方）：
+- `#palette-colors`：8 个 `.palette-color[data-color]` 按钮 + `#palette-color-input`（type=color）+ `#palette-color-value`（当前色文字，可选）。
+- `#palette-width`（range 1–20）+ `#palette-width-value`。
+- `#palette-fill`（形状专用 segmented）：`[data-fill="outline"]` 描边 / `[data-fill="fill"]` 填充；形状模式为 line 时隐藏。
+- `#palette-font-size`（range 12–72）+ `#palette-font-size-value`；`#palette-bold`（文本/序号开关按钮）；`#palette-text-bg`（文本背景色按钮组，含「无背景」，data-bg-color=""）。
+- `#palette-mosaic-size`（range 2–30）+ `#palette-mosaic-size-value`。
+- 控件显隐由当前工具决定；属性栏与工具条同为白色主题、圆角 12、1px `#e2e8f0` 边框。
+- 紧凑模式（`picker.compact`）只影响工具条按钮 label；属性栏不受影响。
+- 工具激活时 `body.annotating`；画布 `#capture-annotations` 位于截图 `<img>` 之上、遮罩之下，透明、覆盖整个视口。
+
+### 11.3 标注引擎模块 `web/capture-annotate.js`（新文件）
+```js
+var editor = window.CaptureAnnotate.create({
+  canvas: HTMLCanvasElement,          // 全屏透明 canvas（#capture-annotations）
+  image: HTMLImageElement,            // 截图 <img>（用于马赛克取样）
+  getSelection: function () {},       // 返回 CSS 选区 {x,y,width,height} 或 null
+  onHistoryChange: function (state) {} // {canUndo, canRedo, hasAnnotations}
+});
+editor.setTool(idOrNull)   // "shape"|"arrow"|"pen"|"text"|"number"|"mosaic"|null（null=选区模式）
+editor.getTool()
+editor.setOption(key, value) // key: color|width|shapeMode("rect"|"ellipse"|"line")|fill("outline"|"fill")|fontSize|bold|textBg|mosaicSize
+editor.getOptions()
+editor.setShapeMode(mode)  // 便捷方法，等同 setOption("shapeMode", mode)
+editor.undo(); editor.redo(); editor.canUndo(); editor.canRedo(); editor.clear();
+editor.hasAnnotations() -> bool
+editor.renderToPng(rectCss) -> string|null
+```
+- `renderToPng`：返回 data URL；画布尺寸 = `round(rect.width * scaleX) × round(rect.height * scaleY)`，`scaleX = image.naturalWidth / viewportWidth`（Y 同理）；内容为**透明背景 + 已绘制标注**（马赛克从 `image` 取样）；无标注返回 `null`。前端调用方保证只导出选区内的标注（按选区裁剪）。
+- 工具激活时 canvas 接管 pointer 事件，选区拖拽/缩放暂停；工具按钮/palette 点击不进入绘制。
+- 尺寸/位置使用 CSS 像素；HiDPI 画布 backing store = CSS × devicePixelRatio，绘制清晰。
+- 标注与选区独立：移动/缩放选区不改变已有标注位置。
+- 文本输入：在点击位置浮出 textarea（白底、与主题一致），Enter 提交（Shift+Enter 换行）、Esc 取消、blur 提交。
+
+### 11.4 导出与命令扩展
+- 前端在「复制/确认/图片技能/钉在桌面」前调用 `renderToPng(selection)`；无标注传空值。
+- `capture_copy {index, rect, annotations?}`：Rust 裁切原图 → 若 `annotations` 存在，解码 PNG 并 alpha 合成（尺寸不一致时缩放到裁切尺寸）→ 写剪贴板 → 关闭 overlay。
+- `capture_skill {requestId, index, rect, action, skillId?, targetLang?, annotations?}`：同上合成后的图片用于剪贴板与 AI（OCR/转写/视觉均使用合成图）。
+- `capture_pin {index, rect, annotations?} -> {ok, id, width, height, error?, hint?}`：合成 → 存入内存 registry（可多个）→ 创建 pin 窗口（见 11.5）。
+- `capture_longshot {index, rect} -> {ok, width, height, pinId?, frames?, error?, hint?}`：见 11.6。长截图忽略标注（v1 文档注明）。
+- pin 命令：`pin_ready {id} -> {ok, dataUrl, width, height, error?}`、`pin_drag {id, dx, dy} -> {ok}`、`pin_copy {id} -> {ok, error?, hint?}`、`pin_close {id} -> {ok}`。
+- 事件（Rust → capture-*）：`capture-longshot-progress {frame, height}`、`capture-longshot-done {ok, width, height, pinId?, error?}`；Rust → pin-*：`pin-close {id}`。
+
+### 11.5 钉在桌面
+- 每个 pin 一个窗口 label `pin-<id>`：无边框、透明、always on top、skip_taskbar、resizable=false、visible=false（先建后显示）。宽度 = 图片物理宽度 / DPI，最大不超过工作区宽 70%；高度 = min(图片逻辑高度, 工作区高 70%)——超长图（长截图）保持可读宽度、窗口内容可滚动，不整体缩成细条；位置在鼠标附近并 clamp 到工作区。
+- `pin.html`（新文件）：加载后调用 `pinAPI.ready(id)` 取图并显示；鼠标按住任意位置拖动窗口（`pin_drag` 增量）；双击关闭；Esc 关闭；悬停右上角显示两个小按钮「复制」「关闭」；右键菜单含「复制」「关闭」。
+- `window.pinAPI = { ready(id), drag(id,dx,dy), copy(id), close(id) }`（tauri-api.js 提供 + mock）。
+- 关闭 pin 不退出截图流程（截图 overlay 已关闭）。
+
+### 11.6 长截图（v1）
+- 前置：已有选区；点击「长截图」后 capture overlay 隐藏（必须释放焦点/让滚轮到达下层应用，且 overlay 不进入帧），前端仍接收进度事件但窗口不可见。
+- capture 窗口自身需 `WDA_EXCLUDEFROMCAPTURE` 排除（设置/工具面板不受影响，仍会入镜）。
+- Rust 流程：取 session 首帧裁切选区 → 循环最多 30 帧：光标移到选区中心 → SendInput 滚轮向下（3 格）→ 150ms → `xcap` 抓同显示器 → 裁切区域 → 在已拼接图底部 10%–90% 范围内按行像素差找最佳重叠（阈值内）→ 拼接新增行；停止条件：无重叠 / 与上帧相同 / 超过 30000px 高 / 30 帧。
+- 结束：合成 PNG 写剪贴板 + 创建 pin 窗口展示（超长图窗口内滚动）+ emit `capture-longshot-done`；capture 前端收到 done 后关闭 overlay。失败：先重新显示 overlay，再 emit done{ok:false,error}（前端 toast，选区可继续操作）。
+- 日志：`longshot: frames=N height=H stop=no-overlap|same-frame|max-height|max-frames`，每帧另有 `longshot frame=N same=... overlap=... height=...`。重叠判定用稠密采样平均差异（容忍平滑滚动的亚像素偏移）。
+- v1 限制：只向下滚动；依赖目标应用响应滚轮（UIPI/管理员窗口、视频/动画内容、固定悬浮窗会失败或错位）；忽略标注图层。
+
+### 11.7 撤回/重做与键盘
+- `Ctrl+Z` 撤回、`Ctrl+Y`/`Ctrl+Shift+Z` 重做；工具激活时 `Esc` 优先取消当前绘制，其次退出工具，最后取消截图。
+- 工具切换保留已绘制标注；清除全部可另设（palette 提供「清除标注」按钮 `#palette-clear`，需二次确认或直接清除+可撤销）。
+
+### 11.8 验收
+- 形状（矩形/椭圆/直线 × 描边/填充）、箭头、画笔、文本（含背景色/粗体/字号）、序号（递增）、马赛克均可绘制，颜色/粗细可调；标注后复制/确认/图片技能/钉在桌面导出的图片包含标注（像素级合成、位置正确）。
+- 撤回/重做按钮与 Ctrl+Z/Ctrl+Y 生效，按钮禁用态正确。
+- 钉在桌面：可拖动、双击/Esc 关闭、复制/关闭按钮可用；大图按比例适配屏幕。
+- 长截图：自动滚动并拼接，结果生成 pin 窗口 + 复制到剪贴板；停止条件与日志正确。
+- 不破坏既有：选区移动/缩放、复制/提取文字/翻译/解释图片/自定义图片技能、紧凑模式、确认/取消、overlay 复用与性能。
+- `cargo test` 通过；`cargo check` 无错误；`node --check` 全部通过。

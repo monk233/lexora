@@ -336,25 +336,14 @@ pub fn move_picker_by(app: &tauri::AppHandle, dx: f64, dy: f64) -> Option<(f64, 
         .unwrap_or(1.0);
     let current = window.outer_position().ok()?;
     let size = window.outer_size().ok()?;
-    let mut x = current.x + (dx * scale).round() as i32;
-    let mut y = current.y + (dy * scale).round() as i32;
+    let x = current.x + (dx * scale).round() as i32;
+    let y = current.y + (dy * scale).round() as i32;
 
     let work = win32::work_area_physical(
         current.x + size.width as i32 / 2,
         current.y + size.height as i32 / 2,
     );
-    let max_x = work.right - size.width as i32;
-    x = if max_x >= work.left {
-        x.clamp(work.left, max_x)
-    } else {
-        work.left
-    };
-    let max_y = work.bottom - size.height as i32;
-    y = if max_y >= work.top {
-        y.clamp(work.top, max_y)
-    } else {
-        work.top
-    };
+    let (x, y) = win32::clamp_to_work_area(x, y, size.width as i32, size.height as i32, &work);
 
     let _ = window.set_position(PhysicalPosition::new(x, y));
     Some((x as f64 / scale, y as f64 / scale))
@@ -460,6 +449,16 @@ pub fn create_capture_window(
         geometry.width.max(1),
         geometry.height.max(1),
     ))?;
+    // The overlay must never be part of a screenshot frame (long screenshots
+    // capture while it is technically alive, contract §11.6). Settings/picker
+    // windows are intentionally *not* excluded: the user wants them to appear
+    // in the frozen screenshot (round 5).
+    if !crate::win32::exclude_from_capture(&window) {
+        log_warn(
+            app,
+            "capture overlay could not be excluded from screen capture",
+        );
+    }
     Ok(())
 }
 

@@ -10,9 +10,16 @@ use windows::Win32::Foundation::POINT;
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromPoint, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
-use windows::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime;
-use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetDoubleClickTime, SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_WHEEL, MOUSEINPUT,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    BringWindowToTop, GetAncestor, GetCursorPos, GetForegroundWindow, GetWindowThreadProcessId,
+    SetCursorPos, SetForegroundWindow, SetWindowDisplayAffinity, SetWindowPos, WindowFromPoint,
+    GA_ROOT, HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WDA_EXCLUDEFROMCAPTURE, WHEEL_DELTA,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct WorkArea {
@@ -37,6 +44,107 @@ pub fn cursor_physical() -> (i32, i32) {
         let _ = GetCursorPos(&mut point);
     }
     (point.x, point.y)
+}
+
+/// Moves the physical cursor position (used to aim the long-screenshot scroll).
+pub fn set_cursor_position(x: i32, y: i32) {
+    unsafe {
+        let _ = SetCursorPos(x, y);
+    }
+}
+
+/// Sends `notches` mouse-wheel steps (negative data = scroll down) through
+/// `SendInput`, i.e. exactly what a real wheel would generate. Returns whether
+/// the input was accepted by the OS.
+pub fn scroll_wheel_notches(notches: i32) -> bool {
+    if notches == 0 {
+        return true;
+    }
+    let delta = -(WHEEL_DELTA as i32 * notches);
+    let input = INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+            mi: MOUSEINPUT {
+                dx: 0,
+                dy: 0,
+                mouseData: delta as u32,
+                dwFlags: MOUSEEVENTF_WHEEL,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    unsafe { SendInput(&[input], std::mem::size_of::<INPUT>() as i32) == 1 }
+}
+
+/// Brings the top-level window under `(x, y)` to the foreground so synthetic
+/// wheel input is delivered to it (Windows routes wheel events to the focused
+/// window unless "scroll inactive windows on hover" is enabled). Our own
+/// hidden overlay never appears under the cursor, so this targets the
+/// application being captured. Failures are ignored (the long screenshot then
+/// relies on the hover setting).
+pub fn focus_window_at(x: i32, y: i32) -> bool {
+    unsafe {
+        let hwnd = WindowFromPoint(POINT { x, y });
+        if hwnd.is_invalid() {
+            return false;
+        }
+        let root = GetAncestor(hwnd, GA_ROOT);
+        let target = if root.is_invalid() { hwnd } else { root };
+        // Raise it in the z-order (works even when another app owns the
+        // foreground), then hand focus over by temporarily attaching to the
+        // foreground thread's input queue (bypasses the foreground lock without
+        // synthesizing keyboard input, which could open e.g. a menu).
+        let _ = SetWindowPos(
+            target,
+            Some(HWND_TOP),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+        let foreground_thread = GetWindowThreadProcessId(GetForegroundWindow(), None);
+        let current_thread = GetCurrentThreadId();
+        let attached = foreground_thread != 0
+            && foreground_thread != current_thread
+            && AttachThreadInput(current_thread, foreground_thread, true).as_bool();
+        let _ = BringWindowToTop(target);
+        let focused = SetForegroundWindow(target).as_bool();
+        if attached {
+            let _ = AttachThreadInput(current_thread, foreground_thread, false);
+        }
+        focused
+    }
+}
+
+/// Excludes one of our own windows from screen capture
+/// (`WDA_EXCLUDEFROMCAPTURE`, Windows 10 2004+). Used for the screenshot
+/// overlays so long-screenshot frames never contain them (contract §11.6);
+/// returns `false` on unsupported systems and the caller only logs it.
+pub fn exclude_from_capture(window: &tauri::WebviewWindow) -> bool {
+    let Ok(hwnd) = window.hwnd() else {
+        return false;
+    };
+    unsafe { SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE).is_ok() }
+}
+
+/// Clamps a window's physical top-left position so a `width`×`height` window
+/// stays fully inside `work` (pure, shared by the picker and pin window drags).
+pub fn clamp_to_work_area(x: i32, y: i32, width: i32, height: i32, work: &WorkArea) -> (i32, i32) {
+    let max_x = work.right - width.max(1);
+    let x = if max_x >= work.left {
+        x.clamp(work.left, max_x)
+    } else {
+        work.left
+    };
+    let max_y = work.bottom - height.max(1);
+    let y = if max_y >= work.top {
+        y.clamp(work.top, max_y)
+    } else {
+        work.top
+    };
+    (x, y)
 }
 
 /// Maximum interval between two clicks of a double click (system setting).
@@ -89,5 +197,44 @@ pub fn monitor_scale_factor(x: i32, y: i32) -> f64 {
         dpi_x as f64 / 96.0
     } else {
         1.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{clamp_to_work_area, WorkArea};
+
+    fn work() -> WorkArea {
+        WorkArea {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        }
+    }
+
+    #[test]
+    fn window_positions_are_clamped_to_the_work_area() {
+        // Inside stays untouched.
+        assert_eq!(clamp_to_work_area(100, 200, 400, 300, &work()), (100, 200));
+        // Negative / beyond the right/bottom edges are pulled back in.
+        assert_eq!(clamp_to_work_area(-50, -20, 400, 300, &work()), (0, 0));
+        assert_eq!(
+            clamp_to_work_area(5000, 5000, 400, 300, &work()),
+            (1520, 780)
+        );
+        // A multi-monitor work area with a negative origin.
+        let secondary = WorkArea {
+            left: -1920,
+            top: 0,
+            right: 0,
+            bottom: 1040,
+        };
+        assert_eq!(
+            clamp_to_work_area(-2000, 3000, 800, 600, &secondary),
+            (-1920, 440)
+        );
+        // A window larger than the work area anchors at the top-left corner.
+        assert_eq!(clamp_to_work_area(50, 50, 4000, 3000, &work()), (0, 0));
     }
 }

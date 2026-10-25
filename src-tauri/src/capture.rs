@@ -29,6 +29,11 @@
 //! The region hotkey (default `Win+Shift+X`) lives on its own Windows message
 //! thread so it can be re-registered at runtime (`capture_set_hotkey`, contract
 //! §10.4) without restarting the app.
+//!
+//! Round 9 (contract §11) adds the annotation layer composited on export
+//! (`capture_copy`/`capture_skill`/`capture_pin`) and the scrolling long
+//! screenshot (`capture_longshot`), which stitches overlapping frames and hands
+//! the result to the pin module.
 
 use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -66,6 +71,31 @@ const EVENT_TRANSLATE: &str = "translate-event";
 /// Rust → `capture-<index>`: a fresh screenshot session is ready for that
 /// monitor; a reused page resets itself and fetches the new display image.
 pub const EVENT_CAPTURE_ARMED: &str = "capture-armed";
+/// Rust → `capture-<index>` while a long screenshot is stitched (contract §11.4).
+const EVENT_LONGSHOT_PROGRESS: &str = "capture-longshot-progress";
+/// Rust → `capture-<index>` when a long screenshot finished or failed (§11.4).
+const EVENT_LONGSHOT_DONE: &str = "capture-longshot-done";
+/// Long screenshot: hard limits and scroll pacing (contract §11.6).
+const LONGSHOT_MAX_FRAMES: u32 = 30;
+const LONGSHOT_MAX_HEIGHT: u32 = 30_000;
+/// Memory guard: a very wide selection would exhaust memory long before the
+/// 30 000-row cap, so the stitched image also stops at this pixel budget
+/// (reported as `max-height`).
+const LONGSHOT_MAX_PIXELS: u64 = 64_000_000;
+const LONGSHOT_SCROLL_NOTCHES: i32 = 3;
+const LONGSHOT_SCROLL_SETTLE: Duration = Duration::from_millis(80);
+const LONGSHOT_FRAME_DELAY: Duration = Duration::from_millis(400);
+/// Extra wait before retaking a frame that looked identical (smooth scrolling).
+const LONGSHOT_SAME_FRAME_RETRY_DELAY: Duration = Duration::from_millis(450);
+const LONGSHOT_MIN_OVERLAP_RATIO: f64 = 0.10;
+const LONGSHOT_MAX_OVERLAP_RATIO: f64 = 0.90;
+const LONGSHOT_ROW_DIFF_THRESHOLD: f64 = 8.0;
+const LONGSHOT_SAME_FRAME_THRESHOLD: f64 = 3.0;
+/// Maximum mean absolute RGB difference allowed for an overlap candidate. A
+/// smooth-scrolled frame can be offset by a fraction of a pixel, so text edges
+/// differ while the overall image matches; the mean stays far below this bar for
+/// a real overlap and far above it for unrelated content.
+const LONGSHOT_OVERLAP_MAX_MEAN_DIFF: f64 = 3.0;
 /// Monotonic part of generated request ids.
 static REQUEST_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -230,6 +260,9 @@ pub struct CaptureService {
     /// Guards against two overlapping `start` calls (e.g. the hotkey pressed
     /// again while the first screenshot is still being encoded).
     starting: AtomicBool,
+    /// Guards against two overlapping long-screenshot runs; while set, a new
+    /// screenshot start is rejected too.
+    longshot_running: AtomicBool,
 }
 
 impl CaptureService {
@@ -241,6 +274,7 @@ impl CaptureService {
             epoch: AtomicU64::new(0),
             ready_signaled: AtomicBool::new(false),
             starting: AtomicBool::new(false),
+            longshot_running: AtomicBool::new(false),
         }
     }
 
@@ -264,6 +298,15 @@ impl CaptureService {
         state: &AppState,
         preset_skill_id: Option<String>,
     ) -> Result<usize, EngineError> {
+        if self.longshot_running.load(Ordering::SeqCst) {
+            state
+                .log
+                .warn("screenshot capture ignored: a long screenshot is running");
+            return Err(EngineError::new(
+                "长截图正在进行中。",
+                "请等待当前长截图结束后再截图。",
+            ));
+        }
         if self.starting.swap(true, Ordering::SeqCst) {
             state
                 .log
@@ -557,10 +600,16 @@ impl CaptureService {
         }))
     }
 
-    /// Copies the cropped region to the clipboard, then hides the capture UI
-    /// (the overlay windows stay reusable for the next capture).
-    pub fn copy(&self, app: &AppHandle, index: u32, rect: &HitRect) -> Result<(), EngineError> {
-        let cropped = {
+    /// Crops the selected region of the session image. The image is shared with
+    /// the retry/follow-up data, so the annotation layer is only composited into
+    /// the returned copy (contract §11.4).
+    pub fn crop_region(
+        &self,
+        index: u32,
+        rect: &HitRect,
+        annotations: Option<String>,
+    ) -> Result<RgbaImage, EngineError> {
+        let mut image = {
             let guard = lock(&self.session);
             let Some(session) = guard.as_ref() else {
                 return Err(not_ready_error());
@@ -572,6 +621,21 @@ impl CaptureService {
                 .ok_or_else(|| missing_monitor_error(index))?;
             crop_image(&shot.image, rect)?
         };
+        composite_annotations(&mut image, annotations)?;
+        Ok(image)
+    }
+
+    /// Copies the cropped region to the clipboard (with the annotation layer
+    /// composited), then hides the capture UI (the overlay windows stay reusable
+    /// for the next capture).
+    pub fn copy(
+        &self,
+        app: &AppHandle,
+        index: u32,
+        rect: &HitRect,
+        annotations: Option<String>,
+    ) -> Result<(), EngineError> {
+        let cropped = self.crop_region(index, rect, annotations)?;
         let (width, height) = cropped.dimensions();
         let image = tauri::image::Image::new_owned(cropped.into_raw(), width, height);
         app.clipboard().write_image(&image).map_err(|error| {
@@ -596,6 +660,7 @@ impl CaptureService {
         skill_id: Option<String>,
         target_lang: Option<String>,
         request_id: Option<String>,
+        annotations: Option<String>,
     ) -> Result<CaptureJob, EngineError> {
         let settings = settings_of(app)?;
         let action = SkillAction::parse(action).ok_or_else(|| {
@@ -629,7 +694,11 @@ impl CaptureService {
             let (left, top, width, height) = clamp_rect(&shot.image, rect).ok_or_else(|| {
                 EngineError::new("选区无效。", "请重新框选一个有效的区域后再试。")
             })?;
-            let image = image::imageops::crop_imm(&shot.image, left, top, width, height).to_image();
+            let mut image =
+                image::imageops::crop_imm(&shot.image, left, top, width, height).to_image();
+            // The annotation layer is rasterized on the fly; clipboard and the
+            // AI request always use the composited image (contract §11.4).
+            composite_annotations(&mut image, annotations)?;
             let data_url = png_data_url(&image)?;
             let (image_width, image_height) = shot.image.dimensions();
             let anchor = anchor_bottom_right(
@@ -830,6 +899,193 @@ impl CaptureService {
         crate::windows::hide_capture_windows(app);
         self.finish_capture(app);
     }
+
+    /// Runs a scrolling long screenshot of the selected region (contract §11.6).
+    ///
+    /// The current session crop is the first frame; the capture overlay is
+    /// hidden so the synthetic wheel input reaches the application below, then
+    /// frames are grabbed and stitched by their overlapping rows. On success the
+    /// PNG goes to the clipboard and into a new pin window. Emits
+    /// `capture-longshot-progress` per stitched frame and `capture-longshot-done`
+    /// at the end. On failure the overlays are shown again so the renderer can
+    /// report the error and the selection stays usable.
+    pub async fn longshot(
+        &self,
+        app: &AppHandle,
+        index: u32,
+        rect: &HitRect,
+    ) -> Result<Value, EngineError> {
+        if self.longshot_running.swap(true, Ordering::SeqCst) {
+            return Err(EngineError::new(
+                "长截图正在进行中。",
+                "请等待当前长截图结束后再试。",
+            ));
+        }
+        let _guard = LongshotGuard(&self.longshot_running);
+        let label = format!("{}{index}", crate::windows::CAPTURE_PREFIX);
+
+        let request = {
+            let guard = lock(&self.session);
+            let Some(session) = guard.as_ref() else {
+                return Err(not_ready_error());
+            };
+            let shot = session
+                .shots
+                .iter()
+                .find(|shot| shot.index == index)
+                .ok_or_else(|| missing_monitor_error(index))?;
+            let (left, top, width, height) = clamp_rect(&shot.image, rect).ok_or_else(|| {
+                EngineError::new("选区无效。", "请重新框选一个有效的区域后再试。")
+            })?;
+            let first_frame =
+                image::imageops::crop_imm(&shot.image, left, top, width, height).to_image();
+            LongshotRequest {
+                index,
+                origin_x: shot.x,
+                origin_y: shot.y,
+                monitor_width: shot.width,
+                monitor_height: shot.height,
+                crop: (left, top, width, height),
+                first_frame,
+            }
+        };
+        let first_height = request.first_frame.height();
+
+        // The wheel input must reach the application below the overlay, and the
+        // overlay must never be part of a frame (contract §11.6).
+        crate::windows::hide_capture_windows(app);
+        tokio::time::sleep(Duration::from_millis(80)).await;
+
+        let cursor_before = crate::win32::cursor_physical();
+        if let Some(log) = log_of(app) {
+            log.info(&format!(
+                "longshot: start index={index} crop={}x{} at ({},{})",
+                request.crop.2, request.crop.3, request.crop.0, request.crop.1
+            ));
+        }
+
+        let worker_app = app.clone();
+        let joined = tauri::async_runtime::spawn_blocking(move || {
+            run_longshot(worker_app, request, cursor_before)
+        })
+        .await;
+        let captured = match joined {
+            Ok(result) => result,
+            Err(error) => {
+                let error = EngineError::new(
+                    "长截图失败。",
+                    format!("后台拼接任务异常，请重试（{error}）。"),
+                );
+                self.fail_longshot(
+                    app,
+                    &label,
+                    0,
+                    first_height,
+                    LongshotStop::NoOverlap,
+                    &error,
+                );
+                return Err(error);
+            }
+        };
+
+        match captured {
+            Ok(captured) => {
+                let LongshotCapture {
+                    image,
+                    frames,
+                    stop,
+                } = captured;
+                let (width, height) = image.dimensions();
+                if height <= first_height {
+                    let error = EngineError::new(
+                        "没有可拼接的新内容。",
+                        "所选区域没有随滚轮滚动（应用可能不响应滚轮，或已经滚动到边界）。",
+                    );
+                    self.fail_longshot(app, &label, frames, height, stop, &error);
+                    return Err(error);
+                }
+                let clipboard = write_clipboard_image(app, &image);
+                let pin = match crate::pin::create_pin(app, image) {
+                    Ok(pin) => pin,
+                    Err(error) => {
+                        self.fail_longshot(app, &label, frames, height, stop, &error);
+                        return Err(error);
+                    }
+                };
+                let (pin_id, _, _) = pin;
+                if let Some(log) = log_of(app) {
+                    log.info(&format!(
+                        "longshot: frames={frames} height={height} stop={}",
+                        stop.as_str()
+                    ));
+                    if !clipboard {
+                        log.warn("longshot: clipboard write failed, pin still created");
+                    }
+                }
+                let _ = app.emit_to(
+                    label.as_str(),
+                    EVENT_LONGSHOT_DONE,
+                    json!({
+                        "ok": true,
+                        "width": width,
+                        "height": height,
+                        "pinId": pin_id,
+                        "frames": frames,
+                    }),
+                );
+                // The capture is finished: hide the overlays, drop the session
+                // and release the input gate.
+                self.close(app);
+                Ok(json!({
+                    "ok": true,
+                    "width": width,
+                    "height": height,
+                    "pinId": pin_id,
+                    "frames": frames,
+                }))
+            }
+            Err(error) => {
+                self.fail_longshot(
+                    app,
+                    &label,
+                    0,
+                    first_height,
+                    LongshotStop::NoOverlap,
+                    &error,
+                );
+                Err(error)
+            }
+        }
+    }
+
+    /// Reports a failed long screenshot: logs the stop reason, emits
+    /// `capture-longshot-done {ok:false}` and shows the overlays again so the
+    /// renderer can display the error and the user can retry (contract §11.6).
+    fn fail_longshot(
+        &self,
+        app: &AppHandle,
+        label: &str,
+        frames: u32,
+        height: u32,
+        stop: LongshotStop,
+        error: &EngineError,
+    ) {
+        if let Some(log) = log_of(app) {
+            log.warn(&format!(
+                "longshot: frames={frames} height={height} stop={} error={}",
+                stop.as_str(),
+                error.message
+            ));
+        }
+        // Show the overlay again **before** the renderer handles the failure, so
+        // its error toast and toolbar are actually visible (contract §11.6).
+        crate::windows::show_all_capture_windows(app);
+        let _ = app.emit_to(
+            label,
+            EVENT_LONGSHOT_DONE,
+            json!({ "ok": false, "error": error.message, "hint": error.hint }),
+        );
+    }
 }
 
 impl Default for CaptureService {
@@ -848,6 +1104,467 @@ fn retry_target_lang(action: SkillAction, current: &str, requested: Option<Strin
         }
     }
     current.to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Long screenshot (contract §11.6)
+// ---------------------------------------------------------------------------
+
+/// Why the long-screenshot loop stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LongshotStop {
+    /// No reliable row overlap between the stitched image and the new frame.
+    NoOverlap,
+    /// The application did not scroll (frame identical to the previous one).
+    SameFrame,
+    /// The stitched image reached the height cap.
+    MaxHeight,
+    /// The frame cap was reached.
+    MaxFrames,
+}
+
+impl LongshotStop {
+    fn as_str(self) -> &'static str {
+        match self {
+            LongshotStop::NoOverlap => "no-overlap",
+            LongshotStop::SameFrame => "same-frame",
+            LongshotStop::MaxHeight => "max-height",
+            LongshotStop::MaxFrames => "max-frames",
+        }
+    }
+}
+
+/// What the stitching loop should do with a freshly captured frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LongshotDecision {
+    Continue,
+    Stop(LongshotStop),
+}
+
+/// First frame plus the monitor/crop geometry the blocking worker needs.
+struct LongshotRequest {
+    index: u32,
+    origin_x: i32,
+    origin_y: i32,
+    monitor_width: u32,
+    monitor_height: u32,
+    crop: (u32, u32, u32, u32),
+    first_frame: RgbaImage,
+}
+
+/// Result of the blocking stitching worker.
+struct LongshotCapture {
+    image: RgbaImage,
+    frames: u32,
+    stop: LongshotStop,
+}
+
+/// Vertically growing RGBA buffer used while stitching: appending a frame only
+/// copies its new rows, instead of cloning the whole stitched image every time.
+struct Stitched {
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+}
+
+impl Stitched {
+    fn from_image(image: &RgbaImage) -> Self {
+        let (width, height) = image.dimensions();
+        Self {
+            width,
+            height,
+            data: image.as_raw().clone(),
+        }
+    }
+
+    fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Appends the rows of `image` starting at `skip_rows` (the overlapping top
+    /// part is not duplicated). Frames of a different width are ignored so the
+    /// buffer can never become inconsistent.
+    fn push_rows(&mut self, image: &RgbaImage, skip_rows: u32) {
+        let width = self.width;
+        if width == 0 || image.width() < width {
+            return;
+        }
+        let source = image.as_raw();
+        let source_width = image.width() as usize;
+        let row_bytes = width as usize * 4;
+        for y in skip_rows..image.height() {
+            let start = y as usize * source_width * 4;
+            self.data
+                .extend_from_slice(&source[start..start + row_bytes]);
+        }
+        self.height = (self.data.len() / (width as usize * 4)) as u32;
+    }
+
+    fn into_image(self) -> RgbaImage {
+        let width = self.width.max(1);
+        let height = self.height.max(1);
+        RgbaImage::from_raw(width, height, self.data)
+            .unwrap_or_else(|| RgbaImage::new(width, height))
+    }
+}
+
+fn stitched_pixel(stitched: &Stitched, x: u32, y: u32) -> [u8; 4] {
+    let offset = (y as usize * stitched.width as usize + x as usize) * 4;
+    [
+        stitched.data[offset],
+        stitched.data[offset + 1],
+        stitched.data[offset + 2],
+        stitched.data[offset + 3],
+    ]
+}
+
+/// Finds the best row overlap between the bottom of `stitched` and the top of
+/// `next` (candidate range 10%–90% of the new frame height). Candidates are
+/// scored by a dense sampled mismatch ratio, so repeated-looking content (e.g.
+/// lines of text) cannot produce a false large overlap; `expected` (the previous
+/// frame's overlap) breaks ties and narrows the search on the first pass.
+/// Returns `None` when no candidate matches closely enough (contract §11.6).
+fn find_overlap(stitched: &Stitched, next: &RgbaImage, expected: Option<u32>) -> Option<u32> {
+    let width = stitched.width.min(next.width());
+    let next_height = next.height();
+    if width == 0 || next_height < 2 || stitched.height() < 2 {
+        return None;
+    }
+    let min_overlap = ((next_height as f64 * LONGSHOT_MIN_OVERLAP_RATIO).ceil() as u32).max(1);
+    let max_overlap = ((next_height as f64 * LONGSHOT_MAX_OVERLAP_RATIO).floor() as u32)
+        .min(stitched.height())
+        .min(next_height.saturating_sub(1));
+    if max_overlap < min_overlap {
+        return None;
+    }
+    // A scroll step is stable between frames: search near the previous overlap
+    // first and only fall back to the full range when that fails.
+    if let Some(expected) = expected.filter(|value| (min_overlap..=max_overlap).contains(value)) {
+        let slack = (expected / 2).clamp(4, 64);
+        let low = expected.saturating_sub(slack).max(min_overlap);
+        let high = (expected + slack).min(max_overlap);
+        if let Some(overlap) =
+            best_overlap_in(stitched, next, width, min_overlap, max_overlap, low, high)
+        {
+            return Some(overlap);
+        }
+    }
+    best_overlap_in(
+        stitched,
+        next,
+        width,
+        min_overlap,
+        max_overlap,
+        min_overlap,
+        max_overlap,
+    )
+}
+
+/// Best-scoring candidate in `[low, high]`; ties prefer the candidate closest to
+/// the middle of the range (i.e. a plausible scroll step).
+fn best_overlap_in(
+    stitched: &Stitched,
+    next: &RgbaImage,
+    width: u32,
+    _min_overlap: u32,
+    _max_overlap: u32,
+    low: u32,
+    high: u32,
+) -> Option<u32> {
+    let mut best: Option<(f64, u32)> = None;
+    for overlap in low..=high {
+        let difference = overlap_mean_difference(stitched, next, overlap, width);
+        if difference > LONGSHOT_OVERLAP_MAX_MEAN_DIFF {
+            continue;
+        }
+        best = match best {
+            None => Some((difference, overlap)),
+            Some((best_difference, best_overlap)) => {
+                if difference + 1e-6 < best_difference {
+                    Some((difference, overlap))
+                } else {
+                    Some((best_difference, best_overlap))
+                }
+            }
+        };
+    }
+    best.map(|(_, overlap)| overlap)
+}
+
+/// Mean absolute RGB difference between the bottom `overlap` rows of `stitched`
+/// and the top `overlap` rows of `next`. A dense sample (up to 96 rows × 96
+/// columns) keeps text-like repeated content from matching wrongly, while the
+/// mean (instead of a hard per-pixel count) tolerates the fractional-pixel
+/// offsets produced by smooth scrolling.
+fn overlap_mean_difference(stitched: &Stitched, next: &RgbaImage, overlap: u32, width: u32) -> f64 {
+    let step_x = (width / 96).max(1);
+    let sample_rows = overlap.clamp(1, 96);
+    let row_step = (overlap / sample_rows).max(1);
+    let start_y = stitched.height() - overlap;
+    let mut total_difference = 0u64;
+    let mut samples = 0u64;
+    let mut row = 0;
+    while row < overlap {
+        let stitched_y = start_y + row;
+        let mut x = 0;
+        while x < width {
+            let above = stitched_pixel(stitched, x, stitched_y);
+            let below = next.get_pixel(x, row);
+            for channel in 0..3 {
+                total_difference +=
+                    (above[channel] as i16 - below[channel] as i16).unsigned_abs() as u64;
+            }
+            samples += 3;
+            x += step_x;
+        }
+        row += row_step;
+    }
+    if samples == 0 {
+        return f64::MAX;
+    }
+    total_difference as f64 / samples as f64
+}
+
+/// Sampled comparison of two equally sized frames: `true` when the application
+/// did not scroll between them (stop `same-frame`).
+fn frames_identical(first: &RgbaImage, second: &RgbaImage) -> bool {
+    if first.dimensions() != second.dimensions() {
+        return false;
+    }
+    let (width, height) = first.dimensions();
+    if width == 0 || height == 0 {
+        return true;
+    }
+    let step_x = (width / 32).max(1);
+    let step_y = (height / 32).max(1);
+    let mut total_difference = 0u64;
+    let mut samples = 0u64;
+    let mut y = 0;
+    while y < height {
+        let mut x = 0;
+        while x < width {
+            let first_pixel = first.get_pixel(x, y);
+            let second_pixel = second.get_pixel(x, y);
+            for channel in 0..3 {
+                total_difference += (first_pixel[channel] as i16 - second_pixel[channel] as i16)
+                    .unsigned_abs() as u64;
+            }
+            samples += 3;
+            x += step_x;
+        }
+        y += step_y;
+    }
+    if samples == 0 {
+        return true;
+    }
+    (total_difference as f64 / samples as f64) <= LONGSHOT_SAME_FRAME_THRESHOLD
+}
+
+/// Decides whether the loop stops after a frame: identical frame / no reliable
+/// overlap dominate, then the height, pixel-budget and frame caps (contract
+/// §11.6).
+fn longshot_decision(
+    width: u32,
+    frame: u32,
+    same_frame: bool,
+    overlap: Option<u32>,
+    projected_height: u32,
+) -> LongshotDecision {
+    if same_frame {
+        return LongshotDecision::Stop(LongshotStop::SameFrame);
+    }
+    if !matches!(overlap, Some(rows) if rows > 0) {
+        return LongshotDecision::Stop(LongshotStop::NoOverlap);
+    }
+    let exceeds_height = projected_height > LONGSHOT_MAX_HEIGHT
+        || (width as u64).saturating_mul(projected_height as u64) > LONGSHOT_MAX_PIXELS;
+    if exceeds_height {
+        return LongshotDecision::Stop(LongshotStop::MaxHeight);
+    }
+    if frame >= LONGSHOT_MAX_FRAMES {
+        return LongshotDecision::Stop(LongshotStop::MaxFrames);
+    }
+    LongshotDecision::Continue
+}
+
+/// Blocking worker of [`CaptureService::longshot`]: scrolls, grabs and stitches
+/// frames. `xcap::Monitor` is not `Send`, which is why this runs entirely inside
+/// one `spawn_blocking` call.
+fn run_longshot(
+    app: AppHandle,
+    request: LongshotRequest,
+    cursor_before: (i32, i32),
+) -> Result<LongshotCapture, EngineError> {
+    let LongshotRequest {
+        index,
+        origin_x,
+        origin_y,
+        monitor_width,
+        monitor_height,
+        crop,
+        first_frame,
+    } = request;
+    let (left, top, width, height) = crop;
+    let label = format!("{}{index}", crate::windows::CAPTURE_PREFIX);
+    let center = (
+        origin_x + (left + width / 2) as i32,
+        origin_y + (top + height / 2) as i32,
+    );
+    let capture_rect = HitRect {
+        x: left as f64,
+        y: top as f64,
+        width: width as f64,
+        height: height as f64,
+    };
+    let monitors = xcap::Monitor::all().map_err(|error| {
+        EngineError::new(
+            "长截图失败。",
+            format!("无法枚举显示器，请重试（{error}）。"),
+        )
+    })?;
+    let monitor = monitors
+        .iter()
+        .find(|monitor| {
+            monitor.x().unwrap_or(i32::MIN) == origin_x
+                && monitor.y().unwrap_or(i32::MIN) == origin_y
+                && monitor.width().unwrap_or(0) == monitor_width
+                && monitor.height().unwrap_or(0) == monitor_height
+        })
+        .or_else(|| monitors.first())
+        .ok_or_else(|| EngineError::new("长截图失败。", "未检测到显示器。"))?;
+
+    let mut stitched = Stitched::from_image(&first_frame);
+    let mut previous = first_frame;
+    let mut frames = 1u32;
+    // Previous accepted scroll overlap; consecutive frames scroll by the same
+    // amount, so it narrows (and disambiguates) the overlap search.
+    let mut expected_overlap: Option<u32> = None;
+    let stop;
+
+    // Put the cursor back where the user left it, even when a capture fails.
+    struct CursorRestore {
+        position: (i32, i32),
+    }
+    impl Drop for CursorRestore {
+        fn drop(&mut self) {
+            crate::win32::set_cursor_position(self.position.0, self.position.1);
+        }
+    }
+    let _cursor_restore = CursorRestore {
+        position: cursor_before,
+    };
+
+    // Wheel input is delivered to the focused window unless "scroll inactive
+    // windows when hovering" is enabled. Focus the application below the
+    // (hidden) overlay once, before the first scroll, so the scroll always lands
+    // there instead of on a stale foreground window.
+    crate::win32::set_cursor_position(center.0, center.1);
+    std::thread::sleep(LONGSHOT_SCROLL_SETTLE);
+    crate::win32::focus_window_at(center.0, center.1);
+
+    loop {
+        if frames >= LONGSHOT_MAX_FRAMES {
+            stop = LongshotStop::MaxFrames;
+            break;
+        }
+        crate::win32::set_cursor_position(center.0, center.1);
+        std::thread::sleep(LONGSHOT_SCROLL_SETTLE);
+        if !crate::win32::scroll_wheel_notches(LONGSHOT_SCROLL_NOTCHES) {
+            if let Some(log) = log_of(&app) {
+                log.warn("longshot: SendInput wheel event was rejected");
+            }
+        }
+        std::thread::sleep(LONGSHOT_FRAME_DELAY);
+        let captured = monitor.capture_image().map_err(|error| {
+            EngineError::new("长截图失败。", format!("抓取屏幕失败，请重试（{error}）。"))
+        })?;
+        let Some((cl, ct, cw, ch)) = clamp_rect(&captured, &capture_rect) else {
+            return Err(EngineError::new("长截图失败。", "选区在滚动后变得无效。"));
+        };
+        let mut next = image::imageops::crop_imm(&captured, cl, ct, cw, ch).to_image();
+        frames += 1;
+        let mut same = frames_identical(&previous, &next);
+        // Smooth-scrolling applications may still be animating after the frame
+        // delay: retake once before deciding that nothing scrolled.
+        if same && frames < LONGSHOT_MAX_FRAMES {
+            std::thread::sleep(LONGSHOT_SAME_FRAME_RETRY_DELAY);
+            if let Ok(retaken) = monitor.capture_image() {
+                if let Some((rl, rt, rw, rh)) = clamp_rect(&retaken, &capture_rect) {
+                    let retaken = image::imageops::crop_imm(&retaken, rl, rt, rw, rh).to_image();
+                    if !frames_identical(&previous, &retaken) {
+                        next = retaken;
+                        same = false;
+                    }
+                }
+            }
+        }
+        let mut overlap = if same {
+            None
+        } else {
+            find_overlap(&stitched, &next, expected_overlap)
+        };
+        // A mid-animation frame can scroll by a non-integral amount and miss the
+        // overlap search; wait for the animation to settle and look again.
+        if !same && overlap.is_none() {
+            std::thread::sleep(LONGSHOT_SAME_FRAME_RETRY_DELAY);
+            if let Ok(settled) = monitor.capture_image() {
+                if let Some((rl, rt, rw, rh)) = clamp_rect(&settled, &capture_rect) {
+                    let settled = image::imageops::crop_imm(&settled, rl, rt, rw, rh).to_image();
+                    if !frames_identical(&previous, &settled) {
+                        next = settled;
+                        overlap = find_overlap(&stitched, &next, expected_overlap);
+                    }
+                }
+            }
+        }
+        if let Some(log) = log_of(&app) {
+            log.info(&format!(
+                "longshot frame={frames} same={same} overlap={overlap:?} height={} expected={expected_overlap:?}",
+                stitched.height()
+            ));
+        }
+        if overlap.is_none() && std::env::var_os("LEXORA_LONGSHOT_DEBUG").is_some() {
+            let dir = std::env::temp_dir().join("lexora-longshot-debug");
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = previous.save(dir.join(format!("frame-{frames}-prev.png")));
+            let _ = next.save(dir.join(format!("frame-{frames}-next.png")));
+        }
+        let added_rows = overlap
+            .map(|rows| next.height().saturating_sub(rows))
+            .unwrap_or(0);
+        let projected_height = stitched.height().saturating_add(added_rows);
+        match longshot_decision(stitched.width, frames, same, overlap, projected_height) {
+            LongshotDecision::Stop(reason) => {
+                stop = reason;
+                break;
+            }
+            LongshotDecision::Continue => {
+                stitched.push_rows(&next, overlap.unwrap_or(0));
+                previous = next;
+                expected_overlap = overlap;
+                let _ = app.emit_to(
+                    label.as_str(),
+                    EVENT_LONGSHOT_PROGRESS,
+                    json!({ "frame": frames, "height": stitched.height() }),
+                );
+            }
+        }
+    }
+
+    Ok(LongshotCapture {
+        image: stitched.into_image(),
+        frames,
+        stop,
+    })
+}
+
+/// Resets [`CaptureService::longshot_running`] on drop, including on panic.
+struct LongshotGuard<'a>(&'a AtomicBool);
+
+impl Drop for LongshotGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 /// Resets [`CaptureService::starting`] on drop, including on panic.
@@ -1467,10 +2184,74 @@ fn png_bytes(image: &RgbaImage) -> Result<Vec<u8>, EngineError> {
 }
 
 /// `data:image/png;base64,...` URL of a cropped region, sent to the vision
-/// model (lossless, contract §10.1/§10.6).
-fn png_data_url(image: &RgbaImage) -> Result<String, EngineError> {
+/// model and to the pinned-window renderer (lossless, contract §10.1/§10.6).
+pub(crate) fn png_data_url(image: &RgbaImage) -> Result<String, EngineError> {
     let encoded = base64::engine::general_purpose::STANDARD.encode(png_bytes(image)?);
     Ok(format!("data:image/png;base64,{encoded}"))
+}
+
+/// Error for a renderer-provided annotation layer that cannot be decoded.
+fn annotation_error() -> EngineError {
+    EngineError::new(
+        "标注图层无效。",
+        "请撤销标注后重试，或直接复制未标注的截图。",
+    )
+}
+
+/// Decodes a `data:image/png;base64,...` annotation layer into RGBA pixels.
+fn decode_annotations(annotations: &str) -> Result<RgbaImage, EngineError> {
+    let (_, encoded) = annotations
+        .split_once(";base64,")
+        .ok_or_else(annotation_error)?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded.trim())
+        .map_err(|_| annotation_error())?;
+    image::load_from_memory(&bytes)
+        .map(|decoded| decoded.into_rgba8())
+        .map_err(|_| annotation_error())
+}
+
+/// Alpha-composites the (transparent) annotation layer returned by
+/// `CaptureAnnotate.renderToPng` over `image`; a layer of a different size is
+/// scaled to the crop first (contract §11.4). Empty/absent annotations are a
+/// no-op.
+fn composite_annotations(
+    image: &mut RgbaImage,
+    annotations: Option<String>,
+) -> Result<(), EngineError> {
+    let Some(annotations) = trimmed(annotations) else {
+        return Ok(());
+    };
+    let layer = decode_annotations(&annotations)?;
+    let (width, height) = image.dimensions();
+    if width == 0 || height == 0 {
+        return Ok(());
+    }
+    let layer = if layer.dimensions() == (width, height) {
+        layer
+    } else {
+        image::imageops::resize(&layer, width, height, image::imageops::FilterType::Triangle)
+    };
+    for (x, y, source) in layer.enumerate_pixels() {
+        let alpha = source[3] as u32;
+        if alpha == 0 {
+            continue;
+        }
+        let destination = image.get_pixel_mut(x, y);
+        if alpha == 255 {
+            *destination = *source;
+            continue;
+        }
+        let inverse = 255 - alpha;
+        for channel in 0..3 {
+            destination[channel] = ((source[channel] as u32 * alpha
+                + destination[channel] as u32 * inverse)
+                / 255) as u8;
+        }
+        // The screenshot crop is opaque; keep the composited result opaque.
+        destination[3] = 255;
+    }
+    Ok(())
 }
 
 /// Encodes a captured monitor as a JPEG data URL painted by the overlay `<img>`
@@ -2443,5 +3224,181 @@ mod tests {
         )
         .unwrap();
         assert_eq!(order.into_inner(), vec!["unregister", "register"]);
+    }
+
+    // -- annotation compositing (contract §11.4) ---------------------------
+
+    fn annotation_data_url(layer: &RgbaImage) -> String {
+        png_data_url(layer).expect("encode annotation layer")
+    }
+
+    #[test]
+    fn annotations_are_alpha_composited_at_crop_size() {
+        let mut base = RgbaImage::from_pixel(4, 3, Rgba([0, 0, 0, 255]));
+        let mut layer = RgbaImage::new(4, 3);
+        *layer.get_pixel_mut(0, 0) = Rgba([255, 0, 0, 255]);
+        *layer.get_pixel_mut(1, 0) = Rgba([0, 255, 0, 128]);
+
+        composite_annotations(&mut base, Some(annotation_data_url(&layer))).unwrap();
+
+        // Fully opaque annotation pixel replaces the screenshot pixel.
+        assert_eq!(*base.get_pixel(0, 0), Rgba([255, 0, 0, 255]));
+        // 50% alpha blends over the black crop and stays opaque.
+        let blended = *base.get_pixel(1, 0);
+        assert!(
+            (126..=129).contains(&blended[1]),
+            "channel={} pixel={blended:?}",
+            blended[1]
+        );
+        assert_eq!(blended[0], 0);
+        assert_eq!(blended[3], 255);
+        // Transparent annotation pixels leave the screenshot untouched.
+        assert_eq!(*base.get_pixel(2, 0), Rgba([0, 0, 0, 255]));
+        assert_eq!(*base.get_pixel(3, 2), Rgba([0, 0, 0, 255]));
+    }
+
+    #[test]
+    fn annotations_are_scaled_to_the_crop_size() {
+        let mut base = RgbaImage::from_pixel(4, 2, Rgba([0, 0, 0, 255]));
+        let layer = RgbaImage::from_pixel(1, 1, Rgba([255, 255, 255, 255]));
+        composite_annotations(&mut base, Some(annotation_data_url(&layer))).unwrap();
+        for pixel in base.pixels() {
+            assert_eq!(*pixel, Rgba([255, 255, 255, 255]));
+        }
+    }
+
+    #[test]
+    fn annotations_are_optional_and_invalid_layers_are_rejected() {
+        let original = pixel_image();
+        let mut unchanged = original.clone();
+        composite_annotations(&mut unchanged, None).unwrap();
+        composite_annotations(&mut unchanged, Some("   ".to_string())).unwrap();
+        assert_eq!(unchanged, original);
+
+        let mut image = original;
+        assert!(composite_annotations(&mut image, Some("not-a-data-url".to_string())).is_err());
+        assert!(
+            composite_annotations(&mut image, Some("data:image/png;base64,AAAA".to_string()))
+                .is_err()
+        );
+    }
+
+    // -- long screenshot stitching (contract §11.6) ------------------------
+
+    /// Deterministic noise so rows differ and overlap detection is meaningful.
+    fn noise_image(width: u32, height: u32, seed: u32) -> RgbaImage {
+        RgbaImage::from_fn(width, height, |x, y| {
+            let mut value = seed
+                .wrapping_mul(0x9E37_79B1)
+                .wrapping_add((y * width + x).wrapping_mul(0x85EB_CA77));
+            value ^= value >> 13;
+            Rgba([
+                (value & 0xFF) as u8,
+                ((value >> 8) & 0xFF) as u8,
+                ((value >> 16) & 0xFF) as u8,
+                255,
+            ])
+        })
+    }
+
+    fn crop_rows(canvas: &RgbaImage, y: u32, height: u32) -> RgbaImage {
+        image::imageops::crop_imm(canvas, 0, y, canvas.width(), height).to_image()
+    }
+
+    #[test]
+    fn longshot_overlap_is_detected_and_stitched() {
+        let canvas = noise_image(12, 200, 7);
+        let first = crop_rows(&canvas, 0, 40);
+        let next = crop_rows(&canvas, 25, 40);
+        let mut stitched = Stitched::from_image(&first);
+
+        let overlap = find_overlap(&stitched, &next, None).expect("overlap must be detected");
+        assert_eq!(overlap, 15);
+        assert_eq!(
+            longshot_decision(12, 2, false, Some(overlap), stitched.height() + 25),
+            LongshotDecision::Continue
+        );
+
+        stitched.push_rows(&next, overlap);
+        assert_eq!(stitched.height(), 65);
+        let image = stitched.into_image();
+        assert_eq!(image.dimensions(), (12, 65));
+        // The first frame stays intact and every row is one continuous capture.
+        for y in 0..65 {
+            assert_eq!(
+                *image.get_pixel(0, y),
+                *canvas.get_pixel(0, y),
+                "row {y} mismatched"
+            );
+        }
+    }
+
+    #[test]
+    fn longshot_without_overlap_is_rejected() {
+        let first = noise_image(12, 40, 7);
+        let unrelated = noise_image(12, 40, 99);
+        let stitched = Stitched::from_image(&first);
+        assert_eq!(find_overlap(&stitched, &unrelated, None), None);
+        assert_eq!(
+            longshot_decision(12, 2, false, None, 80),
+            LongshotDecision::Stop(LongshotStop::NoOverlap)
+        );
+        // Degenerate overlaps count as "no overlap" as well.
+        assert_eq!(
+            longshot_decision(12, 2, false, Some(0), 80),
+            LongshotDecision::Stop(LongshotStop::NoOverlap)
+        );
+    }
+
+    #[test]
+    fn longshot_stop_conditions_are_decided_in_order() {
+        assert_eq!(
+            longshot_decision(1000, 2, true, None, 100),
+            LongshotDecision::Stop(LongshotStop::SameFrame)
+        );
+        // An identical frame dominates even when an overlap was computed.
+        assert_eq!(
+            longshot_decision(1000, 2, true, Some(10), 100),
+            LongshotDecision::Stop(LongshotStop::SameFrame)
+        );
+        assert_eq!(
+            longshot_decision(1000, 2, false, None, 1000),
+            LongshotDecision::Stop(LongshotStop::NoOverlap)
+        );
+        assert_eq!(
+            longshot_decision(1000, 2, false, Some(50), LONGSHOT_MAX_HEIGHT + 1),
+            LongshotDecision::Stop(LongshotStop::MaxHeight)
+        );
+        // A very wide image hits the memory budget before the row cap.
+        assert_eq!(
+            longshot_decision(3840, 2, false, Some(50), 20_000),
+            LongshotDecision::Stop(LongshotStop::MaxHeight)
+        );
+        assert_eq!(
+            longshot_decision(1000, LONGSHOT_MAX_FRAMES, false, Some(50), 5000),
+            LongshotDecision::Stop(LongshotStop::MaxFrames)
+        );
+        assert_eq!(
+            longshot_decision(1000, 2, false, Some(50), 5000),
+            LongshotDecision::Continue
+        );
+        // Stop reasons map to the contract's log tokens.
+        for (reason, token) in [
+            (LongshotStop::NoOverlap, "no-overlap"),
+            (LongshotStop::SameFrame, "same-frame"),
+            (LongshotStop::MaxHeight, "max-height"),
+            (LongshotStop::MaxFrames, "max-frames"),
+        ] {
+            assert_eq!(reason.as_str(), token);
+        }
+    }
+
+    #[test]
+    fn longshot_identical_frames_are_detected() {
+        let canvas = noise_image(64, 200, 3);
+        let first = crop_rows(&canvas, 0, 80);
+        assert!(frames_identical(&first, &first));
+        let scrolled = crop_rows(&canvas, 1, 80);
+        assert!(!frames_identical(&first, &scrolled));
     }
 }

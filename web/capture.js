@@ -72,6 +72,10 @@
     drag: null,
     busy: false,
     closed: false,
+    /* Annotation mode (contract §11): active drawing tool, or null when the
+     * selection interactions are live again. */
+    tool: null,
+    longshotActive: false,
     targetLang: "auto",
     hintTimer: 0,
     hintFadeTimer: 0,
@@ -82,6 +86,11 @@
   var dom = {};
   var handles = [];
   var barButtons = {};
+  /* Annotation engine instance (contract §11.3) and the tool button list. */
+  var editor = null;
+  var toolButtons = [];
+  var longshotTimer = 0;
+  var LONGSHOT_TIMEOUT_MS = 90000;
 
   /* Test/debug hook used by the CDP checks in tests/ and manual QA. */
   window.__captureState = state;
@@ -299,6 +308,20 @@
     dom.errorRetry = byId("capture-error-retry");
     dom.errorClose = byId("capture-error-close");
     dom.toast = byId("capture-toast");
+    /* ---- Annotation layer / toolbar (contract §11.2) ---- */
+    dom.canvas = byId("capture-annotations");
+    dom.palette = byId("capture-palette");
+    dom.toolButtons = Array.prototype.slice.call(
+      document.querySelectorAll("[data-tool]")
+    );
+    toolButtons = dom.toolButtons;
+    dom.shapeMode = byId("capture-shape-mode");
+    dom.undo = byId("capture-undo");
+    dom.redo = byId("capture-redo");
+    dom.pin = byId("capture-pin");
+    dom.longshot = byId("capture-longshot");
+    dom.longshotProgress = byId("capture-longshot-progress");
+    dom.longshotFrame = byId("capture-longshot-frame");
     handles = Array.prototype.slice.call(
       document.querySelectorAll(".selection-handle")
     );
@@ -327,8 +350,10 @@
     if (!dom.shot || !dom.selection) {
       return;
     }
+    initAnnotator();
     bindEvents();
     subscribeArmed();
+    subscribeLongshotEvents();
     /* The arm event of the very first capture can fire before this page starts
      * listening (the shell creates the window and captures right away), so the
      * initial load must poll the session on its own. `beginCapture` also loads
@@ -385,6 +410,7 @@
     if (dom.errorClose) {
       dom.errorClose.addEventListener("click", cancelCapture);
     }
+    bindAnnotationUi();
   }
 
   /* Load the picker settings the overlay needs: translation target language,
@@ -535,6 +561,38 @@
    * leading slot (suppressing a duplicate entry for the same skill) and the tail
    * is always [separator?] [取消] [确认]. Idempotent: no re-binding, clicks are
    * delegated. */
+  /* The annotation toolbar (§11.2) adds static groups around the configurable
+   * actions, so the action buttons are inserted before the longshot/undo block
+   * instead of being appended to the end of `#capture-bar`. */
+  function usesAnnotationBar() {
+    return !!(
+      dom.longshot ||
+      dom.canvas ||
+      toolButtons.length ||
+      document.querySelector("[data-tool]")
+    );
+  }
+
+  function findBarActionAnchor() {
+    var marker = dom.longshot || dom.undo || dom.redo;
+    if (marker) {
+      var node = marker;
+      while (node && node.parentNode !== dom.bar) {
+        node = node.parentNode;
+      }
+      if (node) {
+        return node;
+      }
+    }
+    if (dom.barTailSep && dom.barTailSep.parentNode === dom.bar) {
+      return dom.barTailSep;
+    }
+    if (dom.barCancel && dom.barCancel.parentNode === dom.bar) {
+      return dom.barCancel;
+    }
+    return null;
+  }
+
   function renderCaptureBar() {
     if (!dom.bar) {
       return;
@@ -569,28 +627,46 @@
     each(CAPTURE_ACTIONS, function (action) {
       setHidden(barButtons[action], entries.indexOf(action) < 0);
     });
+
+    var annotationBar = usesAnnotationBar();
+    var anchor = annotationBar ? findBarActionAnchor() : null;
     each(entries, function (id) {
       var button = barButtons[id];
       if (!button) {
         button = createCustomToolButton(customSkills[id]);
       }
+      if (!button) {
+        return;
+      }
+      setHidden(button, false);
+      if (annotationBar) {
+        if (anchor && anchor.parentNode === dom.bar) {
+          dom.bar.insertBefore(button, anchor);
+        } else {
+          dom.bar.appendChild(button);
+        }
+        return;
+      }
       dom.bar.appendChild(button);
     });
-    if (dom.barTailSep) {
-      /* With no action buttons the bar is [preset?] [取消] [确认]; the separator
-       * would then be the first visible item, so hide it. */
-      setHidden(dom.barTailSep, entries.length === 0);
-      dom.bar.appendChild(dom.barTailSep);
-    }
-    if (dom.barCancel) {
-      setHidden(dom.barCancel, false);
-      dom.bar.appendChild(dom.barCancel);
-    }
-    if (dom.barConfirm) {
-      setHidden(dom.barConfirm, false);
-      dom.bar.appendChild(dom.barConfirm);
+
+    if (!annotationBar) {
+      /* Legacy toolbar (before §11.2): [preset?] actions [sep] [取消] [确认]. */
+      if (dom.barTailSep) {
+        setHidden(dom.barTailSep, entries.length === 0);
+        dom.bar.appendChild(dom.barTailSep);
+      }
+      if (dom.barCancel) {
+        setHidden(dom.barCancel, false);
+        dom.bar.appendChild(dom.barCancel);
+      }
+      if (dom.barConfirm) {
+        setHidden(dom.barConfirm, false);
+        dom.bar.appendChild(dom.barConfirm);
+      }
     }
     updateBarState();
+    layoutPalette();
   }
 
   /* ---- Screenshot loading (no visible loading UI, §10.1) --------------- */
@@ -630,6 +706,7 @@
     hideErrorBar();
     hideToast();
     resetShotImage();
+    resetAnnotations();
     document.body.classList.remove("is-dragging", "is-over-selection");
     /* Render the default toolbar first; the (async) settings response reorders
      * it a few milliseconds later, while the window is still hidden. */
@@ -766,6 +843,11 @@
     setHidden(dom.selection, false);
     setHidden(dom.size, false);
     setHidden(dom.bar, false);
+    initAnnotator();
+    if (editor) {
+      editor.setSourceSize(state.imageWidth, state.imageHeight);
+    }
+    updateCanvasVisibility();
     renderPresetButton();
     /* The preset id arrives with the screenshot, so rebuild once more to drop a
      * duplicate entry for it from the configured toolbar. */
@@ -863,6 +945,9 @@
     }
     hideSelectionUi();
     resetShotImage();
+    if (state.tool) {
+      setTool(null);
+    }
     state.rect = null;
     state.shotReady = false;
     state.drag = null;
@@ -894,6 +979,10 @@
     setHidden(dom.selection, true);
     setHidden(dom.size, true);
     setHidden(dom.bar, true);
+    setHidden(dom.palette, true);
+    if (dom.canvas) {
+      dom.canvas.hidden = true;
+    }
     hideHint();
   }
 
@@ -911,6 +1000,7 @@
     updateSelection();
     updateSizeLabel();
     layoutBar();
+    layoutPalette();
   }
 
   function setBox(node, left, top, width, height) {
@@ -1110,6 +1200,11 @@
     if (event.button !== 0 || !canInteract() || state.drag) {
       return;
     }
+    /* While a drawing tool is active the canvas owns the pointer; while a long
+     * screenshot runs the overlay must not react to selection gestures. */
+    if (state.tool || state.longshotActive) {
+      return;
+    }
     if (isUiTarget(event.target)) {
       return;
     }
@@ -1135,6 +1230,9 @@
 
   function onHandleMouseDown(event) {
     if (event.button !== 0 || !canInteract() || state.drag) {
+      return;
+    }
+    if (state.tool || state.longshotActive) {
       return;
     }
     event.preventDefault();
@@ -1169,6 +1267,10 @@
       return;
     }
     if (!canInteract()) {
+      document.body.classList.remove("is-over-selection");
+      return;
+    }
+    if (state.tool || state.longshotActive) {
       document.body.classList.remove("is-over-selection");
       return;
     }
@@ -1245,10 +1347,45 @@
   }
 
   function onKeyDown(event) {
-    if (event.key !== "Escape") {
+    var key = String(event.key || "");
+    var target = event.target;
+    var tag = target && target.tagName ? String(target.tagName).toLowerCase() : "";
+    var typing =
+      tag === "textarea" ||
+      tag === "input" ||
+      tag === "select" ||
+      !!(target && target.isContentEditable);
+
+    /* Undo/redo (§11.7) - never intercept while text is being typed. */
+    if ((event.ctrlKey || event.metaKey) && !typing && editor) {
+      var lower = key.toLowerCase();
+      if (lower === "z" && !event.shiftKey) {
+        event.preventDefault();
+        editor.undo();
+        return;
+      }
+      if (lower === "y" || (lower === "z" && event.shiftKey)) {
+        event.preventDefault();
+        editor.redo();
+        return;
+      }
+    }
+
+    if (key !== "Escape") {
       return;
     }
     event.preventDefault();
+    if (state.longshotActive) {
+      return;
+    }
+    /* Escape priority: the annotation engine already cancelled an in-progress
+     * stroke or text input during its capture-phase listener. Then leave the
+     * tool, and only then cancel the screenshot. */
+    if (editor && state.tool) {
+      setTool(null);
+      editor.setTool(null);
+      return;
+    }
     cancelCapture();
   }
 
@@ -1290,27 +1427,52 @@
     } else if (action === "custom") {
       /* Runtime button of an enabled custom image skill. */
       runSkill("custom", String(skillId || ""));
+    } else if (action === "pin") {
+      pinImage();
+    } else if (action === "longshot") {
+      startLongshot();
+    } else if (action === "undo") {
+      if (editor) {
+        editor.undo();
+      }
+    } else if (action === "redo") {
+      if (editor) {
+        editor.redo();
+      }
     } else if (action === "cancel") {
       cancelCapture();
     }
   }
 
-  function updateBarState() {
-    if (!dom.bar) {
-      return;
+  function syncHistoryButtons() {
+    var canAct = !state.busy && !state.longshotActive && !state.closed;
+    if (dom.undo) {
+      dom.undo.disabled = !canAct || !(editor && editor.canUndo());
     }
-    /* Every action button (including 确认) is disabled while a command is in
-     * flight; 取消 stays available so the user can always bail out. */
-    each(dom.bar.querySelectorAll("[data-action]"), function (button) {
-      var action = button.getAttribute("data-action");
-      button.disabled = state.busy && action !== "cancel";
-    });
-    if (dom.preset) {
-      dom.preset.disabled = state.busy;
+    if (dom.redo) {
+      dom.redo.disabled = !canAct || !(editor && editor.canRedo());
     }
   }
 
-  function cancelCapture() {
+  function updateBarState() {
+    if (dom.bar) {
+      /* Every action button (including 确认) is disabled while a command is in
+       * flight; 取消 stays available so the user can always bail out. */
+      each(dom.bar.querySelectorAll("[data-action]"), function (button) {
+        var action = button.getAttribute("data-action");
+        button.disabled = state.busy && action !== "cancel";
+      });
+    }
+    each(toolButtons, function (button) {
+      button.disabled = state.busy || state.longshotActive;
+    });
+    if (dom.preset) {
+      dom.preset.disabled = state.busy || state.longshotActive;
+    }
+    syncHistoryButtons();
+  }
+
+  function closeOverlay() {
     if (state.closed) {
       return;
     }
@@ -1318,7 +1480,14 @@
     state.drag = null;
     window.clearTimeout(state.pollTimer);
     state.pollTimer = 0;
-    document.body.classList.remove("is-dragging", "is-over-selection");
+    window.clearTimeout(longshotTimer);
+    longshotTimer = 0;
+    document.body.classList.remove(
+      "is-dragging",
+      "is-over-selection",
+      "annotating",
+      "is-longshot"
+    );
     if (API && typeof API.close === "function") {
       try {
         API.close();
@@ -1326,6 +1495,16 @@
         /* the window is going away; nothing to report */
       }
     }
+  }
+
+  function cancelCapture() {
+    if (state.closed) {
+      return;
+    }
+    if (state.tool) {
+      setTool(null);
+    }
+    closeOverlay();
   }
 
   function failureText(result, fallback) {
@@ -1345,9 +1524,10 @@
     state.busy = true;
     updateBarState();
     var generation = state.captureGeneration;
+    var annotations = exportAnnotations();
     var request;
     try {
-      request = API.copy(state.monitor, physicalRect());
+      request = API.copy(state.monitor, physicalRect(), annotations);
     } catch (error) {
       request = Promise.reject(error);
     }
@@ -1386,6 +1566,7 @@
     state.busy = true;
     updateBarState();
     var generation = state.captureGeneration;
+    var annotations = exportAnnotations();
     var request;
     try {
       request = API.skill(
@@ -1394,7 +1575,8 @@
         physicalRect(),
         action,
         skillId || "",
-        state.targetLang || "auto"
+        state.targetLang || "auto",
+        annotations
       );
     } catch (error) {
       request = Promise.reject(error);
@@ -1420,6 +1602,612 @@
         updateBarState();
         toast("处理失败：" + errorText(error), "error", TOAST_MS);
       }
+    );
+  }
+
+  /* ---- Annotation engine / palette (contract §11) ---------------------- */
+
+  /* Which palette groups belong to which tool. Used as a fallback when the
+   * palette markup does not carry `data-tools` attributes. */
+  var PALETTE_ID_TOOLS = {
+    "palette-colors": ["shape", "arrow", "pen", "text", "number"],
+    "palette-color-input": ["shape", "arrow", "pen", "text", "number"],
+    "palette-color-value": ["shape", "arrow", "pen", "text", "number"],
+    "palette-width": ["shape", "arrow", "pen"],
+    "palette-width-value": ["shape", "arrow", "pen"],
+    "palette-fill": ["shape"],
+    "palette-font-size": ["text", "number"],
+    "palette-font-size-value": ["text", "number"],
+    "palette-bold": ["text", "number"],
+    "palette-text-bg": ["text"],
+    "palette-mosaic-size": ["mosaic"],
+    "palette-mosaic-size-value": ["mosaic"],
+    "palette-clear": ["shape", "arrow", "pen", "text", "number", "mosaic"]
+  };
+
+  function initAnnotator() {
+    if (editor) {
+      return editor;
+    }
+    if (!dom.canvas || !dom.shot) {
+      return null;
+    }
+    if (!window.CaptureAnnotate || typeof window.CaptureAnnotate.create !== "function") {
+      return null;
+    }
+    try {
+      editor = window.CaptureAnnotate.create({
+        canvas: dom.canvas,
+        image: dom.shot,
+        getSelection: function () {
+          return state.rect ? cloneRect(state.rect) : null;
+        },
+        onHistoryChange: onAnnotationHistoryChange
+      });
+    } catch (error) {
+      editor = null;
+    }
+    /* Test/debug hook for the CDP checks. */
+    window.__captureEditor = editor;
+    return editor;
+  }
+
+  function onAnnotationHistoryChange() {
+    syncHistoryButtons();
+    updateCanvasVisibility();
+  }
+
+  function updateCanvasVisibility() {
+    if (!dom.canvas) {
+      return;
+    }
+    var visible =
+      !!editor &&
+      state.shotReady &&
+      !state.closed &&
+      (state.tool !== null || editor.hasAnnotations());
+    dom.canvas.hidden = !visible;
+  }
+
+  /* Reset annotations and leave annotation mode when the overlay is re-armed
+   * for a new capture. */
+  function resetAnnotations() {
+    state.tool = null;
+    state.longshotActive = false;
+    if (editor) {
+      editor.reset();
+      editor.setTool(null);
+    }
+    each(toolButtons, function (button) {
+      button.classList.remove("is-active");
+      button.setAttribute("aria-pressed", "false");
+      button.disabled = false;
+    });
+    document.body.classList.remove("annotating", "is-longshot");
+    if (dom.canvas) {
+      dom.canvas.hidden = true;
+    }
+    setHidden(dom.palette, true);
+    hideLongshotProgress();
+    window.clearTimeout(longshotTimer);
+    longshotTimer = 0;
+    syncShapeModeControl();
+  }
+
+  function setTool(id) {
+    var next = id ? String(id).trim().toLowerCase() : null;
+    if (next && next === state.tool) {
+      /* Clicking the active tool leaves annotation mode. */
+      next = null;
+    }
+    state.tool = next;
+    if (editor) {
+      editor.setTool(next);
+    }
+    each(toolButtons, function (button) {
+      var active = button.getAttribute("data-tool") === next;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+    document.body.classList.toggle("annotating", !!next);
+    document.body.classList.remove("is-over-selection");
+    if (next) {
+      hideHint();
+    }
+    updateCanvasVisibility();
+    syncPalette();
+  }
+
+  function bindShapeModeNode(node) {
+    var tag = node.tagName ? node.tagName.toLowerCase() : "";
+    if (tag === "select") {
+      node.addEventListener("change", function () {
+        applyShapeMode(node.value);
+      });
+      return;
+    }
+    if (tag === "option") {
+      return;
+    }
+    node.addEventListener("click", function (event) {
+      event.preventDefault();
+      applyShapeMode(
+        node.getAttribute("data-shape-mode") ||
+          node.getAttribute("data-value") ||
+          ""
+      );
+    });
+  }
+
+  function bindAnnotationUi() {
+    each(toolButtons, function (button) {
+      button.addEventListener("click", function (event) {
+        event.preventDefault();
+        setTool(button.getAttribute("data-tool"));
+      });
+    });
+    var shapeNodes = Array.prototype.slice.call(
+      document.querySelectorAll("[data-shape-mode], #capture-shape-mode")
+    );
+    each(shapeNodes, bindShapeModeNode);
+    bindPaletteControls();
+    syncShapeModeControl();
+  }
+
+  function applyShapeMode(mode) {
+    if (editor) {
+      editor.setShapeMode(mode);
+    }
+    syncShapeModeControl();
+    syncPalette();
+  }
+
+  function syncShapeModeControl() {
+    var node = dom.shapeMode;
+    if (!node && document.querySelector) {
+      node = document.querySelector("select[data-shape-mode]");
+    }
+    if (!node || node.value === undefined) {
+      return;
+    }
+    var mode = editor ? editor.getOptions().shapeMode : "rect";
+    node.value = mode;
+  }
+
+  function bindPaletteControls() {
+    if (dom.palette) {
+      dom.palette.addEventListener("click", onPaletteClick);
+    }
+    var colorInput = byId("palette-color-input");
+    if (colorInput) {
+      colorInput.addEventListener("input", function () {
+        setEditorOption("color", colorInput.value);
+      });
+    }
+    bindRange("palette-width", "width");
+    bindRange("palette-font-size", "fontSize");
+    bindRange("palette-mosaic-size", "mosaicSize");
+  }
+
+  function bindRange(id, optionKey) {
+    var range = byId(id);
+    if (!range) {
+      return;
+    }
+    range.addEventListener("input", function () {
+      setEditorOption(optionKey, range.value);
+    });
+  }
+
+  function onPaletteClick(event) {
+    var target = event.target;
+    if (!target || !target.closest) {
+      return;
+    }
+    if (target.closest("#palette-clear")) {
+      event.preventDefault();
+      clearAnnotations();
+      return;
+    }
+    var colorNode = target.closest("[data-color]");
+    if (colorNode) {
+      event.preventDefault();
+      setEditorOption("color", colorNode.getAttribute("data-color"));
+      return;
+    }
+    var fillNode = target.closest("[data-fill]");
+    if (fillNode) {
+      event.preventDefault();
+      setEditorOption("fill", fillNode.getAttribute("data-fill"));
+      return;
+    }
+    var bgNode = target.closest("[data-bg-color]");
+    if (bgNode) {
+      event.preventDefault();
+      setEditorOption("textBg", bgNode.getAttribute("data-bg-color") || "");
+      return;
+    }
+    var boldNode = target.closest("#palette-bold, [data-bold]");
+    if (boldNode && editor) {
+      event.preventDefault();
+      setEditorOption("bold", !editor.getOptions().bold);
+    }
+  }
+
+  function setEditorOption(key, value) {
+    if (!editor) {
+      return;
+    }
+    editor.setOption(key, value);
+    syncPalette();
+  }
+
+  function syncPalette() {
+    if (!dom.palette) {
+      return;
+    }
+    if (!state.tool || !editor) {
+      setHidden(dom.palette, true);
+      return;
+    }
+    setHidden(dom.palette, false);
+    if (dom.palette.querySelector("[data-tools]")) {
+      applyPaletteGroupVisibility(state.tool);
+    } else {
+      applyPaletteIdVisibility(state.tool);
+    }
+    syncFillVisibility();
+    syncMosaicColorVisibility();
+    syncPaletteSwatches();
+    syncPaletteValues();
+    layoutPalette();
+  }
+
+  function applyPaletteGroupVisibility(tool) {
+    each(dom.palette.querySelectorAll("[data-tools]"), function (group) {
+      var tools = String(group.getAttribute("data-tools") || "").split(/\s+/);
+      setHidden(group, tools.indexOf(tool) < 0);
+    });
+  }
+
+  function applyPaletteIdVisibility(tool) {
+    Object.keys(PALETTE_ID_TOOLS).forEach(function (id) {
+      var node = byId(id);
+      if (!node) {
+        return;
+      }
+      setHidden(node, PALETTE_ID_TOOLS[id].indexOf(tool) < 0);
+    });
+  }
+
+  /* The straight-line shape has no fill, so its segmented control is hidden. */
+  function syncFillVisibility() {
+    var node = byId("palette-fill");
+    if (!node) {
+      return;
+    }
+    var hideLine =
+      state.tool === "shape" &&
+      editor &&
+      editor.getOptions().shapeMode === "line";
+    if (hideLine) {
+      var wrapper = node.closest("[data-tools]") || node;
+      setHidden(wrapper, true);
+    }
+  }
+
+  /* Mosaic has no colour property (contract §11.1), so the colour group is
+   * hidden for that tool even though its markup lists every tool. */
+  function syncMosaicColorVisibility() {
+    var group = byId("palette-colors");
+    if (!group) {
+      return;
+    }
+    if (state.tool === "mosaic") {
+      setHidden(group, true);
+    }
+  }
+
+  function syncPaletteSwatches() {
+    if (!dom.palette || !editor) {
+      return;
+    }
+    var color = String(editor.getOptions().color || "").toLowerCase();
+    each(dom.palette.querySelectorAll("[data-color]"), function (swatch) {
+      var value = String(swatch.getAttribute("data-color") || "").toLowerCase();
+      swatch.classList.toggle("is-active", value === color);
+    });
+    var input = byId("palette-color-input");
+    if (input && /^#[0-9a-f]{6}$/i.test(color)) {
+      input.value = color;
+    }
+    var valueNode = byId("palette-color-value");
+    if (valueNode) {
+      valueNode.textContent = color;
+    }
+  }
+
+  function setRangeValue(rangeId, labelId, value) {
+    var range = byId(rangeId);
+    if (range) {
+      range.value = String(value);
+    }
+    var label = byId(labelId);
+    if (label) {
+      label.textContent = String(value) + " px";
+    }
+  }
+
+  function syncPaletteValues() {
+    if (!editor) {
+      return;
+    }
+    var options = editor.getOptions();
+    setRangeValue("palette-width", "palette-width-value", options.width);
+    setRangeValue("palette-font-size", "palette-font-size-value", options.fontSize);
+    setRangeValue(
+      "palette-mosaic-size",
+      "palette-mosaic-size-value",
+      options.mosaicSize
+    );
+    var bold = byId("palette-bold");
+    if (bold) {
+      bold.classList.toggle("is-active", options.bold === true);
+      bold.setAttribute("aria-pressed", options.bold ? "true" : "false");
+    }
+    each(dom.palette.querySelectorAll("[data-fill]"), function (node) {
+      node.classList.toggle("is-active", node.getAttribute("data-fill") === options.fill);
+    });
+    each(dom.palette.querySelectorAll("[data-bg-color]"), function (node) {
+      var value = node.getAttribute("data-bg-color") || "";
+      node.classList.toggle("is-active", value === (options.textBg || ""));
+    });
+    syncShapeModeControl();
+  }
+
+  /* The palette floats above the toolbar; when there is no room it is placed
+   * below it (§11.2). */
+  function layoutPalette() {
+    if (!dom.palette || dom.palette.hidden || !dom.bar || dom.bar.hidden) {
+      return;
+    }
+    if (!state.rect) {
+      return;
+    }
+    var paletteWidth = dom.palette.offsetWidth || 0;
+    var paletteHeight = dom.palette.offsetHeight || 0;
+    if (!paletteWidth || !paletteHeight) {
+      return;
+    }
+    var size = viewportSize();
+    var barLeft = dom.bar.offsetLeft || 0;
+    var barTop = dom.bar.offsetTop || 0;
+    var barHeight = dom.bar.offsetHeight || 40;
+    var left = clamp(
+      barLeft,
+      EDGE_PAD,
+      Math.max(EDGE_PAD, size.width - paletteWidth - EDGE_PAD)
+    );
+    var top = barTop - paletteHeight - 6;
+    if (top < EDGE_PAD) {
+      top = barTop + barHeight + 6;
+    }
+    top = clamp(
+      top,
+      EDGE_PAD,
+      Math.max(EDGE_PAD, size.height - paletteHeight - EDGE_PAD)
+    );
+    dom.palette.style.left = Math.round(left) + "px";
+    dom.palette.style.top = Math.round(top) + "px";
+    dom.palette.style.right = "";
+    dom.palette.style.bottom = "";
+  }
+
+  /* Transparent annotation layer PNG for the current crop. Empty string means
+   * "no annotations" (the shell then exports the plain crop). */
+  function exportAnnotations() {
+    if (!editor || !editor.hasAnnotations()) {
+      return "";
+    }
+    try {
+      return editor.renderToPng(state.rect ? cloneRect(state.rect) : null) || "";
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function clearAnnotations() {
+    if (!editor || !editor.hasAnnotations()) {
+      return;
+    }
+    editor.clear();
+    toast("已清除标注，可撤销", "info", 2000);
+    updateBarState();
+  }
+
+  /* ---- Pin to desktop (§11.5) ----------------------------------------- */
+
+  function pinImage() {
+    if (!canInteract() || state.busy || state.longshotActive) {
+      return;
+    }
+    if (!API || typeof API.pin !== "function") {
+      toast("截图服务不可用，请重启 Lexora 后再试", "error", TOAST_MS);
+      return;
+    }
+    state.busy = true;
+    updateBarState();
+    var generation = state.captureGeneration;
+    var annotations = exportAnnotations();
+    var request;
+    try {
+      request = API.pin(state.monitor, physicalRect(), annotations);
+    } catch (error) {
+      request = Promise.reject(error);
+    }
+    Promise.resolve(request).then(
+      function (result) {
+        if (state.closed || generation !== state.captureGeneration) {
+          return;
+        }
+        state.busy = false;
+        updateBarState();
+        if (result && result.ok) {
+          toast("已钉在桌面", "success", 1600);
+          closeOverlay();
+          return;
+        }
+        toast("钉在桌面失败：" + failureText(result, "未知错误"), "error", TOAST_MS);
+      },
+      function (error) {
+        if (state.closed || generation !== state.captureGeneration) {
+          return;
+        }
+        state.busy = false;
+        updateBarState();
+        toast("钉在桌面失败：" + errorText(error), "error", TOAST_MS);
+      }
+    );
+  }
+
+  /* ---- Long screenshot (§11.6) ---------------------------------------- */
+
+  function showLongshotProgress(frame) {
+    if (dom.longshotProgress) {
+      setHidden(dom.longshotProgress, false);
+    }
+    if (dom.longshotFrame) {
+      dom.longshotFrame.textContent = frame
+        ? "第 " + frame + " 帧"
+        : "正在拼接…";
+    }
+  }
+
+  function hideLongshotProgress() {
+    if (dom.longshotProgress) {
+      setHidden(dom.longshotProgress, true);
+    }
+  }
+
+  function subscribeLongshotEvents() {
+    if (!API) {
+      return;
+    }
+    try {
+      if (typeof API.onLongshotProgress === "function") {
+        API.onLongshotProgress(handleLongshotProgress);
+      }
+      if (typeof API.onLongshotDone === "function") {
+        API.onLongshotDone(handleLongshotDone);
+      }
+    } catch (error) {
+      /* progress UI is optional; the command result still settles the UI */
+    }
+  }
+
+  function startLongshot() {
+    if (!canInteract() || state.busy || state.longshotActive) {
+      return;
+    }
+    if (!API || typeof API.longshot !== "function") {
+      toast("截图服务不可用，请重启 Lexora 后再试", "error", TOAST_MS);
+      return;
+    }
+    if (state.tool) {
+      setTool(null);
+    }
+    state.longshotActive = true;
+    state.busy = true;
+    document.body.classList.add("is-longshot");
+    setHidden(dom.bar, true);
+    setHidden(dom.palette, true);
+    showLongshotProgress(0);
+    updateBarState();
+    var generation = state.captureGeneration;
+    var request;
+    try {
+      request = API.longshot(state.monitor, physicalRect());
+    } catch (error) {
+      request = Promise.reject(error);
+    }
+    window.clearTimeout(longshotTimer);
+    longshotTimer = window.setTimeout(function () {
+      longshotTimer = 0;
+      if (!state.longshotActive || generation !== state.captureGeneration) {
+        return;
+      }
+      failLongshot({ error: "长截图超时" });
+    }, LONGSHOT_TIMEOUT_MS);
+    Promise.resolve(request).then(
+      function (result) {
+        if (generation !== state.captureGeneration) {
+          return;
+        }
+        if (result && result.ok === false) {
+          failLongshot(result);
+        }
+        /* On success the shell finishes with `capture-longshot-done`. */
+      },
+      function (error) {
+        if (generation !== state.captureGeneration) {
+          return;
+        }
+        failLongshot({ error: errorText(error) });
+      }
+    );
+  }
+
+  function failLongshot(result) {
+    if (state.closed || !state.longshotActive) {
+      /* The shell may report the failure both through the command result and
+       * the `capture-longshot-done` event; settle the UI only once. */
+      return;
+    }
+    state.longshotActive = false;
+    state.busy = false;
+    window.clearTimeout(longshotTimer);
+    longshotTimer = 0;
+    hideLongshotProgress();
+    document.body.classList.remove("is-longshot");
+    setHidden(dom.bar, false);
+    updateBarState();
+    render();
+    toast(
+      "长截图失败：" + failureText(result || {}, "未知错误"),
+      "error",
+      TOAST_MS
+    );
+  }
+
+  function handleLongshotProgress(payload) {
+    if (!state.longshotActive) {
+      return;
+    }
+    showLongshotProgress(payload && payload.frame);
+  }
+
+  function handleLongshotDone(payload) {
+    if (!state.longshotActive || state.closed) {
+      return;
+    }
+    state.longshotActive = false;
+    state.busy = false;
+    window.clearTimeout(longshotTimer);
+    longshotTimer = 0;
+    hideLongshotProgress();
+    document.body.classList.remove("is-longshot");
+    if (payload && payload.ok) {
+      toast("长截图完成，已复制并钉在桌面", "success", 2000);
+      closeOverlay();
+      return;
+    }
+    setHidden(dom.bar, false);
+    updateBarState();
+    render();
+    toast(
+      "长截图失败：" + failureText(payload || {}, "未知错误"),
+      "error",
+      TOAST_MS
     );
   }
 

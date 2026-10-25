@@ -13,6 +13,11 @@
   <div class="capture" id="capture">
     <img class="capture-shot" id="capture-shot" alt="" draggable="false" hidden>
 
+    <!-- Annotation layer: sits above the screenshot and below the dimming mask.
+         Geometry/visibility are controlled by capture.js + capture-annotate.js. -->
+    <canvas class="capture-annotations" id="capture-annotations" hidden
+            aria-hidden="true"></canvas>
+
     <div class="capture-mask" id="capture-mask" hidden aria-hidden="true">
       <div class="mask-piece" id="mask-top"></div>
       <div class="mask-piece" id="mask-left"></div>
@@ -35,6 +40,97 @@
 
     <div class="capture-hint" id="capture-hint" hidden>拖动选区移动 · 拖动边角调整 · Esc 取消</div>
 
+    <!-- Annotation properties. Sits above the toolbar (positioned by capture.js),
+         hidden until a drawing tool is active. -->
+    <div class="capture-palette" id="capture-palette" role="toolbar"
+         aria-label="标注属性" hidden>
+      <div class="palette-group" id="palette-colors"
+           data-tools="shape arrow pen text number mosaic" role="group" aria-label="颜色">
+        <button type="button" class="palette-color" data-color="#ef4444"
+                title="红色" aria-label="红色"></button>
+        <button type="button" class="palette-color" data-color="#f59e0b"
+                title="橙色" aria-label="橙色"></button>
+        <button type="button" class="palette-color" data-color="#84cc16"
+                title="黄绿色" aria-label="黄绿色"></button>
+        <button type="button" class="palette-color" data-color="#22c55e"
+                title="绿色" aria-label="绿色"></button>
+        <button type="button" class="palette-color" data-color="#3b82f6"
+                title="蓝色" aria-label="蓝色"></button>
+        <button type="button" class="palette-color" data-color="#ffffff"
+                title="白色" aria-label="白色"></button>
+        <button type="button" class="palette-color" data-color="#6b7280"
+                title="灰色" aria-label="灰色"></button>
+        <button type="button" class="palette-color" data-color="#111827"
+                title="黑色" aria-label="黑色"></button>
+        <label class="palette-color-custom" title="自定义颜色">
+          <input type="color" id="palette-color-input" value="#ef4444"
+                 aria-label="自定义颜色">
+        </label>
+        <span class="palette-value palette-color-value" id="palette-color-value">#ef4444</span>
+      </div>
+
+      <div class="palette-group palette-field" data-tools="shape arrow pen"
+           role="group" aria-label="粗细">
+        <span class="palette-label">粗细</span>
+        <input type="range" id="palette-width" min="1" max="20" step="1" value="4"
+               aria-label="线条粗细">
+        <span class="palette-value" id="palette-width-value">4</span>
+      </div>
+
+      <div class="palette-group palette-segmented" id="palette-fill" data-tools="shape"
+           role="group" aria-label="填充模式">
+        <span class="palette-label">填充</span>
+        <button type="button" class="palette-seg is-active" data-fill="outline"
+                aria-pressed="true">描边</button>
+        <button type="button" class="palette-seg" data-fill="fill"
+                aria-pressed="false">填充</button>
+      </div>
+
+      <div class="palette-group palette-field" data-tools="text number"
+           role="group" aria-label="字号">
+        <span class="palette-label">字号</span>
+        <input type="range" id="palette-font-size" min="12" max="72" step="1" value="24"
+               aria-label="字号">
+        <span class="palette-value" id="palette-font-size-value">24</span>
+      </div>
+
+      <div class="palette-group" data-tools="text number" role="group" aria-label="粗体">
+        <button type="button" class="palette-toggle" id="palette-bold" data-tools="text number"
+                aria-pressed="false" title="粗体">粗体</button>
+      </div>
+
+      <div class="palette-group palette-bg-group" id="palette-text-bg" data-tools="text"
+           role="group" aria-label="文字背景">
+        <span class="palette-label">背景</span>
+        <button type="button" class="palette-bg palette-bg-none is-active" data-bg-color=""
+                aria-pressed="true" title="无背景">无</button>
+        <button type="button" class="palette-bg" data-bg-color="#ffffff"
+                aria-pressed="false" title="白色背景"></button>
+        <button type="button" class="palette-bg" data-bg-color="#fef3c7"
+                aria-pressed="false" title="黄色背景"></button>
+        <button type="button" class="palette-bg" data-bg-color="#111827"
+                aria-pressed="false" title="黑色背景"></button>
+      </div>
+
+      <div class="palette-group palette-field" data-tools="mosaic"
+           role="group" aria-label="马赛克块大小">
+        <span class="palette-label">马赛克</span>
+        <input type="range" id="palette-mosaic-size" min="2" max="30" step="1" value="8"
+               aria-label="马赛克块大小">
+        <span class="palette-value" id="palette-mosaic-size-value">8</span>
+      </div>
+
+      <div class="palette-group" data-tools="shape arrow pen text number mosaic"
+           role="group" aria-label="清除标注">
+        <button type="button" class="palette-clear" id="palette-clear"
+                data-tools="shape arrow pen text number mosaic"
+                title="清除全部标注">清除标注</button>
+      </div>
+    </div>
+
+    <!-- Toolbar order follows contract §11.2: pin | tools | capture actions |
+         longshot | undo/redo | cancel | confirm. The preset image-skill button
+         stays first (hidden unless the shell started a preset capture). -->
     <div class="capture-bar" id="capture-bar" role="toolbar" aria-label="截图操作" hidden>
       <button type="button" class="tool-btn tool-btn-preset" id="capture-preset" hidden>
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
@@ -43,7 +139,92 @@
         </svg>
         <span class="label" id="capture-preset-label">识别图片</span>
       </button>
-      <span class="bar-sep" id="capture-preset-sep" hidden></span>
+      <span class="bar-sep capture-bar-sep" id="capture-preset-sep" hidden></span>
+
+      <button type="button" class="tool-btn" id="capture-pin" data-action="pin"
+              title="钉在桌面（把截图固定在屏幕上）">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 17v5"></path>
+          <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"></path>
+        </svg>
+        <span class="label">钉在桌面</span>
+      </button>
+
+      <span class="bar-sep capture-bar-sep"></span>
+
+      <div class="capture-tools" id="capture-tools" role="group" aria-label="标注工具">
+        <span class="capture-tool-split">
+          <button type="button" class="tool-btn capture-tool" data-tool="shape"
+                  title="形状（矩形 / 椭圆 / 直线）" aria-pressed="false">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="3" y="3" width="18" height="18" rx="2"></rect>
+            </svg>
+            <span class="label">形状</span>
+          </button>
+          <select class="capture-shape-select" id="capture-shape-mode"
+                  data-shape-mode="rect" title="形状类型" aria-label="形状类型">
+            <option value="rect" selected>矩形</option>
+            <option value="ellipse">椭圆</option>
+            <option value="line">直线</option>
+          </select>
+        </span>
+
+        <button type="button" class="tool-btn capture-tool" data-tool="arrow"
+                title="箭头" aria-pressed="false">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M7 7h10v10"></path>
+            <path d="M7 17 17 7"></path>
+          </svg>
+          <span class="label">箭头</span>
+        </button>
+        <button type="button" class="tool-btn capture-tool" data-tool="pen"
+                title="画笔" aria-pressed="false">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"></path>
+            <path d="m15 5 4 4"></path>
+          </svg>
+          <span class="label">画笔</span>
+        </button>
+        <button type="button" class="tool-btn capture-tool" data-tool="text"
+                title="文字" aria-pressed="false">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 4v16"></path>
+            <path d="M4 7V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2"></path>
+            <path d="M9 20h6"></path>
+          </svg>
+          <span class="label">文字</span>
+        </button>
+        <button type="button" class="tool-btn capture-tool" data-tool="number"
+                title="序号" aria-pressed="false">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <line x1="4" x2="20" y1="9" y2="9"></line>
+            <line x1="4" x2="20" y1="15" y2="15"></line>
+            <line x1="10" x2="8" y1="3" y2="21"></line>
+            <line x1="16" x2="14" y1="3" y2="21"></line>
+          </svg>
+          <span class="label">序号</span>
+        </button>
+        <button type="button" class="tool-btn capture-tool" data-tool="mosaic"
+                title="马赛克" aria-pressed="false">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect width="18" height="18" x="3" y="3" rx="2"></rect>
+            <path d="M3 9h18"></path>
+            <path d="M3 15h18"></path>
+            <path d="M9 3v18"></path>
+            <path d="M15 3v18"></path>
+          </svg>
+          <span class="label">马赛克</span>
+        </button>
+      </div>
+
+      <span class="bar-sep capture-bar-sep"></span>
 
       <button type="button" class="tool-btn" data-action="copy" title="复制截图">
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
@@ -88,7 +269,39 @@
         <span class="label">解释图片</span>
       </button>
 
-      <span class="bar-sep"></span>
+      <button type="button" class="tool-btn" id="capture-longshot" data-action="longshot"
+              title="长截图（自动滚动拼接）">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 13V7"></path>
+          <path d="m15 10-3 3-3-3"></path>
+          <rect width="20" height="14" x="2" y="3" rx="2"></rect>
+          <path d="M12 17v4"></path>
+          <path d="M8 21h8"></path>
+        </svg>
+        <span class="label">长截图</span>
+      </button>
+
+      <span class="bar-sep capture-bar-sep"></span>
+
+      <button type="button" class="tool-btn tool-btn-icon" id="capture-undo"
+              data-action="undo" title="撤回（Ctrl+Z）" aria-label="撤回" disabled>
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3 7v6h6"></path>
+          <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"></path>
+        </svg>
+      </button>
+      <button type="button" class="tool-btn tool-btn-icon" id="capture-redo"
+              data-action="redo" title="重做（Ctrl+Y）" aria-label="重做" disabled>
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 7v6h-6"></path>
+          <path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3l3 2.7"></path>
+        </svg>
+      </button>
+
+      <span class="bar-sep capture-bar-sep"></span>
 
       <button type="button" class="tool-btn tool-btn-danger" data-action="cancel" title="取消截图（Esc）">
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
@@ -109,6 +322,15 @@
       </button>
     </div>
 
+    <!-- Long screenshot progress (contract §11.6): shown while the shell scrolls
+         and stitches the frames. -->
+    <div class="capture-longshot-progress" id="capture-longshot-progress"
+         role="status" aria-live="polite" hidden>
+      <span class="capture-spinner" aria-hidden="true"></span>
+      <span class="capture-longshot-text">正在长截图…</span>
+      <span class="capture-longshot-frame" id="capture-longshot-frame">第 0 帧</span>
+    </div>
+
     <div class="capture-error-bar" id="capture-error" role="alert" hidden>
       <span class="capture-error-text" id="capture-error-text">截图加载失败</span>
       <button type="button" class="capture-error-btn capture-error-btn-primary"
@@ -122,6 +344,7 @@
   <script src="shared/constants.js"></script>
   <script src="shared/skill-icons.js"></script>
   <script src="shared/tauri-api.js"></script>
+  <script src="capture-annotate.js"></script>
   <script src="capture.js"></script>
 </body>
 </html>

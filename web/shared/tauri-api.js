@@ -177,6 +177,31 @@
   var mockDownloadSeq = 0;
   var mockPickerTimer = null;
   var mockPickerAttempts = 0;
+  var mockPins = {};
+  var mockPinSeq = 0;
+
+  /* Placeholder image for pinned-window previews (`pin.html` in the browser). */
+  function mockPinPreview(annotations) {
+    var width = 640;
+    var height = 480;
+    var svg =
+      '<svg xmlns="http://www.w3.org/2000/svg" width="' +
+      width +
+      '" height="' +
+      height +
+      '">' +
+      '<rect width="100%" height="100%" fill="#0f172a"/>' +
+      '<rect x="40" y="40" width="560" height="400" rx="12" fill="#1e293b"/>' +
+      '<text x="80" y="180" fill="#e2e8f0" font-family="Segoe UI, sans-serif" font-size="30">Lexora pinned preview</text>' +
+      '<text x="80" y="240" fill="#94a3b8" font-family="Segoe UI, sans-serif" font-size="20">' +
+      (annotations ? "包含标注图层" : "无标注") +
+      "</text></svg>";
+    return {
+      width: width,
+      height: height,
+      dataUrl: "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg),
+    };
+  }
 
   function clone(value) {
     if (value === undefined || value === null) {
@@ -1086,6 +1111,8 @@
         console.info(
           "[mock] 截图技能：action=" +
             String(args.action || "") +
+            "，标注图层=" +
+            (args.annotations ? "有" : "无") +
             "，图片已复制到剪贴板；真实应用会在 picker 窗口显示结果面板"
         );
         return { ok: true, clipboard: true };
@@ -1093,6 +1120,61 @@
       case "capture_retry":
         return { ok: true };
       case "capture_followup":
+        return { ok: true };
+      case "capture_pin": {
+        mockPinSeq += 1;
+        var pinId = mockPinSeq;
+        mockPins[pinId] = mockPinPreview(String(args.annotations || ""));
+        mockEmit("toast", { type: "success", message: "已钉在桌面（预览模式）" });
+        return {
+          ok: true,
+          id: pinId,
+          width: mockPins[pinId].width,
+          height: mockPins[pinId].height,
+        };
+      }
+      case "capture_longshot": {
+        mockPinSeq += 1;
+        var longId = mockPinSeq;
+        mockPins[longId] = mockPinPreview("");
+        setTimeout(function () {
+          mockEmit("capture-longshot-progress", { frame: 1, height: 200 });
+          mockEmit("capture-longshot-progress", { frame: 2, height: 400 });
+          mockEmit("capture-longshot-done", {
+            ok: true,
+            width: mockPins[longId].width,
+            height: mockPins[longId].height,
+            pinId: longId,
+          });
+        }, 600);
+        return {
+          ok: true,
+          width: mockPins[longId].width,
+          height: mockPins[longId].height,
+          pinId: longId,
+          frames: 3,
+        };
+      }
+      case "pin_ready": {
+        var readyId = Number(args.id) || 0;
+        // The pinned window is a separate page in the browser preview, so it
+        // cannot see the registry of the page that created the pin: fall back
+        // to a placeholder preview there.
+        var readyPin = mockPins[readyId];
+        if (!readyPin) {
+          readyPin = mockPinPreview("");
+          mockPins[readyId] = readyPin;
+        }
+        return {
+          ok: true,
+          dataUrl: readyPin.dataUrl,
+          width: readyPin.width,
+          height: readyPin.height,
+        };
+      }
+      case "pin_drag":
+      case "pin_copy":
+      case "pin_close":
         return { ok: true };
       case "capture_set_hotkey": {
         var normalizedShortcut = normalizeMockShortcut(args.shortcut);
@@ -1820,15 +1902,16 @@
     ready: function (index) {
       return safeInvoke("capture_ready", { index: Number(index) || 0 });
     },
-    copy: function (index, rect) {
+    copy: function (index, rect, annotations) {
       return safeInvoke("capture_copy", {
         index: Number(index) || 0,
         rect: rect || {},
+        annotations: annotations ? String(annotations) : "",
       });
     },
     /* Runs a panel skill on the selected region: the shell copies the image to
      * the clipboard, closes the overlays and shows the result in the picker. */
-    skill: function (requestId, index, rect, action, skillId, targetLang) {
+    skill: function (requestId, index, rect, action, skillId, targetLang, annotations) {
       return safeInvoke("capture_skill", {
         requestId: String(requestId == null ? "" : requestId),
         index: Number(index) || 0,
@@ -1836,6 +1919,36 @@
         action: String(action == null ? "" : action),
         skillId: String(skillId == null ? "" : skillId),
         targetLang: String(targetLang == null ? "" : targetLang),
+        annotations: annotations ? String(annotations) : "",
+      });
+    },
+    /* Pins the annotated region as a new always-on-top window (contract §11.5). */
+    pin: function (index, rect, annotations) {
+      return safeInvoke("capture_pin", {
+        index: Number(index) || 0,
+        rect: rect || {},
+        annotations: annotations ? String(annotations) : "",
+      });
+    },
+    /* Captures a scrolling long screenshot of the selected region (§11.6). */
+    longshot: function (index, rect) {
+      return safeInvoke("capture_longshot", {
+        index: Number(index) || 0,
+        rect: rect || {},
+      });
+    },
+    onLongshotProgress: function (callback) {
+      return subscribe("capture-longshot-progress", function (payload) {
+        if (typeof callback === "function") {
+          callback(payload);
+        }
+      });
+    },
+    onLongshotDone: function (callback) {
+      return subscribe("capture-longshot-done", function (payload) {
+        if (typeof callback === "function") {
+          callback(payload);
+        }
       });
     },
     retry: function (requestId, targetLang) {
@@ -1859,6 +1972,33 @@
      * (they fetch the fresh screenshot themselves and report `ready`). */
     onArmed: function (callback) {
       return subscribe("capture-armed", function (payload) {
+        if (typeof callback === "function") {
+          callback(payload);
+        }
+      });
+    },
+  };
+
+  /* Pinned-to-desktop window API (contract §11.5). */
+  window.pinAPI = {
+    ready: function (id) {
+      return safeInvoke("pin_ready", { id: Number(id) || 0 });
+    },
+    drag: function (id, dx, dy) {
+      return safeInvoke("pin_drag", {
+        id: Number(id) || 0,
+        dx: Number(dx) || 0,
+        dy: Number(dy) || 0,
+      });
+    },
+    copy: function (id) {
+      return safeInvoke("pin_copy", { id: Number(id) || 0 });
+    },
+    close: function (id) {
+      return safeInvoke("pin_close", { id: Number(id) || 0 });
+    },
+    onClose: function (callback) {
+      return subscribe("pin-close", function (payload) {
         if (typeof callback === "function") {
           callback(payload);
         }

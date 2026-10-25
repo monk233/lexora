@@ -605,23 +605,71 @@ pub fn capture_ready(app: AppHandle, state: State<'_, Arc<AppState>>, index: u32
     }
 }
 
-/// Copies the selected screenshot region to the clipboard and closes the overlays.
+/// Copies the selected screenshot region (with the annotation layer composited,
+/// contract §11.4) to the clipboard and closes the overlays.
 #[tauri::command]
 pub fn capture_copy(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
     index: u32,
     rect: crate::capture::HitRect,
+    annotations: Option<String>,
 ) -> Value {
-    match state.capture.copy(&app, index, &rect) {
+    match state.capture.copy(&app, index, &rect, annotations) {
         Ok(()) => json!({ "ok": true }),
         Err(error) => json!({ "ok": false, "error": error.message, "hint": error.hint }),
     }
 }
 
-/// Runs a panel skill on the selected region (contract §10.3): crop → image
-/// clipboard → remember the last capture → close the overlays → show the picker
-/// result panel (`picker-image`) → stream the result through `translate-event`.
+/// Pins the selected region as a new always-on-top desktop window
+/// (`capture_pin`, contract §11.4/§11.5). The annotation layer is composited
+/// into the pinned image; the capture overlay is closed on success.
+///
+/// Async on purpose: creating a webview window from a sync command would block
+/// the event loop that has to build it (deadlock).
+#[tauri::command]
+pub async fn capture_pin(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    index: u32,
+    rect: crate::capture::HitRect,
+    annotations: Option<String>,
+) -> Result<Value, String> {
+    let image = match state.capture.crop_region(index, &rect, annotations) {
+        Ok(image) => image,
+        Err(error) => {
+            return Ok(json!({ "ok": false, "error": error.message, "hint": error.hint }));
+        }
+    };
+    match crate::pin::create_pin(&app, image) {
+        Ok((id, width, height)) => {
+            state.capture.close(&app);
+            Ok(json!({ "ok": true, "id": id, "width": width, "height": height }))
+        }
+        Err(error) => Ok(json!({ "ok": false, "error": error.message, "hint": error.hint })),
+    }
+}
+
+/// Runs a scrolling long screenshot of the selected region (contract §11.6).
+/// Progress/finish events are emitted to the capture overlay
+/// (`capture-longshot-progress` / `capture-longshot-done`).
+#[tauri::command]
+pub async fn capture_longshot(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    index: u32,
+    rect: crate::capture::HitRect,
+) -> Result<Value, String> {
+    match state.capture.longshot(&app, index, &rect).await {
+        Ok(outcome) => Ok(outcome),
+        Err(error) => Ok(json!({ "ok": false, "error": error.message, "hint": error.hint })),
+    }
+}
+
+/// Runs a panel skill on the selected region (contract §10.3/§11.4): crop →
+/// annotations → image clipboard → remember the last capture → close the
+/// overlays → show the picker result panel (`picker-image`) → stream the result
+/// through `translate-event`.
 #[tauri::command]
 pub fn capture_skill(
     app: AppHandle,
@@ -632,6 +680,7 @@ pub fn capture_skill(
     action: String,
     skill_id: Option<String>,
     target_lang: Option<String>,
+    annotations: Option<String>,
 ) -> Value {
     match state.capture.skill(
         &app,
@@ -641,6 +690,7 @@ pub fn capture_skill(
         skill_id,
         target_lang,
         Some(request_id),
+        annotations,
     ) {
         Ok(job) => {
             let clipboard = job.clipboard();
@@ -743,6 +793,57 @@ pub fn capture_set_hotkey(app: AppHandle, shortcut: String) -> Value {
             "hint": hint,
         }),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Pinned desktop windows (contract §11.5)
+// ---------------------------------------------------------------------------
+
+/// PNG data URL + physical size of a pinned image; `pin.html` calls this after
+/// loading (contract §11.5). The PNG is encoded on a blocking worker because a
+/// long-screenshot pin can be very large.
+#[tauri::command]
+pub async fn pin_ready(id: u64) -> Value {
+    let encoded = tauri::async_runtime::spawn_blocking(move || crate::pin::ready(id)).await;
+    match encoded {
+        Ok(Ok(mut info)) => {
+            if let Some(object) = info.as_object_mut() {
+                object.insert("ok".to_string(), json!(true));
+            }
+            info
+        }
+        Ok(Err(error)) => json!({ "ok": false, "error": error.message, "hint": error.hint }),
+        Err(error) => json!({
+            "ok": false,
+            "error": "读取钉图失败。",
+            "hint": format!("请重试；若问题持续请重启程序（{error}）。"),
+        }),
+    }
+}
+
+/// Moves a pinned window by a logical-pixel delta, clamped into the work area.
+#[tauri::command]
+pub fn pin_drag(app: AppHandle, id: u64, dx: f64, dy: f64) -> Value {
+    match crate::pin::drag(&app, id, dx, dy) {
+        Ok(()) => json!({ "ok": true }),
+        Err(error) => json!({ "ok": false, "error": error.message, "hint": error.hint }),
+    }
+}
+
+/// Writes the pinned image to the system clipboard.
+#[tauri::command]
+pub fn pin_copy(app: AppHandle, id: u64) -> Value {
+    match crate::pin::copy(&app, id) {
+        Ok(()) => json!({ "ok": true }),
+        Err(error) => json!({ "ok": false, "error": error.message, "hint": error.hint }),
+    }
+}
+
+/// Destroys the pinned window, forgets its image and emits `pin-close`.
+#[tauri::command]
+pub fn pin_close(app: AppHandle, id: u64) -> Value {
+    crate::pin::close(&app, id);
+    json!({ "ok": true })
 }
 
 // ---------------------------------------------------------------------------

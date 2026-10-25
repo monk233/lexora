@@ -86,6 +86,13 @@ body.is-over-selection {
   cursor: move;
 }
 
+/* An annotation tool is active: the drawing canvas owns the pointer and the
+ * overlay must keep the crosshair even over the selection (contract §11.2). */
+body.annotating,
+body.annotating.is-over-selection {
+  cursor: crosshair;
+}
+
 button {
   font-family: inherit;
 }
@@ -102,6 +109,18 @@ button {
   pointer-events: none;
   -webkit-user-drag: none;
   user-select: none;
+}
+
+/* Transparent annotation layer above the screenshot, below the mask. Its
+ * hidden/pointer-events state is driven by capture.js (§11.2/§11.3). */
+.capture-annotations {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: transparent;
 }
 
 /* ---- Dimming mask + selection ------------------------------------------ */
@@ -211,7 +230,10 @@ body.is-dragging .selection-handle {
   z-index: 30;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 2px;
+  max-width: calc(100vw - 8px);
   padding: 4px;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -227,7 +249,7 @@ body.is-dragging .selection-handle {
   gap: 7px;
   flex: 0 0 auto;
   height: 32px;
-  padding: 0 11px;
+  padding: 0 9px;
   border: 0;
   border-radius: var(--radius-md);
   background: transparent;
@@ -338,11 +360,379 @@ body.is-dragging .selection-handle {
   display: none;
 }
 
+/* ---- Annotation tools (contract §11.2) --------------------------------- */
+
+.capture-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.capture-tool-split {
+  display: inline-flex;
+  align-items: center;
+}
+
+.capture-tool.is-active {
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.capture-tool.is-active .icon {
+  color: var(--primary);
+}
+
+/* Shape sub-mode: a compact white select tucked next to the shape button. */
+.capture-shape-select {
+  flex: 0 0 auto;
+  height: 26px;
+  margin: 0 2px 0 -6px;
+  padding: 0 18px 0 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background-color: var(--surface-muted);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 3px center;
+  background-size: 12px 12px;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.capture-shape-select:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.capture-shape-select:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+.capture-bar.compact .capture-shape-select {
+  margin-left: 2px;
+}
+
+/* ---- Annotation palette (contract §11.2) ------------------------------- */
+
+.capture-palette {
+  position: fixed;
+  /* Fallback anchor only: capture.js positions it above the toolbar. */
+  left: 180px;
+  top: 80px;
+  z-index: 34;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  max-width: min(760px, calc(100vw - 16px));
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1;
+  box-shadow: var(--shadow-float);
+  cursor: default;
+}
+
+.palette-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+}
+
+.palette-label {
+  color: var(--text-faint);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.palette-value {
+  min-width: 14px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.palette-color-value {
+  min-width: 54px;
+  text-align: left;
+  letter-spacing: 0.01em;
+}
+
+/* 18×18 rounded swatches; the active one gets a ring. */
+.palette-color {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  border-radius: 6px;
+  background: var(--surface-muted);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35);
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+.palette-color:hover {
+  transform: scale(1.12);
+}
+
+.palette-color.is-active {
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 3.5px var(--primary);
+}
+
+.palette-color[data-color="#ef4444"] {
+  background: #ef4444;
+}
+
+.palette-color[data-color="#f59e0b"] {
+  background: #f59e0b;
+}
+
+.palette-color[data-color="#84cc16"] {
+  background: #84cc16;
+}
+
+.palette-color[data-color="#22c55e"] {
+  background: #22c55e;
+}
+
+.palette-color[data-color="#3b82f6"] {
+  background: #3b82f6;
+}
+
+.palette-color[data-color="#ffffff"] {
+  background: #ffffff;
+}
+
+.palette-color[data-color="#6b7280"] {
+  background: #6b7280;
+}
+
+.palette-color[data-color="#111827"] {
+  background: #111827;
+}
+
+.palette-color-custom {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+#palette-color-input {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+
+#palette-color-input::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+#palette-color-input::-webkit-color-swatch {
+  border: 0;
+  border-radius: 5px;
+}
+
+.palette-field input[type="range"] {
+  width: 72px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+
+#palette-mosaic-size {
+  width: 64px;
+}
+
+.palette-segmented {
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-muted);
+}
+
+.palette-seg {
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.palette-seg:hover {
+  color: var(--text);
+}
+
+.palette-seg.is-active {
+  background: var(--surface);
+  color: var(--primary);
+  font-weight: 600;
+  box-shadow: var(--shadow-float);
+}
+
+.palette-toggle {
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.palette-toggle:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.palette-toggle.is-active {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.palette-bg {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  border-radius: 6px;
+  background: var(--surface-muted);
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+.palette-bg:hover {
+  transform: scale(1.12);
+}
+
+.palette-bg.is-active {
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 3.5px var(--primary);
+}
+
+.palette-bg-none {
+  width: auto;
+  padding: 0 7px;
+  color: var(--text-muted);
+  font-size: 11px;
+  background: var(--surface);
+}
+
+.palette-bg[data-bg-color="#ffffff"] {
+  background: #ffffff;
+}
+
+.palette-bg[data-bg-color="#fef3c7"] {
+  background: #fef3c7;
+}
+
+.palette-bg[data-bg-color="#111827"] {
+  background: #111827;
+}
+
+.palette-clear {
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--danger);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.palette-clear:hover {
+  border-color: #fecaca;
+  background: var(--danger-soft);
+}
+
+.palette-clear:focus-visible,
+.palette-toggle:focus-visible,
+.palette-seg:focus-visible,
+.palette-color:focus-visible,
+.palette-bg:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+/* ---- Long screenshot progress (contract §11.6) ------------------------- */
+
+.capture-longshot-progress {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  transform: translate(-50%, -50%);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12.5px;
+  white-space: nowrap;
+  box-shadow: var(--shadow-float);
+  cursor: default;
+}
+
+.capture-spinner {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: capture-spin 700ms linear infinite;
+}
+
+.capture-longshot-frame {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes capture-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .bar-sep {
   flex: 0 0 auto;
   width: 1px;
   height: 18px;
-  margin: 0 5px;
+  margin: 0 4px;
   background: var(--border);
 }
 
@@ -444,7 +834,16 @@ body.is-dragging .selection-handle {
   .selection-handle,
   .tool-btn,
   .capture-error-btn,
-  .capture-hint.is-fading {
+  .capture-hint.is-fading,
+  .palette-color,
+  .palette-bg,
+  .palette-seg,
+  .palette-toggle,
+  .palette-clear {
     transition: none;
+  }
+
+  .capture-spinner {
+    animation-duration: 2400ms;
   }
 }
