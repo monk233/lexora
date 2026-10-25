@@ -1,20 +1,25 @@
-//! Screenshot capture core: monitor grabbing (`xcap`), hidden overlay windows,
-//! on-device OCR (`native-ocr`), screenshot panel skills streamed into the picker
-//! result panel and the configurable global screenshot hotkey.
+//! Screenshot capture core: monitor grabbing (`xcap`), reusable hidden overlay
+//! windows, on-device OCR (`native-ocr`) / vision-model transcription, screenshot
+//! panel skills streamed into the picker result panel and the configurable global
+//! screenshot hotkey.
 //!
-//! Flow (contract §10): [`CaptureService::start`] hides our own windows, grabs
-//! every monitor and **pre-encodes every monitor as a PNG data URL on blocking
-//! worker threads before any window is created**, so the overlay is created
-//! hidden and can appear with the screenshot already painted (no black flash).
-//! The capture page calls `capture_monitor_info` (cached data URL), paints it and
-//! then `capture_ready` shows that overlay. As a safety net the shell shows all
-//! overlays 2.5 s after `start` in case the renderer never reports readiness.
+//! Flow (contract §10.1): [`CaptureService::start`] hides our own windows (only
+//! pausing when one of them was really visible), reuses the overlay webviews of
+//! the previous capture, grabs every monitor and pre-encodes each one as a
+//! **JPEG data URL** on blocking worker threads before arming the overlays.
+//! Arming emits `capture-armed {index}`; the page resets itself, fetches the
+//! cached data URL via `capture_monitor_info`, paints it and calls
+//! `capture_ready`, which shows that overlay window (already transparent, no
+//! black/white flash). As a safety net the shell shows all overlays 2.5 s after
+//! `start` in case the renderer never reports readiness.
 //!
 //! Panel skills (`capture_skill`): crop the region from the session, copy the
-//! image to the system clipboard, remember it as [`LastCapture`], destroy the
-//! overlays, show the picker at the bottom-right corner of the selection and
-//! stream the OCR / translation / vision result to the picker through the same
-//! `translate-event` channel the text skills use (contract §10.3/§10.5).
+//! image to the system clipboard, remember it as [`LastCapture`], hide the
+//! overlays (they stay alive for the next capture), show the picker at the
+//! bottom-right corner of the selection and stream the transcription /
+//! translation / vision result to the picker through the same `translate-event`
+//! channel the text skills use (contract §10.3/§10.5). Text extraction prefers
+//! the vision model and falls back to Windows OCR (contract §10.8).
 //!
 //! The region hotkey (default `Win+Shift+X`) lives on its own Windows message
 //! thread so it can be re-registered at runtime (`capture_set_hotkey`, contract
@@ -24,7 +29,7 @@ use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use futures_util::StreamExt;
@@ -41,16 +46,26 @@ use crate::settings::{
     normalize_shortcut, parse_shortcut, Settings, Shortcut, ShortcutKey, DEFAULT_REGION_SHORTCUT,
 };
 use crate::state::{lock, AppState, TranslateTask};
+use crate::windows::CaptureGeometry;
 
-/// Wait after hiding our windows so they are gone before the screenshot is taken.
-const WINDOW_HIDE_DELAY: Duration = Duration::from_millis(120);
+/// Wait after hiding one of **our own visible** windows so it has really
+/// disappeared from the screen before the screenshot is taken. The common
+/// hotkey path has nothing visible on screen and skips this wait entirely
+/// (contract §10.7 latency: no fixed cost before the grab).
+const WINDOW_HIDE_DELAY: Duration = Duration::from_millis(100);
 /// Fallback: show every overlay this long after `start` when the renderer never
 /// called `capture_ready` (contract §10.1).
 const OVERLAY_FALLBACK_DELAY: Duration = Duration::from_millis(2_500);
+/// JPEG quality of the overlay display image (contract §10.1). Crop/vision
+/// requests keep using the original lossless RGBA pixels.
+const DISPLAY_JPEG_QUALITY: u8 = 85;
 /// Event carrying one screenshot result panel (`picker-image`, contract §10.5).
 const EVENT_PICKER_IMAGE: &str = "picker-image";
 /// Event carrying the streamed chunks of a screenshot skill (contract §10.3).
 const EVENT_TRANSLATE: &str = "translate-event";
+/// Rust → `capture-<index>`: a fresh screenshot session is ready for that
+/// monitor; a reused page resets itself and fetches the new display image.
+pub const EVENT_CAPTURE_ARMED: &str = "capture-armed";
 /// Monotonic part of generated request ids.
 static REQUEST_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -90,8 +105,9 @@ struct PresetInfo {
     label: String,
 }
 
-/// One captured monitor. `data_url` is pre-encoded on a blocking worker thread
-/// before any overlay window exists, so `monitor_info` never has to encode.
+/// One captured monitor. `display_url` is the pre-encoded JPEG painted by the
+/// overlay; `image` keeps the original lossless RGBA pixels used for cropping
+/// and vision requests (contract §10.1).
 struct Shot {
     index: u32,
     x: i32,
@@ -99,7 +115,7 @@ struct Shot {
     width: u32,
     height: u32,
     image: RgbaImage,
-    data_url: String,
+    display_url: String,
 }
 
 /// Screenshot in progress: one image per monitor plus the optional preset.
@@ -202,6 +218,10 @@ pub struct FollowupJob {
 pub struct CaptureService {
     session: Mutex<Option<Session>>,
     last: Mutex<Option<LastCapture>>,
+    /// Physical monitor layout the overlay windows were created for. An
+    /// identical layout reuses the loaded webviews; a different one destroys
+    /// and recreates them (contract §10.1).
+    layout: Mutex<Option<Vec<CaptureGeometry>>>,
     /// Bumped on every session change so a stale 2.5 s fallback show is a no-op.
     epoch: AtomicU64,
     /// Guards against two overlapping `start` calls (e.g. the hotkey pressed
@@ -214,15 +234,16 @@ impl CaptureService {
         Self {
             session: Mutex::new(None),
             last: Mutex::new(None),
+            layout: Mutex::new(None),
             epoch: AtomicU64::new(0),
             starting: AtomicBool::new(false),
         }
     }
 
-    /// Hides our own windows, grabs every monitor, pre-encodes them in parallel
-    /// and creates one **hidden** overlay window per monitor. Returns the number
-    /// of monitors. On failure all partially created overlay windows are closed
-    /// again and the session is dropped.
+    /// Prepares one screenshot: hides our own windows (only waiting when one of
+    /// them was really visible), reuses the overlay webviews when the monitor
+    /// layout is unchanged, grabs every monitor, pre-encodes the display images
+    /// in parallel and arms the overlays. Returns the number of monitors.
     ///
     /// A second call while the first one is still preparing is rejected: the
     /// hotkey may be pressed twice because the overlay only appears once the
@@ -254,12 +275,23 @@ impl CaptureService {
         state: &AppState,
         preset_skill_id: Option<String>,
     ) -> Result<usize, EngineError> {
+        let started = Instant::now();
+
         // A new capture always replaces the previous session and retry image.
-        self.close(app);
+        // Clearing the session *before* the overlay webviews are armed is what
+        // keeps a reused page from painting the previous screenshot.
+        self.clear_session();
         *lock(&self.last) = None;
-        crate::windows::hide_picker(app);
-        crate::windows::hide_settings(app);
-        tokio::time::sleep(WINDOW_HIDE_DELAY).await;
+
+        // Hide our own windows. Only windows that were really visible need a
+        // moment to disappear from the compositor; the common hotkey path has
+        // nothing on screen and goes straight to the grab (contract §10.7).
+        let mut hid_windows = crate::windows::hide_picker(app);
+        hid_windows |= crate::windows::hide_settings(app);
+        hid_windows |= crate::windows::hide_capture_windows(app);
+        if hid_windows {
+            tokio::time::sleep(WINDOW_HIDE_DELAY).await;
+        }
 
         let settings = state.settings.get();
         let preset = preset_skill_id
@@ -281,10 +313,10 @@ impl CaptureService {
             }
         });
 
-        // Grab first (blocking xcap calls). `xcap::Monitor` is not `Send`, so it
-        // is kept in a scope that ends before the first await point.
-        let mut raw = Vec::new();
-        {
+        // Enumerate monitors, make sure one hidden overlay exists per monitor
+        // (its webview starts loading in the background), then grab the screen.
+        // `xcap::Monitor` is not `Send`, so this block has no await points.
+        let (layout, created, reused, overlay_ms, capture_ms, raw) = {
             let monitors = xcap::Monitor::all().map_err(|error| {
                 EngineError::new(
                     "无法枚举显示器。",
@@ -297,6 +329,24 @@ impl CaptureService {
                     "请确认显示器连接正常后重试。",
                 ));
             }
+
+            let overlay_started = Instant::now();
+            let layout: Vec<CaptureGeometry> = monitors
+                .iter()
+                .enumerate()
+                .map(|(index, monitor)| CaptureGeometry {
+                    index: index as u32,
+                    x: monitor.x().unwrap_or(0),
+                    y: monitor.y().unwrap_or(0),
+                    width: monitor.width().unwrap_or(0),
+                    height: monitor.height().unwrap_or(0),
+                })
+                .collect();
+            let (created, reused) = self.ensure_overlay_windows(app, &layout)?;
+            let overlay_ms = overlay_started.elapsed().as_millis();
+
+            let capture_started = Instant::now();
+            let mut raw = Vec::with_capacity(monitors.len());
             for (index, monitor) in monitors.iter().enumerate() {
                 let image = monitor.capture_image().map_err(|error| {
                     EngineError::new(
@@ -304,30 +354,49 @@ impl CaptureService {
                         format!("请确认没有其他程序独占屏幕后重试（{error}）。"),
                     )
                 })?;
-                raw.push((
-                    index as u32,
-                    monitor.x().unwrap_or(0),
-                    monitor.y().unwrap_or(0),
-                    monitor.width().unwrap_or_else(|_| image.width()),
-                    monitor.height().unwrap_or_else(|_| image.height()),
-                    image,
-                ));
+                let mut geometry = layout[index];
+                // Some drivers do not report the size; the grabbed bitmap is
+                // the authoritative physical size then.
+                if geometry.width == 0 {
+                    geometry.width = image.width();
+                }
+                if geometry.height == 0 {
+                    geometry.height = image.height();
+                }
+                raw.push((geometry, image));
             }
-        }
+            let capture_ms = capture_started.elapsed().as_millis();
+            (layout, created, reused, overlay_ms, capture_ms, raw)
+        };
 
-        // Pre-encode every monitor before creating any window (contract §10.1).
+        let overlay_mode = if created == 0 {
+            "reuse"
+        } else if reused == 0 {
+            "create"
+        } else {
+            "mixed"
+        };
+        state.log.info(&format!(
+            "screenshot capture: monitors={} overlay={overlay_mode} created={created} \
+             reused={reused} overlay_ms={overlay_ms}",
+            layout.len()
+        ));
+
+        // Pre-encode the display JPEGs on parallel blocking workers (contract
+        // §10.1: JPEG is several times faster than PNG for IPC + webview decode).
+        let encode_started = Instant::now();
         let mut handles = Vec::with_capacity(raw.len());
-        for (index, x, y, width, height, image) in raw {
+        for (geometry, image) in raw {
             handles.push(tauri::async_runtime::spawn_blocking(move || {
-                let data_url = png_data_url(&image)?;
+                let display_url = jpeg_data_url(&image)?;
                 Ok::<Shot, EngineError>(Shot {
-                    index,
-                    x,
-                    y,
-                    width,
-                    height,
+                    index: geometry.index,
+                    x: geometry.x,
+                    y: geometry.y,
+                    width: geometry.width,
+                    height: geometry.height,
                     image,
-                    data_url,
+                    display_url,
                 })
             }));
         }
@@ -341,25 +410,23 @@ impl CaptureService {
             })?;
             shots.push(encoded?);
         }
+        let encode_ms = encode_started.elapsed().as_millis();
 
-        let overlays: Vec<(u32, i32, i32, u32, u32)> = shots
-            .iter()
-            .map(|shot| (shot.index, shot.x, shot.y, shot.width, shot.height))
-            .collect();
         let count = shots.len();
+        let display_kb = shots
+            .iter()
+            .map(|shot| shot.display_url.len())
+            .sum::<usize>()
+            / 1024;
         let epoch = self.epoch.fetch_add(1, Ordering::SeqCst) + 1;
+        // Session first, arm second: an armed renderer polls immediately.
         *lock(&self.session) = Some(Session { shots, preset });
-
-        for (index, x, y, width, height) in overlays {
-            if let Err(error) =
-                crate::windows::create_capture_window(app, index, x, y, width, height)
-            {
-                self.close(app);
-                return Err(EngineError::new(
-                    "无法创建截图窗口。",
-                    format!("请重试或重启程序（{error}）。"),
-                ));
-            }
+        for geometry in &layout {
+            let _ = app.emit_to(
+                geometry.label(),
+                EVENT_CAPTURE_ARMED,
+                json!({ "index": geometry.index }),
+            );
         }
 
         // Safety net: if the renderer never reports `capture_ready` (crashed
@@ -381,14 +448,65 @@ impl CaptureService {
             crate::windows::show_all_capture_windows(&fallback_app);
         });
 
-        state
-            .log
-            .info(&format!("screenshot capture started: monitors={count}"));
+        let total_ms = started.elapsed().as_millis();
+        state.log.info(&format!(
+            "screenshot capture ready: monitors={count} overlay={overlay_mode} \
+             capture_ms={capture_ms} encode_ms={encode_ms} total_ms={total_ms} display_kb={display_kb}"
+        ));
         Ok(count)
     }
 
-    /// PNG data URL + monitor size (+ preset) for the capture page of `index`.
-    /// The data URL is the one pre-encoded by [`CaptureService::start`].
+    /// Forgets the current session and invalidates a pending fallback show. The
+    /// overlay windows are left untouched (hidden and reusable, contract §10.1).
+    fn clear_session(&self) {
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+        *lock(&self.session) = None;
+    }
+
+    /// Makes sure one hidden overlay window exists per monitor. When the layout
+    /// is unchanged the already loaded webviews are reused; otherwise every
+    /// overlay is destroyed and created again (contract §10.1). Returns the
+    /// number of created and reused windows. On failure all overlays are
+    /// destroyed so the next capture starts from a clean state.
+    fn ensure_overlay_windows(
+        &self,
+        app: &AppHandle,
+        layout: &[CaptureGeometry],
+    ) -> Result<(usize, usize), EngineError> {
+        let previous = lock(&self.layout).clone();
+        let reuse = previous
+            .as_deref()
+            .is_some_and(|previous| crate::windows::layout_matches(previous, layout));
+        if !reuse {
+            crate::windows::destroy_capture_windows(app);
+            *lock(&self.layout) = None;
+        }
+        let mut created = 0usize;
+        let mut reused = 0usize;
+        for geometry in layout {
+            let exists = reuse && app.get_webview_window(&geometry.label()).is_some();
+            if exists {
+                reused += 1;
+                continue;
+            }
+            if let Err(error) = crate::windows::create_capture_window(app, *geometry) {
+                crate::windows::destroy_capture_windows(app);
+                *lock(&self.layout) = None;
+                return Err(EngineError::new(
+                    "无法创建截图窗口。",
+                    format!("请重试或重启程序（{error}）。"),
+                ));
+            }
+            created += 1;
+        }
+        *lock(&self.layout) = Some(layout.to_vec());
+        Ok((created, reused))
+    }
+
+    /// JPEG data URL + original physical monitor size (+ preset) for the
+    /// capture page of `index`. The data URL is the one pre-encoded by
+    /// [`CaptureService::start`]; `width`/`height` stay the physical pixels of
+    /// the original screenshot, the JPEG is display-only (contract §10.3).
     pub fn monitor_info(&self, index: u32) -> Result<Value, EngineError> {
         let guard = lock(&self.session);
         let Some(session) = guard.as_ref() else {
@@ -408,12 +526,13 @@ impl CaptureService {
             "index": index,
             "width": shot.width,
             "height": shot.height,
-            "dataUrl": shot.data_url,
+            "dataUrl": shot.display_url,
             "preset": preset,
         }))
     }
 
-    /// Copies the cropped region to the clipboard, then closes the capture UI.
+    /// Copies the cropped region to the clipboard, then hides the capture UI
+    /// (the overlay windows stay reusable for the next capture).
     pub fn copy(&self, app: &AppHandle, index: u32, rect: &HitRect) -> Result<(), EngineError> {
         let cropped = {
             let guard = lock(&self.session);
@@ -520,7 +639,8 @@ impl CaptureService {
             ocr_text: None,
         });
 
-        // 4. Close the overlays and show the picker at the selection anchor.
+        // 4. Hide the overlays (kept reusable) and show the picker at the
+        //    selection anchor.
         self.close(app);
         let payload = PickerPayload {
             text: String::new(),
@@ -652,12 +772,12 @@ impl CaptureService {
         }
     }
 
-    /// Destroys every overlay window and forgets the session. The last capture
-    /// stays available for retry / follow-up (contract §10.3).
+    /// Hides every overlay window (they stay alive and are reused by the next
+    /// capture, contract §10.1) and forgets the session. The last capture stays
+    /// available for retry / follow-up (contract §10.3).
     pub fn close(&self, app: &AppHandle) {
-        self.epoch.fetch_add(1, Ordering::SeqCst);
-        crate::windows::close_capture_windows(app);
-        *lock(&self.session) = None;
+        self.clear_session();
+        crate::windows::hide_capture_windows(app);
     }
 }
 
@@ -721,6 +841,9 @@ pub fn spawn_followup_job(app: AppHandle, state: Arc<AppState>, job: FollowupJob
     *lock(&state.translate_task) = Some(TranslateTask { request_id, handle });
 }
 
+/// Streamed model response (text and vision providers share the same shape).
+type TextStream = futures_util::stream::BoxStream<'static, Result<String, EngineError>>;
+
 async fn run_capture_job(
     app: AppHandle,
     state: Arc<AppState>,
@@ -728,24 +851,23 @@ async fn run_capture_job(
 ) -> Result<(), EngineError> {
     let request_id = job.request_id.clone();
     match job.action {
-        // Windows OCR → one chunk with the full text → done.
+        // Transcription → one chunk with the full text → done. Contract §10.8:
+        // the vision model is preferred, Windows OCR is only the fallback.
         SkillAction::Ocr => {
-            let text = recognize_text(&job.image).await?;
-            state.capture.cache_ocr_text(&job.data_url, &text);
+            let (text, source) =
+                transcribe_screenshot(&app, &state, &job.image, &job.data_url).await?;
+            log_ocr_source(&app, source, &text);
             emit_chunk(&app, &request_id, &text);
             emit_done(&app, &request_id);
             Ok(())
         }
-        // OCR → text translation stream.
+        // Transcription (cached when available) → text translation stream.
         SkillAction::Translate => {
-            let text = match job.ocr_text.clone() {
-                Some(cached) => cached,
-                None => {
-                    let text = recognize_text(&job.image).await?;
-                    state.capture.cache_ocr_text(&job.data_url, &text);
-                    text
-                }
+            let (text, source) = match job.ocr_text.clone() {
+                Some(cached) => (cached, "cache"),
+                None => transcribe_screenshot(&app, &state, &job.image, &job.data_url).await?,
             };
+            log_ocr_source(&app, source, &text);
             let target = crate::engine::resolve_target_lang(&job.target_lang, &text);
             let engine = engine_of(&app)?;
             let mut stream = engine.translate_stream(&text, &target).await?;
@@ -786,8 +908,9 @@ async fn run_followup_job(
         let text = match job.ocr_text.clone() {
             Some(cached) => cached,
             None => {
-                let text = recognize_text(&job.image).await?;
-                state.capture.cache_ocr_text(&job.data_url, &text);
+                let (text, source) =
+                    transcribe_screenshot(&app, &state, &job.image, &job.data_url).await?;
+                log_ocr_source(&app, source, &text);
                 text
             }
         };
@@ -800,10 +923,98 @@ async fn run_followup_job(
     Ok(())
 }
 
+/// Recognizes the text of a screenshot. The vision model is preferred (contract
+/// §10.8, either the configured online vision endpoint or local Qwen2.5-VL);
+/// Windows OCR is used when vision is not available **or when the vision request
+/// fails** (e.g. a text-only online model, a 4xx, or no text returned), so the
+/// extraction skill keeps working. A successful transcription is cached on
+/// [`LastCapture`] for retry / follow-up. Returns the text plus the path that
+/// produced it (`"vision"` / `"windows-ocr"`).
+async fn transcribe_screenshot(
+    app: &AppHandle,
+    state: &Arc<AppState>,
+    image: &RgbaImage,
+    data_url: &str,
+) -> Result<(String, &'static str), EngineError> {
+    let engine = engine_of(app)?;
+    let mut vision_error: Option<EngineError> = None;
+    if engine.can_use_vision() {
+        let attempt = match engine
+            .vision_stream(data_url, crate::engine::DEFAULT_OCR_PROMPT)
+            .await
+        {
+            Ok(mut stream) => collect_stream(&mut stream)
+                .await
+                .map(|text| text.trim().to_string()),
+            Err(error) => Err(error),
+        };
+        match attempt {
+            Ok(text) if !text.is_empty() => {
+                state.capture.cache_ocr_text(data_url, &text);
+                return Ok((text, "vision"));
+            }
+            Ok(_) => vision_error = Some(no_text_error()),
+            Err(error) => vision_error = Some(error),
+        }
+        if let Some(log) = log_of(app) {
+            let error = vision_error.as_ref().expect("vision error was just set");
+            log.warn(&format!(
+                "screenshot vision OCR failed, falling back to Windows OCR: {} / {}",
+                error.message, error.hint
+            ));
+        }
+    }
+    match recognize_text(image).await {
+        Ok(text) => {
+            state.capture.cache_ocr_text(data_url, &text);
+            Ok((text, "windows-ocr"))
+        }
+        Err(ocr_error) => {
+            // Both paths failed: report the vision error (usually the more
+            // actionable one, e.g. "configure a vision model") plus the OCR
+            // hint when there is one.
+            match vision_error {
+                Some(vision_error) => Err(EngineError::new(
+                    vision_error.message,
+                    format!(
+                        "{} 系统 OCR 回退同样失败：{}",
+                        vision_error.hint, ocr_error.message
+                    ),
+                )),
+                None => Err(ocr_error),
+            }
+        }
+    }
+}
+
+/// Collects a streamed model response into one string: transcription results
+/// are emitted as one full chunk instead of token by token (contract §10.3).
+async fn collect_stream(stream: &mut TextStream) -> Result<String, EngineError> {
+    let mut text = String::new();
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(chunk) => text.push_str(&chunk),
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(text)
+}
+
+/// Logs which path produced the screenshot text (`vision` / `windows-ocr` /
+/// `cache`) so the contract-required source is visible in the log (§10.8).
+fn log_ocr_source(app: &AppHandle, source: &str, text: &str) {
+    if let Some(log) = log_of(app) {
+        log.info(&format!(
+            "screenshot ocr source={source} chars={}",
+            text.chars().count()
+        ));
+    }
+}
+
 async fn stream_chunks(
     app: &AppHandle,
     request_id: &str,
-    stream: &mut futures_util::stream::BoxStream<'static, Result<String, EngineError>>,
+    stream: &mut TextStream,
 ) -> Result<(), EngineError> {
     while let Some(item) = stream.next().await {
         match item {
@@ -932,6 +1143,7 @@ fn write_clipboard_image(app: &AppHandle, image: &RgbaImage) -> bool {
 }
 
 /// Runs the OS OCR engine on an RGBA bitmap (blocking work on a worker thread).
+/// Only used as the fallback when no vision model is available (contract §10.8).
 async fn recognize_text(image: &RgbaImage) -> Result<String, EngineError> {
     let (width, height) = image.dimensions();
     let bytes = image.clone().into_raw();
@@ -953,6 +1165,11 @@ async fn recognize_text(image: &RgbaImage) -> Result<String, EngineError> {
         ));
     }
     Ok(text)
+}
+
+/// Error returned when the vision model transcribed an image without any text.
+fn no_text_error() -> EngineError {
+    EngineError::new("没有识别到文字。", "请重新框选包含文字的区域后再试一次。")
 }
 
 fn map_ocr_error(error: native_ocr::Error) -> EngineError {
@@ -1040,10 +1257,29 @@ fn png_bytes(image: &RgbaImage) -> Result<Vec<u8>, EngineError> {
     Ok(cursor.into_inner())
 }
 
-/// `data:image/png;base64,...` URL used both by the capture page and the model.
+/// `data:image/png;base64,...` URL of a cropped region, sent to the vision
+/// model (lossless, contract §10.1/§10.6).
 fn png_data_url(image: &RgbaImage) -> Result<String, EngineError> {
     let encoded = base64::engine::general_purpose::STANDARD.encode(png_bytes(image)?);
     Ok(format!("data:image/png;base64,{encoded}"))
+}
+
+/// Encodes a captured monitor as a JPEG data URL painted by the overlay `<img>`
+/// (contract §10.1). JPEG is several times cheaper than PNG for encoding, IPC
+/// and webview decoding; the original RGBA pixels are kept separately for
+/// cropping and vision requests, so nothing lossy reaches the model.
+fn jpeg_data_url(image: &RgbaImage) -> Result<String, EngineError> {
+    let mut cursor = Cursor::new(Vec::new());
+    let mut encoder =
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, DISPLAY_JPEG_QUALITY);
+    encoder.encode_image(image).map_err(|error| {
+        EngineError::new(
+            "编码截图失败。",
+            format!("请重试；若问题持续请重启程序（{error}）。"),
+        )
+    })?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(cursor.into_inner());
+    Ok(format!("data:image/jpeg;base64,{encoded}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -1671,6 +1907,27 @@ mod tests {
         assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
         // Round-trip through the image crate.
         let decoded = image::load_from_memory(&bytes).unwrap().into_rgba8();
+        assert_eq!(decoded.dimensions(), (10, 10));
+    }
+
+    #[test]
+    fn jpeg_data_url_is_a_decodable_jpeg_at_the_original_size() {
+        let image = pixel_image();
+        let url = jpeg_data_url(&image).unwrap();
+        assert!(url.starts_with("data:image/jpeg;base64,"));
+        let encoded = url
+            .strip_prefix("data:image/jpeg;base64,")
+            .expect("JPEG data URL prefix");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap();
+        // JPEG SOI (FFD8) ... EOI (FFD9) markers.
+        assert_eq!(&bytes[..2], b"\xff\xd8");
+        assert_eq!(&bytes[bytes.len() - 2..], b"\xff\xd9");
+        // The display image keeps the physical pixel size of the screenshot.
+        let decoded = image::load_from_memory(&bytes)
+            .expect("decode JPEG")
+            .into_rgba8();
         assert_eq!(decoded.dimensions(), (10, 10));
     }
 

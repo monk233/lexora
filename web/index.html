@@ -225,21 +225,6 @@
           </div>
         </div>
 
-        <div class="field hotkey-field">
-          <div class="field-label">
-            <span class="field-name">截图快捷键</span>
-            <p class="field-hint">点击后按下新的组合键即可修改；需包含至少一个修饰键（Ctrl / Alt / Shift / Win）</p>
-          </div>
-          <div class="field-control">
-            <div class="inline-actions">
-              <button type="button" class="btn hotkey-display" id="capture-hotkey"
-                      title="点击后录制新的组合键">Win + Shift + X</button>
-              <button type="button" class="btn btn-ghost" id="capture-hotkey-restore">恢复默认</button>
-            </div>
-            <p class="inline-error" id="capture-hotkey-error" hidden></p>
-          </div>
-        </div>
-
         <div class="field field-switch">
           <div class="field-label">
             <span class="field-name">紧凑模式</span>
@@ -374,6 +359,32 @@
             <div class="chips" id="blacklist-chips"></div>
             <input class="input" id="blacklist-input" type="text" spellcheck="false"
                    placeholder="例如 WeChat.exe，回车添加" autocomplete="off">
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================== 快捷键 ============================= -->
+    <section class="card hotkey-card" aria-labelledby="card-shortcuts-title">
+      <div class="card-head">
+        <div class="card-head-text">
+          <h2 id="card-shortcuts-title">快捷键</h2>
+          <p>配置 Lexora 的全局快捷键。</p>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="field hotkey-field">
+          <div class="field-label">
+            <span class="field-name">截图快捷键</span>
+            <p class="field-hint">点击后按下新的组合键即可修改；需包含至少一个修饰键（Ctrl / Alt / Shift / Win）</p>
+          </div>
+          <div class="field-control">
+            <div class="inline-actions">
+              <button type="button" class="btn hotkey-display" id="capture-hotkey"
+                      title="点击后录制新的组合键">Win + Shift + X</button>
+              <button type="button" class="btn btn-ghost" id="capture-hotkey-restore">恢复默认</button>
+            </div>
+            <p class="inline-error" id="capture-hotkey-error" hidden></p>
           </div>
         </div>
       </div>

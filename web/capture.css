@@ -1,10 +1,16 @@
 /* Lexora screenshot overlay.
  *
  * One frameless always-on-top window per monitor serves `capture.html?monitor=N`.
- * The page paints the frozen screenshot, a dimming mask with a selection
- * rectangle, and a floating action bar. The window stays hidden until the
- * renderer calls `capture_ready`, so nothing paints on screen before the
- * screenshot is decoded (contract §10.1: no black loading flash).
+ * The window is created once (transparent, hidden) and reused for later
+ * captures; the page repaints the frozen screenshot on each `capture-armed`.
+ * The window stays hidden until the renderer calls `capture_ready`, so nothing
+ * paints on screen before the screenshot is decoded (contract §10.1: no black
+ * loading flash).
+ *
+ * The page background must stay fully transparent: with `transparent(true)` in
+ * the shell, an opaque html/body background would flash black/white on the
+ * first frame. Only the screenshot, the mask pieces and the floating surfaces
+ * below paint any pixels.
  *
  * Visual language mirrors `picker.css`: white surfaces, slate text, indigo
  * accent, hairline borders, restrained shadows. Only the mask stays dark.
@@ -49,7 +55,15 @@ body {
   margin: 0;
   padding: 0;
   overflow: hidden;
-  background: #000;
+  background: transparent;
+}
+
+/* Root container: never paints a backdrop either (see the file header). The
+ * screenshot and every overlay piece are positioned individually. */
+#capture {
+  width: 100%;
+  height: 100%;
+  background: transparent;
 }
 
 body {

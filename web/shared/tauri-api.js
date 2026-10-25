@@ -861,6 +861,12 @@
     return mockPickerImage(String(action || "explain"), options || {});
   };
 
+  /* Console helper for the capture overlay preview: simulates the shell arming
+   * the (reused) overlay window for another capture. */
+  window.__mockCaptureArmed = function (index) {
+    mockEmit("capture-armed", { index: Number(index) || 0 });
+  };
+
   var MOCK_NAMED_KEYS = {
     printscreen: "PrintScreen",
     print: "PrintScreen",
@@ -1758,6 +1764,15 @@
     },
     close: function () {
       return safeInvoke("capture_close", {});
+    },
+    /* Re-uses the hidden overlay windows: the shell arms them for a new capture
+     * (they fetch the fresh screenshot themselves and report `ready`). */
+    onArmed: function (callback) {
+      return subscribe("capture-armed", function (payload) {
+        if (typeof callback === "function") {
+          callback(payload);
+        }
+      });
     },
   };
 

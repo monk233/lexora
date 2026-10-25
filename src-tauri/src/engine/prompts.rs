@@ -28,6 +28,11 @@ pub const DEFAULT_POLISH_PROMPT: &str = "You are a professional editor. Polish t
 pub const DEFAULT_EXPLAIN_IMAGE_PROMPT: &str =
     "你是一名视觉助手。请用简体中文解释图片的内容、文字信息与关键细节，使用 Markdown，不要编造。";
 
+/// Built-in system prompt for extracting text from a screenshot with a vision
+/// model. The model must transcribe verbatim (no translating/summarizing) so
+/// the result can be shown directly and fed to text translation.
+pub const DEFAULT_OCR_PROMPT: &str = "You are an OCR engine. Transcribe every visible character in the image exactly as shown, preserving the original line breaks, reading order and punctuation. Output only the transcribed text: do not translate, summarize, explain, add labels or wrap the text in Markdown code fences. If the image contains no readable text, output nothing.";
+
 /// System prompt template for a single-word dictionary lookup (translate/explain
 /// on a single English word). `{target}` is replaced with the request's target
 /// language name so the entry is explained in the language the user picked,

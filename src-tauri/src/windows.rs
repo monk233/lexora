@@ -15,6 +15,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
+use tauri::utils::config::BackgroundThrottlingPolicy;
+use tauri::window::Color;
 use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
 
 use crate::selection::PickerPayload;
@@ -82,10 +84,18 @@ pub fn show_settings(app: &tauri::AppHandle) {
     let _ = window.set_focus();
 }
 
-pub fn hide_settings(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window(SETTINGS_LABEL) {
+/// Hides the settings window. Returns whether it was actually visible, so the
+/// screenshot flow can skip its "wait until our windows are gone" pause on the
+/// common path where nothing is on screen.
+pub fn hide_settings(app: &tauri::AppHandle) -> bool {
+    let Some(window) = app.get_webview_window(SETTINGS_LABEL) else {
+        return false;
+    };
+    let was_visible = window.is_visible().unwrap_or(false);
+    if was_visible {
         let _ = window.hide();
     }
+    was_visible
 }
 
 // ---------------------------------------------------------------------------
@@ -199,10 +209,12 @@ pub fn show_picker(app: &tauri::AppHandle, payload: &PickerPayload) -> bool {
     true
 }
 
-/// Hides the picker and tells the renderer to reset its state.
-pub fn hide_picker(app: &tauri::AppHandle) {
+/// Hides the picker and tells the renderer to reset its state. Returns whether
+/// the picker was actually visible (see [`hide_settings`]: the screenshot flow
+/// only pauses when one of our windows really had to disappear from screen).
+pub fn hide_picker(app: &tauri::AppHandle) -> bool {
     let Some(window) = app.get_webview_window(PICKER_LABEL) else {
-        return;
+        return false;
     };
     // The picker may have been made focusable for the follow-up input; make
     // sure a hidden picker never keeps keyboard focus.
@@ -222,6 +234,7 @@ pub fn hide_picker(app: &tauri::AppHandle) {
             state.log.info("picker hidden");
         }
     }
+    was_visible
 }
 
 pub fn is_picker_visible(app: &tauri::AppHandle) -> bool {
@@ -372,35 +385,68 @@ fn log_warn(app: &tauri::AppHandle, message: &str) {
 // Screenshot overlay windows
 // ---------------------------------------------------------------------------
 
-/// Creates one full-monitor overlay window hosting `capture.html?monitor=<index>`.
-/// Coordinates/sizes are physical pixels coming from `xcap`.
+/// Physical bounds of one overlay window: monitor origin and size exactly as
+/// reported by `xcap` (physical pixels). The overlay window is borderless and
+/// transparent, so its bounds are identical to the monitor rectangle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CaptureGeometry {
+    pub index: u32,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl CaptureGeometry {
+    pub fn label(&self) -> String {
+        format!("{CAPTURE_PREFIX}{}", self.index)
+    }
+}
+
+/// Compares the monitor layout the overlay windows were created for with the
+/// current one. Identical count/indices/origins/sizes → the already loaded
+/// webviews are reused; any difference → they must be destroyed and recreated
+/// (contract §10.1).
+pub fn layout_matches(previous: &[CaptureGeometry], next: &[CaptureGeometry]) -> bool {
+    previous == next
+}
+
+/// Creates one transparent, borderless full-monitor overlay window hosting
+/// `capture.html?monitor=<index>`.
 ///
-/// The window is created **hidden**: the renderer paints the pre-encoded PNG
-/// first and then calls `capture_ready`, which shows it (contract §10.1) — this
-/// is what keeps the overlay from flashing black while the image loads.
+/// The window is created **hidden** and fully transparent (`transparent(true)`,
+/// transparent background color, no shadow), so showing it later never flashes
+/// a black or white surface before the renderer has painted the pre-encoded
+/// JPEG (contract §10.1). Coordinates/sizes are physical pixels from `xcap`.
 pub fn create_capture_window(
     app: &tauri::AppHandle,
-    index: u32,
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
+    geometry: CaptureGeometry,
 ) -> tauri::Result<()> {
-    let label = format!("{CAPTURE_PREFIX}{index}");
+    let label = geometry.label();
     let window = WebviewWindowBuilder::new(
         app,
         label.as_str(),
-        WebviewUrl::App(format!("capture.html?monitor={index}").into()),
+        WebviewUrl::App(format!("capture.html?monitor={}", geometry.index).into()),
     )
     .title("Lexora 截图")
     .decorations(false)
     .resizable(false)
     .always_on_top(true)
     .skip_taskbar(true)
+    .transparent(true)
+    .shadow(false)
     .visible(false)
+    .background_color(Color(0, 0, 0, 0))
+    // Keep the hidden renderer scheduled: its `capture-armed` handler has to
+    // fetch and paint the next screenshot while the window is still hidden, so
+    // `capture_ready` can show it with the pixels already on screen.
+    .background_throttling(BackgroundThrottlingPolicy::Disabled)
     .build()?;
-    window.set_position(PhysicalPosition::new(x, y))?;
-    window.set_size(PhysicalSize::new(width.max(1), height.max(1)))?;
+    window.set_position(PhysicalPosition::new(geometry.x, geometry.y))?;
+    window.set_size(PhysicalSize::new(
+        geometry.width.max(1),
+        geometry.height.max(1),
+    ))?;
     Ok(())
 }
 
@@ -438,10 +484,30 @@ pub fn show_all_capture_windows(app: &tauri::AppHandle) {
     }
 }
 
-/// Destroys every screenshot overlay window (`capture-*` labels).
-pub fn close_capture_windows(app: &tauri::AppHandle) {
+/// Hides every screenshot overlay window **without destroying it**, so the next
+/// capture can reuse the already loaded webviews (contract §10.1). Returns
+/// whether at least one overlay was visible, i.e. whether the caller has to
+/// wait a moment before grabbing the screen so the overlay is really gone.
+pub fn hide_capture_windows(app: &tauri::AppHandle) -> bool {
+    let mut hid_any = false;
     for (label, window) in app.webview_windows() {
-        if label.starts_with(CAPTURE_PREFIX) {
+        if capture_index(&label).is_none() {
+            continue;
+        }
+        if window.is_visible().unwrap_or(false) {
+            hid_any = true;
+        }
+        let _ = window.hide();
+    }
+    hid_any
+}
+
+/// Destroys every screenshot overlay window (`capture-*` labels). Needed when
+/// the monitor layout changed (the loaded webview no longer fits) and as the
+/// explicit teardown path; normal closing only hides (contract §10.1).
+pub fn destroy_capture_windows(app: &tauri::AppHandle) {
+    for (label, window) in app.webview_windows() {
+        if capture_index(&label).is_some() {
             let _ = window.destroy();
         }
     }
@@ -449,7 +515,20 @@ pub fn close_capture_windows(app: &tauri::AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{capture_index, sanitize_dimension, BASE_HEIGHT, BASE_WIDTH, MAX_PANEL_DIMENSION};
+    use super::{
+        capture_index, layout_matches, sanitize_dimension, CaptureGeometry, BASE_HEIGHT,
+        BASE_WIDTH, MAX_PANEL_DIMENSION,
+    };
+
+    fn geometry(index: u32, x: i32, y: i32, width: u32, height: u32) -> CaptureGeometry {
+        CaptureGeometry {
+            index,
+            x,
+            y,
+            width,
+            height,
+        }
+    }
 
     #[test]
     fn capture_labels_expose_their_monitor_index() {
@@ -458,6 +537,38 @@ mod tests {
         assert_eq!(capture_index("capture-"), None);
         assert_eq!(capture_index("capture-abc"), None);
         assert_eq!(capture_index("picker"), None);
+        assert_eq!(
+            geometry(3, -1920, 0, 1920, 1080).label(),
+            "capture-3".to_string()
+        );
+    }
+
+    #[test]
+    fn overlay_layouts_are_reused_only_when_identical() {
+        let single = [geometry(0, 0, 0, 3840, 2160)];
+        // Same layout → reuse the existing webviews.
+        assert!(layout_matches(&single, &single));
+        assert!(layout_matches(&[], &[]));
+        // Different monitor count (display connected/disconnected).
+        assert!(!layout_matches(&single, &[]));
+        // Different origin (monitor rearranged).
+        assert!(!layout_matches(
+            &single,
+            &[geometry(0, 1920, 0, 3840, 2160)]
+        ));
+        // Different resolution / DPI-scaled size.
+        assert!(!layout_matches(&single, &[geometry(0, 0, 0, 2560, 1440)]));
+        // Different index ordering is a layout change too.
+        assert!(!layout_matches(
+            &[
+                geometry(0, 0, 0, 1920, 1080),
+                geometry(1, 1920, 0, 1920, 1080)
+            ],
+            &[
+                geometry(1, 0, 0, 1920, 1080),
+                geometry(0, 1920, 0, 1920, 1080)
+            ]
+        ));
     }
 
     #[test]

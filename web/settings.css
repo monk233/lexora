@@ -383,6 +383,13 @@ textarea {
   margin-top: 2px;
 }
 
+/* The shortcut card holds a single field row: trim the trailing card-body
+ * padding so the row is balanced between the card head and the card bottom
+ * (other cards end with a field row that already adds its own breathing room). */
+.hotkey-card .card-body {
+  padding-bottom: 4px;
+}
+
 .inline-actions {
   display: flex;
   align-items: center;

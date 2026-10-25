@@ -37,6 +37,7 @@ mod prompts;
 pub use llama::LocalState;
 pub use prompts::{
     default_prompts, render_image_prompt, resolve_target_lang, DEFAULT_EXPLAIN_IMAGE_PROMPT,
+    DEFAULT_OCR_PROMPT,
 };
 
 /// Pinned llama.cpp Windows CPU release used when the user installs the engine.
@@ -590,6 +591,20 @@ impl EngineService {
     /// `true` when the local vision model (weights + projector) is installed.
     pub fn has_local_vision(&self) -> bool {
         self.installed_vision_model().is_some()
+    }
+
+    /// `true` when an image request can be served right now: online mode with a
+    /// configured endpoint, or local mode with the Qwen2.5-VL model installed
+    /// (the call itself still fails with a clear message when the local engine
+    /// was not started). Screenshot OCR/translate use this to prefer the vision
+    /// model and fall back to the Windows OCR engine otherwise.
+    pub fn can_use_vision(&self) -> bool {
+        let settings = self.settings.get();
+        if settings.is_local_mode() {
+            self.has_local_vision()
+        } else {
+            settings.online_configured()
+        }
     }
 
     /// Model started by the settings "启动" button: translation-preferred.

@@ -574,8 +574,8 @@ pub async fn start_capture(
     }
 }
 
-/// PNG data URL + size (+ preset) of one captured monitor. The data URL was
-/// pre-encoded by `start_capture`, so this never blocks on PNG encoding.
+/// JPEG data URL + size (+ preset) of one captured monitor. The display URL was
+/// pre-encoded by `start_capture`, so this never blocks on image encoding.
 #[tauri::command]
 pub fn capture_monitor_info(state: State<'_, Arc<AppState>>, index: u32) -> Value {
     match state.capture.monitor_info(index) {

@@ -1,15 +1,17 @@
 /* Lexora screenshot overlay renderer.
  *
  * One instance runs per monitor (`capture.html?monitor=N`). The overlay window
- * stays hidden until `capture_ready` is reported (contract §10.1), so this page
- * must decode the frozen screenshot, lay out the selection UI and only then ask
- * the shell to show the window - there is no full-screen loading state.
+ * is created once and then reused: `capture-armed {index}` asks this page to
+ * reload the frozen screenshot, and the window stays hidden until
+ * `capture_ready` is reported (contract §10.1). Nothing paints before the
+ * screenshot is decoded, so there is no full-screen loading state and no
+ * black/white flash - the page background is fully transparent.
  *
  * Coordinate systems:
  *   - CSS pixels: selection state (`state.rect`) relative to the overlay window.
- *   - Physical pixels: `captureAPI` rects, mapped through naturalWidth/clientWidth
- *     on both axes so HiDPI monitors with a scaled webview still map 1:1 to the
- *     screenshot bitmap.
+ *   - Physical pixels: `captureAPI` rects, mapped through the session's
+ *     `width`/`height` (the original screenshot bitmap) so HiDPI monitors with
+ *     a scaled webview still map 1:1. `naturalWidth` is only a fallback.
  */
 (function () {
   "use strict";
@@ -18,8 +20,12 @@
   var LP = window.LP || {};
 
   var MIN_SIZE = 8;
-  var MONITOR_RETRIES = 3;
-  var MONITOR_RETRY_DELAY = 120;
+  /* The shell captures/encodes while the reused overlay window is being armed,
+   * so the session is not necessarily ready on the first poll. Keep polling
+   * with an attempt budget (~9 s at 120 ms) instead of a fixed retry count;
+   * every attempt keeps its own timeout so slow IPC cannot extend it. */
+  var MONITOR_POLL_INTERVAL = 120;
+  var MONITOR_POLL_ATTEMPTS = 75;
   var READY_RETRIES = 3;
   var READY_RETRY_DELAY = 150;
   var EDGE_PAD = 10;
@@ -33,6 +39,11 @@
     shot: null,
     shotReady: false,
     readySignaled: false,
+    /* Diagnostics for tests/QA: how often the shell armed/showed this page. */
+    readyCount: 0,
+    armedCount: 0,
+    captureGeneration: 0,
+    pollAttempt: 0,
     preset: null,
     imageWidth: 0,
     imageHeight: 0,
@@ -45,7 +56,8 @@
     targetLang: "auto",
     hintTimer: 0,
     hintFadeTimer: 0,
-    toastTimer: 0
+    toastTimer: 0,
+    pollTimer: 0
   };
 
   var dom = {};
@@ -155,6 +167,20 @@
     );
   }
 
+  /* The initial selection covers the whole viewport, so there is no room to
+   * pan it. While it is full-screen, dragging inside it must start a new
+   * rectangle instead ("draw"), and the `move` cursor is hidden
+   * (contract §10.2: 全屏选区例外). */
+  function selectionCoversViewport() {
+    if (!state.rect) {
+      return false;
+    }
+    var size = viewportSize();
+    return (
+      state.rect.width >= size.width - 1 && state.rect.height >= size.height - 1
+    );
+  }
+
   function rectFromPoints(start, end) {
     var left = Math.min(start.x, end.x);
     var top = Math.min(start.y, end.y);
@@ -214,13 +240,22 @@
   }
 
   function afterPaint(callback) {
+    var called = false;
+    function once() {
+      if (called) {
+        return;
+      }
+      called = true;
+      callback();
+    }
     if (typeof window.requestAnimationFrame === "function") {
       window.requestAnimationFrame(function () {
-        window.requestAnimationFrame(callback);
+        window.requestAnimationFrame(once);
       });
-      return;
     }
-    window.setTimeout(callback, 16);
+    /* A hidden (not yet shown) window can throttle animation frames; the timer
+     * guarantees `capture_ready` is still reported so the shell can show it. */
+    window.setTimeout(once, 300);
   }
 
   /* ---- DOM cache + boot ------------------------------------------------ */
@@ -256,7 +291,33 @@
     }
     bindEvents();
     loadTargetLanguage();
-    beginCapture();
+    subscribeArmed();
+    /* The arm event of the very first capture can fire before this page starts
+     * listening (the shell creates the window and captures right away), so the
+     * initial load must poll the session on its own. */
+    beginCapture(state.monitor);
+  }
+
+  function subscribeArmed() {
+    if (!API || typeof API.onArmed !== "function") {
+      return;
+    }
+    try {
+      API.onArmed(onArmed);
+    } catch (error) {
+      /* The page still works for the first capture without arm events. */
+    }
+  }
+
+  /* The reused overlay window was armed for another capture: restart the whole
+   * flow (contract §10.1). `index` identifies the monitor the shell captured. */
+  function onArmed(payload) {
+    if (!dom.shot) {
+      return;
+    }
+    state.armedCount += 1;
+    var index = payload && Number(payload.index);
+    beginCapture(isFinite(index) && index >= 0 ? Math.floor(index) : state.monitor);
   }
 
   function bindEvents() {
@@ -279,7 +340,9 @@
       dom.preset.addEventListener("click", onPresetClick);
     }
     if (dom.errorRetry) {
-      dom.errorRetry.addEventListener("click", beginCapture);
+      dom.errorRetry.addEventListener("click", function () {
+        beginCapture(state.monitor);
+      });
     }
     if (dom.errorClose) {
       dom.errorClose.addEventListener("click", cancelCapture);
@@ -307,7 +370,23 @@
 
   /* ---- Screenshot loading (no visible loading UI, §10.1) --------------- */
 
-  function beginCapture() {
+  /* Restart the overlay for `index`. Called on boot and for every
+   * `capture-armed` event, so nothing may leak from the previous capture. */
+  function beginCapture(index) {
+    if (!dom.shot) {
+      return;
+    }
+    var parsedIndex = Number(index);
+    state.monitor =
+      isFinite(parsedIndex) && parsedIndex >= 0
+        ? Math.floor(parsedIndex)
+        : state.monitor;
+    state.captureGeneration += 1;
+    var generation = state.captureGeneration;
+
+    window.clearTimeout(state.pollTimer);
+    state.pollTimer = 0;
+    state.pollAttempt = 0;
     state.closed = false;
     state.shot = null;
     state.shotReady = false;
@@ -320,20 +399,42 @@
     state.busy = false;
     state.viewWidth = 0;
     state.viewHeight = 0;
+    window.clearTimeout(state.hintTimer);
+    window.clearTimeout(state.hintFadeTimer);
     hideSelectionUi();
     hideErrorBar();
     hideToast();
+    resetShotImage();
+    document.body.classList.remove("is-dragging", "is-over-selection");
+    /* The overlay window lives for the whole session, so refresh the target
+     * language on every capture instead of only on boot. */
+    loadTargetLanguage();
+
     if (!API || typeof API.monitor !== "function") {
-      showLoadError({ error: "截图服务不可用，请重启 Lexora 后再试。" });
+      showLoadError(generation, { error: "截图服务不可用，请重启 Lexora 后再试。" });
       return;
     }
-    requestMonitor(0);
+    pollMonitor(generation, 0);
   }
 
-  function requestMonitor(attempt) {
-    if (state.closed) {
+  function resetShotImage() {
+    if (!dom.shot) {
       return;
     }
+    dom.shot.onload = null;
+    dom.shot.onerror = null;
+    dom.shot.hidden = true;
+    dom.shot.removeAttribute("src");
+  }
+
+  /* Poll the shell until the new session is ready. Encoding runs in parallel
+   * with window arming, so one retry count is not enough; the attempt budget
+   * bounds the wait (~9 s) and keeps a single slow IPC call from resetting it. */
+  function pollMonitor(generation, attempt) {
+    if (generation !== state.captureGeneration || state.closed) {
+      return;
+    }
+    state.pollAttempt = attempt;
     var request;
     try {
       request = API.monitor(state.monitor);
@@ -342,56 +443,64 @@
     }
     Promise.resolve(request).then(
       function (result) {
-        if (state.closed) {
+        if (generation !== state.captureGeneration || state.closed) {
           return;
         }
         if (result && result.ok && result.dataUrl) {
-          paintShot(result);
+          paintShot(generation, result);
           return;
         }
-        if (attempt < MONITOR_RETRIES) {
-          retryMonitor(attempt + 1);
-          return;
-        }
-        showLoadError(result);
+        scheduleMonitorPoll(generation, attempt + 1, result || {});
       },
       function (error) {
-        if (state.closed) {
+        if (generation !== state.captureGeneration || state.closed) {
           return;
         }
-        if (attempt < MONITOR_RETRIES) {
-          retryMonitor(attempt + 1);
-          return;
-        }
-        showLoadError({ error: errorText(error) });
+        scheduleMonitorPoll(generation, attempt + 1, { error: errorText(error) });
       }
     );
   }
 
-  function retryMonitor(attempt) {
-    window.setTimeout(function () {
-      requestMonitor(attempt);
-    }, MONITOR_RETRY_DELAY);
+  function scheduleMonitorPoll(generation, attempt, lastResult) {
+    if (generation !== state.captureGeneration || state.closed) {
+      return;
+    }
+    if (attempt >= MONITOR_POLL_ATTEMPTS) {
+      var detail = lastResult && (lastResult.error || lastResult.hint);
+      showLoadError(generation, detail ? lastResult : { error: "等待截图超时" });
+      return;
+    }
+    state.pollTimer = window.setTimeout(function () {
+      state.pollTimer = 0;
+      pollMonitor(generation, attempt);
+    }, MONITOR_POLL_INTERVAL);
   }
 
-  function paintShot(result) {
+  function paintShot(generation, result) {
+    if (generation !== state.captureGeneration || state.closed) {
+      return;
+    }
     state.shot = result || {};
     state.preset = normalizePreset(result);
+    /* §10.3: width/height are the physical pixels of the original screenshot;
+     * keep them as the mapping source (naturalWidth is only a fallback). */
     state.imageWidth = positiveNumber(result && result.width);
     state.imageHeight = positiveNumber(result && result.height);
     state.shotReady = false;
 
-    dom.shot.onload = onShotLoaded;
+    dom.shot.onload = function () {
+      onShotLoaded(generation);
+    };
     dom.shot.onerror = function () {
-      if (state.shotReady || state.closed) {
+      if (generation !== state.captureGeneration || state.shotReady || state.closed) {
         return;
       }
-      showLoadError({ error: "截图加载失败" });
+      showLoadError(generation, { error: "截图加载失败" });
     };
     dom.shot.removeAttribute("src");
     dom.shot.src = String(result.dataUrl);
     if (dom.shot.complete && dom.shot.naturalWidth > 0) {
-      onShotLoaded();
+      onShotLoaded(generation);
     }
   }
 
@@ -403,16 +512,19 @@
     return null;
   }
 
-  function onShotLoaded() {
-    if (state.shotReady || state.closed) {
+  function onShotLoaded(generation) {
+    if (generation !== state.captureGeneration || state.shotReady || state.closed) {
       return;
     }
     state.shotReady = true;
     var size = viewportSize();
-    state.imageWidth =
-      dom.shot.naturalWidth || state.imageWidth || size.width;
-    state.imageHeight =
-      dom.shot.naturalHeight || state.imageHeight || size.height;
+    /* Physical sizes come from the session; decode sizes are only a fallback. */
+    if (!state.imageWidth) {
+      state.imageWidth = dom.shot.naturalWidth || size.width;
+    }
+    if (!state.imageHeight) {
+      state.imageHeight = dom.shot.naturalHeight || size.height;
+    }
     state.rect = { x: 0, y: 0, width: size.width, height: size.height };
     state.viewWidth = size.width;
     state.viewHeight = size.height;
@@ -429,7 +541,7 @@
     render();
     showHint();
     afterPaint(function () {
-      signalReady();
+      signalReady(generation);
     });
   }
 
@@ -445,19 +557,26 @@
 
   /* Ask the shell to show this overlay window. Retried a few times because the
    * window must only become visible with the screenshot already painted. */
-  function signalReady() {
-    if (state.closed) {
+  function signalReady(generation) {
+    if (
+      generation !== state.captureGeneration ||
+      state.closed ||
+      state.readySignaled
+    ) {
       return;
     }
-    requestReady(0);
+    requestReady(generation, 0, null);
   }
 
-  function requestReady(attempt) {
-    if (state.closed) {
+  function requestReady(generation, attempt, onDone) {
+    if (generation !== state.captureGeneration || state.closed) {
       return;
     }
     if (!API || typeof API.ready !== "function") {
       state.readySignaled = true;
+      if (typeof onDone === "function") {
+        onDone();
+      }
       return;
     }
     var request;
@@ -468,38 +587,54 @@
     }
     Promise.resolve(request).then(
       function (result) {
+        if (generation !== state.captureGeneration || state.closed) {
+          return;
+        }
         if (result && result.ok) {
           state.readySignaled = true;
+          state.readyCount += 1;
+          if (typeof onDone === "function") {
+            onDone();
+          }
           return;
         }
-        if (attempt < READY_RETRIES) {
-          window.setTimeout(function () {
-            requestReady(attempt + 1);
-          }, READY_RETRY_DELAY);
-          return;
-        }
-        state.readySignaled = true;
+        retryReady(generation, attempt, onDone);
       },
       function () {
-        if (attempt < READY_RETRIES) {
-          window.setTimeout(function () {
-            requestReady(attempt + 1);
-          }, READY_RETRY_DELAY);
+        if (generation !== state.captureGeneration || state.closed) {
           return;
         }
-        state.readySignaled = true;
+        retryReady(generation, attempt, onDone);
       }
     );
   }
 
-  function showLoadError(result) {
-    if (state.closed) {
+  function retryReady(generation, attempt, onDone) {
+    if (generation !== state.captureGeneration || state.closed) {
+      return;
+    }
+    if (attempt < READY_RETRIES) {
+      window.setTimeout(function () {
+        requestReady(generation, attempt + 1, onDone);
+      }, READY_RETRY_DELAY);
+      return;
+    }
+    state.readySignaled = true;
+    if (typeof onDone === "function") {
+      onDone();
+    }
+  }
+
+  function showLoadError(generation, result) {
+    if (generation !== state.captureGeneration || state.closed) {
       return;
     }
     hideSelectionUi();
+    resetShotImage();
     state.rect = null;
     state.shotReady = false;
     state.drag = null;
+    state.busy = false;
     document.body.classList.remove("is-dragging", "is-over-selection");
 
     var detail = result && (result.error || result.hint);
@@ -513,45 +648,12 @@
       setHidden(dom.error, false);
       return;
     }
-    requestReadyThen(0, function () {
+    requestReady(generation, 0, function () {
+      if (generation !== state.captureGeneration || state.closed) {
+        return;
+      }
       setHidden(dom.error, false);
     });
-  }
-
-  function requestReadyThen(attempt, callback) {
-    if (state.closed) {
-      return;
-    }
-    var request;
-    try {
-      request = API.ready(state.monitor);
-    } catch (error) {
-      request = Promise.reject(error);
-    }
-    Promise.resolve(request).then(
-      function (result) {
-        if (result && result.ok) {
-          state.readySignaled = true;
-          callback();
-          return;
-        }
-        retryReadyThen(attempt, callback);
-      },
-      function () {
-        retryReadyThen(attempt, callback);
-      }
-    );
-  }
-
-  function retryReadyThen(attempt, callback) {
-    if (attempt < READY_RETRIES) {
-      window.setTimeout(function () {
-        requestReadyThen(attempt + 1, callback);
-      }, READY_RETRY_DELAY);
-      return;
-    }
-    state.readySignaled = true;
-    callback();
   }
 
   function hideSelectionUi() {
@@ -784,13 +886,16 @@
     setHidden(dom.bar, true);
 
     var point = pointFromEvent(event);
-    var inside = pointInRect(point, state.rect);
-    state.drag = inside
+    /* Inside the selection = pan, except while it fills the viewport: there is
+     * nothing to pan, so the drag starts a fresh rectangle at the press point
+     * (contract §10.2 全屏选区例外). */
+    var moving = pointInRect(point, state.rect) && !selectionCoversViewport();
+    state.drag = moving
       ? { mode: "move", start: point, origin: cloneRect(state.rect) }
       : { mode: "draw", start: point, previous: cloneRect(state.rect) };
     document.body.classList.add("is-dragging");
-    document.body.classList.toggle("is-over-selection", inside);
-    if (!inside) {
+    document.body.classList.toggle("is-over-selection", moving);
+    if (!moving) {
       state.rect = { x: point.x, y: point.y, width: 0, height: 0 };
     }
     render();
@@ -837,7 +942,7 @@
     }
     document.body.classList.toggle(
       "is-over-selection",
-      pointInRect(point, state.rect)
+      pointInRect(point, state.rect) && !selectionCoversViewport()
     );
   }
 
@@ -860,7 +965,8 @@
     if (event && typeof event.clientX === "number") {
       document.body.classList.toggle(
         "is-over-selection",
-        pointInRect(pointFromEvent(event), state.rect)
+        pointInRect(pointFromEvent(event), state.rect) &&
+          !selectionCoversViewport()
       );
     }
   }
@@ -885,6 +991,11 @@
         width: state.rect.width * scaleX,
         height: state.rect.height * scaleY
       };
+    } else {
+      /* The page booted with a degenerate viewport (the shell may set the
+       * window size after creating it): the initial full-screen selection has
+       * to follow the settled size. */
+      state.rect = { x: 0, y: 0, width: size.width, height: size.height };
     }
     state.viewWidth = size.width;
     state.viewHeight = size.height;
@@ -963,6 +1074,8 @@
     }
     state.closed = true;
     state.drag = null;
+    window.clearTimeout(state.pollTimer);
+    state.pollTimer = 0;
     document.body.classList.remove("is-dragging", "is-over-selection");
     if (API && typeof API.close === "function") {
       try {
@@ -989,6 +1102,7 @@
     }
     state.busy = true;
     updateBarState();
+    var generation = state.captureGeneration;
     var request;
     try {
       request = API.copy(state.monitor, physicalRect());
@@ -997,7 +1111,7 @@
     }
     Promise.resolve(request).then(
       function (result) {
-        if (state.closed) {
+        if (state.closed || generation !== state.captureGeneration) {
           return;
         }
         state.busy = false;
@@ -1009,7 +1123,7 @@
         toast("复制失败：" + failureText(result, "未知错误"), "error", TOAST_MS);
       },
       function (error) {
-        if (state.closed) {
+        if (state.closed || generation !== state.captureGeneration) {
           return;
         }
         state.busy = false;
@@ -1029,6 +1143,7 @@
     }
     state.busy = true;
     updateBarState();
+    var generation = state.captureGeneration;
     var request;
     try {
       request = API.skill(
@@ -1044,7 +1159,7 @@
     }
     Promise.resolve(request).then(
       function (result) {
-        if (state.closed) {
+        if (state.closed || generation !== state.captureGeneration) {
           return;
         }
         state.busy = false;
@@ -1056,7 +1171,7 @@
         toast("处理失败：" + failureText(result, "请求失败"), "error", TOAST_MS);
       },
       function (error) {
-        if (state.closed) {
+        if (state.closed || generation !== state.captureGeneration) {
           return;
         }
         state.busy = false;
