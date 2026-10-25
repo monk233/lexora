@@ -314,6 +314,19 @@ textarea {
   justify-content: center;
 }
 
+/* Local engine status row: badge/buttons and the hint/error share the right
+ * edge of the control column. */
+.local-state-field .inline-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.local-state-field .inline-hint,
+.local-state-field .inline-error {
+  width: 100%;
+  text-align: right;
+}
+
 .inline-actions {
   display: flex;
   align-items: center;

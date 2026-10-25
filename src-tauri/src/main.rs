@@ -164,6 +164,7 @@ fn main() {
             commands::picker_custom_skill,
             commands::picker_abort_translate,
             commands::picker_assist,
+            commands::picker_followup,
             commands::picker_status,
             commands::picker_disable_in_app,
             commands::picker_disable_tool

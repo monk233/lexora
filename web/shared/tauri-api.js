@@ -173,7 +173,8 @@
 
   var mockListeners = {};
   var mockStore = null;
-  var mockDownloads = null;
+  var mockDownloads = {};
+  var mockDownloadSeq = 0;
   var mockPickerTimer = null;
   var mockPickerAttempts = 0;
 
@@ -329,6 +330,7 @@
         ),
       ],
       download: null,
+      downloads: [],
       picker: { visible: false, pinned: false },
       loginItem: { supported: !portable, enabled: false },
       promptDefaults: {
@@ -383,7 +385,10 @@
       settings.app.startAtLogin = false;
       mockStore.loginItem.enabled = false;
     }
-    mockStore.download = mockDownloads ? mockDownloads.progress : null;
+    mockStore.download = null;
+    mockStore.downloads = Object.keys(mockDownloads).map(function (key) {
+      return clone(mockDownloads[key].progress);
+    });
   }
 
   function normalizeMockSettings() {
@@ -598,8 +603,9 @@
   }
 
   function mockDownload(kind, id, entry) {
-    if (mockDownloads) {
-      return { ok: false, error: "当前已有下载任务在进行，请等待完成或取消" };
+    var key = kind + ":" + (id || "");
+    if (mockDownloads[key]) {
+      return { ok: false, error: "该任务已在下载中" };
     }
     var total =
       kind === "engine"
@@ -620,8 +626,9 @@
       error: "",
     };
     var task = { progress: progress, cancelled: false, timer: null, resolve: null };
-    mockDownloads = task;
-    mockStore.download = progress;
+    mockDownloads[key] = task;
+    mockDownloadSeq += 1;
+    refreshMockDerived();
     mockEmit("download-progress", clone(progress));
 
     return new Promise(function (resolve) {
@@ -642,8 +649,8 @@
             if (task.cancelled) {
               return;
             }
-            mockStore.download = null;
-            mockDownloads = null;
+            delete mockDownloads[key];
+            refreshMockDerived();
             if (kind === "engine") {
               mockStore.engine.engineAvailable = true;
             } else if (entry) {
@@ -682,22 +689,31 @@
     });
   }
 
-  function cancelMockDownload() {
-    if (!mockDownloads) {
-      return { ok: true };
-    }
-    var task = mockDownloads;
-    task.cancelled = true;
-    if (task.timer) {
-      window.clearInterval(task.timer);
-    }
-    task.progress.status = "cancelled";
-    mockEmit("download-progress", clone(task.progress));
-    mockEmit("toast", { type: "info", message: "已取消下载" });
-    mockStore.download = null;
-    mockDownloads = null;
-    if (typeof task.resolve === "function") {
-      task.resolve({ ok: false, error: "下载已取消" });
+  function cancelMockDownload(id) {
+    var wanted = String(id == null ? "" : id).trim();
+    var keys = Object.keys(mockDownloads);
+    var cancelled = 0;
+    keys.forEach(function (key) {
+      var matches = key === "model:" + wanted || key === wanted || (wanted === "engine" && key === "engine:");
+      if (wanted && !matches) {
+        return;
+      }
+      var task = mockDownloads[key];
+      task.cancelled = true;
+      if (task.timer) {
+        window.clearInterval(task.timer);
+      }
+      task.progress.status = "cancelled";
+      mockEmit("download-progress", clone(task.progress));
+      delete mockDownloads[key];
+      cancelled += 1;
+      if (typeof task.resolve === "function") {
+        task.resolve({ ok: false, error: "下载已取消" });
+      }
+    });
+    refreshMockDerived();
+    if (cancelled) {
+      mockEmit("toast", { type: "info", message: "已取消下载" });
     }
     return { ok: true };
   }
@@ -776,6 +792,18 @@
           return { ok: false, error: "缺少请求 ID" };
         }
         startMockTranslate(assistRequestId, String(args.text || ""), "zh");
+        return { ok: true };
+      }
+      case "picker_followup": {
+        var followupRequestId = String(args.requestId || "");
+        if (!followupRequestId) {
+          return { ok: false, error: "缺少请求 ID" };
+        }
+        startMockTranslate(
+          followupRequestId,
+          String(args.question || args.text || ""),
+          "zh"
+        );
         return { ok: true };
       }
       case "picker_status":
@@ -919,7 +947,7 @@
         return mockDownload("model", id, entry);
       }
       case "cancel_download":
-        return cancelMockDownload();
+        return cancelMockDownload(args.id);
       case "import_model":
         return new Promise(function (resolve) {
           window.setTimeout(function () {
@@ -1164,6 +1192,16 @@
         programName: String(programName == null ? "" : programName),
       });
     },
+    /* Streams a follow-up question in the same panel (same translate-event channel). */
+    followup: function (requestId, text, previousAnswer, question, history) {
+      return safeInvoke("picker_followup", {
+        requestId: String(requestId == null ? "" : requestId),
+        text: String(text == null ? "" : text),
+        previousAnswer: String(previousAnswer == null ? "" : previousAnswer),
+        question: String(question == null ? "" : question),
+        history: Array.isArray(history) ? history : [],
+      });
+    },
     /* Streams the built-in 润色 skill through the same translate-event channel. */
     polish: function (requestId, text) {
       return safeInvoke("picker_polish", {
@@ -1269,8 +1307,8 @@
     downloadModel: function (id) {
       return safeInvoke("download_model", { id: String(id == null ? "" : id) });
     },
-    cancelDownload: function () {
-      return safeInvoke("cancel_download", {});
+    cancelDownload: function (id) {
+      return safeInvoke("cancel_download", { id: String(id == null ? "" : id) });
     },
     importModel: function () {
       return safeInvoke("import_model", {});
