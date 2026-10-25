@@ -338,8 +338,8 @@
       // Chunky QQ proportions: the head is clearly wider than the shaft and
       // scales with the line width, but never eats the whole arrow.
       var headLength = Math.min(Math.max(26, width * 8), length * 0.55, 120);
-      var headHalf = headLength * 0.6;
-      var shaftHalfAtHead = Math.max(width * 0.8, headLength * 0.12);
+      var headHalf = headLength * 0.62;
+      var shaftHalfAtHead = Math.max(width * 1.2, headLength * 0.3);
       var shaftHalfAtTail = Math.max(0.4, width * 0.08);
       var ux = dx / length;
       var uy = dy / length;
