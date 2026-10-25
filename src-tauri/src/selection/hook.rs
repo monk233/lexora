@@ -107,9 +107,10 @@ fn on_event(inner: &Arc<Inner>, state: &mut HookState, event: Event) {
         EventType::ButtonPress(Button::Right) | EventType::ButtonPress(Button::Middle) => {
             dismiss_picker_on_input(inner, "鼠标按键");
         }
-        // Mouse wheel / touchpad scrolling must NOT dismiss the toolbar: panels
-        // with long results need scrolling. The wheel event still reaches the
-        // window under the cursor (picker panel scrolls, host app scrolls).
+        // Wheel over a toolbar-only capsule dismisses it (the capsule is in the
+        // way of normal scrolling). While a result panel is open the shell vetoes
+        // this dismissal via `panel_open`, so long content stays scrollable.
+        EventType::Wheel { .. } => dismiss_picker_on_input(inner, "滚轮"),
         _ => {}
     }
 }
