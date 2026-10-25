@@ -20,6 +20,11 @@
   var LP = window.LP || {};
 
   var MIN_SIZE = 8;
+  /* Screenshot toolbar actions, in their canonical order. The visible order and
+   * the enabled set come from `settings.picker.captureSkills` (contract §7.2 /
+   * §10.2); `copy`/`ocr`/`translate`/`explain` all enabled is the default. */
+  var CAPTURE_ACTIONS = ["copy", "ocr", "translate", "explain"];
+  var DEFAULT_CAPTURE_SKILLS = CAPTURE_ACTIONS.slice();
   /* The shell captures/encodes while the reused overlay window is being armed,
    * so the session is not necessarily ready on the first poll. Keep polling
    * with an attempt budget (~9 s at 120 ms) instead of a fixed retry count;
@@ -45,6 +50,8 @@
     captureGeneration: 0,
     pollAttempt: 0,
     preset: null,
+    /* Effective `captureSkills` order (validated against CAPTURE_ACTIONS). */
+    captureSkills: DEFAULT_CAPTURE_SKILLS.slice(),
     imageWidth: 0,
     imageHeight: 0,
     rect: null,
@@ -62,6 +69,7 @@
 
   var dom = {};
   var handles = [];
+  var barButtons = {};
 
   /* Test/debug hook used by the CDP checks in tests/ and manual QA. */
   window.__captureState = state;
@@ -282,6 +290,23 @@
     handles = Array.prototype.slice.call(
       document.querySelectorAll(".selection-handle")
     );
+    if (dom.bar) {
+      barButtons = {};
+      each(dom.bar.querySelectorAll("[data-action]"), function (button) {
+        var action = button.getAttribute("data-action");
+        if (CAPTURE_ACTIONS.indexOf(action) >= 0) {
+          barButtons[action] = button;
+        }
+      });
+      dom.barCancel = dom.bar.querySelector('[data-action="cancel"]');
+      /* The last separator sits between the actions and the cancel button and
+       * is the insertion anchor for reordering (preset stays at the front). */
+      var separators = dom.bar.querySelectorAll(".bar-sep");
+      dom.barTailSep = separators.length
+        ? separators[separators.length - 1]
+        : null;
+      renderCaptureBar();
+    }
   }
 
   function boot() {
@@ -290,11 +315,11 @@
       return;
     }
     bindEvents();
-    loadTargetLanguage();
     subscribeArmed();
     /* The arm event of the very first capture can fire before this page starts
      * listening (the shell creates the window and captures right away), so the
-     * initial load must poll the session on its own. */
+     * initial load must poll the session on its own. `beginCapture` also loads
+     * the picker settings (target language + toolbar order). */
     beginCapture(state.monitor);
   }
 
@@ -349,7 +374,10 @@
     }
   }
 
-  function loadTargetLanguage() {
+  /* Load the picker settings the overlay needs: translation target language
+   * and the toolbar action order/visibility (`picker.captureSkills`). Called on
+   * boot and on every capture, so a changed setting reaches the reused window. */
+  function loadPickerSettings() {
     var api = window.settingsAPI;
     if (!api || typeof api.getState !== "function") {
       return;
@@ -358,14 +386,72 @@
       function (result) {
         var payload = result && (result.state || result);
         var picker = payload && payload.settings && payload.settings.picker;
-        if (picker && picker.defaultTargetLang) {
+        if (!picker) {
+          return;
+        }
+        if (picker.defaultTargetLang) {
           state.targetLang = String(picker.defaultTargetLang);
         }
+        applyCaptureSkills(normalizeCaptureSkills(picker.captureSkills));
       },
       function () {
-        /* keep "auto" */
+        /* keep "auto" and the default toolbar order */
       }
     );
+  }
+
+  /* Validate the configured action list: unknown values are dropped, repeats
+   * are ignored and the configuration order is preserved. A missing/invalid
+   * value falls back to the four default actions; an explicit empty list means
+   * "no action buttons" (cancel/preset only). */
+  function normalizeCaptureSkills(raw) {
+    if (!Array.isArray(raw)) {
+      return DEFAULT_CAPTURE_SKILLS.slice();
+    }
+    var result = [];
+    each(raw, function (item) {
+      var value = String(item == null ? "" : item).trim().toLowerCase();
+      if (CAPTURE_ACTIONS.indexOf(value) >= 0 && result.indexOf(value) < 0) {
+        result.push(value);
+      }
+    });
+    return result;
+  }
+
+  function applyCaptureSkills(skills) {
+    state.captureSkills = Array.isArray(skills) ? skills : DEFAULT_CAPTURE_SKILLS.slice();
+    renderCaptureBar();
+  }
+
+  /* Reorder/hide the toolbar actions to mirror `state.captureSkills`. Existing
+   * button elements are only moved with `appendChild`, so their listeners, ids
+   * and data-actions survive; the preset button keeps the leading slot and the
+   * separator + cancel button are pinned to the tail. Idempotent by
+   * construction (no re-creation, no re-binding). */
+  function renderCaptureBar() {
+    if (!dom.bar) {
+      return;
+    }
+    var skills = Array.isArray(state.captureSkills)
+      ? state.captureSkills
+      : DEFAULT_CAPTURE_SKILLS;
+    each(CAPTURE_ACTIONS, function (action) {
+      setHidden(barButtons[action], skills.indexOf(action) < 0);
+    });
+    each(skills, function (action) {
+      var button = barButtons[action];
+      if (button) {
+        dom.bar.appendChild(button);
+      }
+    });
+    if (dom.barTailSep) {
+      /* No lone separator when every action button is disabled. */
+      setHidden(dom.barTailSep, skills.length === 0);
+      dom.bar.appendChild(dom.barTailSep);
+    }
+    if (dom.barCancel) {
+      dom.bar.appendChild(dom.barCancel);
+    }
   }
 
   /* ---- Screenshot loading (no visible loading UI, §10.1) --------------- */
@@ -406,9 +492,13 @@
     hideToast();
     resetShotImage();
     document.body.classList.remove("is-dragging", "is-over-selection");
-    /* The overlay window lives for the whole session, so refresh the target
-     * language on every capture instead of only on boot. */
-    loadTargetLanguage();
+    /* Render the default toolbar first; the (async) settings response reorders
+     * it a few milliseconds later, while the window is still hidden. */
+    state.captureSkills = DEFAULT_CAPTURE_SKILLS.slice();
+    renderCaptureBar();
+    /* The overlay window lives for the whole session, so refresh the picker
+     * settings (target language + toolbar order) on every capture. */
+    loadPickerSettings();
 
     if (!API || typeof API.monitor !== "function") {
       showLoadError(generation, { error: "截图服务不可用，请重启 Lexora 后再试。" });

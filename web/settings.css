@@ -1040,6 +1040,34 @@ textarea {
   line-height: 1.5;
 }
 
+/* Image tab subsections: screenshot toolbar actions, then custom image skills. */
+.skill-subsection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.skill-subsection-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.skill-subsection-title {
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.skill-subsection-hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
 .skill-list-empty {
   margin: 0;
   padding: 10px 12px;

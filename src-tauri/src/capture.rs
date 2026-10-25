@@ -232,6 +232,9 @@ pub struct CaptureService {
     fallback_settings_hidden: AtomicBool,
     /// Bumped on every session change so a stale 2.5 s fallback show is a no-op.
     epoch: AtomicU64,
+    /// Set when at least one overlay renderer reported `capture_ready`, so the
+    /// 2.5 s fallback does not re-show/refocus healthy overlays.
+    ready_signaled: AtomicBool,
     /// Guards against two overlapping `start` calls (e.g. the hotkey pressed
     /// again while the first screenshot is still being encoded).
     starting: AtomicBool,
@@ -245,8 +248,14 @@ impl CaptureService {
             layout: Mutex::new(None),
             fallback_settings_hidden: AtomicBool::new(false),
             epoch: AtomicU64::new(0),
+            ready_signaled: AtomicBool::new(false),
             starting: AtomicBool::new(false),
         }
+    }
+
+    /// Records that a capture overlay was painted and is about to be shown.
+    pub fn mark_ready(&self) {
+        self.ready_signaled.store(true, Ordering::SeqCst);
     }
 
     /// Prepares one screenshot: keeps the shell windows open (they are excluded
@@ -455,6 +464,7 @@ impl CaptureService {
             / 1024;
         let epoch = self.epoch.fetch_add(1, Ordering::SeqCst) + 1;
         // Session first, arm second: an armed renderer polls immediately.
+        self.ready_signaled.store(false, Ordering::SeqCst);
         *lock(&self.session) = Some(Session { shots, preset });
         for geometry in &layout {
             let _ = app.emit_to(
@@ -465,7 +475,10 @@ impl CaptureService {
         }
 
         // Safety net: if the renderer never reports `capture_ready` (crashed
-        // webview, script error, …) the overlays are shown anyway.
+        // webview, script error, …) the overlays are shown anyway. The flag is
+        // cleared when a renderer did report readiness, so a healthy capture
+        // never gets the extra show/refocus (real-world logs showed the noisy
+        // fallback firing 2.5 s after every successful capture).
         let fallback_app = app.clone();
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(OVERLAY_FALLBACK_DELAY).await;
@@ -474,6 +487,7 @@ impl CaptureService {
             };
             if state.capture.epoch.load(Ordering::SeqCst) != epoch
                 || lock(&state.capture.session).is_none()
+                || state.capture.ready_signaled.load(Ordering::SeqCst)
             {
                 return;
             }

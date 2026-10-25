@@ -592,7 +592,8 @@ pub fn capture_monitor_info(state: State<'_, Arc<AppState>>, index: u32) -> Valu
 /// Shows the overlay window of one monitor; the capture page calls this once
 /// the screenshot image has been painted (contract §10.1, no black flash).
 #[tauri::command]
-pub fn capture_ready(app: AppHandle, index: u32) -> Value {
+pub fn capture_ready(app: AppHandle, state: State<'_, Arc<AppState>>, index: u32) -> Value {
+    state.capture.mark_ready();
     if crate::windows::show_capture_window(&app, index) {
         json!({ "ok": true })
     } else {

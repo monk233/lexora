@@ -43,6 +43,17 @@ pub const PANEL_MODES: [&str; 2] = ["auto", "scroll"];
 pub fn default_panel_mode() -> String {
     "auto".to_string()
 }
+/// Built-in actions of the screenshot toolbar, in their canonical order. They
+/// are configured independently from the picker skills: `picker.captureSkills`
+/// holds the enabled subset in toolbar order.
+pub const CAPTURE_SKILLS: [&str; 4] = ["copy", "ocr", "translate", "explain"];
+/// Default screenshot toolbar actions (all of them, canonical order).
+pub fn default_capture_skills() -> Vec<String> {
+    CAPTURE_SKILLS
+        .iter()
+        .map(|skill| skill.to_string())
+        .collect()
+}
 /// Input kinds accepted by `picker.customSkills[].kind`: `text` runs the custom
 /// skill on the selected text, `image` runs it on a screenshot region.
 pub const CUSTOM_SKILL_KINDS: [&str; 2] = ["text", "image"];
@@ -115,6 +126,11 @@ pub struct PickerSettings {
     /// Panel sizing mode; one of [`PANEL_MODES`].
     #[serde(default = "default_panel_mode")]
     pub panel_mode: String,
+    /// Built-in screenshot toolbar actions (order = toolbar order); a subset of
+    /// [`CAPTURE_SKILLS`]. The screenshot skill itself is part of `skills`; these
+    /// are the actions shown inside the capture overlay.
+    #[serde(default = "default_capture_skills")]
+    pub capture_skills: Vec<String>,
     #[serde(default)]
     pub prompts: PromptSettings,
     #[serde(default)]
@@ -233,6 +249,7 @@ impl Default for PickerSettings {
             search_engine: DEFAULT_SEARCH_ENGINE.to_string(),
             panel_pinned: false,
             panel_mode: default_panel_mode(),
+            capture_skills: default_capture_skills(),
             prompts: PromptSettings::default(),
             custom_skills: Vec::new(),
         }
@@ -439,6 +456,21 @@ impl Settings {
             } else {
                 default_panel_mode()
             }
+        };
+        // Screenshot toolbar actions: drop unknown/duplicate ids, keep the
+        // configured order. An empty list falls back to all actions so the
+        // capture overlay can never end up without its buttons.
+        let mut capture_skills: Vec<String> = Vec::new();
+        for skill in &self.picker.capture_skills {
+            let skill = skill.trim().to_ascii_lowercase();
+            if CAPTURE_SKILLS.contains(&skill.as_str()) && !capture_skills.contains(&skill) {
+                capture_skills.push(skill);
+            }
+        }
+        self.picker.capture_skills = if capture_skills.is_empty() {
+            default_capture_skills()
+        } else {
+            capture_skills
         };
         // Custom prompts are user-editable text: trim and cap them so a pasted
         // document cannot bloat settings.json or every request.
@@ -1614,6 +1646,45 @@ mod tests {
             parse_shortcut("Ctrl+Delete").unwrap().key,
             ShortcutKey::Named("Delete")
         );
+    }
+
+    #[test]
+    fn capture_skills_are_normalized_and_keep_their_order() {
+        let settings = Settings::default().normalize();
+        assert_eq!(
+            settings.picker.capture_skills,
+            vec![
+                "copy".to_string(),
+                "ocr".to_string(),
+                "translate".to_string(),
+                "explain".to_string()
+            ]
+        );
+
+        let (store, dir) = store();
+        let updated = store
+            .update_json(json!({ "picker": { "captureSkills": ["explain", "ocr", "explain", "hack", "copy"] } }))
+            .unwrap();
+        assert_eq!(
+            updated.picker.capture_skills,
+            vec!["explain".to_string(), "ocr".to_string(), "copy".to_string()]
+        );
+        let reloaded = SettingsStore::load(dir.path().join("settings.json"));
+        assert_eq!(
+            reloaded.get().picker.capture_skills,
+            vec!["explain".to_string(), "ocr".to_string(), "copy".to_string()]
+        );
+
+        // An empty list falls back to every action (the overlay always needs a
+        // way to copy / extract text).
+        let cleared = store
+            .update_json(json!({ "picker": { "captureSkills": [] } }))
+            .unwrap();
+        assert_eq!(cleared.picker.capture_skills.len(), 4);
+
+        // Older settings files (without the field) load the defaults.
+        let parsed: Settings = serde_json::from_value(json!({ "version": 4 })).unwrap();
+        assert_eq!(parsed.normalize().picker.capture_skills.len(), 4);
     }
 
     #[test]

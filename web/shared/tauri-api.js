@@ -231,6 +231,27 @@
     };
   }
 
+  /* Screenshot toolbar actions of the preview: `?captureSkills=explain,ocr`. */
+  function mockCaptureSkills(query) {
+    var match = /[?&]captureSkills=([^&]+)/.exec(String(query || ""));
+    var allowed = ["copy", "ocr", "translate", "explain"];
+    if (!match) {
+      return allowed.slice();
+    }
+    var result = [];
+    match[1]
+      .split(",")
+      .map(function (item) {
+        return item.trim().toLowerCase();
+      })
+      .forEach(function (item) {
+        if (allowed.indexOf(item) >= 0 && result.indexOf(item) < 0) {
+          result.push(item);
+        }
+      });
+    return result.length ? result : allowed.slice();
+  }
+
   function initMockStore() {
     var query = String(window.location.search || "");
     var portable = !/[?&]portable=0(?:&|$)/.test(query);
@@ -273,6 +294,7 @@
           customSkills: [],
           searchEngine: "google",
           panelMode: "auto",
+          captureSkills: mockCaptureSkills(query),
         },
         provider: {
           mode: "online",
@@ -490,6 +512,15 @@
     settings.capture = {
       regionShortcut: normalizeMockShortcut(capture.regionShortcut) || "Win+Shift+X",
     };
+    var allowedCaptureSkills = ["copy", "ocr", "translate", "explain"];
+    var captureSkills = [];
+    (Array.isArray(picker.captureSkills) ? picker.captureSkills : []).forEach(function (item) {
+      var value = String(item || "").trim().toLowerCase();
+      if (allowedCaptureSkills.indexOf(value) >= 0 && captureSkills.indexOf(value) < 0) {
+        captureSkills.push(value);
+      }
+    });
+    picker.captureSkills = captureSkills.length ? captureSkills : allowedCaptureSkills.slice();
     mockStore.picker.pinned = false;
   }
 

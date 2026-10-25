@@ -67,6 +67,10 @@
   /* Skill id currently being dragged in the toolbar-order list. */
   var dragSkillId = "";
 
+  /* Screenshot-toolbar action id currently being dragged (independent from
+   * `dragSkillId`; capture actions are not picker skills). */
+  var dragCaptureAction = "";
+
   /* Active toolbar-skill category tab: "text" | "image". Not persisted; every
    * settings window starts on the text tab (contract §7.2). */
   var skillTab = "text";
@@ -135,6 +139,34 @@
       '支持变量：<code>{text}</code> 选中文本、<code>{target}</code> / <code>{language}</code> 目标语言、<code>{program}</code> / <code>{app}</code> 当前应用',
     image:
       '支持变量：<code>{target}</code> / <code>{language}</code> 目标语言、<code>{program}</code> / <code>{app}</code> 当前应用（图片内容由截图提供，不使用 {text}）',
+  };
+
+  /* Screenshot toolbar actions (contract §7.2, fourth review round). Stored in
+   * `picker.captureSkills`: the array order is the toolbar button order and a
+   * missing id hides that action. The built-in screenshot entry skill stays in
+   * `picker.skills` (text-skill tab) and is unrelated to this list. */
+  var CAPTURE_ACTION_ORDER = ["copy", "ocr", "translate", "explain"];
+  var CAPTURE_ACTION_META = {
+    copy: {
+      label: "复制",
+      description: "把框选区域图片复制到剪贴板",
+      icon: "copy",
+    },
+    ocr: {
+      label: "提取文字",
+      description: "用视觉模型提取框选区域文字",
+      icon: "scan-text",
+    },
+    translate: {
+      label: "翻译",
+      description: "识别并翻译框选区域文字",
+      icon: "languages",
+    },
+    explain: {
+      label: "解释图片",
+      description: "用视觉模型解释图片内容",
+      icon: "lightbulb",
+    },
   };
 
   /* ---- DOM helpers ----------------------------------------------------- */
@@ -1531,19 +1563,16 @@
 
   /* ---- Skill categories (文字技能 / 图片技能 tabs) ----------------------- */
 
-  /* Built-in skills: screenshot is the only image skill and every other
-   * built-in is a text skill (contract §7.2). Custom skills follow their own
-   * kind; unknown ids return "" so a stale saved id is never mistaken for a
-   * member of either category. */
+  /* Built-in skills all live in the text-skill tab, including the screenshot
+   * entry skill (fourth review round); the image tab lists the screenshot
+   * toolbar actions instead. Custom skills follow their own kind; unknown ids
+   * return "" so a stale saved id is never mistaken for either category. */
   function skillCategory(id, customMap) {
     var custom = customMap && customMap[id];
     if (custom) {
       return customSkillKind(custom) === "image" ? "image" : "text";
     }
-    if (SKILL_IDS.indexOf(id) >= 0) {
-      return builtinSkillKind(id) === "image" ? "image" : "text";
-    }
-    return "";
+    return SKILL_IDS.indexOf(id) >= 0 ? "text" : "";
   }
 
   function customSkillMap() {
@@ -1611,6 +1640,10 @@
     if (!list) {
       return;
     }
+    /* The toolbar actions live outside #skill-list, so refresh them before the
+     * skill-list signature short-circuit: toggling one action must repaint the
+     * action rows even when the skill rows themselves did not change. */
+    renderCaptureActions();
     var customs = customSkillsList();
     var customMap = {};
     customs.forEach(function (skill) {
@@ -1645,6 +1678,10 @@
         return id + ":" + (enabled.indexOf(id) >= 0 ? 1 : 0) + ":" + detail;
       })
       .join("\u0001");
+    /* Tab chrome, counters and section visibility also depend on the
+     * screenshot-toolbar actions (not part of this signature), so refresh them
+     * before the skill-list short-circuit. */
+    renderSkillTabs(order, customMap, customs);
     if (
       !force &&
       skillTab === list.getAttribute("data-active-tab") &&
@@ -1661,7 +1698,6 @@
       }
       list.appendChild(skillRow(id, enabled.indexOf(id) >= 0, customMap[id]));
     });
-    renderSkillTabs(order, customMap, customs);
   }
 
   /* Tab chrome: selected state, per-category counts, the image-tab note and
@@ -1669,11 +1705,16 @@
   function renderSkillTabs(order, customMap, customs) {
     var counts = { text: 0, image: 0 };
     order.forEach(function (id) {
-      var category = skillCategory(id, customMap);
-      if (category === "text" || category === "image") {
-        counts[category] += 1;
+      if (skillCategory(id, customMap) === "text") {
+        counts.text += 1;
       }
     });
+    var customImageCount = customs.filter(function (skill) {
+      return customSkillKind(skill) === "image";
+    }).length;
+    /* Image-tab count = enabled screenshot-toolbar actions + custom image
+     * skills; text-tab count = rows listed there (screenshot included). */
+    counts.image = enabledCaptureActions().length + customImageCount;
     var textTab = byId("skill-tab-text");
     if (textTab) {
       textTab.setAttribute(
@@ -1696,11 +1737,253 @@
     if (imageCount) {
       imageCount.textContent = "(" + counts.image + ")";
     }
-    setHidden(byId("skill-kind-note"), skillTab !== "image");
-    var hasCustomImage = customs.some(function (skill) {
-      return customSkillKind(skill) === "image";
+    var imageTabActive = skillTab === "image";
+    setHidden(byId("capture-actions-section"), !imageTabActive);
+    setHidden(byId("custom-image-head"), !imageTabActive);
+    setHidden(byId("skill-kind-note"), !imageTabActive);
+    setHidden(byId("skill-list-empty"), !imageTabActive || customImageCount > 0);
+  }
+
+  /* ---- Screenshot toolbar actions (图片技能 Tab 的截图工具条) ------------ */
+
+  /* Enabled action ids in saved toolbar order; a missing id means hidden. */
+  function enabledCaptureActions() {
+    var picker = state && state.settings && state.settings.picker;
+    var stored =
+      picker && Array.isArray(picker.captureSkills) ? picker.captureSkills : [];
+    var result = [];
+    stored.forEach(function (value) {
+      var id = String(value || "");
+      if (CAPTURE_ACTION_META[id] && result.indexOf(id) < 0) {
+        result.push(id);
+      }
     });
-    setHidden(byId("skill-list-empty"), skillTab !== "image" || hasCustomImage);
+    return result;
+  }
+
+  /* Saved order first, then disabled actions in default order so every action
+   * stays reachable from the list. */
+  function captureActionOrder() {
+    var order = enabledCaptureActions();
+    CAPTURE_ACTION_ORDER.forEach(function (id) {
+      if (order.indexOf(id) < 0) {
+        order.push(id);
+      }
+    });
+    return order;
+  }
+
+  function toggleCaptureAction(id, enabled) {
+    if (!CAPTURE_ACTION_META[id]) {
+      return;
+    }
+    var actions = enabledCaptureActions();
+    if (enabled) {
+      if (actions.indexOf(id) < 0) {
+        actions.push(id);
+      }
+    } else {
+      actions = actions.filter(function (action) {
+        return action !== id;
+      });
+      /* The backend treats an empty list as "all actions", so hiding the last
+       * one would flip everything back on; keep at least one enabled. */
+      if (!actions.length) {
+        toast("至少保留一个截图工具条动作", "error");
+        renderCaptureActions(true);
+        return;
+      }
+    }
+    save({ picker: { captureSkills: actions } });
+  }
+
+  function renderCaptureActions(force) {
+    var list = byId("capture-action-list");
+    if (!list) {
+      return;
+    }
+    var enabled = enabledCaptureActions();
+    var order = captureActionOrder();
+    var signature = order
+      .map(function (id) {
+        return id + ":" + (enabled.indexOf(id) >= 0 ? 1 : 0);
+      })
+      .join("\u0001");
+    if (!force && signature === list.getAttribute("data-signature")) {
+      return;
+    }
+    list.setAttribute("data-signature", signature);
+    list.innerHTML = "";
+    order.forEach(function (id) {
+      list.appendChild(captureActionRow(id, enabled.indexOf(id) >= 0));
+    });
+  }
+
+  function captureActionRow(id, enabled) {
+    var meta = CAPTURE_ACTION_META[id] || {
+      label: id,
+      description: "",
+      icon: "sparkles",
+    };
+    var row = el("li", "skill-item" + (enabled ? "" : " is-disabled"));
+    row.setAttribute("data-capture-action", id);
+
+    var line = el("div", "skill-row");
+    if (enabled) {
+      line.setAttribute("draggable", "true");
+    }
+
+    var drag = el("span", "skill-drag");
+    drag.setAttribute("role", "img");
+    drag.setAttribute("aria-label", enabled ? "拖动排序" : "启用后可拖动排序");
+    drag.title = enabled ? "拖动排序" : "启用后可拖动排序";
+    drag.innerHTML =
+      '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' +
+      '<circle cx="9" cy="6" r="1.5"></circle><circle cx="15" cy="6" r="1.5"></circle>' +
+      '<circle cx="9" cy="12" r="1.5"></circle><circle cx="15" cy="12" r="1.5"></circle>' +
+      '<circle cx="9" cy="18" r="1.5"></circle><circle cx="15" cy="18" r="1.5"></circle>' +
+      "</svg>";
+    line.appendChild(drag);
+
+    var icon = el("span", "skill-icon");
+    icon.setAttribute("aria-hidden", "true");
+    icon.innerHTML = LP.skillIconSvg(meta.icon);
+    line.appendChild(icon);
+
+    var main = el("div", "skill-main");
+    var nameRow = el("div", "skill-name-row");
+    nameRow.appendChild(el("span", "skill-name", meta.label));
+    main.appendChild(nameRow);
+    main.appendChild(el("span", "skill-desc", meta.description));
+    line.appendChild(main);
+
+    var toggle = el("label", "switch");
+    var input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = enabled;
+    input.setAttribute("data-capture-toggle", id);
+    input.setAttribute("aria-label", "启用" + meta.label);
+    var track = el("span", "switch-track");
+    var thumb = el("span", "switch-thumb");
+    track.appendChild(thumb);
+    toggle.appendChild(input);
+    toggle.appendChild(track);
+    line.appendChild(toggle);
+
+    row.appendChild(line);
+    return row;
+  }
+
+  /* Drag ordering for the screenshot-toolbar actions. Kept separate from the
+   * picker-skill drag state so the two lists never mix. */
+  function captureActionItemFromEvent(event) {
+    var target = event.target;
+    if (!target || !target.closest) {
+      return null;
+    }
+    return target.closest(".skill-item[data-capture-action]");
+  }
+
+  function clearCaptureDropMarks() {
+    var list = byId("capture-action-list");
+    if (!list) {
+      return;
+    }
+    each(list.querySelectorAll(".drop-before, .drop-after"), function (node) {
+      node.classList.remove("drop-before", "drop-after");
+    });
+  }
+
+  function clearCaptureDragMarks() {
+    var list = byId("capture-action-list");
+    dragCaptureAction = "";
+    if (!list) {
+      return;
+    }
+    clearCaptureDropMarks();
+    each(list.querySelectorAll(".is-dragging"), function (node) {
+      node.classList.remove("is-dragging");
+    });
+  }
+
+  function startCaptureActionDrag(event) {
+    var row = captureActionItemFromEvent(event);
+    var target = event.target;
+    if (!row || row.classList.contains("is-disabled") || !target.closest) {
+      return;
+    }
+    if (target.closest("button, input, label, textarea, .switch")) {
+      event.preventDefault();
+      return;
+    }
+    var id = row.getAttribute("data-capture-action");
+    if (!id) {
+      event.preventDefault();
+      return;
+    }
+    dragCaptureAction = id;
+    row.classList.add("is-dragging");
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = "move";
+      try {
+        event.dataTransfer.setData("text/plain", id);
+      } catch (ignored) {
+        /* IE-style dataTransfer quirks - order is tracked in memory */
+      }
+    }
+  }
+
+  function overCaptureActionDrop(event) {
+    if (!dragCaptureAction) {
+      return;
+    }
+    var row = captureActionItemFromEvent(event);
+    if (!row || row.classList.contains("is-disabled")) {
+      return;
+    }
+    event.preventDefault();
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = "move";
+    }
+    clearCaptureDropMarks();
+    if (row.getAttribute("data-capture-action") === dragCaptureAction) {
+      return;
+    }
+    var rect = row.getBoundingClientRect();
+    var after = event.clientY > rect.top + rect.height / 2;
+    row.classList.add(after ? "drop-after" : "drop-before");
+  }
+
+  function dropCaptureAction(event) {
+    var row = captureActionItemFromEvent(event);
+    if (!dragCaptureAction || !row || row.classList.contains("is-disabled")) {
+      clearCaptureDragMarks();
+      return;
+    }
+    event.preventDefault();
+    var targetId = row.getAttribute("data-capture-action");
+    var after = row.classList.contains("drop-after");
+    var movedId = dragCaptureAction;
+    clearCaptureDragMarks();
+    if (!targetId || targetId === movedId) {
+      return;
+    }
+    var original = enabledCaptureActions();
+    var from = original.indexOf(movedId);
+    if (from < 0) {
+      return;
+    }
+    var next = original.slice();
+    next.splice(from, 1);
+    var to = next.indexOf(targetId);
+    if (to < 0) {
+      return;
+    }
+    next.splice(after ? to + 1 : to, 0, movedId);
+    if (next.join("|") === original.join("|")) {
+      return;
+    }
+    save({ picker: { captureSkills: next } });
   }
 
   function skillRow(id, enabled, custom) {
@@ -3431,6 +3714,18 @@
     byId("skill-tab-image").addEventListener("click", function () {
       selectSkillTab("image");
     });
+
+    byId("capture-action-list").addEventListener("change", function (event) {
+      var input = event.target;
+      var id = input && input.getAttribute("data-capture-toggle");
+      if (id) {
+        toggleCaptureAction(id, input.checked);
+      }
+    });
+    byId("capture-action-list").addEventListener("dragstart", startCaptureActionDrag);
+    byId("capture-action-list").addEventListener("dragover", overCaptureActionDrop);
+    byId("capture-action-list").addEventListener("drop", dropCaptureAction);
+    byId("capture-action-list").addEventListener("dragend", clearCaptureDragMarks);
 
     byId("add-custom-skill").addEventListener("click", function () {
       openCustomEditor("");

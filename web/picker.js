@@ -2592,18 +2592,18 @@
       showToast("截图失败：" + friendlyError(String(error)));
       return;
     }
-    function closePickerForCapture() {
+    /* Keep the picker window open while the capture overlay is active: the
+     * shell excludes it from the screenshot and suppresses blur/dismiss while
+     * capturing, so it reappears untouched when the capture ends (§10.1). Only
+     * the transient menu/stream/speech are stopped. */
+    function stopPickerWorkForCapture() {
       closeMenu();
       abortActiveRequest();
       stopSpeech();
-      if (API && typeof API.close === "function") {
-        API.close();
-      } else {
-        scheduleToolbarResize();
-      }
+      scheduleToolbarResize();
     }
     if (!result || typeof result.then !== "function") {
-      closePickerForCapture();
+      stopPickerWorkForCapture();
       return;
     }
     result.then(
@@ -2612,7 +2612,7 @@
           showToast("截图失败：" + friendlyError(response.error || "未知错误"));
           return;
         }
-        closePickerForCapture();
+        stopPickerWorkForCapture();
       },
       function (error) {
         showToast("截图失败：" + friendlyError(String(error)));

@@ -33,6 +33,7 @@ use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
 use state::AppState;
 
 fn main() {
+    ensure_webview2_scheduling_args();
     let app = tauri::Builder::default()
         // The single-instance plugin must be registered before any other plugin.
         // A second launch never opens a window on its own (a plain double-click
@@ -310,6 +311,33 @@ fn cleanup(app: &AppHandle) {
             .warn("local engine stop timed out; it will be terminated with this process");
     }
     state.log.info("shutdown: cleanup finished");
+}
+
+/// The screenshot overlays are hidden most of the time: they are reused
+/// webviews that must fetch and paint the next screenshot **while still
+/// hidden**, then call `capture_ready` (contract §10.1). Chromium/WebView2
+/// otherwise throttles background timers and suspends occluded windows, which
+/// real-world logs showed as a 2.5 s fallback delay. The environment variable
+/// is inherited by every WebView2 instance this process creates.
+fn ensure_webview2_scheduling_args() {
+    const FLAGS: [&str; 4] = [
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--disable-features=CalculateNativeWinOcclusion",
+    ];
+    let key = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
+    let existing = std::env::var(key).unwrap_or_default();
+    let mut args = existing.trim().to_string();
+    for flag in FLAGS {
+        if !args.contains(flag) {
+            if !args.is_empty() {
+                args.push(' ');
+            }
+            args.push_str(flag);
+        }
+    }
+    std::env::set_var(key, args);
 }
 
 /// The settings window is only shown on an explicit `--show` launch. A plain
