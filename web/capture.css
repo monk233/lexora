@@ -473,17 +473,19 @@ body.is-dragging .selection-handle {
 }
 
 /* Color trigger (contract §11.10.3): 32×24 button with the current swatch. */
-/* Colour trigger (contract §11.10.5): 32×32 square, same size as the shape
- * buttons; the 20×20 swatch is centred and the chevron sits in the corner. */
+/* Colour trigger (contract §11.10.5): same 32px height as the shape buttons,
+ * wide enough for the swatch on the left and a vertically centred chevron on
+ * the right (QQ layout, fourteenth round). */
 .palette-color-button {
   position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 5px;
   flex: 0 0 auto;
-  width: 32px;
+  width: 46px;
   height: 32px;
-  padding: 0;
+  padding: 0 7px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface);
@@ -510,12 +512,11 @@ body.is-dragging .selection-handle {
 }
 
 .palette-color-chevron {
-  position: absolute;
-  right: 1px;
-  bottom: 1px;
-  width: 8px;
-  height: 8px;
-  color: var(--text-faint);
+  position: static;
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  color: var(--text-muted);
   pointer-events: none;
 }
 
