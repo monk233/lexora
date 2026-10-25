@@ -638,12 +638,22 @@ body.is-resizing-panel * {
 /* ---- Follow-up conversation -------------------------------------------- */
 
 .panel-followup {
-  flex: 0 0 auto;
-  padding: 4px 10px 8px;
-  /* Transparent host: the input row and the suggestion chips float on their
-   * own, so the follow-up area blends into the panel content. */
+  /* Floating overlay anchored above the footer: it must not take layout space
+   * or push the result content up. The chips and input row float as separate
+   * surfaces; the host only captures clicks on those controls. */
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 44px;
+  z-index: 4;
+  padding: 2px 0 4px;
   background: transparent;
   border-top: 0;
+  pointer-events: none;
+}
+
+.panel-followup > * {
+  pointer-events: auto;
 }
 
 .panel-suggestions {

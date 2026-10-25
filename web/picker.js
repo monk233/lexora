@@ -1191,6 +1191,20 @@
 
   /* Follow-up context belongs to the current panel: closing the panel or
    * switching skills resets it so a new answer never inherits old history. */
+  /* Keeps the floating follow-up overlay from covering the last lines of the
+   * result: the panel body gets bottom padding equal to the overlay height. */
+  function syncFollowupOverlay() {
+    if (!panelFollowup || !panelBody) {
+      return;
+    }
+    if (panelFollowup.hidden) {
+      panelBody.style.paddingBottom = "";
+      return;
+    }
+    var height = panelFollowup.offsetHeight || 0;
+    panelBody.style.paddingBottom = Math.ceil(height + 14) + "px";
+  }
+
   function resetFollowup() {
     state.followupHistory = [];
     state.followupAnswer = "";
@@ -1207,6 +1221,7 @@
       panelFollowup.classList.remove("is-busy");
     }
     setFollowupSuggestions([]);
+    window.requestAnimationFrame(syncFollowupOverlay);
   }
 
   function singleEnglishWord(text) {
@@ -1260,6 +1275,7 @@
       word = singleEnglishWord(state.text);
     }
     setFollowupSuggestions(word ? wordSuggestions(word) : []);
+    window.requestAnimationFrame(syncFollowupOverlay);
   }
 
   function setFollowupBusy(busy) {
@@ -2110,6 +2126,11 @@
   document.addEventListener("mousemove", handlePanelResizeMove);
   document.addEventListener("mouseup", endPanelResize);
   window.addEventListener("blur", endPanelResize);
+  window.addEventListener("resize", function () {
+    if (state.panelOpen) {
+      syncFollowupOverlay();
+    }
+  });
   panelFollowupSend.addEventListener("click", function () {
     submitFollowup();
   });

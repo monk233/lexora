@@ -556,7 +556,7 @@ impl EngineService {
         let truncated = prompts::truncate_chars(cleaned, settings.picker.max_chars as usize);
         let target = prompts::resolve_target_lang(target_lang, &truncated);
         // A single English word gets a dictionary entry instead of a plain
-        // translation; the target language is irrelevant in that mode.
+        // translation; the entry is localized to the requested target language.
         let dictionary = prompts::is_single_word(&truncated);
         let (system, user) = prompts::translate_or_dictionary_messages(
             &truncated,

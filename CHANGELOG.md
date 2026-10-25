@@ -2,6 +2,13 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/) 与 [Keep a Changelog](https://keepachangelog.com/) 风格。
 
+## [Unreleased]
+
+### Fixed
+
+- 继续提问/建议区改为覆盖在结果面板底部的悬浮层，不再单独占一块把正文顶上去。
+- 单个单词翻译按目标语言输出词典释义：目标为中文/英文时保留英语音标，日语等目标语言改为对应语言释义与读法，不再强制英语解释。
+
 ## [0.2.0] - 2026-10-25
 
 ### Added
