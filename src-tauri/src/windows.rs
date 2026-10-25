@@ -449,16 +449,10 @@ pub fn create_capture_window(
         geometry.width.max(1),
         geometry.height.max(1),
     ))?;
-    // The overlay must never be part of a screenshot frame (long screenshots
-    // capture while it is technically alive, contract §11.6). Settings/picker
-    // windows are intentionally *not* excluded: the user wants them to appear
-    // in the frozen screenshot (round 5).
-    if !crate::win32::exclude_from_capture(&window) {
-        log_warn(
-            app,
-            "capture overlay could not be excluded from screen capture",
-        );
-    }
+    // The overlay is deliberately **not** excluded from screen capture: system
+    // screenshot tools and recorders must see the Lexora capture UI (contract
+    // §11.11.1). Long screenshots hide the overlay before grabbing frames, so no
+    // capture exclusion is needed.
     Ok(())
 }
 

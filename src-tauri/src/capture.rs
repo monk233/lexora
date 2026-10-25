@@ -4,13 +4,16 @@
 //! screenshot hotkey.
 //!
 //! Flow (contract §10.1): [`CaptureService::start`] keeps the settings window
-//! and the picker open — they are excluded from screen capture via
-//! `WDA_EXCLUDEFROMCAPTURE` and only hidden when the OS rejects that — reuses the
-//! overlay webviews of the previous capture, grabs every monitor and
+//! and the picker open and lets them appear in the frozen image; the overlay
+//! windows are **not** excluded from screen capture, so system screenshot tools
+//! and recorders can see the Lexora capture UI (contract §11.11.1) — long
+//! screenshots hide the overlay before grabbing frames instead. The capture
+//! reuses the overlay webviews of the previous capture, grabs every monitor and
 //! pre-encodes each one as a **JPEG data URL** on blocking worker threads
 //! before arming the overlays. While the overlay is active
 //! [`crate::selection::SelectionService::set_capture_active`] keeps ordinary
-//! input from dismissing the picker (contract §10.1).
+//! input from dismissing the picker (contract §10.1), and a second screenshot
+//! trigger is rejected until the current one ends (contract §11.11.2).
 //! Arming emits `capture-armed {index}`; the page resets itself, fetches the
 //! cached data URL via `capture_monitor_info`, paints it and calls
 //! `capture_ready`, which shows that overlay window (already transparent, no
@@ -283,6 +286,14 @@ impl CaptureService {
         self.ready_signaled.store(true, Ordering::SeqCst);
     }
 
+    /// `true` while a screenshot session exists: the overlays are armed/shown
+    /// (or about to be) and the user has not finished or cancelled yet. A new
+    /// screenshot trigger is rejected instead of replacing the frozen frame
+    /// (contract §11.11.2, QQ behavior).
+    pub fn is_active(&self) -> bool {
+        lock(&self.session).is_some()
+    }
+
     /// Prepares one screenshot: keeps the settings/picker windows open **and
     /// inside the frozen image** (user request), reuses the overlay webviews
     /// when the monitor layout is unchanged, grabs every monitor, pre-encodes
@@ -306,6 +317,15 @@ impl CaptureService {
                 "长截图正在进行中。",
                 "请等待当前长截图结束后再截图。",
             ));
+        }
+        // Single-screenshot guard (contract §11.11.2): while an overlay session
+        // exists, a second trigger from the hotkey / picker / command is
+        // rejected. The active session and the shown overlay stay untouched.
+        if self.is_active() {
+            state
+                .log
+                .warn("screenshot capture ignored: a capture is already active");
+            return Err(capture_already_active_error());
         }
         if self.starting.swap(true, Ordering::SeqCst) {
             state
@@ -2291,6 +2311,16 @@ fn not_ready_error() -> EngineError {
     )
 }
 
+/// Error returned when a screenshot is triggered while another one is still
+/// active (contract §11.11.2). Kept as a function so the exact wording is
+/// unit-testable.
+fn capture_already_active_error() -> EngineError {
+    EngineError::new(
+        "已经在截图了。",
+        "请先完成当前截图（或按 Esc 取消）后再试。",
+    )
+}
+
 fn missing_monitor_error(index: u32) -> EngineError {
     EngineError::new(
         format!("找不到第 {} 块屏幕。", index + 1),
@@ -2737,6 +2767,43 @@ mod tests {
 
     fn pixel_image() -> RgbaImage {
         RgbaImage::from_fn(10, 10, |x, y| Rgba([x as u8, y as u8, 0, 255]))
+    }
+
+    fn test_shot() -> Shot {
+        Shot {
+            index: 0,
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 10,
+            image: pixel_image(),
+            display_url: "data:image/jpeg;base64,AA==".to_string(),
+        }
+    }
+
+    #[test]
+    fn capture_session_marks_the_service_as_active() {
+        // Contract §11.11.2: a session means the overlays are armed/shown, so a
+        // second screenshot trigger must be rejected until it ends.
+        let service = CaptureService::new();
+        assert!(!service.is_active());
+
+        *lock(&service.session) = Some(Session {
+            shots: vec![test_shot()],
+            preset: None,
+        });
+        assert!(service.is_active());
+
+        // close/copy/skill clear the session and allow a new screenshot again.
+        service.clear_session();
+        assert!(!service.is_active());
+    }
+
+    #[test]
+    fn already_active_error_matches_the_contract_wording() {
+        let error = capture_already_active_error();
+        assert_eq!(error.message, "已经在截图了。");
+        assert_eq!(error.hint, "请先完成当前截图（或按 Esc 取消）后再试。");
     }
 
     fn image_skill_settings() -> Settings {

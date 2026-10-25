@@ -140,7 +140,7 @@
     var tool = null;
     var history = [[]];
     var historyIndex = 0;
-    var current = null;
+    var draft = null;
     var activePointerId = null;
     var textSession = null;
     var renderQueued = false;
@@ -209,8 +209,10 @@
       prepareContext(context, size);
       context.clearRect(0, 0, size.width, size.height);
       drawList(context, history[historyIndex], size);
-      if (current) {
-        drawAnnotation(context, current, size);
+      if (draft) {
+        /* Live preview (§11.11): the uncommitted op is painted above the
+         * committed annotations and never enters history until pointerup. */
+        drawAnnotation(context, draftToAnnotation(draft), size);
       }
     }
 
@@ -218,6 +220,45 @@
       for (var index = 0; index < list.length; index += 1) {
         drawAnnotation(targetContext, list[index], size);
       }
+    }
+
+    /* A draft stores the raw drag form (x1/y1 -> x2/y2 for shapes/arrows, point
+     * lists for pen/mosaic). Convert it to the geometry committed annotations
+     * use so the live preview looks exactly like the final result. */
+    function draftToAnnotation(source) {
+      if (!source) {
+        return null;
+      }
+      if (
+        source.type === "rect" ||
+        source.type === "circle" ||
+        source.type === "ellipse" ||
+        source.type === "line"
+      ) {
+        if (source.type === "line") {
+          return {
+            type: "line",
+            x1: source.x1,
+            y1: source.y1,
+            x2: source.x2,
+            y2: source.y2,
+            color: source.color,
+            width: source.width
+          };
+        }
+        return {
+          type: source.type,
+          x: Math.min(source.x1, source.x2),
+          y: Math.min(source.y1, source.y2),
+          w: Math.abs(source.x2 - source.x1),
+          h: Math.abs(source.y2 - source.y1),
+          color: source.color,
+          width: source.width,
+          fill: source.fill === "fill" ? "fill" : "outline"
+        };
+      }
+      /* Arrow/pen/mosaic drafts already use the committed drawing form. */
+      return source;
     }
 
     /* -------------------------------------------------------------- */
@@ -564,10 +605,10 @@
     }
 
     function cancelStroke() {
-      if (!current) {
+      if (!draft) {
         return false;
       }
-      current = null;
+      draft = null;
       activePointerId = null;
       requestRender();
       return true;
@@ -612,7 +653,7 @@
         return;
       }
       if (tool === "mosaic") {
-        current = {
+        draft = {
           type: "mosaic",
           points: [point],
           mosaicSize: optionsState.mosaicSize
@@ -621,7 +662,7 @@
         return;
       }
       if (tool === "pen") {
-        current = {
+        draft = {
           type: "pen",
           points: [point],
           color: optionsState.color,
@@ -631,7 +672,7 @@
         return;
       }
       if (tool === "shape") {
-        current = {
+        draft = {
           type: optionsState.shapeMode,
           x1: point.x,
           y1: point.y,
@@ -645,7 +686,7 @@
         return;
       }
       if (tool === "arrow") {
-        current = {
+        draft = {
           type: "arrow",
           x1: point.x,
           y1: point.y,
@@ -659,24 +700,24 @@
     }
 
     function onPointerMove(event) {
-      if (activePointerId === null || !current) {
+      if (activePointerId === null || !draft) {
         return;
       }
       event.preventDefault();
       var point = pointFromEvent(event);
-      if (current.type === "pen" || current.type === "mosaic") {
-        var points = current.points;
+      if (draft.type === "pen" || draft.type === "mosaic") {
+        var points = draft.points;
         var last = points[points.length - 1];
         var minimum =
-          current.type === "mosaic"
-            ? Math.max(1.5, (current.mosaicSize || 8) * 1.5)
+          draft.type === "mosaic"
+            ? Math.max(1.5, (draft.mosaicSize || 8) * 1.5)
             : 1;
         if (distance(last, point) >= minimum) {
           points.push(point);
         }
       } else {
-        current.x2 = point.x;
-        current.y2 = point.y;
+        draft.x2 = point.x;
+        draft.y2 = point.y;
       }
       requestRender();
     }
@@ -765,8 +806,8 @@
         /* ignore */
       }
       activePointerId = null;
-      var annotation = finalizeAnnotation(current);
-      current = null;
+      var annotation = finalizeAnnotation(draft);
+      draft = null;
       if (annotation) {
         commitAnnotation(annotation);
       } else {
@@ -776,7 +817,7 @@
 
     function onPointerCancel() {
       activePointerId = null;
-      current = null;
+      draft = null;
       requestRender();
     }
 
@@ -914,7 +955,7 @@
         cancelTextSession();
         return;
       }
-      if (current) {
+      if (draft) {
         event.preventDefault();
         event.stopPropagation();
         cancelStroke();
@@ -1114,6 +1155,11 @@
       /* Read-only copy for tests/diagnostics. */
       getAnnotations: function () {
         return currentList().slice();
+      },
+
+      /* The uncommitted live-preview op (null when not dragging). */
+      getDraft: function () {
+        return draft ? draftToAnnotation(draft) : null;
       },
 
       /* §11.10.3 eyedropper: sample the frozen screenshot pixel under a CSS

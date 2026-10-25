@@ -17,8 +17,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, GetAncestor, GetCursorPos, GetForegroundWindow, GetWindowThreadProcessId,
-    SetCursorPos, SetForegroundWindow, SetWindowDisplayAffinity, SetWindowPos, WindowFromPoint,
-    GA_ROOT, HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WDA_EXCLUDEFROMCAPTURE, WHEEL_DELTA,
+    SetCursorPos, SetForegroundWindow, SetWindowPos, WindowFromPoint, GA_ROOT, HWND_TOP,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WHEEL_DELTA,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -116,17 +116,6 @@ pub fn focus_window_at(x: i32, y: i32) -> bool {
         }
         focused
     }
-}
-
-/// Excludes one of our own windows from screen capture
-/// (`WDA_EXCLUDEFROMCAPTURE`, Windows 10 2004+). Used for the screenshot
-/// overlays so long-screenshot frames never contain them (contract §11.6);
-/// returns `false` on unsupported systems and the caller only logs it.
-pub fn exclude_from_capture(window: &tauri::WebviewWindow) -> bool {
-    let Ok(hwnd) = window.hwnd() else {
-        return false;
-    };
-    unsafe { SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE).is_ok() }
 }
 
 /// Clamps a window's physical top-left position so a `width`×`height` window

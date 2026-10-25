@@ -639,7 +639,7 @@ editor.renderToPng(rectCss) -> string|null
 
 ### 11.6 长截图（v1）
 - 前置：已有选区；点击「长截图」后 capture overlay 隐藏（必须释放焦点/让滚轮到达下层应用，且 overlay 不进入帧），前端仍接收进度事件但窗口不可见。
-- capture 窗口自身需 `WDA_EXCLUDEFROMCAPTURE` 排除（设置/工具面板不受影响，仍会入镜）。
+- ~~capture 窗口自身需 `WDA_EXCLUDEFROMCAPTURE` 排除~~（第十二轮起作废：overlay 不排除，见 §11.11.1；长截图抓帧前隐藏 overlay）。
 - Rust 流程：取 session 首帧裁切选区 → 循环最多 30 帧：光标移到选区中心 → SendInput 滚轮向下（3 格）→ 150ms → `xcap` 抓同显示器 → 裁切区域 → 在已拼接图底部 10%–90% 范围内按行像素差找最佳重叠（阈值内）→ 拼接新增行；停止条件：无重叠 / 与上帧相同 / 超过 30000px 高 / 30 帧。
 - 结束：合成 PNG 写剪贴板 + 创建 pin 窗口展示（超长图窗口内滚动）+ emit `capture-longshot-done`；capture 前端收到 done 后关闭 overlay。失败：先重新显示 overlay，再 emit done{ok:false,error}（前端 toast，选区可继续操作）。
 - 日志：`longshot: frames=N height=H stop=no-overlap|same-frame|max-height|max-frames`，每帧另有 `longshot frame=N same=... overlap=... height=...`。重叠判定用稠密采样平均差异（容忍平滑滚动的亚像素偏移）。
@@ -689,3 +689,26 @@ editor.renderToPng(rectCss) -> string|null
 ### 11.10.4 交互与验收
 - 属性栏与弹层均为白色主题（沿用现有样式 token），圆角 12、边框 `#e2e8f0`、阴影轻量；紧凑模式仍只影响工具条 label。
 - 验收：点击形状→属性栏在工具条下方，含矩形/圆形/直线三个按钮；切换三者绘图正确（圆形画圆/椭圆，直线无填充组）；颜色按钮展开面板在下方（底部空间不足时翻到上方）；面板含 10 预设色 + 自定义入口；自定义面板含 HSV 区/色相条/RGB 输入/吸色器；吸色器点截图可取到该像素颜色并应用；所有绘图工具都有颜色按钮且拖动宽度即时生效；console 无错误。
+## 11.11 第十二轮修订：截图界面可见性、重复触发与实时预览（权威）
+
+### 11.11.1 截图界面不再对其它截图/录屏隐藏
+- capture overlay 窗口**不得**设置 `WDA_EXCLUDEFROMCAPTURE`（或任何捕获排除）：系统截图、第三方截图工具与录屏软件应能正常拍到 Lexora 的截图界面（用户明确要求）。
+- 长截图在抓帧前隐藏 overlay（`hide_capture_windows`）即可，不依赖捕获排除。
+- 设置窗口、picker 面板继续不排除（第五轮语义不变）。
+
+### 11.11.2 单实例截图守卫（QQ 行为）
+- 已有截图会话（overlay 已 armed/显示中，未 close/copy/skill 结束）时再次触发截图（热键 / picker「截图」按钮 / 命令 `start_capture`）必须被拒绝：
+  - `start_capture` 返回错误：message「已经在截图了。」hint「请先完成当前截图（或按 Esc 取消）后再试。」；
+  - 不重置/替换当前 session，不隐藏当前 overlay，不重新抓屏；
+  - 日志记录 `screenshot capture ignored: a capture is already active`。
+- 长截图运行中仍按 §11.6 拒绝并提示。
+
+### 11.11.3 标注拖动实时预览
+- 形状（矩形/圆形/直线）、箭头、画笔：鼠标按下后拖动过程中**实时绘制**当前图形（pointermove 时更新画布），松开鼠标才把该图形提交为一步可撤销的标注；`pointercancel` / 绘制中 Esc 丢弃未提交图形。
+- 导出（`renderToPng`）与截图动作只包含已提交标注，不含拖动中的草稿。
+- 马赛克保持实时涂抹；文字/序号仍为点击即提交。
+
+### 11.11.4 验收
+- 用系统截图（Win+Shift+S）或录屏工具时能看到 Lexora 截图界面；
+- 截图界面已显示时再次按截图快捷键/点截图按钮：不重新抓屏、不重置界面，给出已存在的提示；
+- 形状/箭头/画笔拖动时图形实时跟随，松开后 undo 一步可撤掉整个图形；导出不含草稿。

@@ -136,6 +136,18 @@ fn main() {
                         crate::pin::close(window.app_handle(), id);
                     }
                 }
+                label if label.starts_with(crate::windows::CAPTURE_PREFIX) => {
+                    // Never let an overlay be destroyed behind the service's
+                    // back: the single-flight guard treats an existing session
+                    // as "already capturing" (contract §11.11.2), so close the
+                    // capture flow instead of leaving a stuck session.
+                    api.prevent_close();
+                    let app = window.app_handle();
+                    if let Some(state) = app.try_state::<Arc<AppState>>() {
+                        state.capture.close(app);
+                        windows::hide_capture_windows(app);
+                    }
+                }
                 _ => {}
             },
             WindowEvent::Destroyed => {
