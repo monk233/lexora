@@ -362,6 +362,23 @@ textarea {
 
 /* ---- Screenshot shortcut recorder (contract §10.4) ---------------------- */
 
+/* Same "label left, control right" rule as the switch rows: the recorder and
+ * its reset button hug the right edge of the control column instead of
+ * floating next to the label. */
+.hotkey-field .field-control {
+  align-items: flex-end;
+}
+
+.hotkey-field .inline-actions {
+  justify-content: flex-end;
+}
+
+.hotkey-field .inline-error {
+  margin-top: 2px;
+  align-self: flex-end;
+  text-align: right;
+}
+
 .hotkey-display {
   justify-content: center;
   min-width: 196px;
@@ -377,10 +394,6 @@ textarea {
   background: var(--primary-soft);
   color: var(--primary);
   font-weight: 600;
-}
-
-.hotkey-field .inline-error {
-  margin-top: 2px;
 }
 
 /* The shortcut card holds a single field row: trim the trailing card-body

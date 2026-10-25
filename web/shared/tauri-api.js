@@ -384,7 +384,7 @@
         captureTranslate:
           "You are a professional translation engine. Translate the user's text into {target}. Output only the translation, without explanations, quotes, or the source text.",
         captureExplain:
-          "你是一名视觉助手。请用简体中文解释图片的内容、文字信息与关键细节，使用 Markdown，不要编造。",
+          "You are a vision assistant. Explain the content, the visible text and the key details of the image in Simplified Chinese, using Markdown. Do not invent information that is not in the image.",
       },
     };
     refreshMockDerived();

@@ -24,9 +24,11 @@ pub const DEFAULT_EXPLAIN_PROMPT: &str = "You are a knowledge assistant. Explain
 pub const DEFAULT_POLISH_PROMPT: &str = "You are a professional editor. Polish the user's text so it reads naturally and fluently while keeping the original meaning. Output only the polished text, without explanations, quotes, or the source text.";
 
 /// Built-in system prompt for the `explain` skill when the input is an image
-/// (a screenshot region); used by `capture`/`engine` for image requests.
+/// (a screenshot region); used by `capture`/`engine` for image requests. Like
+/// every other built-in default it is written in English; the requested output
+/// language stays Simplified Chinese.
 pub const DEFAULT_EXPLAIN_IMAGE_PROMPT: &str =
-    "你是一名视觉助手。请用简体中文解释图片的内容、文字信息与关键细节，使用 Markdown，不要编造。";
+    "You are a vision assistant. Explain the content, the visible text and the key details of the image in Simplified Chinese, using Markdown. Do not invent information that is not in the image.";
 
 /// Built-in system prompt for extracting text from a screenshot with a vision
 /// model. The model must transcribe verbatim (no translating/summarizing) so
@@ -749,9 +751,14 @@ mod tests {
     fn image_default_prompt_is_locked_to_contract() {
         assert_eq!(
             DEFAULT_EXPLAIN_IMAGE_PROMPT,
-            "你是一名视觉助手。请用简体中文解释图片的内容、文字信息与关键细节，使用 Markdown，不要编造。"
+            "You are a vision assistant. Explain the content, the visible text and the key details of the image in Simplified Chinese, using Markdown. Do not invent information that is not in the image."
         );
-        for expected in ["视觉助手", "简体中文", "Markdown", "不要编造"] {
+        for expected in [
+            "vision assistant",
+            "Simplified Chinese",
+            "Markdown",
+            "Do not invent",
+        ] {
             assert!(
                 DEFAULT_EXPLAIN_IMAGE_PROMPT.contains(expected),
                 "image prompt must mention {expected}"
