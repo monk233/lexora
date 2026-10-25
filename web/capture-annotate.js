@@ -34,7 +34,6 @@
   var TEXT_PAD_X = 4;
   var TEXT_PAD_Y = 2;
   var TEXT_LINE_RATIO = 1.35;
-  var FILL_ALPHA = 0.3;
   var MOSAIC_CELLS = 4; /* each mosaic stamp is a 4x4 grid of blocks */
 
   var DEFAULT_OPTIONS = {
@@ -280,10 +279,9 @@
       }
       targetContext.save();
       if (annotation.fill === "fill") {
-        targetContext.globalAlpha = FILL_ALPHA;
+        /* §11.10.5: filled shapes are solid (alpha = 1), QQ style. */
         targetContext.fillStyle = annotation.color;
         targetContext.fillRect(annotation.x, annotation.y, width, height);
-        targetContext.globalAlpha = 1;
       }
       setupStroke(targetContext, annotation);
       targetContext.strokeRect(annotation.x, annotation.y, width, height);
@@ -307,10 +305,9 @@
         targetContext.restore();
       }
       if (annotation.fill === "fill") {
-        targetContext.globalAlpha = FILL_ALPHA;
+        /* §11.10.5: solid fill, alpha = 1. */
         targetContext.fillStyle = annotation.color;
         targetContext.fill();
-        targetContext.globalAlpha = 1;
       }
       setupStroke(targetContext, annotation);
       targetContext.stroke();

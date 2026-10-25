@@ -70,16 +70,12 @@
         </button>
       </div>
 
-      <div class="palette-group" id="palette-color-group"
-           data-tools="shape arrow pen text number" role="group" aria-label="颜色">
-        <button type="button" class="palette-color-button" id="palette-color-button"
-                title="颜色" aria-label="颜色" aria-haspopup="dialog">
-          <span class="palette-color-swatch" id="palette-color-swatch"></span>
-          <svg class="palette-color-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="m6 9 6 6 6-6"></path>
-          </svg>
-        </button>
+      <div class="palette-group palette-segmented" id="palette-fill" data-tools="shape"
+           role="group" aria-label="填充模式">
+        <button type="button" class="palette-seg is-active" data-fill="outline"
+                aria-pressed="true">描边</button>
+        <button type="button" class="palette-seg" data-fill="fill"
+                aria-pressed="false">填充</button>
       </div>
 
       <div class="palette-group palette-field" id="palette-width-group"
@@ -88,15 +84,6 @@
         <input type="range" id="palette-width" min="1" max="20" step="1" value="4"
                aria-label="线条粗细">
         <span class="palette-value" id="palette-width-value">4</span>
-      </div>
-
-      <div class="palette-group palette-segmented" id="palette-fill" data-tools="shape"
-           role="group" aria-label="填充模式">
-        <span class="palette-label">填充</span>
-        <button type="button" class="palette-seg is-active" data-fill="outline"
-                aria-pressed="true">描边</button>
-        <button type="button" class="palette-seg" data-fill="fill"
-                aria-pressed="false">填充</button>
       </div>
 
       <div class="palette-group palette-field" id="palette-font-size-group"
@@ -123,6 +110,19 @@
                 aria-pressed="false" title="黄色背景"></button>
         <button type="button" class="palette-bg" data-bg-color="#111827"
                 aria-pressed="false" title="黑色背景"></button>
+      </div>
+
+      <!-- Colour control is last for every drawing tool (contract §11.10.5). -->
+      <div class="palette-group" id="palette-color-group"
+           data-tools="shape arrow pen text number" role="group" aria-label="颜色">
+        <button type="button" class="palette-color-button" id="palette-color-button"
+                title="颜色" aria-label="颜色" aria-haspopup="dialog">
+          <span class="palette-color-swatch" id="palette-color-swatch"></span>
+          <svg class="palette-color-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="m6 9 6 6 6-6"></path>
+          </svg>
+        </button>
       </div>
 
       <div class="palette-group palette-field" id="palette-mosaic-size-group"
