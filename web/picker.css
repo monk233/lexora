@@ -488,6 +488,16 @@ body.is-resizing-panel * {
   background-color: var(--surface-muted);
 }
 
+/* Screenshot translation: the target language is informational (changing it
+ * needs a new capture), so the dropdown is shown read-only. */
+.panel-target-lang:disabled {
+  border-color: var(--border);
+  background-color: var(--surface-muted);
+  color: var(--text-muted);
+  cursor: default;
+  opacity: 1;
+}
+
 .panel-target-lang:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 1px;
@@ -552,6 +562,18 @@ body.is-resizing-panel * {
   margin: 0;
   color: var(--text);
   white-space: pre-wrap;
+}
+
+/* OCR result: literal text (no Markdown), same typography as the panel but the
+ * original line breaks are preserved. */
+.result-text.plain {
+  margin: 0;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
 }
 
 /* Markdown rendering inside the result panel. */
@@ -691,6 +713,41 @@ body.is-resizing-panel * {
   user-select: text;
   scrollbar-width: thin;
   scrollbar-color: var(--border-strong) transparent;
+}
+
+/* ---- Screenshot panels (picker-image) ---------------------------------- */
+
+/* Screenshot panels have no selected text: a single muted note row replaces
+ * the source block (e.g. "截图已复制到剪贴板") with the same box treatment, so
+ * both panel families stay visually identical. */
+.panel-note {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-muted);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  user-select: none;
+}
+
+.panel-note::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+  opacity: 0.8;
+}
+
+/* Clipboard write failed: the result still streams, only the note turns amber. */
+.panel-note.is-warn::before {
+  background: var(--warn);
 }
 
 /* ---- Follow-up conversation -------------------------------------------- */

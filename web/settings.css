@@ -360,6 +360,29 @@ textarea {
   outline-offset: 1px;
 }
 
+/* ---- Screenshot shortcut recorder (contract §10.4) ---------------------- */
+
+.hotkey-display {
+  justify-content: center;
+  min-width: 196px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+
+/* Recording state: same accent treatment as the active segment, so the row
+ * reads as "this control is waiting for input". */
+.hotkey-display.is-recording,
+.hotkey-display.is-recording:hover:not(:disabled) {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.hotkey-field .inline-error {
+  margin-top: 2px;
+}
+
 .inline-actions {
   display: flex;
   align-items: center;
@@ -912,6 +935,27 @@ textarea {
   background: var(--primary-soft);
   color: var(--primary);
   font-weight: 600;
+}
+
+/* "视觉" marker for the Qwen2.5-VL catalog entry (contract §10.6); same
+ * indigo accent as the built-in role pills, sized like the skill kind badge. */
+.badge-vision {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  height: 17px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.catalog-name .badge-vision {
+  position: relative;
+  top: -1px;
 }
 
 .catalog-action {

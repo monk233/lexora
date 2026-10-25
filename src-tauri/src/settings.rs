@@ -12,7 +12,9 @@ use std::sync::{Arc, RwLock};
 
 /// Version of the on-disk settings schema. Bumped whenever defaults or fields
 /// change so [`Settings::normalize`] can migrate an older file in place.
-pub const SETTINGS_VERSION: u32 = 3;
+pub const SETTINGS_VERSION: u32 = 4;
+/// Default global shortcut that starts a region screenshot.
+pub const DEFAULT_REGION_SHORTCUT: &str = "Win+Shift+X";
 /// Built-in picker skills, in their canonical toolbar order.
 pub const SKILLS: [&str; 8] = [
     "translate",
@@ -75,6 +77,25 @@ pub struct Settings {
     pub picker: PickerSettings,
     pub provider: ProviderSettings,
     pub app: AppSettings,
+    /// Region-screenshot preferences (`v4`).
+    #[serde(default)]
+    pub capture: CaptureSettings,
+}
+
+/// Screenshot settings. `region_shortcut` is stored in canonical form (see
+/// [`normalize_shortcut`]) so the hotkey thread can parse it without surprises.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CaptureSettings {
+    pub region_shortcut: String,
+}
+
+impl Default for CaptureSettings {
+    fn default() -> Self {
+        Self {
+            region_shortcut: DEFAULT_REGION_SHORTCUT.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -195,6 +216,7 @@ impl Default for Settings {
             picker: PickerSettings::default(),
             provider: ProviderSettings::default(),
             app: AppSettings::default(),
+            capture: CaptureSettings::default(),
         }
     }
 }
@@ -448,6 +470,10 @@ impl Settings {
         if !["system", "light", "dark"].contains(&self.app.theme.as_str()) {
             self.app.theme = "system".to_string();
         }
+        // Screenshot shortcut: any unsupported/empty value falls back to the
+        // default so a hand-edited file can never leave the hotkey thread with
+        // an unparseable combination.
+        self.capture.region_shortcut = normalize_shortcut(&self.capture.region_shortcut);
         self.version = SETTINGS_VERSION;
         self
     }
@@ -492,6 +518,176 @@ fn normalize_app_name(value: &str) -> String {
         .to_ascii_lowercase()
         .trim_end_matches(".exe")
         .to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Screenshot shortcut (v4)
+// ---------------------------------------------------------------------------
+
+/// Modifier flags of a screenshot shortcut.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ShortcutModifiers {
+    pub win: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+}
+
+/// Main key of a screenshot shortcut.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShortcutKey {
+    /// A–Z (stored upper case).
+    Letter(char),
+    /// 0–9.
+    Digit(u8),
+    /// F1–F24.
+    Function(u8),
+    /// PrintScreen, Space, Tab, Enter, Esc, Backspace, Insert, Delete, Home,
+    /// End, PageUp, PageDown, Up, Down, Left, Right.
+    Named(&'static str),
+}
+
+impl ShortcutKey {
+    /// Canonical display name, e.g. `X`, `7`, `F5`, `PrintScreen`.
+    pub fn label(self) -> String {
+        match self {
+            ShortcutKey::Letter(value) => value.to_string(),
+            ShortcutKey::Digit(value) => value.to_string(),
+            ShortcutKey::Function(value) => format!("F{value}"),
+            ShortcutKey::Named(name) => name.to_string(),
+        }
+    }
+}
+
+/// Parsed screenshot shortcut: at least one modifier plus exactly one main key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Shortcut {
+    pub modifiers: ShortcutModifiers,
+    pub key: ShortcutKey,
+}
+
+impl Shortcut {
+    /// Canonical form used by settings and the hotkey thread, e.g.
+    /// `Win+Shift+X` or `Ctrl+Alt+P`.
+    pub fn label(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if self.modifiers.win {
+            parts.push("Win".to_string());
+        }
+        if self.modifiers.ctrl {
+            parts.push("Ctrl".to_string());
+        }
+        if self.modifiers.alt {
+            parts.push("Alt".to_string());
+        }
+        if self.modifiers.shift {
+            parts.push("Shift".to_string());
+        }
+        parts.push(self.key.label());
+        parts.join("+")
+    }
+}
+
+/// Parses a user/renderer supplied shortcut. Returns `None` for anything that
+/// is not "at least one modifier + exactly one supported main key".
+pub fn parse_shortcut(raw: &str) -> Option<Shortcut> {
+    if raw.trim().is_empty() {
+        return None;
+    }
+    let mut modifiers = ShortcutModifiers::default();
+    let mut key: Option<ShortcutKey> = None;
+    for part in raw.split('+') {
+        let token = part.trim().to_ascii_lowercase();
+        if token.is_empty() {
+            return None;
+        }
+        match token.as_str() {
+            "win" | "windows" | "meta" | "super" | "cmd" => {
+                modifiers.win = true;
+                continue;
+            }
+            "ctrl" | "control" => {
+                modifiers.ctrl = true;
+                continue;
+            }
+            "alt" | "option" => {
+                modifiers.alt = true;
+                continue;
+            }
+            "shift" => {
+                modifiers.shift = true;
+                continue;
+            }
+            _ => {}
+        }
+        if key.is_some() {
+            return None;
+        }
+        key = Some(parse_shortcut_key(&token)?);
+    }
+    let has_modifier = modifiers.win || modifiers.ctrl || modifiers.alt || modifiers.shift;
+    if !has_modifier {
+        return None;
+    }
+    Some(Shortcut {
+        modifiers,
+        key: key?,
+    })
+}
+
+fn parse_shortcut_key(token: &str) -> Option<ShortcutKey> {
+    let chars: Vec<char> = token.chars().collect();
+    if chars.len() == 1 {
+        let character = chars[0];
+        if character.is_ascii_alphabetic() {
+            return Some(ShortcutKey::Letter(character.to_ascii_uppercase()));
+        }
+        if character.is_ascii_digit() {
+            return Some(ShortcutKey::Digit(character as u8 - b'0'));
+        }
+        return None;
+    }
+    if let Some(rest) = token.strip_prefix('f') {
+        if let Ok(number) = rest.parse::<u8>() {
+            if (1..=24).contains(&number) {
+                return Some(ShortcutKey::Function(number));
+            }
+        }
+    }
+    named_shortcut_key(token).map(ShortcutKey::Named)
+}
+
+/// Canonical name of a named main key (aliases are accepted on input).
+fn named_shortcut_key(token: &str) -> Option<&'static str> {
+    let canonical = match token {
+        "printscreen" | "print" | "prtsc" => "PrintScreen",
+        "space" | "spacebar" => "Space",
+        "tab" => "Tab",
+        "enter" | "return" => "Enter",
+        "esc" | "escape" => "Esc",
+        "backspace" => "Backspace",
+        "insert" | "ins" => "Insert",
+        "delete" | "del" => "Delete",
+        "home" => "Home",
+        "end" => "End",
+        "pageup" | "pgup" => "PageUp",
+        "pagedown" | "pgdn" => "PageDown",
+        "up" | "arrowup" => "Up",
+        "down" | "arrowdown" => "Down",
+        "left" | "arrowleft" => "Left",
+        "right" | "arrowright" => "Right",
+        _ => return None,
+    };
+    Some(canonical)
+}
+
+/// Normalizes a shortcut string; invalid values fall back to
+/// [`DEFAULT_REGION_SHORTCUT`] so persistence and hotkey registration always
+/// work with a canonical, parseable value.
+pub fn normalize_shortcut(raw: &str) -> String {
+    parse_shortcut(raw)
+        .map(|shortcut| shortcut.label())
+        .unwrap_or_else(|| DEFAULT_REGION_SHORTCUT.to_string())
 }
 
 /// Thread-safe settings holder with atomic persistence.
@@ -669,7 +865,7 @@ mod tests {
     fn defaults_are_normalized() {
         let settings = Settings::default().normalize();
         assert_eq!(settings.version, SETTINGS_VERSION);
-        assert_eq!(settings.version, 3);
+        assert_eq!(settings.version, 4);
         let expected: Vec<String> = SKILLS.iter().map(|skill| skill.to_string()).collect();
         assert_eq!(settings.picker.skills, expected);
         assert_eq!(settings.picker.skills.len(), 8);
@@ -1367,5 +1563,78 @@ mod tests {
         // The reset state is persisted, not only kept in memory.
         let reloaded = SettingsStore::load(dir.path().join("settings.json"));
         assert_eq!(reloaded.get(), reset);
+    }
+
+    #[test]
+    fn capture_shortcut_defaults_and_roundtrips() {
+        let settings = Settings::default().normalize();
+        assert_eq!(settings.capture.region_shortcut, DEFAULT_REGION_SHORTCUT);
+        let value = serde_json::to_value(&settings).unwrap();
+        assert_eq!(value["capture"]["regionShortcut"], "Win+Shift+X");
+
+        // Older files (without the capture block) load the default.
+        let parsed: Settings = serde_json::from_value(json!({"version": 3})).unwrap();
+        let normalized = parsed.normalize();
+        assert_eq!(normalized.capture.region_shortcut, DEFAULT_REGION_SHORTCUT);
+
+        // The patch path normalizes and persists the new shortcut.
+        let (store, dir) = store();
+        let updated = store
+            .update_json(json!({ "capture": { "regionShortcut": "ctrl + alt + p" } }))
+            .unwrap();
+        assert_eq!(updated.capture.region_shortcut, "Ctrl+Alt+P");
+        let reloaded = SettingsStore::load(dir.path().join("settings.json"));
+        assert_eq!(reloaded.get().capture.region_shortcut, "Ctrl+Alt+P");
+    }
+
+    #[test]
+    fn shortcut_normalization_accepts_supported_combinations() {
+        assert_eq!(normalize_shortcut("win+shift+x"), "Win+Shift+X");
+        assert_eq!(normalize_shortcut("WIN + SHIFT + X"), "Win+Shift+X");
+        assert_eq!(normalize_shortcut("ctrl+alt+p"), "Ctrl+Alt+P");
+        assert_eq!(normalize_shortcut("Ctrl+Ctrl+Q"), "Ctrl+Q");
+        assert_eq!(
+            normalize_shortcut("Shift+Alt+Control+Meta+A"),
+            "Win+Ctrl+Alt+Shift+A"
+        );
+        assert_eq!(normalize_shortcut("Ctrl+Shift+F12"), "Ctrl+Shift+F12");
+        assert_eq!(normalize_shortcut("Win+PrintScreen"), "Win+PrintScreen");
+        assert_eq!(normalize_shortcut("Ctrl+Alt+Space"), "Ctrl+Alt+Space");
+        assert_eq!(normalize_shortcut("alt+pageup"), "Alt+PageUp");
+        assert_eq!(normalize_shortcut("win+1"), "Win+1");
+        assert_eq!(
+            parse_shortcut("Win+Shift+X").unwrap().key,
+            ShortcutKey::Letter('X')
+        );
+        assert_eq!(
+            parse_shortcut("Ctrl+F5").unwrap().key,
+            ShortcutKey::Function(5)
+        );
+        assert_eq!(
+            parse_shortcut("Ctrl+Delete").unwrap().key,
+            ShortcutKey::Named("Delete")
+        );
+    }
+
+    #[test]
+    fn shortcut_normalization_rejects_invalid_combinations() {
+        for raw in [
+            "",
+            "   ",
+            "X",              // no modifier
+            "Win",            // modifier only
+            "Ctrl+Shift",     // modifier only
+            "Ctrl+Shift+",    // empty token
+            "Ctrl+Shift+Foo", // unsupported key
+            "Ctrl+Shift+F25",
+            "Ctrl+Shift+Alt+A+B", // two main keys
+        ] {
+            assert_eq!(
+                normalize_shortcut(raw),
+                DEFAULT_REGION_SHORTCUT,
+                "raw={raw:?}"
+            );
+            assert!(parse_shortcut(raw).is_none(), "raw={raw:?}");
+        }
     }
 }

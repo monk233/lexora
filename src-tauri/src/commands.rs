@@ -167,9 +167,13 @@ pub fn update_settings(
     state: State<'_, Arc<AppState>>,
     patch: Value,
 ) -> Result<Value, String> {
+    let previous_shortcut = state.settings.get().capture.region_shortcut;
     let settings = state.settings.update_json(patch)?;
     state.selection.apply_settings(&settings);
     state.abort_translate();
+    if settings.capture.region_shortcut != previous_shortcut {
+        sync_capture_hotkey(&app, &state, &settings);
+    }
     crate::tray::refresh(&app);
     broadcast_state(&app, &state);
     Ok(json!({ "state": build_state(&app, &state) }))
@@ -177,11 +181,38 @@ pub fn update_settings(
 
 #[tauri::command]
 pub fn reset_settings(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<Value, String> {
+    let previous_shortcut = state.settings.get().capture.region_shortcut;
     let settings = state.settings.reset();
     state.selection.apply_settings(&settings);
+    if settings.capture.region_shortcut != previous_shortcut {
+        sync_capture_hotkey(&app, &state, &settings);
+    }
     crate::tray::refresh(&app);
     broadcast_state(&app, &state);
     Ok(json!({ "state": build_state(&app, &state) }))
+}
+
+/// Keeps the registered screenshot hotkey in sync when a generic settings patch
+/// (or a reset) changed `capture.regionShortcut` outside `capture_set_hotkey`.
+/// The hotkey thread is the single owner of the registration, so this is a
+/// cheap no-op whenever the shortcut did not change.
+fn sync_capture_hotkey(
+    app: &AppHandle,
+    state: &Arc<AppState>,
+    settings: &crate::settings::Settings,
+) {
+    match crate::capture::set_hotkey(app, &settings.capture.region_shortcut) {
+        crate::capture::SetHotkeyOutcome::Applied {
+            warning: Some(warning),
+            ..
+        } => state.log.warn(&warning),
+        crate::capture::SetHotkeyOutcome::Failed { error, hint, .. } => {
+            state
+                .log
+                .warn(&format!("screenshot hotkey sync failed: {error} / {hint}"));
+        }
+        _ => {}
+    }
 }
 
 #[tauri::command]
@@ -524,12 +555,12 @@ pub async fn install_update(app: AppHandle) -> Value {
 }
 
 // ---------------------------------------------------------------------------
-// Screenshot capture commands
+// Screenshot capture commands (contract §10.3)
 // ---------------------------------------------------------------------------
 
-/// Starts a region screenshot: hides our own windows, grabs every monitor and
-/// opens one overlay window per monitor. The capture page then polls
-/// `capture_monitor_info` until the session is ready.
+/// Starts a region screenshot: hides our own windows, grabs every monitor,
+/// pre-encodes the images and creates one **hidden** overlay window per monitor.
+/// The capture page shows its overlay through `capture_ready` once painted.
 #[tauri::command]
 pub async fn start_capture(
     app: AppHandle,
@@ -543,7 +574,8 @@ pub async fn start_capture(
     }
 }
 
-/// PNG data URL + size (+ preset) of one captured monitor.
+/// PNG data URL + size (+ preset) of one captured monitor. The data URL was
+/// pre-encoded by `start_capture`, so this never blocks on PNG encoding.
 #[tauri::command]
 pub fn capture_monitor_info(state: State<'_, Arc<AppState>>, index: u32) -> Value {
     match state.capture.monitor_info(index) {
@@ -554,6 +586,21 @@ pub fn capture_monitor_info(state: State<'_, Arc<AppState>>, index: u32) -> Valu
             info
         }
         Err(error) => json!({ "ok": false, "error": error.message, "hint": error.hint }),
+    }
+}
+
+/// Shows the overlay window of one monitor; the capture page calls this once
+/// the screenshot image has been painted (contract §10.1, no black flash).
+#[tauri::command]
+pub fn capture_ready(app: AppHandle, index: u32) -> Value {
+    if crate::windows::show_capture_window(&app, index) {
+        json!({ "ok": true })
+    } else {
+        json!({
+            "ok": false,
+            "error": "找不到截图窗口。",
+            "hint": "请重新发起截图。",
+        })
     }
 }
 
@@ -571,23 +618,11 @@ pub fn capture_copy(
     }
 }
 
-/// Recognizes the text in the selected screenshot region (on-device OCR).
+/// Runs a panel skill on the selected region (contract §10.3): crop → image
+/// clipboard → remember the last capture → close the overlays → show the picker
+/// result panel (`picker-image`) → stream the result through `translate-event`.
 #[tauri::command]
-pub async fn capture_ocr(
-    state: State<'_, Arc<AppState>>,
-    index: u32,
-    rect: crate::capture::HitRect,
-) -> Result<Value, String> {
-    match state.capture.ocr(index, &rect).await {
-        Ok(text) => Ok(json!({ "ok": true, "text": text })),
-        Err(error) => Ok(json!({ "ok": false, "error": error.message, "hint": error.hint })),
-    }
-}
-
-/// Streams a screenshot AI action (`translate` / `explain` / `custom`); chunks
-/// arrive as `capture-event` messages on the capture windows.
-#[tauri::command]
-pub fn capture_ai(
+pub fn capture_skill(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
     request_id: String,
@@ -597,7 +632,7 @@ pub fn capture_ai(
     skill_id: Option<String>,
     target_lang: Option<String>,
 ) -> Value {
-    match state.capture.ai(
+    match state.capture.skill(
         &app,
         index,
         &rect,
@@ -606,16 +641,101 @@ pub fn capture_ai(
         target_lang,
         Some(request_id),
     ) {
-        Ok(()) => json!({ "ok": true }),
+        Ok(job) => {
+            let clipboard = job.clipboard();
+            let app_state = (*state).clone();
+            crate::capture::spawn_capture_job(app, app_state, job);
+            json!({ "ok": true, "clipboard": clipboard })
+        }
+        Err(error) => json!({
+            "ok": false,
+            "clipboard": false,
+            "error": error.message,
+            "hint": error.hint,
+        }),
+    }
+}
+
+/// Re-runs the last screenshot action; the result is streamed into the panel
+/// that is already open (`translate-event`).
+#[tauri::command]
+pub fn capture_retry(app: AppHandle, state: State<'_, Arc<AppState>>, request_id: String) -> Value {
+    match state.capture.retry(&app, request_id) {
+        Ok(job) => {
+            let app_state = (*state).clone();
+            crate::capture::spawn_capture_job(app, app_state, job);
+            json!({ "ok": true })
+        }
         Err(error) => json!({ "ok": false, "error": error.message, "hint": error.hint }),
     }
 }
 
-/// Closes the capture overlays and forgets the session.
+/// One follow-up question about the last screenshot (contract §10.3): vision
+/// actions continue with the image, OCR/translate with the recognized text.
+#[tauri::command]
+pub fn capture_followup(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    request_id: String,
+    question: String,
+    previous_answer: String,
+    history: Vec<FollowupTurn>,
+) -> Value {
+    let question = question.trim().to_string();
+    if question.is_empty() {
+        return json!({
+            "ok": false,
+            "error": "没有可回答的问题。",
+            "hint": "请在结果下方的输入框中输入要继续提问的问题后再提交。",
+        });
+    }
+    let turns: Vec<(String, String)> = history
+        .into_iter()
+        .map(|turn| (turn.question, turn.answer))
+        .collect();
+    match state.capture.followup(
+        request_id,
+        question,
+        previous_answer.trim().to_string(),
+        turns,
+    ) {
+        Ok(job) => {
+            let app_state = (*state).clone();
+            crate::capture::spawn_followup_job(app, app_state, job);
+            json!({ "ok": true })
+        }
+        Err(error) => json!({ "ok": false, "error": error.message, "hint": error.hint }),
+    }
+}
+
+/// Closes the capture overlays and forgets the session. The last capture is
+/// kept so retry/follow-up still work on an open result panel (contract §10.3).
 #[tauri::command]
 pub fn capture_close(app: AppHandle, state: State<'_, Arc<AppState>>) -> Value {
     state.capture.close(&app);
     json!({ "ok": true })
+}
+
+/// Updates the global screenshot shortcut: normalizes, re-registers it on the
+/// hotkey thread and persists the canonical value (contract §10.4).
+#[tauri::command]
+pub fn capture_set_hotkey(app: AppHandle, shortcut: String) -> Value {
+    match crate::capture::set_hotkey(&app, &shortcut) {
+        crate::capture::SetHotkeyOutcome::Applied { shortcut, warning } => match warning {
+            Some(warning) => json!({ "ok": true, "shortcut": shortcut, "hint": warning }),
+            None => json!({ "ok": true, "shortcut": shortcut }),
+        },
+        crate::capture::SetHotkeyOutcome::Failed {
+            shortcut,
+            error,
+            hint,
+        } => json!({
+            "ok": false,
+            "shortcut": shortcut,
+            "error": error,
+            "hint": hint,
+        }),
+    }
 }
 
 // ---------------------------------------------------------------------------

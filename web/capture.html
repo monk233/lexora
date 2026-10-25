@@ -6,6 +6,7 @@
         content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src ipc: http://ipc.localhost">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Lexora 截图</title>
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="capture.css">
 </head>
 <body>
@@ -32,28 +33,28 @@
 
     <div class="selection-size" id="selection-size" hidden>0 × 0</div>
 
-    <div class="capture-hint" id="capture-hint" hidden>拖动框选区域 · 拖动边角调整 · Esc 取消</div>
+    <div class="capture-hint" id="capture-hint" hidden>拖动选区移动 · 拖动边角调整 · Esc 取消</div>
 
     <div class="capture-bar" id="capture-bar" role="toolbar" aria-label="截图操作" hidden>
-      <button type="button" class="capture-btn capture-btn-preset" id="capture-preset" hidden>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+      <button type="button" class="tool-btn tool-btn-preset" id="capture-preset" hidden>
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"></path>
         </svg>
-        <span class="capture-btn-label" id="capture-preset-label">识别图片</span>
+        <span class="label" id="capture-preset-label">识别图片</span>
       </button>
-      <span class="capture-bar-sep" id="capture-preset-sep" hidden></span>
+      <span class="bar-sep" id="capture-preset-sep" hidden></span>
 
-      <button type="button" class="capture-btn" data-action="copy" title="复制截图">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+      <button type="button" class="tool-btn" data-action="copy" title="复制截图">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <rect x="9" y="9" width="11" height="11" rx="2"></rect>
           <path d="M5 15V5a2 2 0 0 1 2-2h10"></path>
         </svg>
-        <span class="capture-btn-label">复制</span>
+        <span class="label">复制</span>
       </button>
-      <button type="button" class="capture-btn" data-action="ocr" title="提取选中区域的文字">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+      <button type="button" class="tool-btn" data-action="ocr" title="提取选中区域的文字">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M3 7V5a2 2 0 0 1 2-2h2"></path>
           <path d="M17 3h2a2 2 0 0 1 2 2v2"></path>
@@ -63,10 +64,10 @@
           <path d="M7 12h10"></path>
           <path d="M7 16h6"></path>
         </svg>
-        <span class="capture-btn-label">提取文字</span>
+        <span class="label">提取文字</span>
       </button>
-      <button type="button" class="capture-btn" data-action="translate" title="翻译选中区域的文字">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+      <button type="button" class="tool-btn" data-action="translate" title="翻译选中区域的文字">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="m5 8 6 6"></path>
           <path d="m4 14 6-6 2-3"></path>
@@ -75,83 +76,41 @@
           <path d="m22 22-5-10-5 10"></path>
           <path d="M14 18h6"></path>
         </svg>
-        <span class="capture-btn-label">翻译</span>
+        <span class="label">翻译</span>
       </button>
-      <button type="button" class="capture-btn" data-action="explain" title="用 AI 解释图片内容">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+      <button type="button" class="tool-btn" data-action="explain" title="用 AI 解释图片内容">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"></path>
           <path d="M9 18h6"></path>
           <path d="M10 22h4"></path>
         </svg>
-        <span class="capture-btn-label">解释图片</span>
+        <span class="label">解释图片</span>
       </button>
 
-      <span class="capture-bar-sep"></span>
+      <span class="bar-sep"></span>
 
-      <button type="button" class="capture-btn capture-btn-danger" data-action="cancel" title="取消截图（Esc）">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+      <button type="button" class="tool-btn tool-btn-danger" data-action="cancel" title="取消截图（Esc）">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M18 6 6 18"></path>
           <path d="m6 6 12 12"></path>
         </svg>
-        <span class="capture-btn-label">取消</span>
+        <span class="label">取消</span>
       </button>
     </div>
 
-    <div class="capture-panel" id="capture-panel" role="dialog" aria-label="截图结果" hidden>
-      <div class="capture-panel-head">
-        <div class="capture-panel-heading">
-          <span class="capture-panel-title" id="capture-panel-title">结果</span>
-          <span class="capture-panel-badge" id="capture-panel-badge" hidden></span>
-        </div>
-        <div class="capture-panel-actions">
-          <button type="button" class="capture-icon-btn" id="capture-panel-copy"
-                  title="复制结果" aria-label="复制结果" disabled>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <rect x="9" y="9" width="11" height="11" rx="2"></rect>
-              <path d="M5 15V5a2 2 0 0 1 2-2h10"></path>
-            </svg>
-          </button>
-          <button type="button" class="capture-icon-btn" id="capture-panel-close"
-                  title="关闭结果" aria-label="关闭结果">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M18 6 6 18"></path>
-              <path d="m6 6 12 12"></path>
-            </svg>
-          </button>
-        </div>
-      </div>
-      <div class="capture-panel-body" id="capture-panel-body"></div>
-      <div class="capture-panel-foot" id="capture-panel-foot" hidden>
-        <span class="capture-panel-status" id="capture-panel-status"></span>
-        <button type="button" class="capture-panel-retry" id="capture-panel-retry" hidden>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
-            <path d="M21 3v6h-6"></path>
-          </svg>
-          <span>重试</span>
-        </button>
-      </div>
-    </div>
-
-    <div class="capture-status" id="capture-status" hidden>
-      <span class="capture-spinner capture-spinner-lg" id="capture-status-spinner"></span>
-      <p class="capture-status-text" id="capture-status-text">正在截取屏幕…</p>
-      <div class="capture-status-actions" id="capture-status-actions" hidden>
-        <button type="button" class="capture-status-btn" id="capture-status-retry" hidden>重试</button>
-        <button type="button" class="capture-status-btn capture-status-btn-ghost" id="capture-status-close">关闭</button>
-      </div>
+    <div class="capture-error-bar" id="capture-error" role="alert" hidden>
+      <span class="capture-error-text" id="capture-error-text">截图加载失败</span>
+      <button type="button" class="capture-error-btn capture-error-btn-primary"
+              id="capture-error-retry">重试</button>
+      <button type="button" class="capture-error-btn" id="capture-error-close">关闭</button>
     </div>
 
     <div class="capture-toast" id="capture-toast" role="status" aria-live="polite" hidden></div>
   </div>
 
   <script src="shared/constants.js"></script>
-  <script src="shared/markdown.js"></script>
   <script src="shared/tauri-api.js"></script>
   <script src="capture.js"></script>
 </body>

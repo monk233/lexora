@@ -29,6 +29,11 @@ const HEALTH_INTERVAL: Duration = Duration::from_millis(300);
 const HEALTH_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const LLAMA_LOG_FILE: &str = "llama.log";
 
+/// Minimum context size for vision models: image tokens can easily consume
+/// several thousand positions, so the configured value is raised to this floor
+/// (and logged) when a multimodal projector is loaded.
+pub const VISION_MIN_CONTEXT: u32 = 8_192;
+
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -59,6 +64,9 @@ pub struct LocalSnapshot {
     pub port: u16,
     pub model_file: String,
     pub model_name: String,
+    /// Multimodal projector currently loaded by the server (empty for text-only
+    /// models). Switching either the model or the projector restarts it.
+    pub mmproj_file: String,
     pub error: String,
 }
 
@@ -70,6 +78,7 @@ impl LocalSnapshot {
             port: 0,
             model_file: String::new(),
             model_name: String::new(),
+            mmproj_file: String::new(),
             error: String::new(),
         }
     }
@@ -81,6 +90,7 @@ struct Runtime {
     port: u16,
     model_file: String,
     model_name: String,
+    mmproj_file: String,
     error: String,
 }
 
@@ -92,6 +102,7 @@ impl Runtime {
             port: 0,
             model_file: String::new(),
             model_name: String::new(),
+            mmproj_file: String::new(),
             error: String::new(),
         }
     }
@@ -135,6 +146,7 @@ impl LocalServer {
             port: runtime.port,
             model_file: runtime.model_file.clone(),
             model_name: runtime.model_name.clone(),
+            mmproj_file: runtime.mmproj_file.clone(),
             error: runtime.error.clone(),
         }
     }
@@ -149,24 +161,47 @@ impl LocalServer {
         }
     }
 
-    pub fn is_running_model(&self, model_file: &str) -> bool {
+    /// `true` when the ready server already runs exactly this model + projector
+    /// combination. `mmproj_file = None` (or blank) means a text-only server;
+    /// loading a vision projector and loading none are different configurations
+    /// and therefore force a restart.
+    pub fn is_running_model(&self, model_file: &str, mmproj_file: Option<&str>) -> bool {
         let runtime = self.lock();
         runtime.state == LocalState::Ready
             && runtime.model_file.eq_ignore_ascii_case(model_file.trim())
+            && runtime
+                .mmproj_file
+                .eq_ignore_ascii_case(mmproj_file.map(str::trim).unwrap_or(""))
     }
 
-    /// Starts (or reuses) the server for `model_file` and returns the base URL.
-    /// A different running model is stopped first (role-based model switching).
+    /// `true` when `file` is the weights **or** the projector of the running
+    /// server. Used before deleting a model so the locked file can be released.
+    pub fn is_running_file(&self, file: &str) -> bool {
+        let runtime = self.lock();
+        let file = file.trim();
+        (runtime.state == LocalState::Ready || runtime.state == LocalState::Starting)
+            && (runtime.model_file.eq_ignore_ascii_case(file)
+                || runtime.mmproj_file.eq_ignore_ascii_case(file))
+    }
+
+    /// Starts (or reuses) the server for `model_file` + optional `mmproj_file`
+    /// and returns the base URL. A different running model/projector is stopped
+    /// first (role-based model switching).
     pub async fn ensure_model(
         &self,
         paths: &AppPaths,
         settings: &Settings,
         model_file: &str,
+        mmproj_file: Option<&str>,
         http: &reqwest::Client,
         logger: &Logger,
     ) -> Result<String, EngineError> {
         let _guard = self.start_lock.lock().await;
         let model_file = model_file.trim().to_string();
+        let mmproj_file = mmproj_file
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
         if model_file.is_empty() {
             return Err(EngineError::new(
                 "尚未安装本地模型。",
@@ -175,9 +210,7 @@ impl LocalServer {
         }
 
         let snapshot = self.snapshot();
-        if snapshot.state == LocalState::Ready
-            && snapshot.model_file.eq_ignore_ascii_case(&model_file)
-        {
+        if self.is_running_model(&model_file, mmproj_file.as_deref()) {
             if let Some(url) = self.base_url() {
                 return Ok(url);
             }
@@ -199,29 +232,61 @@ impl LocalServer {
             ));
         }
 
-        if !snapshot.model_file.is_empty() && !snapshot.model_file.eq_ignore_ascii_case(&model_file)
+        let mmproj_path = match mmproj_file.as_deref() {
+            Some(file) => {
+                let path = paths.models_dir.join(file);
+                if !path.is_file() {
+                    return Err(EngineError::new(
+                        format!("视觉投影器文件不存在：{file}。"),
+                        "请在「设置 → 本地模型」中重新下载 Qwen2.5-VL 3B（含视觉投影器），或重新下载该模型。",
+                    ));
+                }
+                Some(path)
+            }
+            None => None,
+        };
+
+        if !snapshot.model_file.is_empty()
+            && (!snapshot.model_file.eq_ignore_ascii_case(&model_file)
+                || !snapshot
+                    .mmproj_file
+                    .eq_ignore_ascii_case(mmproj_file.as_deref().unwrap_or("")))
         {
             logger.info(&format!(
-                "switching local model: {} -> {model_file}",
-                snapshot.model_file
+                "switching local model: {} + {} -> {model_file} + {}",
+                snapshot.model_file,
+                if snapshot.mmproj_file.is_empty() {
+                    "(text)"
+                } else {
+                    snapshot.mmproj_file.as_str()
+                },
+                mmproj_file.as_deref().unwrap_or("(text)")
             ));
         }
 
-        // Drop a stale process (crashed, errored, or another model) first.
+        // Drop a stale process (crashed, errored, or another configuration) first.
         self.stop(Some(logger));
 
         let local = &settings.provider.local;
         let port = free_port()?;
-        let context_size = local.context_size.clamp(1024, 32_768);
+        let context_size = effective_context_size(local.context_size, mmproj_path.is_some());
+        if mmproj_path.is_some() && context_size != local.context_size.clamp(1024, 32_768) {
+            logger.info(&format!(
+                "vision model context raised to {context_size} (configured {})",
+                local.context_size
+            ));
+        }
         let threads = resolve_threads(local.threads);
         let gpu_layers = local.gpu_layers.min(200);
         let log_path = paths.logs_dir.join(LLAMA_LOG_FILE);
         logger.info(&format!(
-            "starting llama-server: model={model_file} port={port} ctx={context_size} threads={threads} ngl={gpu_layers}"
+            "starting llama-server: model={model_file} mmproj={} port={port} ctx={context_size} threads={threads} ngl={gpu_layers}",
+            mmproj_file.as_deref().unwrap_or("-")
         ));
         let child = spawn_server(
             &binary,
             &model_path,
+            mmproj_path.as_deref(),
             port,
             context_size,
             threads,
@@ -244,6 +309,7 @@ impl LocalServer {
             runtime.port = port;
             runtime.model_file = model_file.clone();
             runtime.model_name = model_display_name(&model_file);
+            runtime.mmproj_file = mmproj_file.clone().unwrap_or_default();
             runtime.error.clear();
         }
 
@@ -399,9 +465,57 @@ pub fn free_port() -> Result<u16, EngineError> {
     Ok(port)
 }
 
+/// Context size passed to `-c`. Vision models need more room for image tokens,
+/// so their configured value is raised to [`VISION_MIN_CONTEXT`].
+pub fn effective_context_size(configured: u32, vision: bool) -> u32 {
+    let clamped = configured.clamp(1024, 32_768);
+    if vision {
+        clamped.max(VISION_MIN_CONTEXT)
+    } else {
+        clamped
+    }
+}
+
+/// Builds the `llama-server` invocation. Extracted from [`spawn_server`] so the
+/// argument list (especially `--mmproj` for vision models) is unit-testable
+/// without starting a process.
+fn build_server_command(
+    binary: &Path,
+    model: &Path,
+    mmproj: Option<&Path>,
+    port: u16,
+    context_size: u32,
+    threads: u32,
+    gpu_layers: u32,
+) -> Command {
+    let mut command = Command::new(binary);
+    command
+        .arg("-m")
+        .arg(model)
+        .arg("--host")
+        .arg("127.0.0.1")
+        .arg("--port")
+        .arg(port.to_string())
+        .arg("-c")
+        .arg(context_size.to_string())
+        .arg("-t")
+        .arg(threads.to_string())
+        .arg("-ngl")
+        .arg(gpu_layers.to_string())
+        .arg("--no-webui");
+    if let Some(mmproj) = mmproj {
+        command.arg("--mmproj").arg(mmproj);
+    }
+    command
+        .current_dir(binary.parent().unwrap_or_else(|| Path::new(".")))
+        .stdin(Stdio::null());
+    command
+}
+
 fn spawn_server(
     binary: &Path,
     model: &Path,
+    mmproj: Option<&Path>,
     port: u16,
     context_size: u32,
     threads: u32,
@@ -417,28 +531,24 @@ fn spawn_server(
         .open(log_path)?;
     let _ = writeln!(
         log,
-        "\n=== llama-server start (port {port}, ctx {context_size}, threads {threads}, ngl {gpu_layers}) ==="
+        "\n=== llama-server start (port {port}, ctx {context_size}, threads {threads}, ngl {gpu_layers}, mmproj {}) ===",
+        mmproj
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "-".to_string())
     );
     let stdout = log.try_clone()?;
     let stderr = log.try_clone()?;
 
-    let mut command = Command::new(binary);
+    let mut command = build_server_command(
+        binary,
+        model,
+        mmproj,
+        port,
+        context_size,
+        threads,
+        gpu_layers,
+    );
     command
-        .arg("-m")
-        .arg(model)
-        .arg("--host")
-        .arg("127.0.0.1")
-        .arg("--port")
-        .arg(port.to_string())
-        .arg("-c")
-        .arg(context_size.to_string())
-        .arg("-t")
-        .arg(threads.to_string())
-        .arg("-ngl")
-        .arg(gpu_layers.to_string())
-        .arg("--no-webui")
-        .current_dir(binary.parent().unwrap_or_else(|| Path::new(".")))
-        .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
     #[cfg(windows)]
@@ -469,7 +579,102 @@ mod tests {
         assert_eq!(snapshot.port, 0);
         assert!(snapshot.error.is_empty());
         assert!(server.base_url().is_none());
-        assert!(!server.is_running_model("qwen2.5-1.5b-instruct-q4_k_m.gguf"));
+        assert!(!server.is_running_model("qwen2.5-1.5b-instruct-q4_k_m.gguf", None));
+        assert!(!server.is_running_model(
+            "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf",
+            Some("mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf")
+        ));
+        assert!(!server.is_running_file("Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf"));
+    }
+
+    /// Puts the manager into the ready state without spawning a real process.
+    fn mark_ready(server: &LocalServer, model: &str, mmproj: Option<&str>, port: u16) {
+        let mut runtime = server.runtime.lock().unwrap();
+        runtime.state = LocalState::Ready;
+        runtime.port = port;
+        runtime.model_file = model.to_string();
+        runtime.model_name = model_display_name(model);
+        runtime.mmproj_file = mmproj.unwrap_or("").to_string();
+    }
+
+    #[test]
+    fn running_model_matches_weights_and_projector() {
+        let server = LocalServer::new();
+        let model = "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf";
+        let projector = "mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf";
+        mark_ready(&server, model, Some(projector), 18080);
+
+        assert!(server.is_running_model(model, Some(projector)));
+        assert!(server.is_running_model(&model.to_ascii_uppercase(), Some(projector)));
+        // Case-insensitive, and None/blank both mean "text-only".
+        assert!(!server.is_running_model(model, None));
+        assert!(!server.is_running_model(model, Some("")));
+        assert!(!server.is_running_model(model, Some("other-mmproj.gguf")));
+        // A different model never matches, even with the same projector.
+        assert!(!server.is_running_model("qwen2.5-3b-instruct-q4_k_m.gguf", Some(projector)));
+
+        // Text-only server: asking for the same model + no projector reuses it.
+        mark_ready(&server, "qwen2.5-3b-instruct-q4_k_m.gguf", None, 18080);
+        assert!(server.is_running_model("qwen2.5-3b-instruct-q4_k_m.gguf", None));
+        assert!(!server.is_running_model("qwen2.5-3b-instruct-q4_k_m.gguf", Some(projector)));
+    }
+
+    #[test]
+    fn running_file_matches_weights_or_projector() {
+        let server = LocalServer::new();
+        let model = "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf";
+        let projector = "mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf";
+        mark_ready(&server, model, Some(projector), 18081);
+        assert!(server.is_running_file(model));
+        assert!(server.is_running_file(projector));
+        assert!(server.is_running_file(&projector.to_ascii_uppercase()));
+        assert!(!server.is_running_file("qwen2.5-3b-instruct-q4_k_m.gguf"));
+    }
+
+    #[test]
+    fn vision_models_get_a_minimum_context_window() {
+        assert_eq!(VISION_MIN_CONTEXT, 8_192);
+        assert_eq!(effective_context_size(4096, false), 4096);
+        assert_eq!(effective_context_size(4096, true), 8_192);
+        assert_eq!(effective_context_size(8192, true), 8_192);
+        assert_eq!(effective_context_size(16384, true), 16384);
+        // Out-of-range values keep being clamped like before.
+        assert_eq!(effective_context_size(0, false), 1024);
+        assert_eq!(effective_context_size(0, true), 8_192);
+        assert_eq!(effective_context_size(999_999, true), 32_768);
+    }
+
+    #[test]
+    fn server_arguments_include_mmproj_only_for_vision_models() {
+        let binary = Path::new("C:\\engine\\llama-server.exe");
+        let model = Path::new("C:\\models\\Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf");
+        let mmproj = Path::new("C:\\models\\mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf");
+
+        let text = build_server_command(binary, model, None, 18000, 8192, 4, 0);
+        let text_args: Vec<String> = text
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+        assert!(!text_args.iter().any(|arg| arg == "--mmproj"));
+        assert!(text_args.contains(&"-m".to_string()));
+        assert!(text_args.contains(&model.to_string_lossy().to_string()));
+        assert!(text_args.contains(&"--no-webui".to_string()));
+
+        let vision = build_server_command(binary, model, Some(mmproj), 18000, 8192, 4, 0);
+        let vision_args: Vec<String> = vision
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+        let mmproj_index = vision_args
+            .iter()
+            .position(|arg| arg == "--mmproj")
+            .expect("vision command must pass --mmproj");
+        assert_eq!(
+            vision_args.get(mmproj_index + 1).map(String::as_str),
+            Some(mmproj.to_string_lossy().as_ref())
+        );
+        // The weights flag stays first and the projector comes after it.
+        assert_eq!(vision_args.first().map(String::as_str), Some("-m"));
     }
 
     #[test]
@@ -504,5 +709,6 @@ mod tests {
         assert_eq!(snapshot.state, LocalState::Stopped);
         assert!(snapshot.model_file.is_empty());
         assert!(snapshot.model_name.is_empty());
+        assert!(snapshot.mmproj_file.is_empty());
     }
 }

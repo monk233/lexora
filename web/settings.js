@@ -46,6 +46,12 @@
   var localBusy = false;
   var loginBusy = false;
 
+  /* Region-screenshot shortcut recorder (contract §10.4): while recording the
+   * global keydown handler owns the keyboard, while saving the display is
+   * locked so a `state-changed` refresh cannot flash the old value. */
+  var hotkeyRecording = false;
+  var hotkeySaving = false;
+
   /* Online models fetched from /models, cached per baseUrl + apiKey. */
   var onlineModelCache = {};
   var customModelMode = false;
@@ -117,7 +123,7 @@
   var CUSTOM_KIND_HINTS = {
     text: "文本技能处理选中文字：点击后直接执行提示词。",
     image:
-      "图片技能在截图中使用：选中文字后点击会先进入截图，再对框选图片执行该提示词（需要在线视觉模型）。",
+      "图片技能在截图中使用：选中文字后点击会先进入截图，再对框选图片执行该提示词（需要在线视觉模型或本地 Qwen2.5-VL 3B）。",
   };
 
   var CUSTOM_VARS_HINTS = {
@@ -651,6 +657,9 @@
     if (catalogId === "qwen2.5-3b") {
       return { label: "通用模型", builtin: true };
     }
+    if (catalogId === "qwen2.5-vl-3b") {
+      return { label: "视觉模型", builtin: true };
+    }
     return { label: "自定义模型", builtin: false };
   }
 
@@ -805,7 +814,7 @@
       if (!models.length) {
         modelHint.hidden = false;
         modelHint.textContent =
-          "还没有本地模型：展开「模型目录」下载（翻译推荐 Hy-MT2，通用推荐 Qwen2.5 3B），或点击「导入 GGUF」选择本机文件。";
+          "还没有本地模型：展开「模型目录」下载（翻译推荐 Hy-MT2，通用推荐 Qwen2.5 3B，截图理解推荐 Qwen2.5-VL 3B），或点击「导入 GGUF」选择本机文件。";
       } else {
         modelHint.hidden = true;
       }
@@ -910,6 +919,9 @@
     var main = el("div", "catalog-main");
     var name = el("div", "catalog-name");
     name.appendChild(el("span", null, entry.name || entry.id));
+    if (entry.vision === true) {
+      name.appendChild(el("span", "badge-vision", "视觉"));
+    }
     main.appendChild(name);
     if (entry.description) {
       main.appendChild(el("div", "catalog-desc", entry.description));
@@ -996,6 +1008,23 @@
     updateCatalogProgress();
   }
 
+  /* Progress text for one catalog row. VL model downloads fetch the main GGUF
+   * first and then the mmproj projector; the stage label makes that switch
+   * visible instead of showing a percentage that appears to restart (§10.6). */
+  function catalogProgressText(progress) {
+    if (!progress) {
+      return "";
+    }
+    if (progress.status === "verifying") {
+      return "校验中…";
+    }
+    var percent = Math.round(Math.max(0, Math.min(100, Number(progress.percent) || 0)));
+    if (/^mmproj-/i.test(String(progress.filename || ""))) {
+      return "视觉投影器 · " + percent + "%";
+    }
+    return percent + "%";
+  }
+
   function updateCatalogProgress() {
     each(byId("catalog-list").querySelectorAll(".catalog-item"), function (row) {
       var id = row.getAttribute("data-catalog-id");
@@ -1016,8 +1045,8 @@
           fill.style.width = percent + "%";
         }
         if (text) {
-          text.textContent =
-            progress.status === "verifying" ? "校验中…" : Math.round(percent) + "%";
+          text.textContent = catalogProgressText(progress);
+          text.title = String(progress.filename || "");
         }
         if (downloadButton) {
           downloadButton.hidden = true;
@@ -1053,6 +1082,7 @@
     setChecked(byId("picker-enabled"), picker.enabled !== false);
     setChecked(byId("picker-compact"), picker.compact === true);
     renderPanelMode();
+    renderHotkey();
     setSelectValue(byId("default-target-lang"), picker.defaultTargetLang || "auto");
     renderSkills();
     renderCustomSkillEditor(false);
@@ -1082,6 +1112,251 @@
     /* Patch only this field; save() re-renders optimistically and the generic
      * save-error handler refreshes state, which rolls the selection back. */
     save({ picker: { panelMode: next } });
+  }
+
+  /* ---- Screenshot shortcut recorder (contract §10.4) -------------------- */
+
+  /* Fixed modifier order Win → Ctrl → Alt → Shift mirrors
+   * `settings::normalize_shortcut`; the main-key list matches the contract. */
+  var HOTKEY_NAMED_KEYS = {
+    " ": "Space",
+    space: "Space",
+    spacebar: "Space",
+    tab: "Tab",
+    enter: "Enter",
+    return: "Enter",
+    backspace: "Backspace",
+    insert: "Insert",
+    ins: "Insert",
+    delete: "Delete",
+    del: "Delete",
+    home: "Home",
+    end: "End",
+    pageup: "PageUp",
+    pgup: "PageUp",
+    pagedown: "PageDown",
+    pgdn: "PageDown",
+    up: "Up",
+    arrowup: "Up",
+    down: "Down",
+    arrowdown: "Down",
+    left: "Left",
+    arrowleft: "Left",
+    right: "Right",
+    arrowright: "Right",
+    printscreen: "PrintScreen",
+    print: "PrintScreen",
+    prtsc: "PrintScreen",
+  };
+
+  /* Bare modifier keys never finish a recording; they are swallowed too. */
+  var HOTKEY_MODIFIER_KEYS = {
+    Control: true,
+    Shift: true,
+    Alt: true,
+    Meta: true,
+    OS: true,
+    AltGraph: true,
+  };
+
+  function captureShortcut() {
+    var capture = (state && state.settings && state.settings.capture) || {};
+    return String(capture.regionShortcut || "").trim() || "Win+Shift+X";
+  }
+
+  /* "Ctrl+Alt+P" → "Ctrl + Alt + P" for display only. */
+  function formatShortcut(shortcut) {
+    return String(shortcut || "")
+      .split("+")
+      .map(function (token) {
+        return token.trim();
+      })
+      .filter(function (token) {
+        return !!token;
+      })
+      .join(" + ");
+  }
+
+  /* Main key from a KeyboardEvent; "" when the key is not allowed. */
+  function hotkeyKeyFromEvent(event) {
+    if (!event) {
+      return "";
+    }
+    var key = String(event.key || "");
+    if (/^[a-zA-Z]$/.test(key)) {
+      return key.toUpperCase();
+    }
+    if (/^[0-9]$/.test(key)) {
+      return key;
+    }
+    var fn = /^f([1-9]|1[0-9]|2[0-4])$/i.exec(key);
+    if (fn) {
+      return "F" + fn[1];
+    }
+    var named = HOTKEY_NAMED_KEYS[key.toLowerCase()];
+    if (named) {
+      return named;
+    }
+    /* Synthetic/IME events can carry an empty key: fall back to a physical code. */
+    var code = String(event.code || "");
+    if (/^Key[A-Z]$/.test(code)) {
+      return code.slice(3);
+    }
+    if (/^Digit[0-9]$/.test(code)) {
+      return code.slice(5);
+    }
+    if (/^F([1-9]|1[0-9]|2[0-4])$/.test(code)) {
+      return code;
+    }
+    return "";
+  }
+
+  function hotkeyComboFromEvent(event) {
+    var modifiers = [];
+    if (event.metaKey) {
+      modifiers.push("Win");
+    }
+    if (event.ctrlKey) {
+      modifiers.push("Ctrl");
+    }
+    if (event.altKey) {
+      modifiers.push("Alt");
+    }
+    if (event.shiftKey) {
+      modifiers.push("Shift");
+    }
+    var key = hotkeyKeyFromEvent(event);
+    if (!key || !modifiers.length) {
+      return "";
+    }
+    return modifiers.concat(key).join("+");
+  }
+
+  function renderHotkey() {
+    var button = byId("capture-hotkey");
+    var restore = byId("capture-hotkey-restore");
+    if (!button) {
+      return;
+    }
+    button.classList.toggle("is-recording", hotkeyRecording);
+    button.disabled = hotkeySaving;
+    if (hotkeyRecording) {
+      button.textContent = "请按下新的快捷键…（Esc 取消）";
+      button.title = "按下组合键后立即保存，Esc 取消";
+      button.setAttribute("aria-label", "正在录制截图快捷键，按 Esc 取消");
+    } else if (hotkeySaving) {
+      button.textContent = "保存中…";
+      button.title = "";
+      button.setAttribute("aria-label", "正在保存截图快捷键");
+    } else {
+      var text = formatShortcut(captureShortcut());
+      button.textContent = text;
+      button.title = "点击后录制新的组合键";
+      button.setAttribute("aria-label", "截图快捷键：" + text + "，点击录制新的组合键");
+    }
+    if (restore) {
+      restore.disabled = hotkeyRecording || hotkeySaving;
+    }
+  }
+
+  function startHotkeyRecording() {
+    if (hotkeyRecording || hotkeySaving) {
+      return;
+    }
+    hotkeyRecording = true;
+    hideInlineError(byId("capture-hotkey-error"));
+    renderHotkey();
+  }
+
+  function cancelHotkeyRecording() {
+    if (!hotkeyRecording) {
+      return;
+    }
+    hotkeyRecording = false;
+    hideInlineError(byId("capture-hotkey-error"));
+    renderHotkey();
+  }
+
+  function submitHotkey(combo) {
+    if (hotkeySaving) {
+      return;
+    }
+    var previous = captureShortcut();
+    hotkeyRecording = false;
+    hotkeySaving = true;
+    hideInlineError(byId("capture-hotkey-error"));
+    renderHotkey();
+    API.setCaptureHotkey(combo).then(function (result) {
+      hotkeySaving = false;
+      if (result && result.ok) {
+        var saved = String(result.shortcut || combo).trim() || combo;
+        /* The backend broadcasts `state-changed` as well, but applying the
+         * returned value here keeps the display deterministic. */
+        if (state && state.settings) {
+          state.settings.capture = LP.deepMerge(state.settings.capture || {}, {
+            regionShortcut: saved,
+          });
+        }
+        hideInlineError(byId("capture-hotkey-error"));
+        toast("已保存", "success");
+      } else {
+        /* Keep the saved settings untouched and restore the old display. */
+        if (state && state.settings) {
+          state.settings.capture = LP.deepMerge(state.settings.capture || {}, {
+            regionShortcut: previous,
+          });
+        }
+        showInlineError(
+          byId("capture-hotkey-error"),
+          (result && result.error) || "保存快捷键失败",
+          (result && result.hint) || ""
+        );
+      }
+      renderHotkey();
+    });
+  }
+
+  /* Capture-phase listener on window: while recording, the combo must not reach
+   * buttons, text fields or the other page shortcuts. */
+  function handleHotkeyKeydown(event) {
+    if (!hotkeyRecording || !event) {
+      return;
+    }
+    if (event.isComposing) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.repeat) {
+      return;
+    }
+    var key = String(event.key || "");
+    if (key === "Escape" || key === "Esc") {
+      cancelHotkeyRecording();
+      return;
+    }
+    if (HOTKEY_MODIFIER_KEYS[key]) {
+      /* Only modifiers so far: keep waiting. */
+      return;
+    }
+    var combo = hotkeyComboFromEvent(event);
+    if (!combo) {
+      if (!hotkeyKeyFromEvent(event)) {
+        showInlineError(
+          byId("capture-hotkey-error"),
+          "不支持这个主键。",
+          "请使用字母、数字、F1–F24、PrintScreen、空格、Tab 或方向键等。"
+        );
+      } else {
+        showInlineError(
+          byId("capture-hotkey-error"),
+          "需要至少一个修饰键。",
+          "请按住 Ctrl / Alt / Shift / Win 中的至少一个，再按主键。"
+        );
+      }
+      return;
+    }
+    submitHotkey(combo);
   }
 
   /* ---- Custom skills ----------------------------------------------------- */
@@ -2941,6 +3216,16 @@
     byId("picker-compact").addEventListener("change", function (event) {
       save({ picker: { compact: event.target.checked } });
     });
+    byId("capture-hotkey").addEventListener("click", startHotkeyRecording);
+    byId("capture-hotkey-restore").addEventListener("click", function () {
+      if (hotkeySaving) {
+        return;
+      }
+      hotkeyRecording = false;
+      submitHotkey("Win+Shift+X");
+    });
+    window.addEventListener("keydown", handleHotkeyKeydown, true);
+    window.addEventListener("blur", cancelHotkeyRecording);
     byId("panel-mode-scroll").addEventListener("click", function () {
       selectPanelMode("scroll");
     });

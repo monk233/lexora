@@ -6,6 +6,7 @@
         content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src ipc: http://ipc.localhost">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Lexora 设置</title>
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="settings.css">
 </head>
 <body>
@@ -163,7 +164,7 @@
           <div class="field">
             <div class="field-label">
               <span class="field-name">本地模型</span>
-              <p class="field-hint">启动后按功能自动选择：翻译用 Hy-MT2 1.8B，总结/解释用 Qwen2.5 3B</p>
+              <p class="field-hint">启动后按功能自动选择：翻译用 Hy-MT2 1.8B，总结/解释用 Qwen2.5 3B；Qwen2.5-VL 3B 支持截图图片理解</p>
             </div>
             <div class="field-control">
               <div class="local-models" id="local-models"></div>
@@ -221,6 +222,21 @@
               <input type="checkbox" id="picker-enabled">
               <span class="switch-track"><span class="switch-thumb"></span></span>
             </label>
+          </div>
+        </div>
+
+        <div class="field hotkey-field">
+          <div class="field-label">
+            <span class="field-name">截图快捷键</span>
+            <p class="field-hint">点击后按下新的组合键即可修改；需包含至少一个修饰键（Ctrl / Alt / Shift / Win）</p>
+          </div>
+          <div class="field-control">
+            <div class="inline-actions">
+              <button type="button" class="btn hotkey-display" id="capture-hotkey"
+                      title="点击后录制新的组合键">Win + Shift + X</button>
+              <button type="button" class="btn btn-ghost" id="capture-hotkey-restore">恢复默认</button>
+            </div>
+            <p class="inline-error" id="capture-hotkey-error" hidden></p>
           </div>
         </div>
 

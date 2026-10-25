@@ -134,6 +134,8 @@ pub struct CatalogEntry {
     pub languages: String,
     pub recommended: bool,
     pub installed: bool,
+    /// `true` for the multimodal model (Qwen2.5-VL 3B + projector).
+    pub vision: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -392,12 +394,24 @@ pub struct EngineService {
     download: Mutex<DownloadState>,
 }
 
-/// Which model role a request needs. Hy-MT2 is translation-specialised while
-/// Qwen2.5 3B handles summarization/explanation.
+/// Which model role a request needs. Hy-MT2 is translation-specialised,
+/// Qwen2.5 3B handles summarization/explanation, and Qwen2.5-VL (weights +
+/// multimodal projector) is the only role that can read images.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LocalRole {
     Translate,
     General,
+    Vision,
+}
+
+/// Error returned when local mode is selected but the VL model (or its
+/// projector) is not installed. Shared by `vision_stream` and the local chat
+/// config so both paths give the same actionable hint.
+fn local_vision_missing_error() -> EngineError {
+    EngineError::new(
+        "本地视觉模型未安装。",
+        "请在「设置 → 本地模型」下载 Qwen2.5-VL 3B（含视觉投影器），或切换到支持视觉的在线模型。",
+    )
 }
 
 impl EngineService {
@@ -513,7 +527,15 @@ impl EngineService {
     /// Resolves which installed model to use for a role. Preferred catalog model
     /// wins; any imported GGUF is used as a fallback so importing one model is
     /// enough to use the local engine.
+    ///
+    /// `Vision` is special: it only resolves the Qwen2.5-VL weights *and* its
+    /// multimodal projector, because llama.cpp cannot read images without it.
     fn model_for_role(&self, role: LocalRole) -> Option<String> {
+        if role == LocalRole::Vision {
+            return self
+                .installed_vision_model()
+                .map(|(model_file, _)| model_file);
+        }
         let installed = self.installed_local_models();
         if installed.is_empty() {
             return None;
@@ -521,6 +543,8 @@ impl EngineService {
         let preferred: [&str; 2] = match role {
             LocalRole::Translate => [models::TRANSLATION_MODEL_ID, models::GENERAL_MODEL_ID],
             LocalRole::General => [models::GENERAL_MODEL_ID, models::TRANSLATION_MODEL_ID],
+            // Handled above; kept exhaustive for clarity.
+            LocalRole::Vision => [models::VISION_MODEL_ID, models::VISION_MODEL_ID],
         };
         for id in preferred {
             if let Some(spec) = models::spec_by_id(id) {
@@ -533,6 +557,39 @@ impl EngineService {
             }
         }
         installed.first().map(|model| model.file.clone())
+    }
+
+    /// Multimodal projector that belongs to `model_file`, when it is installed.
+    /// A vision model is always loaded together with its projector — even for
+    /// text requests — so switching between text and image tasks does not
+    /// restart the server. A partially installed VL model (weights only) still
+    /// works as a plain text model.
+    fn mmproj_for_model(&self, model_file: &str) -> Option<String> {
+        let mmproj = models::spec_by_filename(model_file)?.mmproj?;
+        self.paths
+            .models_dir
+            .join(mmproj.filename)
+            .is_file()
+            .then(|| mmproj.filename.to_string())
+    }
+
+    /// The installed vision model as `(weights, projector)` file names. Both
+    /// files must exist; a lone projector or lone weights is not usable.
+    fn installed_vision_model(&self) -> Option<(String, String)> {
+        let spec = models::spec_by_id(models::VISION_MODEL_ID)?;
+        let mmproj = spec.mmproj?;
+        let has_weights = self.paths.models_dir.join(spec.filename).is_file();
+        let has_mmproj = self.paths.models_dir.join(mmproj.filename).is_file();
+        if has_weights && has_mmproj {
+            Some((spec.filename.to_string(), mmproj.filename.to_string()))
+        } else {
+            None
+        }
+    }
+
+    /// `true` when the local vision model (weights + projector) is installed.
+    pub fn has_local_vision(&self) -> bool {
+        self.installed_vision_model().is_some()
     }
 
     /// Model started by the settings "启动" button: translation-preferred.
@@ -585,24 +642,30 @@ impl EngineService {
         openai::stream_chat(&self.http, &config, messages, config.header_timeout()).await
     }
 
-    /// Streams a vision (screenshot) request through an online vision model.
+    /// Streams a vision (screenshot) request.
     ///
     /// `image_data_url` is a `data:image/png;base64,...` URL; `system` is the
-    /// rendered instruction. Local llama.cpp models cannot see images, so this
-    /// always requires an online OpenAI-compatible endpoint with a vision model.
+    /// rendered instruction. Online mode uses the configured OpenAI-compatible
+    /// endpoint; local mode uses the Qwen2.5-VL model together with its
+    /// multimodal projector (`--mmproj`), both loaded on demand by
+    /// [`llama::LocalServer::ensure_model`].
     pub async fn vision_stream(
         &self,
         image_data_url: &str,
         system: &str,
     ) -> Result<BoxStream<'static, Result<String, EngineError>>, EngineError> {
         let settings = self.settings.get();
-        if settings.is_local_mode() {
-            return Err(EngineError::new(
-                "本地模型不支持图片理解。",
-                "请在「设置 → 翻译服务」切换到在线 API，并使用支持视觉的模型（如 GPT-4o / Qwen-VL）；也可以改用「提取文字」。",
-            ));
+        // Local mode needs the VL weights *and* the projector; report a precise
+        // "not installed" error instead of a generic provider error.
+        if settings.is_local_mode() && !self.has_local_vision() {
+            return Err(local_vision_missing_error());
         }
-        let config = self.chat_config(&settings, LocalRole::General).await?;
+        let role = if settings.is_local_mode() {
+            LocalRole::Vision
+        } else {
+            LocalRole::General
+        };
+        let config = self.chat_config(&settings, role).await?;
         let instruction = system.trim();
         let system_content = if instruction.is_empty() {
             "请用简体中文解释这张截图的内容、文字信息和关键细节，使用 Markdown。"
@@ -620,9 +683,89 @@ impl EngineService {
             }),
         ];
         self.logger.info(&format!(
-            "vision stream start: model={} bytes={}",
+            "vision stream start: provider={} model={} bytes={}",
+            if config.local { "local" } else { "online" },
             config.model,
             image_data_url.len()
+        ));
+        openai::stream_chat(&self.http, &config, messages, config.header_timeout()).await
+    }
+
+    /// Streams a follow-up question about a screenshot that was already
+    /// explained. Works in both online and local modes: the conversation is
+    /// system explanation prompt → image → previous answer → earlier Q/A turns →
+    /// the new question, so the model keeps the screenshot in context.
+    ///
+    /// `history` contains `(question, answer)` pairs of the earlier follow-ups
+    /// (same shape as [`Self::followup_stream`]); only the most recent
+    /// [`prompts::FOLLOWUP_HISTORY_MAX_TURNS`] turns are sent and every block is
+    /// capped at [`prompts::FOLLOWUP_SEGMENT_MAX_CHARS`].
+    pub async fn vision_followup_stream(
+        &self,
+        image_data_url: &str,
+        previous_answer: &str,
+        question: &str,
+        history: &[(String, String)],
+    ) -> Result<BoxStream<'static, Result<String, EngineError>>, EngineError> {
+        let settings = self.settings.get();
+        let question = question.trim();
+        if question.is_empty() {
+            return Err(EngineError::new(
+                "没有可回答的问题。",
+                "请在结果下方的输入框中输入要继续提问的问题后再提交。",
+            ));
+        }
+        if settings.is_local_mode() && !self.has_local_vision() {
+            return Err(local_vision_missing_error());
+        }
+        let role = if settings.is_local_mode() {
+            LocalRole::Vision
+        } else {
+            LocalRole::General
+        };
+        let config = self.chat_config(&settings, role).await?;
+
+        let recent = if history.len() > prompts::FOLLOWUP_HISTORY_MAX_TURNS {
+            &history[history.len() - prompts::FOLLOWUP_HISTORY_MAX_TURNS..]
+        } else {
+            history
+        };
+        let mut messages = vec![
+            json!({"role": "system", "content": prompts::DEFAULT_EXPLAIN_IMAGE_PROMPT}),
+            json!({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "请分析这张截图。"},
+                    {"type": "image_url", "image_url": {"url": image_data_url}},
+                ],
+            }),
+        ];
+        let previous =
+            prompts::truncate_chars(previous_answer.trim(), prompts::FOLLOWUP_SEGMENT_MAX_CHARS);
+        if !previous.is_empty() {
+            messages.push(json!({"role": "assistant", "content": previous}));
+        }
+        for (turn_question, turn_answer) in recent {
+            let turn_question =
+                prompts::truncate_chars(turn_question.trim(), prompts::FOLLOWUP_SEGMENT_MAX_CHARS);
+            let turn_answer =
+                prompts::truncate_chars(turn_answer.trim(), prompts::FOLLOWUP_SEGMENT_MAX_CHARS);
+            if turn_question.is_empty() && turn_answer.is_empty() {
+                continue;
+            }
+            messages.push(json!({"role": "user", "content": turn_question}));
+            messages.push(json!({"role": "assistant", "content": turn_answer}));
+        }
+        messages.push(json!({
+            "role": "user",
+            "content": prompts::truncate_chars(question, prompts::FOLLOWUP_SEGMENT_MAX_CHARS),
+        }));
+        self.logger.info(&format!(
+            "vision followup stream start: provider={} model={} bytes={} history={}",
+            if config.local { "local" } else { "online" },
+            config.model,
+            image_data_url.len(),
+            recent.len()
         ));
         openai::stream_chat(&self.http, &config, messages, config.header_timeout()).await
     }
@@ -826,9 +969,10 @@ impl EngineService {
         result
     }
 
-    /// Resolves the endpoint used for translation / assist. In local mode the
-    /// user must have started the engine explicitly ("启动"); the model is then
-    /// picked by role and swapped automatically when necessary.
+    /// Resolves the endpoint used for translation / assist / vision. In local
+    /// mode the user must have started the engine explicitly ("启动"); the model
+    /// is then picked by role and swapped automatically when necessary. The
+    /// vision role additionally loads the model's multimodal projector.
     async fn chat_config(
         &self,
         settings: &Settings,
@@ -842,13 +986,25 @@ impl EngineService {
                 ));
             }
             let Some(model_file) = self.model_for_role(role) else {
-                return Err(EngineError::new(
-                    "尚未安装本地模型。",
-                    "请在「设置 → 本地模型」下载 Hy-MT2（翻译）或 Qwen2.5 3B（通用），也可以导入 GGUF 文件。",
-                ));
+                return Err(if role == LocalRole::Vision {
+                    local_vision_missing_error()
+                } else {
+                    EngineError::new(
+                        "尚未安装本地模型。",
+                        "请在「设置 → 本地模型」下载 Hy-MT2（翻译）或 Qwen2.5 3B（通用），也可以导入 GGUF 文件。",
+                    )
+                });
             };
+            let mmproj_file = self.mmproj_for_model(&model_file);
             self.local
-                .ensure_model(&self.paths, settings, &model_file, &self.http, &self.logger)
+                .ensure_model(
+                    &self.paths,
+                    settings,
+                    &model_file,
+                    mmproj_file.as_deref(),
+                    &self.http,
+                    &self.logger,
+                )
                 .await?;
             self.local_config(settings, &model_file)
         } else {
@@ -1086,26 +1242,113 @@ impl EngineService {
         })?;
 
         let final_path = self.paths.models_dir.join(spec.filename);
-        if final_path.is_file() {
+        let mmproj_installed = spec
+            .mmproj
+            .map(|mmproj| self.paths.models_dir.join(mmproj.filename).is_file())
+            .unwrap_or(true);
+        // A vision model is only installed once weights *and* projector exist,
+        // so a retry after a failed projector download resumes at phase 2.
+        if final_path.is_file() && mmproj_installed {
             self.logger
                 .info(&format!("model already installed: {}", spec.filename));
             return Ok(self.model_info_for(&final_path));
         }
 
-        let part = models::part_path(&self.paths.cache_dir, spec.filename);
-        // Reserves this model id in the registry; a second request for the same
+        // Phase 1: model weights (skipped when a previous attempt already saved
+        // them but failed on the projector).
+        if !final_path.is_file() {
+            self.download_model_file(
+                &app,
+                spec.id,
+                spec.filename,
+                spec.size_bytes,
+                models::download_urls(&spec),
+                "也可以手动下载该 GGUF 文件，然后通过「导入 GGUF」加入模型列表。",
+            )
+            .await?;
+        } else {
+            self.logger.info(&format!(
+                "model weights already present, skipping download: {}",
+                spec.filename
+            ));
+        }
+
+        // Phase 2: multimodal projector (same model id, distinct filename in the
+        // progress events so the UI shows both stages).
+        if let Some(mmproj) = spec.mmproj {
+            let mmproj_path = self.paths.models_dir.join(mmproj.filename);
+            if !mmproj_path.is_file() {
+                self.logger.info(&format!(
+                    "downloading vision projector {} for {}",
+                    mmproj.filename, spec.filename
+                ));
+                self.download_model_file(
+                    &app,
+                    spec.id,
+                    mmproj.filename,
+                    mmproj.size_bytes,
+                    models::mmproj_download_urls(&mmproj),
+                    "请重试：已下载完成的主模型会自动跳过，只重新下载投影器；也可手动把该文件放入「设置 → 数据目录」的 models 目录。",
+                )
+                .await
+                .map_err(|error| {
+                    // Cancellation is not a projector failure: keep its wording.
+                    if error.message.contains("已取消") {
+                        return error;
+                    }
+                    EngineError::new(
+                        format!("视觉投影器下载失败：{}", error.message),
+                        format!(
+                            "主模型已安装，只差视觉投影器（{}）。{}",
+                            mmproj.filename, error.hint
+                        ),
+                    )
+                })?;
+            } else {
+                self.logger.info(&format!(
+                    "vision projector already present: {}",
+                    mmproj.filename
+                ));
+            }
+        }
+
+        self.logger.info(&format!(
+            "model installed: {} ({} bytes)",
+            spec.filename, spec.size_bytes
+        ));
+        Ok(self.model_info_for(&final_path))
+    }
+
+    /// Downloads one file of a model (weights or vision projector) with the
+    /// ModelScope → Hugging Face fallback, size verification, cancellation and
+    /// `.part` cleanup. The model id is registered in the download registry for
+    /// the duration of the phase; phases run sequentially so the second phase
+    /// reuses the same id with a different filename.
+    async fn download_model_file(
+        &self,
+        app: &tauri::AppHandle,
+        spec_id: &str,
+        filename: &str,
+        size_bytes: u64,
+        urls: Vec<&'static str>,
+        manual_hint: &str,
+    ) -> Result<(), EngineError> {
+        let part = models::part_path(&self.paths.cache_dir, filename);
+        let final_path = self.paths.models_dir.join(filename);
+        // Reserves the model id in the registry; a second request for the same
         // model fails with "该模型正在下载中" while other models stay free.
-        let mut reporter = DownloadReporter::begin(
-            &app,
-            &self.download,
-            "model",
-            spec.id,
-            spec.filename,
-            spec.size_bytes,
-        )?;
+        let mut reporter =
+            DownloadReporter::begin(app, &self.download, "model", spec_id, filename, size_bytes)?;
+        if urls.is_empty() {
+            let error = EngineError::new(
+                "该模型没有可用的下载地址。",
+                "请在「设置 → 本地模型」中重试，或手动下载后导入。",
+            );
+            reporter.fail(&format!("{} {}", error.message, error.hint));
+            return Err(error);
+        }
         let mut last_error: Option<EngineError> = None;
         // ModelScope first (mainland-friendly), Hugging Face as fallback.
-        let urls = models::download_urls(&spec);
         for (index, url) in urls.iter().enumerate() {
             if reporter.is_cancelled() {
                 let _ = std::fs::remove_file(&part);
@@ -1118,9 +1361,9 @@ impl EngineService {
                 reporter.status("downloading");
             }
             self.logger
-                .info(&format!("downloading model {} from {}", spec.filename, url));
+                .info(&format!("downloading model {} from {}", filename, url));
             let attempt = self
-                .download_to_file(url, &part, &mut reporter, Some(spec.size_bytes))
+                .download_to_file(url, &part, &mut reporter, Some(size_bytes))
                 .await;
             match attempt {
                 Ok(()) => {
@@ -1145,21 +1388,18 @@ impl EngineService {
             reporter.fail(&format!("{} {}", error.message, error.hint));
             return Err(EngineError::new(
                 error.message,
-                format!(
-                    "{} 也可以手动下载该 GGUF 文件，然后通过「导入 GGUF」加入模型列表。",
-                    error.hint
-                ),
+                format!("{} {manual_hint}", error.hint),
             ));
         }
 
         reporter.status("verifying");
         let actual = std::fs::metadata(&part).map(|meta| meta.len()).unwrap_or(0);
-        if actual != spec.size_bytes {
+        if actual != size_bytes {
             let _ = std::fs::remove_file(&part);
             let error = EngineError::new(
                 format!(
                     "模型文件大小校验失败（期望 {}，实际 {}）。",
-                    models::format_size(spec.size_bytes),
+                    models::format_size(size_bytes),
                     models::format_size(actual)
                 ),
                 "下载可能未完成或镜像文件已更新：请重试，或手动下载 GGUF 文件后导入。",
@@ -1180,10 +1420,10 @@ impl EngineService {
         }
         reporter.succeed();
         self.logger.info(&format!(
-            "model installed: {} ({} bytes)",
-            spec.filename, spec.size_bytes
+            "model file saved: {} ({} bytes)",
+            filename, size_bytes
         ));
-        Ok(self.model_info_for(&final_path))
+        Ok(())
     }
 
     pub async fn install_engine(&self, app: tauri::AppHandle) -> Result<(), EngineError> {
@@ -1359,7 +1599,7 @@ impl EngineService {
 
     pub fn remove_model(&self, file: &str) -> Result<(), EngineError> {
         let file = models::clean_model_file_name(file)?;
-        if self.local.is_running_model(&file) {
+        if self.local.is_running_file(&file) {
             self.local.stop(Some(&self.logger));
         }
         let path = self.paths.models_dir.join(&file);
@@ -1376,6 +1616,23 @@ impl EngineService {
             )
         })?;
         self.logger.info(&format!("model removed: {file}"));
+
+        // A vision model consists of the weights + a projector; remove the
+        // projector too so no orphaned ~800 MB file stays behind.
+        if let Some(mmproj) = models::spec_by_filename(&file).and_then(|spec| spec.mmproj) {
+            let mmproj_path = self.paths.models_dir.join(mmproj.filename);
+            if mmproj_path.is_file() {
+                match std::fs::remove_file(&mmproj_path) {
+                    Ok(()) => self
+                        .logger
+                        .info(&format!("vision projector removed: {}", mmproj.filename)),
+                    Err(error) => self.logger.warn(&format!(
+                        "failed to remove vision projector {}: {error}",
+                        mmproj.filename
+                    )),
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1389,6 +1646,7 @@ impl EngineService {
                 "请先在「设置 → 本地模型」下载 Hy-MT2（翻译）或 Qwen2.5 3B（通用），也可以导入 GGUF 文件。",
             ));
         };
+        let mmproj_file = self.mmproj_for_model(&model_file);
         self.local_desired.store(true, Ordering::Release);
         let result = self
             .local
@@ -1396,6 +1654,7 @@ impl EngineService {
                 &self.paths,
                 &settings,
                 &model_file,
+                mmproj_file.as_deref(),
                 &self.http,
                 &self.logger,
             )
@@ -1866,6 +2125,9 @@ mod tests {
         let env = test_env();
         for spec in models::CATALOG.iter() {
             std::fs::write(env.paths.models_dir.join(spec.filename), b"fake").unwrap();
+            if let Some(mmproj) = spec.mmproj {
+                std::fs::write(env.paths.models_dir.join(mmproj.filename), b"fake").unwrap();
+            }
         }
         assert_eq!(
             env.service.model_for_role(LocalRole::Translate),
@@ -1876,8 +2138,48 @@ mod tests {
             Some(models::CATALOG[1].filename.to_string())
         );
         assert_eq!(
+            env.service.model_for_role(LocalRole::Vision),
+            Some(models::CATALOG[2].filename.to_string())
+        );
+        assert!(env.service.has_local_vision());
+        assert_eq!(
             env.service.default_local_model(),
             Some(models::CATALOG[0].filename.to_string())
+        );
+    }
+
+    #[test]
+    fn vision_model_needs_weights_and_projector() {
+        let env = test_env();
+        let spec = &models::CATALOG[2];
+        let mmproj = spec.mmproj.expect("vision model must ship a projector");
+
+        // Weights only: the model cannot see images, so the vision role must
+        // not resolve it (text roles may still use it as a plain GGUF).
+        std::fs::write(env.paths.models_dir.join(spec.filename), b"fake").unwrap();
+        assert!(!env.service.has_local_vision());
+        assert_eq!(env.service.model_for_role(LocalRole::Vision), None);
+        assert_eq!(
+            env.service.model_for_role(LocalRole::Translate),
+            Some(spec.filename.to_string())
+        );
+
+        // Weights + projector: vision role resolves and the projector is picked
+        // up automatically for the local server.
+        std::fs::write(env.paths.models_dir.join(mmproj.filename), b"fake").unwrap();
+        assert!(env.service.has_local_vision());
+        assert_eq!(
+            env.service.model_for_role(LocalRole::Vision),
+            Some(spec.filename.to_string())
+        );
+        assert_eq!(
+            env.service.mmproj_for_model(spec.filename),
+            Some(mmproj.filename.to_string())
+        );
+        // Text models never load a projector.
+        assert_eq!(
+            env.service.mmproj_for_model(models::CATALOG[1].filename),
+            None
         );
     }
 
@@ -1895,10 +2197,13 @@ mod tests {
         assert_eq!(installed[0].size_bytes, 9);
 
         let catalog = env.service.catalog();
-        assert_eq!(catalog.len(), 2);
+        assert_eq!(catalog.len(), 3);
         assert!(!catalog[0].installed);
         assert!(catalog[1].installed);
         assert_eq!(catalog[1].filename, models::CATALOG[1].filename);
+        assert_eq!(catalog[2].id, "qwen2.5-vl-3b");
+        assert!(catalog[2].vision);
+        assert!(!catalog[2].installed);
     }
 
     #[test]
@@ -1907,6 +2212,15 @@ mod tests {
         let catalog = env.service.catalog();
         assert!(catalog.iter().all(|entry| !entry.installed));
         assert!(catalog.iter().any(|entry| entry.recommended));
+        assert!(catalog.iter().any(|entry| entry.vision));
+        let value = serde_json::to_value(&catalog[2]).unwrap();
+        assert_eq!(
+            value.get("vision").and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        // camelCase serialization feeds the settings page directly.
+        assert!(value.get("sizeBytes").is_some());
+        assert!(value.get("vision").is_some());
     }
 
     #[test]
@@ -1946,11 +2260,14 @@ mod tests {
     }
 
     #[test]
-    fn vision_requires_online_mode() {
+    fn local_vision_without_model_reports_install_hint() {
         let env = test_env();
+        std::fs::write(env.paths.llama_binary(), b"stub").unwrap();
         env.store
             .update_json(json!({"provider": {"mode": "local"}}))
             .unwrap();
+        // No Qwen2.5-VL installed: the error must point at the download instead
+        // of claiming "local models cannot read images" like before.
         let error = block_on(
             env.service
                 .vision_stream("data:image/png;base64,AA", "解释这张图"),
@@ -1958,11 +2275,44 @@ mod tests {
         .err()
         .expect("expected engine error");
         assert!(
-            error.message.contains("本地模型不支持图片理解"),
+            error.message.contains("本地视觉模型未安装"),
             "message: {}",
             error.message
         );
-        assert!(!error.hint.is_empty());
+        assert!(
+            error.hint.contains("Qwen2.5-VL") && error.hint.contains("设置"),
+            "hint: {}",
+            error.hint
+        );
+        assert!(!env.service.has_local_vision());
+    }
+
+    #[test]
+    fn local_vision_requires_started_engine() {
+        let env = test_env();
+        std::fs::write(env.paths.llama_binary(), b"stub").unwrap();
+        let spec = &models::CATALOG[2];
+        let mmproj = spec.mmproj.expect("vision model must ship a projector");
+        std::fs::write(env.paths.models_dir.join(spec.filename), b"fake").unwrap();
+        std::fs::write(env.paths.models_dir.join(mmproj.filename), b"fake").unwrap();
+        env.store
+            .update_json(json!({"provider": {"mode": "local"}}))
+            .unwrap();
+        // Model installed but the engine was never started: the request must not
+        // auto-start it (same rule as translation).
+        assert!(env.service.has_local_vision());
+        let error = block_on(
+            env.service
+                .vision_stream("data:image/png;base64,AA", "解释这张图"),
+        )
+        .err()
+        .expect("expected engine error");
+        assert!(
+            error.message.contains("未启动"),
+            "message: {}",
+            error.message
+        );
+        assert!(error.hint.contains("启动"), "hint: {}", error.hint);
     }
 
     #[test]
@@ -1978,6 +2328,61 @@ mod tests {
         .err()
         .expect("expected engine error");
         assert!(error.message.contains("配置"), "message: {}", error.message);
+    }
+
+    #[test]
+    fn vision_followup_requires_a_question() {
+        let env = test_env();
+        let error = block_on(env.service.vision_followup_stream(
+            "data:image/png;base64,AA",
+            "previous answer",
+            "   ",
+            &[("first?".to_string(), "first answer".to_string())],
+        ))
+        .err()
+        .expect("expected engine error");
+        assert!(error.message.contains("问题"), "message: {}", error.message);
+        assert!(!error.hint.is_empty());
+    }
+
+    #[test]
+    fn vision_followup_online_requires_configuration() {
+        let env = test_env();
+        env.store
+            .update_json(json!({"provider": {"online": {"baseUrl": ""}}}))
+            .unwrap();
+        let error = block_on(env.service.vision_followup_stream(
+            "data:image/png;base64,AA",
+            "previous answer",
+            "为什么？",
+            &[],
+        ))
+        .err()
+        .expect("expected engine error");
+        assert!(error.message.contains("配置"), "message: {}", error.message);
+    }
+
+    #[test]
+    fn vision_followup_local_without_vision_model_reports_install_hint() {
+        let env = test_env();
+        std::fs::write(env.paths.llama_binary(), b"stub").unwrap();
+        env.store
+            .update_json(json!({"provider": {"mode": "local"}}))
+            .unwrap();
+        let error = block_on(env.service.vision_followup_stream(
+            "data:image/png;base64,AA",
+            "previous answer",
+            "图片里还有什么？",
+            &[],
+        ))
+        .err()
+        .expect("expected engine error");
+        assert!(
+            error.message.contains("本地视觉模型未安装"),
+            "message: {}",
+            error.message
+        );
+        assert!(error.hint.contains("Qwen2.5-VL"), "hint: {}", error.hint);
     }
 
     #[test]
@@ -2339,6 +2744,24 @@ mod tests {
             .remove_model(models::CATALOG[0].filename)
             .unwrap();
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn removing_vision_model_also_removes_projector() {
+        let env = test_env();
+        let spec = &models::CATALOG[2];
+        let mmproj = spec.mmproj.expect("vision model must ship a projector");
+        let weights = env.paths.models_dir.join(spec.filename);
+        let projector = env.paths.models_dir.join(mmproj.filename);
+        std::fs::write(&weights, b"x").unwrap();
+        std::fs::write(&projector, b"x").unwrap();
+        assert!(env.service.has_local_vision());
+
+        env.service.remove_model(spec.filename).unwrap();
+        assert!(!weights.exists());
+        // No orphaned ~800MB projector file is left behind.
+        assert!(!projector.exists());
+        assert!(!env.service.has_local_vision());
     }
 
     #[test]

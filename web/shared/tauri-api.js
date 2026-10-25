@@ -216,7 +216,7 @@
     return (mockListeners[eventName] || []).length > 0;
   }
 
-  function mockCatalogEntry(id, name, description, filename, sizeBytes, recommended, installed) {
+  function mockCatalogEntry(id, name, description, filename, sizeBytes, recommended, installed, vision) {
     return {
       id: id,
       name: name,
@@ -227,6 +227,7 @@
       languages: "多语言",
       recommended: !!recommended,
       installed: !!installed,
+      vision: !!vision,
     };
   }
 
@@ -260,7 +261,7 @@
         license: "MIT",
       },
       settings: {
-        version: 1,
+        version: 4,
         picker: {
           enabled: true,
           skills: ["translate", "summarize", "explain", "polish", "read", "copy", "screenshot", "search"],
@@ -296,6 +297,9 @@
           startAtLogin: false,
           theme: "system",
         },
+        capture: {
+          regionShortcut: "Win+Shift+X",
+        },
       },
       engine: {
         mode: "online",
@@ -328,6 +332,16 @@
           2104932768,
           false,
           false
+        ),
+        mockCatalogEntry(
+          "qwen2.5-vl-3b",
+          "Qwen2.5-VL 3B（视觉模型）",
+          "视觉模型：可理解截图内容，包含 mmproj 视觉投影器；适合内存 16GB 以上的电脑",
+          "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf",
+          1929901056,
+          false,
+          false,
+          true
         ),
       ],
       download: null,
@@ -472,6 +486,10 @@
     if (settings.provider.mode !== "local") {
       settings.provider.mode = "online";
     }
+    var capture = settings.capture && typeof settings.capture === "object" ? settings.capture : {};
+    settings.capture = {
+      regionShortcut: normalizeMockShortcut(capture.regionShortcut) || "Win+Shift+X",
+    };
     mockStore.picker.pinned = false;
   }
 
@@ -752,27 +770,202 @@
     };
   }
 
-  function startMockCaptureAi(requestId, action) {
-    var text =
-      action === 'translate'
-        ? '[MOCK] 图片中的文字已翻译为中文。'
-        : action === 'ocr'
-          ? '[MOCK] 这是从图片中提取的文字。'
-          : '[MOCK] 这是对图片内容的解释：画面包含一段说明文字和一个矩形区域。';
-    var chunks = [];
-    for (var i = 0; i < text.length; i += 4) {
-      chunks.push(text.slice(i, i + 4));
-    }
+  /* Screenshot skill preview: a simulated picker result panel. `picker-image`
+   * opens the panel, `translate-event` streams the answer (same channel as the
+   * text skills). `?mockImage=ocr|translate|explain|custom` triggers it on load;
+   * `?mockImageFail=1` previews the error panel. */
+  var MOCK_IMAGE_TEXTS = {
+    ocr: "Lexora screenshot preview\nDrag a rectangle to select an area.\n复制 / 提取文字 / 翻译 / 解释图片",
+    translate: "这是截图文字的模拟翻译结果：Lexora 截图预览。拖动矩形选择一个区域即可截取。",
+    explain:
+      "## 图片内容（预览）\n\n画面是 Lexora 截图预览：深色背景上有一段标题文字「Lexora screenshot preview」，下方是拖选提示与工具条说明。\n\n- 主要元素：标题、提示文字、矩形选区\n- 这是浏览器预览模式下的模拟输出",
+    custom:
+      "## 图片技能结果（预览）\n\n- 检测到一段英文标题\n- 画面中包含操作提示\n\n> 浏览器预览模式：由本地 mock 数据生成。",
+  };
+
+  function startMockImageStream(requestId, action) {
+    var text = MOCK_IMAGE_TEXTS[action] || MOCK_IMAGE_TEXTS.explain;
+    var step = action === "ocr" ? 12 : 6;
     var index = 0;
     var timer = window.setInterval(function () {
-      if (index >= chunks.length) {
+      if (index >= text.length) {
         window.clearInterval(timer);
-        mockEmit('capture-event', { requestId: requestId, type: 'done' });
+        mockEmit("translate-event", { requestId: requestId, type: "done" });
         return;
       }
-      mockEmit('capture-event', { requestId: requestId, type: 'chunk', text: chunks[index] });
-      index += 1;
-    }, 42);
+      mockEmit("translate-event", {
+        requestId: requestId,
+        type: "chunk",
+        text: text.slice(index, index + step),
+      });
+      index += step;
+    }, 45);
+  }
+
+  function mockPickerImage(action, options) {
+    var opts = options || {};
+    var requestId = String(opts.requestId || "capture-" + Date.now().toString(36));
+    var labels = {
+      ocr: "提取文字",
+      translate: "翻译",
+      explain: "解释图片",
+      custom: opts.label || "图片技能",
+    };
+    mockEmit("picker-image", {
+      requestId: requestId,
+      action: action,
+      skillId: opts.skillId || "",
+      label: labels[action] || "截图",
+      targetLang: opts.targetLang || "auto",
+      clipboard: true,
+      hint: "截图已复制到剪贴板",
+    });
+    if (opts.error) {
+      window.setTimeout(function () {
+        mockEmit("translate-event", {
+          requestId: requestId,
+          type: "error",
+          message: String(opts.error),
+          hint: opts.hint || "请在「设置 → 翻译服务」配置支持视觉的模型。",
+        });
+      }, 420);
+      return requestId;
+    }
+    window.setTimeout(function () {
+      startMockImageStream(requestId, action);
+    }, 300);
+    return requestId;
+  }
+
+  function scheduleMockPickerImage() {
+    var query = String(window.location.search || "");
+    var match = /[?&]mockImage=([a-z]+)/.exec(query);
+    if (!match) {
+      return;
+    }
+    var action =
+      ["ocr", "translate", "explain", "custom"].indexOf(match[1]) >= 0
+        ? match[1]
+        : "explain";
+    var failed = /[?&]mockImageFail=1(?:&|$)/.test(query);
+    scheduleMockPickerData(80);
+    window.setTimeout(function () {
+      mockPickerImage(action, {
+        error: failed ? "模拟错误：视觉模型未配置" : "",
+      });
+    }, 650);
+  }
+
+  /* Console helper for manual UI checks: `__mockPickerImage("translate")`. */
+  window.__mockPickerImage = function (action, options) {
+    return mockPickerImage(String(action || "explain"), options || {});
+  };
+
+  var MOCK_NAMED_KEYS = {
+    printscreen: "PrintScreen",
+    print: "PrintScreen",
+    prtsc: "PrintScreen",
+    space: "Space",
+    spacebar: "Space",
+    tab: "Tab",
+    enter: "Enter",
+    return: "Enter",
+    esc: "Esc",
+    escape: "Esc",
+    backspace: "Backspace",
+    insert: "Insert",
+    ins: "Insert",
+    delete: "Delete",
+    del: "Delete",
+    home: "Home",
+    end: "End",
+    pageup: "PageUp",
+    pgup: "PageUp",
+    pagedown: "PageDown",
+    pgdn: "PageDown",
+    up: "Up",
+    arrowup: "Up",
+    down: "Down",
+    arrowdown: "Down",
+    left: "Left",
+    arrowleft: "Left",
+    right: "Right",
+    arrowright: "Right",
+  };
+
+  function canonicalMockKey(token) {
+    if (/^[a-z]$/.test(token)) {
+      return token.toUpperCase();
+    }
+    if (/^[0-9]$/.test(token)) {
+      return token;
+    }
+    var fn = /^f([1-9]|1[0-9]|2[0-4])$/.exec(token);
+    if (fn) {
+      return "F" + fn[1];
+    }
+    return MOCK_NAMED_KEYS[token] || "";
+  }
+
+  /* Mirrors `settings::normalize_shortcut` for browser preview. */
+  function normalizeMockShortcut(raw) {
+    var tokens = String(raw == null ? "" : raw)
+      .split("+")
+      .map(function (part) {
+        return part.trim().toLowerCase();
+      });
+    if (!tokens.length) {
+      return "";
+    }
+    var flags = { win: false, ctrl: false, alt: false, shift: false };
+    var key = "";
+    for (var index = 0; index < tokens.length; index += 1) {
+      var token = tokens[index];
+      if (!token) {
+        return "";
+      }
+      if (token === "win" || token === "windows" || token === "meta" || token === "super" || token === "cmd") {
+        flags.win = true;
+        continue;
+      }
+      if (token === "ctrl" || token === "control") {
+        flags.ctrl = true;
+        continue;
+      }
+      if (token === "alt" || token === "option") {
+        flags.alt = true;
+        continue;
+      }
+      if (token === "shift") {
+        flags.shift = true;
+        continue;
+      }
+      if (key) {
+        return "";
+      }
+      key = canonicalMockKey(token);
+      if (!key) {
+        return "";
+      }
+    }
+    if (!(flags.win || flags.ctrl || flags.alt || flags.shift) || !key) {
+      return "";
+    }
+    var parts = [];
+    if (flags.win) {
+      parts.push("Win");
+    }
+    if (flags.ctrl) {
+      parts.push("Ctrl");
+    }
+    if (flags.alt) {
+      parts.push("Alt");
+    }
+    if (flags.shift) {
+      parts.push("Shift");
+    }
+    parts.push(key);
+    return parts.join("+");
   }
 
   function mockHandle(command, args) {
@@ -784,18 +977,46 @@
       /* ---- picker ---- */
       case "picker_ready":
         scheduleMockPickerData(120);
+        scheduleMockPickerImage();
         return { ok: true };
       case "start_capture":
         return { ok: true, monitors: 1 };
       case "capture_monitor_info":
         return mockCaptureMonitorInfo(args.index);
+      case "capture_ready":
+        return { ok: true };
       case "capture_copy":
         return { ok: true };
-      case "capture_ocr":
-        return { ok: true, text: "这是从图片中提取的模拟文字。", hint: "" };
-      case "capture_ai":
-        startMockCaptureAi(String(args.requestId || ""), String(args.action || ""));
+      case "capture_skill": {
+        var captureRequestId = String(args.requestId || "");
+        if (!captureRequestId) {
+          return { ok: false, error: "缺少请求 ID" };
+        }
+        console.info(
+          "[mock] 截图技能：action=" +
+            String(args.action || "") +
+            "，图片已复制到剪贴板；真实应用会在 picker 窗口显示结果面板"
+        );
+        return { ok: true, clipboard: true };
+      }
+      case "capture_retry":
         return { ok: true };
+      case "capture_followup":
+        return { ok: true };
+      case "capture_set_hotkey": {
+        var normalizedShortcut = normalizeMockShortcut(args.shortcut);
+        if (!normalizedShortcut) {
+          return {
+            ok: false,
+            shortcut: String((mockStore.settings.capture || {}).regionShortcut || ""),
+            error: "快捷键格式无效。",
+            hint: "至少需要一个修饰键（Ctrl / Alt / Shift / Win）和一个主键。",
+          };
+        }
+        mockStore.settings.capture = { regionShortcut: normalizedShortcut };
+        mockPublishState();
+        return { ok: true, shortcut: normalizedShortcut };
+      }
       case "capture_close":
         return { ok: true };
       case "picker_close":
@@ -1210,6 +1431,10 @@
     onHidden: function (callback) {
       return subscribe("picker-hidden", callback);
     },
+    /* Screenshot skills hand their result panel to the picker (see §10.5). */
+    onImage: function (callback) {
+      return subscribe("picker-image", callback);
+    },
     close: function () {
       return safeInvoke("picker_close", {});
     },
@@ -1287,6 +1512,21 @@
         text: String(text == null ? "" : text),
         previousAnswer: String(previousAnswer == null ? "" : previousAnswer),
         question: String(question == null ? "" : question),
+        history: Array.isArray(history) ? history : [],
+      });
+    },
+    /* Re-runs the screenshot skill that opened the current image panel. */
+    captureRetry: function (requestId) {
+      return safeInvoke("capture_retry", {
+        requestId: String(requestId == null ? "" : requestId),
+      });
+    },
+    /* Follow-up on a screenshot panel (vision / OCR context kept in the shell). */
+    captureFollowup: function (requestId, question, previousAnswer, history) {
+      return safeInvoke("capture_followup", {
+        requestId: String(requestId == null ? "" : requestId),
+        question: String(question == null ? "" : question),
+        previousAnswer: String(previousAnswer == null ? "" : previousAnswer),
         history: Array.isArray(history) ? history : [],
       });
     },
@@ -1419,6 +1659,12 @@
     setStartAtLogin: function (enabled) {
       return safeInvoke("set_start_at_login", { enabled: !!enabled });
     },
+    /* Updates the region-screenshot shortcut (validates + re-registers it). */
+    setCaptureHotkey: function (shortcut) {
+      return safeInvoke("capture_set_hotkey", {
+        shortcut: String(shortcut == null ? "" : shortcut),
+      });
+    },
     checkUpdate: function () {
       return safeInvoke("check_update", {});
     },
@@ -1474,20 +1720,21 @@
     monitor: function (index) {
       return safeInvoke("capture_monitor_info", { index: Number(index) || 0 });
     },
+    /* Called once the screenshot is painted: the shell only then shows the
+     * overlay window (no black flash while the PNG loads). */
+    ready: function (index) {
+      return safeInvoke("capture_ready", { index: Number(index) || 0 });
+    },
     copy: function (index, rect) {
       return safeInvoke("capture_copy", {
         index: Number(index) || 0,
         rect: rect || {},
       });
     },
-    ocr: function (index, rect) {
-      return safeInvoke("capture_ocr", {
-        index: Number(index) || 0,
-        rect: rect || {},
-      });
-    },
-    ai: function (requestId, index, rect, action, skillId, targetLang) {
-      return safeInvoke("capture_ai", {
+    /* Runs a panel skill on the selected region: the shell copies the image to
+     * the clipboard, closes the overlays and shows the result in the picker. */
+    skill: function (requestId, index, rect, action, skillId, targetLang) {
+      return safeInvoke("capture_skill", {
         requestId: String(requestId == null ? "" : requestId),
         index: Number(index) || 0,
         rect: rect || {},
@@ -1496,15 +1743,21 @@
         targetLang: String(targetLang == null ? "" : targetLang),
       });
     },
+    retry: function (requestId) {
+      return safeInvoke("capture_retry", {
+        requestId: String(requestId == null ? "" : requestId),
+      });
+    },
+    followup: function (requestId, question, previousAnswer, history) {
+      return safeInvoke("capture_followup", {
+        requestId: String(requestId == null ? "" : requestId),
+        question: String(question == null ? "" : question),
+        previousAnswer: String(previousAnswer == null ? "" : previousAnswer),
+        history: Array.isArray(history) ? history : [],
+      });
+    },
     close: function () {
       return safeInvoke("capture_close", {});
-    },
-    onEvent: function (callback) {
-      return subscribe("capture-event", function (payload) {
-        if (typeof callback === "function") {
-          callback(payload);
-        }
-      });
     },
   };
 

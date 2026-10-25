@@ -506,22 +506,29 @@ fn config_from_settings(settings: &Settings) -> WorkerConfig {
             .map(|entry| normalize_program_name(entry))
             .filter(|entry| !entry.is_empty())
             .collect(),
-        picker_config: serde_json::json!({
-            "skills": &settings.picker.skills,
-            "compact": settings.picker.compact,
-            "defaultTargetLang": &settings.picker.default_target_lang,
-            // Search engine used by the built-in `search` skill.
-            "searchEngine": &settings.picker.search_engine,
-            // Remembered pin preference: the picker restores it when a panel opens.
-            "panelPinned": settings.picker.panel_pinned,
-            // Panel sizing mode: "auto" grows with content, "scroll" keeps a
-            // fixed window and scrolls the panel body.
-            "panelMode": &settings.picker.panel_mode,
-            // Only enabled custom skills are sent to the picker; the full
-            // definition (including the prompt) stays in settings.
-            "customSkills": enabled_custom_skill_metadata(settings),
-        }),
+        picker_config: picker_config(settings),
     }
+}
+
+/// `PickerData.config` as defined by contract §5.5, built from the current
+/// settings. Shared by the text-selection picker and the screenshot result
+/// panel (`capture_skill` opens the picker with the same config, §10.3).
+pub(crate) fn picker_config(settings: &Settings) -> serde_json::Value {
+    serde_json::json!({
+        "skills": &settings.picker.skills,
+        "compact": settings.picker.compact,
+        "defaultTargetLang": &settings.picker.default_target_lang,
+        // Search engine used by the built-in `search` skill.
+        "searchEngine": &settings.picker.search_engine,
+        // Remembered pin preference: the picker restores it when a panel opens.
+        "panelPinned": settings.picker.panel_pinned,
+        // Panel sizing mode: "auto" grows with content, "scroll" keeps a
+        // fixed window and scrolls the panel body.
+        "panelMode": &settings.picker.panel_mode,
+        // Only enabled custom skills are sent to the picker; the full
+        // definition (including the prompt) stays in settings.
+        "customSkills": enabled_custom_skill_metadata(settings),
+    })
 }
 
 /// Metadata (`{id,label,icon}`) of the custom skills enabled in

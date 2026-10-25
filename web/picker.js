@@ -74,6 +74,17 @@
     search: "搜索",
   };
 
+  /* Screenshot skills (picker-image, see contracts §10.5). They reuse the text
+   * skill result panel: only the loading wording, the source row and the
+   * renderer (OCR is literal text, everything else Markdown) differ. */
+  var IMAGE_ACTION_LABELS = {
+    ocr: "提取文字",
+    translate: "翻译",
+    explain: "解释图片",
+    custom: "图片技能",
+  };
+  var IMAGE_CLIPBOARD_HINT = "截图已复制到剪贴板";
+
   /* Target languages come from the shared language table (shared/constants.js)
    * so the picker dropdown stays in sync with the settings window. The fallback
    * list keeps the panel usable when the shared script failed to load. */
@@ -221,6 +232,11 @@
     /* Remembered pin preference (picker-data config.panelPinned): result
      * panels start pinned when enabled. */
     panelPinnedPreference: false,
+    /* Screenshot skill that opened the current panel:
+     * {requestId, action, skillId, label, targetLang, clipboard, hint}.
+     * null for ordinary text-skill panels (cleared when the panel is closed,
+     * reset or replaced). */
+    image: null,
     /* Follow-up conversation of the current AI panel. */
     followupHistory: [],
     followupAnswer: "",
@@ -282,6 +298,12 @@
     return (
       "translate-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8)
     );
+  }
+
+  /* Request ids for screenshot retry/follow-up streams (same translate-event
+   * channel as text skills, see contracts §10.3). */
+  function makeCaptureRequestId() {
+    return "capture-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
   }
 
   /* ---- Window sizing --------------------------------------------------- */
@@ -1094,6 +1116,9 @@
     abortActiveRequest();
     stopSpeech();
     resetFollowup();
+    // Switching skills (or opening a fresh screenshot panel) drops the image
+    // context: the next picker-image event records it again.
+    state.image = null;
     // A new/switched panel starts with keyboard capture off until the user
     // focuses the follow-up field.
     setInputActivated(false);
@@ -1104,6 +1129,12 @@
     setPanelCopyText("");
     panelTitle.textContent = title;
     setPanelLanguage("");
+    if (panelTargetSelect) {
+      // Screenshot translate panels disable the dropdown; every other panel
+      // starts with an editable language selector again.
+      panelTargetSelect.disabled = false;
+      panelTargetSelect.removeAttribute("title");
+    }
     pickerEl.classList.add("panel-mode");
     syncPanelPin();
     syncPanelFoot();
@@ -1151,6 +1182,7 @@
     abortActiveRequest();
     stopSpeech();
     resetFollowup();
+    state.image = null;
     panel.hidden = true;
     state.panelOpen = false;
     state.panelRetry = null;
@@ -1202,6 +1234,33 @@
   function setPanelCopyText(text) {
     state.panelCopyText = String(text == null ? "" : text);
     syncPanelFoot();
+  }
+
+  /* Writes the streamed answer into the result node. OCR panels are literal
+   * text (no Markdown); every other action reuses the Markdown renderer. */
+  function renderRequestResult(request) {
+    if (!request || !request.result) {
+      return;
+    }
+    if (request.plain) {
+      request.result.textContent = String(request.raw || "");
+      return;
+    }
+    renderMarkdownInto(request.result, request.raw);
+  }
+
+  /* Plain text for the speech/copy footer: OCR keeps its literal text (a
+   * Markdown flattener would eat characters), Markdown panels are flattened. */
+  function requestOutputText(request) {
+    if (!request) {
+      return "";
+    }
+    return request.plain ? String(request.raw || "") : plainFromMarkdown(request.raw);
+  }
+
+  /* Lightweight replacement for the text source block on screenshot panels. */
+  function imageNoteNode(text) {
+    return el("p", "panel-note", text);
   }
 
   function loadingNode(text) {
@@ -1420,7 +1479,15 @@
     if (!question) {
       return;
     }
-    if (!API || typeof API.followup !== "function") {
+    // Screenshot panels keep the image/OCR context in the shell, so their
+    // follow-up goes through `capture_followup` (same translate-event stream).
+    var imageMode = !!state.image;
+    if (imageMode) {
+      if (!API || typeof API.captureFollowup !== "function") {
+        showToast("当前版本不支持继续提问");
+        return;
+      }
+    } else if (!API || typeof API.followup !== "function") {
       showToast("当前版本不支持继续提问");
       return;
     }
@@ -1446,7 +1513,10 @@
     };
     activeRequest = request;
     state.translating = true;
-    API.followup(request.id, state.text, previousAnswer, question, history).then(
+    var stream = imageMode
+      ? API.captureFollowup(request.id, question, previousAnswer, history)
+      : API.followup(request.id, state.text, previousAnswer, question, history);
+    Promise.resolve(stream).then(
       function (response) {
         if (!request.active) {
           return;
@@ -1549,8 +1619,11 @@
   }
 
   /* Per-kind wording shared by the streaming panel (translate / polish /
-   * custom skill). */
+   * custom skill / screenshot skill). */
   function requestFailureTitle(request) {
+    if (request.kind === "image") {
+      return imageFailureTitle(request.imageAction, request.label);
+    }
     if (request.kind === "custom") {
       return (request.label || "自定义技能") + "失败";
     }
@@ -1564,6 +1637,9 @@
   }
 
   function emptyResultMessage(request) {
+    if (request.kind === "image") {
+      return imageEmptyMessage(request.imageAction, request.label);
+    }
     if (request.kind === "custom") {
       return "自定义技能没有返回结果（可能正在启动或服务不可用）。";
     }
@@ -1578,6 +1654,11 @@
 
   function retryRequest(request) {
     if (!request) {
+      return;
+    }
+    if (request.kind === "image") {
+      // Re-runs the stored screenshot with `capture_retry` (see retryImageRequest).
+      retryImageRequest();
       return;
     }
     if (request.kind === "custom" && request.skillId) {
@@ -1609,9 +1690,10 @@
       failTranslation(request, emptyResultMessage(request));
       return;
     }
-    renderMarkdownInto(request.result, request.raw);
-    setPanelSpeakText(plainFromMarkdown(request.raw));
-    setPanelCopyText(plainFromMarkdown(request.raw));
+    renderRequestResult(request);
+    var output = requestOutputText(request);
+    setPanelSpeakText(output);
+    setPanelCopyText(output);
     enableFollowup(request);
     resizePanelForContent();
   }
@@ -1630,9 +1712,10 @@
     var text = friendlyError(message || requestFailureTitle(request));
     if (String(request.raw || "").trim()) {
       appendErrorNote(request.target, text);
-      renderMarkdownInto(request.result, request.raw);
-      setPanelSpeakText(plainFromMarkdown(request.raw));
-      setPanelCopyText(plainFromMarkdown(request.raw));
+      renderRequestResult(request);
+      var output = requestOutputText(request);
+      setPanelSpeakText(output);
+      setPanelCopyText(output);
       resizePanelForContent();
       return;
     }
@@ -1640,16 +1723,18 @@
       requestFailureTitle(request),
       text,
       hint ||
-        hintForError(
-          text,
-          request.kind === "custom"
-            ? "custom"
-            : request.kind === "polish"
-              ? "polish"
-              : request.kind === "assist"
-                ? "assist"
-                : "translate"
-        ),
+        (request.kind === "image"
+          ? imageErrorHint(request, text)
+          : hintForError(
+              text,
+              request.kind === "custom"
+                ? "custom"
+                : request.kind === "polish"
+                  ? "polish"
+                  : request.kind === "assist"
+                    ? "assist"
+                    : "translate"
+            )),
       function () {
         retryRequest(request);
       }
@@ -1667,12 +1752,13 @@
         return;
       }
       var stickToBottom = isNearBottom(panelBody);
-      renderMarkdownInto(request.result, request.raw);
+      renderRequestResult(request);
       if (stickToBottom) {
         panelBody.scrollTop = panelBody.scrollHeight;
       }
-      setPanelSpeakText(plainFromMarkdown(request.raw));
-      setPanelCopyText(plainFromMarkdown(request.raw));
+      var output = requestOutputText(request);
+      setPanelSpeakText(output);
+      setPanelCopyText(output);
       // Streaming text also grows the auto window.
       resizePanelForContent();
     });
@@ -1703,9 +1789,9 @@
     }
     if (event.type === "error") {
       if (request.kind === "followup") {
-        failFollowup(request, event.message || "回答失败");
+        failFollowup(request, event.message || "回答失败", event.hint || "");
       } else {
-        failTranslation(request, event.message || requestFailureTitle(request));
+        failTranslation(request, event.message || requestFailureTitle(request), event.hint || "");
       }
     }
   }
@@ -1769,6 +1855,199 @@
         failTranslation(request, String(error));
       }
     );
+  }
+
+  /* ---- Screenshot result panels (picker-image) ------------------------- */
+
+  /* Screenshot skills reuse the text result panel (contracts §10.5): same head,
+   * footer, follow-up overlay and resize grip; only the source row (clipboard
+   * note instead of the selected text), the loading wording and the renderer
+   * differ (OCR is literal text, the others stream Markdown). */
+
+  function imageFailureTitle(action, label) {
+    if (action === "ocr") {
+      return "提取文字失败";
+    }
+    if (action === "translate") {
+      return "翻译失败";
+    }
+    if (action === "explain") {
+      return "解释失败";
+    }
+    return (label || IMAGE_ACTION_LABELS.custom) + "失败";
+  }
+
+  function imageEmptyMessage(action, label) {
+    if (action === "ocr") {
+      return "没有识别到文字，请重新截图并框选包含文字的区域。";
+    }
+    if (action === "translate") {
+      return "截图翻译没有返回结果（可能正在启动或服务不可用）。";
+    }
+    if (action === "explain") {
+      return "图片解释没有返回结果（可能正在启动或视觉模型不可用）。";
+    }
+    return (label || IMAGE_ACTION_LABELS.custom) + "没有返回结果（可能正在启动或视觉模型不可用）。";
+  }
+
+  /* Hint shown with a failed screenshot skill (the event hint wins when set). */
+  function imageErrorHint(request, message) {
+    var text = String(message || "");
+    if (/API Key|apiKey|401|403|429|Unauthorized|认证|服务地址|baseUrl|超时|timeout|未安装|未配置|模型|视觉/i.test(text)) {
+      return "请检查「设置 → 翻译服务」中的在线 API 或本地视觉模型（Qwen2.5-VL 3B）后重试。";
+    }
+    if (request.imageAction === "ocr") {
+      return "可重新截图并框选包含文字的清晰区域后重试。";
+    }
+    return "可点「重试」重新识别这张截图，或检查设置中的在线 API / 本地视觉模型。";
+  }
+
+  /* Builds the result panel for one screenshot request. Returns the active
+   * request object; the answer arrives through handleTranslateEvent
+   * (chunk/error/done) exactly like a text skill. */
+  function beginImageRequest(image, requestId) {
+    var action = image.action;
+    var label = image.label || IMAGE_ACTION_LABELS[action] || "截图结果";
+    openPanel(label);
+    // openPanel resets the image context, then the new one is recorded here.
+    state.image = image;
+    state.text = "";
+    if (action === "translate") {
+      // Screenshot translation shows the language that was used; changing it
+      // requires a new capture, so the selector is read-only (no stray
+      // picker_translate call from the text pipeline).
+      setPanelLanguage(image.targetLang || state.defaultTargetLang || "auto");
+      if (panelTargetSelect) {
+        panelTargetSelect.disabled = true;
+        panelTargetSelect.setAttribute("title", "截图翻译的目标语言，如需更换请重新框选截图");
+      }
+    } else {
+      setPanelLanguage("");
+    }
+    setPanelRetry(retryImageRequest);
+
+    var target = el("div");
+    if (image.hint || image.clipboard) {
+      var note = imageNoteNode(image.hint || IMAGE_CLIPBOARD_HINT);
+      // The shell still streams when the clipboard write failed; the note keeps
+      // the failure visible without blocking the result panel.
+      if (image.clipboard === false) {
+        note.classList.add("is-warn");
+      }
+      target.appendChild(note);
+    }
+    var loadingRow = loadingNode(action === "ocr" ? "正在识别文字…" : "正在处理…");
+    target.appendChild(loadingRow);
+    var result =
+      action === "ocr" ? el("pre", "result-text plain") : el("div", "result-text markdown");
+    target.appendChild(result);
+    setBody(target);
+
+    var request = {
+      id: requestId,
+      kind: "image",
+      imageAction: action,
+      skillId: image.skillId || "",
+      label: label,
+      plain: action === "ocr",
+      target: target,
+      result: result,
+      raw: "",
+      renderPending: false,
+      loading: loadingRow,
+      active: true,
+      failed: false,
+      sawContent: false,
+    };
+    activeRequest = request;
+    state.translating = true;
+    resizePanelForContent();
+    return request;
+  }
+
+  /* Footer/error "重试": new request id + `capture_retry`, which re-runs the
+   * action on the screenshot the shell kept (LastCapture). */
+  function retryImageRequest() {
+    var image = state.image;
+    if (!image || !state.panelOpen) {
+      return;
+    }
+    var requestId = makeCaptureRequestId();
+    var request = beginImageRequest(image, requestId);
+    if (!API || typeof API.captureRetry !== "function") {
+      failTranslation(request, "当前版本不支持重试截图结果", "请更新应用后再试。");
+      return;
+    }
+    var response;
+    try {
+      response = API.captureRetry(requestId);
+    } catch (error) {
+      failTranslation(request, String(error));
+      return;
+    }
+    // A synchronous error result (no promise) still gets the error panel.
+    if (!response || typeof response.then !== "function") {
+      if (!response || response.ok === false) {
+        failTranslation(
+          request,
+          (response && response.error) || "重试失败",
+          (response && response.hint) || ""
+        );
+      }
+      return;
+    }
+    response.then(
+      function (result) {
+        if (!request.active) {
+          return;
+        }
+        if (!result || !result.ok) {
+          failTranslation(
+            request,
+            (result && result.error) || "重试失败",
+            (result && result.hint) || ""
+          );
+        }
+      },
+      function (error) {
+        if (request.active) {
+          failTranslation(request, String(error));
+        }
+      }
+    );
+  }
+
+  /* picker-image: the screenshot overlay finished and the shell copied the crop
+   * to the clipboard; open the shared result panel and let the request id
+   * correlate the translate-event stream. */
+  function handleImageEvent(payload) {
+    var event = payload && typeof payload === "object" ? payload : {};
+    var requestId = String(event.requestId || "").trim();
+    if (!requestId) {
+      return;
+    }
+    var action = String(event.action || "").trim().toLowerCase();
+    if (!hasOwn(IMAGE_ACTION_LABELS, action)) {
+      action = "explain";
+    }
+    closeMenu();
+    abortActiveRequest();
+    stopSpeech();
+    // The image skill panel never renders the previous selection: picker-data
+    // sends text="" for captures and nothing here may depend on old text.
+    state.text = "";
+    state.targetLang = "";
+    var image = {
+      requestId: requestId,
+      action: action,
+      skillId: String(event.skillId || ""),
+      label:
+        String(event.label || "").trim() || IMAGE_ACTION_LABELS[action] || "截图结果",
+      targetLang: String(event.targetLang || ""),
+      clipboard: event.clipboard === true,
+      hint: String(event.hint || "").trim(),
+    };
+    beginImageRequest(image, requestId);
   }
 
   /* ---- Polish ---------------------------------------------------------- */
@@ -2251,6 +2530,8 @@
     abortActiveRequest();
     stopSpeech();
     setInputActivated(false);
+    // Hidden picker: no screenshot context may survive into the next payload.
+    state.image = null;
     if (state.panelPinned) {
       // The shell hid the picker; cancel the transient pin (preference stays).
       setPanelPinned(false, true, false);
@@ -2271,7 +2552,9 @@
   /* ---- Events ---------------------------------------------------------- */
 
   panelTargetSelect.addEventListener("change", function () {
-    if (state.panelOpen) {
+    // Screenshot translation panels keep the language they were captured with
+    // (the selector is disabled); never route that through the text pipeline.
+    if (state.panelOpen && !state.image) {
       translateSkill(panelTargetSelect.value);
     }
   });
@@ -2351,6 +2634,12 @@
   });
 
   API.onTranslateEvent(handleTranslateEvent);
+
+  /* Screenshot skills hand their result panel to the picker (picker-image,
+   * contracts §10.5); the streaming chunks then arrive on translate-event. */
+  if (API && typeof API.onImage === "function") {
+    API.onImage(handleImageEvent);
+  }
 
   API.onData(function (payload) {
     var data = payload || {};

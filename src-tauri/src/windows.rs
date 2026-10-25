@@ -374,6 +374,10 @@ fn log_warn(app: &tauri::AppHandle, message: &str) {
 
 /// Creates one full-monitor overlay window hosting `capture.html?monitor=<index>`.
 /// Coordinates/sizes are physical pixels coming from `xcap`.
+///
+/// The window is created **hidden**: the renderer paints the pre-encoded PNG
+/// first and then calls `capture_ready`, which shows it (contract §10.1) — this
+/// is what keeps the overlay from flashing black while the image loads.
 pub fn create_capture_window(
     app: &tauri::AppHandle,
     index: u32,
@@ -394,12 +398,44 @@ pub fn create_capture_window(
     .always_on_top(true)
     .skip_taskbar(true)
     .visible(false)
-    .focused(index == 0)
     .build()?;
     window.set_position(PhysicalPosition::new(x, y))?;
     window.set_size(PhysicalSize::new(width.max(1), height.max(1)))?;
-    window.show()?;
     Ok(())
+}
+
+/// Extracts the monitor index from a `capture-<index>` window label.
+fn capture_index(label: &str) -> Option<u32> {
+    label.strip_prefix(CAPTURE_PREFIX)?.parse::<u32>().ok()
+}
+
+/// Shows one overlay window once its renderer has painted the screenshot. The
+/// first monitor also receives keyboard focus so Escape / arrow keys work.
+/// Returns `false` when the window does not exist (capture already closed).
+pub fn show_capture_window(app: &tauri::AppHandle, index: u32) -> bool {
+    let Some(window) = app.get_webview_window(&format!("{CAPTURE_PREFIX}{index}")) else {
+        return false;
+    };
+    let _ = window.show();
+    if index == 0 {
+        let _ = window.set_focus();
+    }
+    true
+}
+
+/// Fallback used 2.5 s after `capture_start`: shows every overlay even when a
+/// renderer never sent `capture_ready`.
+pub fn show_all_capture_windows(app: &tauri::AppHandle) {
+    for (label, window) in app.webview_windows() {
+        if capture_index(&label).is_none() {
+            continue;
+        }
+        let _ = window.show();
+    }
+    // Focus monitor 0 last so it wins over the other overlays.
+    if let Some(window) = app.get_webview_window(&format!("{CAPTURE_PREFIX}0")) {
+        let _ = window.set_focus();
+    }
 }
 
 /// Destroys every screenshot overlay window (`capture-*` labels).
@@ -413,7 +449,16 @@ pub fn close_capture_windows(app: &tauri::AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{sanitize_dimension, BASE_HEIGHT, BASE_WIDTH, MAX_PANEL_DIMENSION};
+    use super::{capture_index, sanitize_dimension, BASE_HEIGHT, BASE_WIDTH, MAX_PANEL_DIMENSION};
+
+    #[test]
+    fn capture_labels_expose_their_monitor_index() {
+        assert_eq!(capture_index("capture-0"), Some(0));
+        assert_eq!(capture_index("capture-12"), Some(12));
+        assert_eq!(capture_index("capture-"), None);
+        assert_eq!(capture_index("capture-abc"), None);
+        assert_eq!(capture_index("picker"), None);
+    }
 
     #[test]
     fn dimensions_are_sanitized_without_product_limits() {

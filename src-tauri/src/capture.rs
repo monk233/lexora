@@ -1,17 +1,29 @@
-//! Screenshot capture core: monitor grabbing (`xcap`), overlay windows,
-//! on-device OCR (`native-ocr`) and online vision streaming.
+//! Screenshot capture core: monitor grabbing (`xcap`), hidden overlay windows,
+//! on-device OCR (`native-ocr`), screenshot panel skills streamed into the picker
+//! result panel and the configurable global screenshot hotkey.
 //!
-//! Flow: `start` hides our own windows, grabs every monitor on the `xcap` side
-//! (physical pixels), stores an in-memory [`Session`] and opens one overlay
-//! window per monitor (`capture.html?monitor=<index>`). The capture page then
-//! asks for the PNG (`monitor_info`), the user draws a rectangle and chooses an
-//! action: `copy` (clipboard + close), `ocr` (text) or `ai` (translate the OCR
-//! text, explain the image, or run a user-defined image skill). AI results are
-//! streamed to every overlay window as `capture-event` messages.
+//! Flow (contract §10): [`CaptureService::start`] hides our own windows, grabs
+//! every monitor and **pre-encodes every monitor as a PNG data URL on blocking
+//! worker threads before any window is created**, so the overlay is created
+//! hidden and can appear with the screenshot already painted (no black flash).
+//! The capture page calls `capture_monitor_info` (cached data URL), paints it and
+//! then `capture_ready` shows that overlay. As a safety net the shell shows all
+//! overlays 2.5 s after `start` in case the renderer never reports readiness.
+//!
+//! Panel skills (`capture_skill`): crop the region from the session, copy the
+//! image to the system clipboard, remember it as [`LastCapture`], destroy the
+//! overlays, show the picker at the bottom-right corner of the selection and
+//! stream the OCR / translation / vision result to the picker through the same
+//! `translate-event` channel the text skills use (contract §10.3/§10.5).
+//!
+//! The region hotkey (default `Win+Shift+X`) lives on its own Windows message
+//! thread so it can be re-registered at runtime (`capture_set_hotkey`, contract
+//! §10.4) without restarting the app.
 
 use std::io::Cursor;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
@@ -23,17 +35,42 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
 use crate::engine::{EngineError, EngineService};
-use crate::settings::Settings;
-use crate::state::{lock, AppState};
+use crate::logger::Logger;
+use crate::selection::{picker_config, PickerPayload};
+use crate::settings::{
+    normalize_shortcut, parse_shortcut, Settings, Shortcut, ShortcutKey, DEFAULT_REGION_SHORTCUT,
+};
+use crate::state::{lock, AppState, TranslateTask};
 
 /// Wait after hiding our windows so they are gone before the screenshot is taken.
 const WINDOW_HIDE_DELAY: Duration = Duration::from_millis(120);
-/// Event pushed to every capture overlay window.
-const CAPTURE_EVENT: &str = "capture-event";
-/// Actions accepted by [`CaptureService::ai`].
-const AI_ACTIONS: [&str; 3] = ["translate", "explain", "custom"];
+/// Fallback: show every overlay this long after `start` when the renderer never
+/// called `capture_ready` (contract §10.1).
+const OVERLAY_FALLBACK_DELAY: Duration = Duration::from_millis(2_500);
+/// Event carrying one screenshot result panel (`picker-image`, contract §10.5).
+const EVENT_PICKER_IMAGE: &str = "picker-image";
+/// Event carrying the streamed chunks of a screenshot skill (contract §10.3).
+const EVENT_TRANSLATE: &str = "translate-event";
 /// Monotonic part of generated request ids.
 static REQUEST_SEQ: AtomicU64 = AtomicU64::new(0);
+
+// Windows virtual-key / modifier values used by the screenshot hotkey. They are
+// plain numbers so the mapping stays a pure, unit-testable function.
+const MOD_ALT_RAW: u32 = 0x0001;
+const MOD_CONTROL_RAW: u32 = 0x0002;
+const MOD_SHIFT_RAW: u32 = 0x0004;
+const MOD_WIN_RAW: u32 = 0x0008;
+const MOD_NOREPEAT_RAW: u32 = 0x4000;
+const HOTKEY_ID: i32 = 0x4c58; // 'LX'
+/// `WM_APP + 1`: posted to the hotkey thread to re-register the shortcut.
+const HOTKEY_RELOAD_MESSAGE: u32 = 0x8001;
+
+/// Thread id of the hotkey message loop (0 = not running yet).
+static HOTKEY_THREAD_ID: AtomicU32 = AtomicU32::new(0);
+/// Shortcut currently registered by the hotkey thread (used for rollback).
+static CURRENT_HOTKEY: Mutex<Option<Shortcut>> = Mutex::new(None);
+/// Pending re-registration request handed from a command to the hotkey thread.
+static PENDING_HOTKEY: Mutex<Option<HotkeyRequest>> = Mutex::new(None);
 
 /// A physical-pixel rectangle on the selected monitor, sent by the capture page.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
@@ -53,7 +90,8 @@ struct PresetInfo {
     label: String,
 }
 
-/// One captured monitor.
+/// One captured monitor. `data_url` is pre-encoded on a blocking worker thread
+/// before any overlay window exists, so `monitor_info` never has to encode.
 struct Shot {
     index: u32,
     x: i32,
@@ -61,6 +99,7 @@ struct Shot {
     width: u32,
     height: u32,
     image: RgbaImage,
+    data_url: String,
 }
 
 /// Screenshot in progress: one image per monitor plus the optional preset.
@@ -69,37 +108,155 @@ struct Session {
     preset: Option<PresetInfo>,
 }
 
-/// What a capture AI request should do.
-enum AiTask {
-    /// OCR the region, then translate the recognized text.
-    Translate { target_lang: String },
-    /// Send the cropped image to a vision model with a system prompt.
-    Vision { system: String },
+/// Panel skill a screenshot result panel can run (contract §10.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SkillAction {
+    Ocr,
+    Translate,
+    Explain,
+    Custom,
+}
+
+impl SkillAction {
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "ocr" => Some(SkillAction::Ocr),
+            "translate" => Some(SkillAction::Translate),
+            "explain" => Some(SkillAction::Explain),
+            "custom" => Some(SkillAction::Custom),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            SkillAction::Ocr => "ocr",
+            SkillAction::Translate => "translate",
+            SkillAction::Explain => "explain",
+            SkillAction::Custom => "custom",
+        }
+    }
+
+    /// `true` for actions that send the cropped image to a vision model.
+    fn is_vision(self) -> bool {
+        matches!(self, SkillAction::Explain | SkillAction::Custom)
+    }
+}
+
+/// Resolved metadata of a skill request: label shown in the result panel plus
+/// the system prompt used by vision actions.
+struct SkillMeta {
+    label: String,
+    skill_id: String,
+    system_prompt: String,
+}
+
+/// Last screenshot kept for retry / follow-up (contract §10.3).
+#[derive(Clone)]
+struct LastCapture {
+    image: RgbaImage,
+    data_url: String,
+    action: SkillAction,
+    skill_id: String,
+    target_lang: String,
+    label: String,
+    /// OCR cache: a successful translation reuses it for follow-up questions.
+    ocr_text: Option<String>,
+}
+
+/// One validated screenshot action ready to stream into the picker panel.
+pub struct CaptureJob {
+    request_id: String,
+    action: SkillAction,
+    image: RgbaImage,
+    data_url: String,
+    target_lang: String,
+    /// Rendered vision prompt (explain/custom); empty for OCR/translate.
+    system_prompt: String,
+    /// Cached OCR text reused by `translate` (and its follow-up questions).
+    ocr_text: Option<String>,
+    /// Whether the cropped image reached the system clipboard.
+    clipboard: bool,
+}
+
+impl CaptureJob {
+    /// Whether the cropped screenshot reached the system clipboard.
+    pub fn clipboard(&self) -> bool {
+        self.clipboard
+    }
+}
+
+/// One follow-up question about the last screenshot.
+pub struct FollowupJob {
+    request_id: String,
+    image: RgbaImage,
+    data_url: String,
+    action: SkillAction,
+    ocr_text: Option<String>,
+    question: String,
+    previous_answer: String,
+    history: Vec<(String, String)>,
 }
 
 /// Screenshot state stored in [`AppState`].
 pub struct CaptureService {
     session: Mutex<Option<Session>>,
+    last: Mutex<Option<LastCapture>>,
+    /// Bumped on every session change so a stale 2.5 s fallback show is a no-op.
+    epoch: AtomicU64,
+    /// Guards against two overlapping `start` calls (e.g. the hotkey pressed
+    /// again while the first screenshot is still being encoded).
+    starting: AtomicBool,
 }
 
 impl CaptureService {
     pub fn new() -> Self {
         Self {
             session: Mutex::new(None),
+            last: Mutex::new(None),
+            epoch: AtomicU64::new(0),
+            starting: AtomicBool::new(false),
         }
     }
 
-    /// Hides our own windows, grabs every monitor and opens one overlay per
-    /// monitor. Returns the number of monitors. On failure all partially created
-    /// overlay windows are closed again and the session is dropped.
+    /// Hides our own windows, grabs every monitor, pre-encodes them in parallel
+    /// and creates one **hidden** overlay window per monitor. Returns the number
+    /// of monitors. On failure all partially created overlay windows are closed
+    /// again and the session is dropped.
+    ///
+    /// A second call while the first one is still preparing is rejected: the
+    /// hotkey may be pressed twice because the overlay only appears once the
+    /// renderer painted the screenshot.
     pub async fn start(
         &self,
         app: &AppHandle,
         state: &AppState,
         preset_skill_id: Option<String>,
     ) -> Result<usize, EngineError> {
-        // A new capture always replaces the previous session.
+        if self.starting.swap(true, Ordering::SeqCst) {
+            state
+                .log
+                .warn("screenshot capture ignored: another capture is being prepared");
+            return Err(EngineError::new(
+                "截图正在进行中。",
+                "请稍候片刻，等截图界面出现后再试。",
+            ));
+        }
+        // Reset the flag even when the preparation panics, otherwise every
+        // later screenshot would be rejected.
+        let _guard = StartGuard(&self.starting);
+        self.start_inner(app, state, preset_skill_id).await
+    }
+
+    async fn start_inner(
+        &self,
+        app: &AppHandle,
+        state: &AppState,
+        preset_skill_id: Option<String>,
+    ) -> Result<usize, EngineError> {
+        // A new capture always replaces the previous session and retry image.
         self.close(app);
+        *lock(&self.last) = None;
         crate::windows::hide_picker(app);
         crate::windows::hide_settings(app);
         tokio::time::sleep(WINDOW_HIDE_DELAY).await;
@@ -124,45 +281,73 @@ impl CaptureService {
             }
         });
 
-        let monitors = xcap::Monitor::all().map_err(|error| {
-            EngineError::new(
-                "无法枚举显示器。",
-                format!("请确认系统允许屏幕截图后重试（{error}）。"),
-            )
-        })?;
-        if monitors.is_empty() {
-            return Err(EngineError::new(
-                "未检测到显示器。",
-                "请确认显示器连接正常后重试。",
-            ));
-        }
-
-        let mut shots = Vec::with_capacity(monitors.len());
-        for (index, monitor) in monitors.iter().enumerate() {
-            let image = monitor.capture_image().map_err(|error| {
+        // Grab first (blocking xcap calls). `xcap::Monitor` is not `Send`, so it
+        // is kept in a scope that ends before the first await point.
+        let mut raw = Vec::new();
+        {
+            let monitors = xcap::Monitor::all().map_err(|error| {
                 EngineError::new(
-                    "截取屏幕失败。",
-                    format!("请确认没有其他程序独占屏幕后重试（{error}）。"),
+                    "无法枚举显示器。",
+                    format!("请确认系统允许屏幕截图后重试（{error}）。"),
                 )
             })?;
-            let x = monitor.x().unwrap_or(0);
-            let y = monitor.y().unwrap_or(0);
-            let width = monitor.width().unwrap_or_else(|_| image.width());
-            let height = monitor.height().unwrap_or_else(|_| image.height());
-            shots.push(Shot {
-                index: index as u32,
-                x,
-                y,
-                width,
-                height,
-                image,
-            });
+            if monitors.is_empty() {
+                return Err(EngineError::new(
+                    "未检测到显示器。",
+                    "请确认显示器连接正常后重试。",
+                ));
+            }
+            for (index, monitor) in monitors.iter().enumerate() {
+                let image = monitor.capture_image().map_err(|error| {
+                    EngineError::new(
+                        "截取屏幕失败。",
+                        format!("请确认没有其他程序独占屏幕后重试（{error}）。"),
+                    )
+                })?;
+                raw.push((
+                    index as u32,
+                    monitor.x().unwrap_or(0),
+                    monitor.y().unwrap_or(0),
+                    monitor.width().unwrap_or_else(|_| image.width()),
+                    monitor.height().unwrap_or_else(|_| image.height()),
+                    image,
+                ));
+            }
         }
+
+        // Pre-encode every monitor before creating any window (contract §10.1).
+        let mut handles = Vec::with_capacity(raw.len());
+        for (index, x, y, width, height, image) in raw {
+            handles.push(tauri::async_runtime::spawn_blocking(move || {
+                let data_url = png_data_url(&image)?;
+                Ok::<Shot, EngineError>(Shot {
+                    index,
+                    x,
+                    y,
+                    width,
+                    height,
+                    image,
+                    data_url,
+                })
+            }));
+        }
+        let mut shots = Vec::with_capacity(handles.len());
+        for handle in handles {
+            let encoded = handle.await.map_err(|error| {
+                EngineError::new(
+                    "编码截图失败。",
+                    format!("后台编码任务异常，请重试（{error}）。"),
+                )
+            })?;
+            shots.push(encoded?);
+        }
+
         let overlays: Vec<(u32, i32, i32, u32, u32)> = shots
             .iter()
             .map(|shot| (shot.index, shot.x, shot.y, shot.width, shot.height))
             .collect();
         let count = shots.len();
+        let epoch = self.epoch.fetch_add(1, Ordering::SeqCst) + 1;
         *lock(&self.session) = Some(Session { shots, preset });
 
         for (index, x, y, width, height) in overlays {
@@ -176,12 +361,25 @@ impl CaptureService {
                 ));
             }
         }
-        // Make sure the first overlay owns the keyboard (Escape / selection keys).
-        if let Some(window) =
-            app.get_webview_window(&format!("{}{}", crate::windows::CAPTURE_PREFIX, 0))
-        {
-            let _ = window.set_focus();
-        }
+
+        // Safety net: if the renderer never reports `capture_ready` (crashed
+        // webview, script error, …) the overlays are shown anyway.
+        let fallback_app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(OVERLAY_FALLBACK_DELAY).await;
+            let Some(state) = fallback_app.try_state::<Arc<AppState>>() else {
+                return;
+            };
+            if state.capture.epoch.load(Ordering::SeqCst) != epoch
+                || lock(&state.capture.session).is_none()
+            {
+                return;
+            }
+            state
+                .log
+                .warn("screenshot overlay fallback: capture_ready not received, showing overlays");
+            crate::windows::show_all_capture_windows(&fallback_app);
+        });
 
         state
             .log
@@ -190,6 +388,7 @@ impl CaptureService {
     }
 
     /// PNG data URL + monitor size (+ preset) for the capture page of `index`.
+    /// The data URL is the one pre-encoded by [`CaptureService::start`].
     pub fn monitor_info(&self, index: u32) -> Result<Value, EngineError> {
         let guard = lock(&self.session);
         let Some(session) = guard.as_ref() else {
@@ -200,7 +399,6 @@ impl CaptureService {
             .iter()
             .find(|shot| shot.index == index)
             .ok_or_else(|| missing_monitor_error(index))?;
-        let data_url = png_data_url(&shot.image)?;
         let preset = session
             .preset
             .as_ref()
@@ -210,7 +408,7 @@ impl CaptureService {
             "index": index,
             "width": shot.width,
             "height": shot.height,
-            "dataUrl": data_url,
+            "dataUrl": shot.data_url,
             "preset": preset,
         }))
     }
@@ -241,27 +439,10 @@ impl CaptureService {
         Ok(())
     }
 
-    /// Recognizes the text inside `rect` with the OS OCR engine.
-    pub async fn ocr(&self, index: u32, rect: &HitRect) -> Result<String, EngineError> {
-        let cropped = {
-            let guard = lock(&self.session);
-            let Some(session) = guard.as_ref() else {
-                return Err(not_ready_error());
-            };
-            let shot = session
-                .shots
-                .iter()
-                .find(|shot| shot.index == index)
-                .ok_or_else(|| missing_monitor_error(index))?;
-            crop_image(&shot.image, rect)?
-        };
-        recognize_text(&cropped).await
-    }
-
-    /// Starts an AI action on the cropped region; results stream to the capture
-    /// windows as `capture-event` chunks. Validation errors are returned
-    /// synchronously so the command can report them before streaming.
-    pub fn ai(
+    /// Runs a panel skill on the selected region and switches to the picker
+    /// result panel (contract §10.3, steps 1–6). All validation happens before
+    /// any side effect, so an invalid request leaves the overlays untouched.
+    pub fn skill(
         &self,
         app: &AppHandle,
         index: u32,
@@ -270,75 +451,27 @@ impl CaptureService {
         skill_id: Option<String>,
         target_lang: Option<String>,
         request_id: Option<String>,
-    ) -> Result<(), EngineError> {
+    ) -> Result<CaptureJob, EngineError> {
         let settings = settings_of(app)?;
-        if settings.is_local_mode() {
-            return Err(local_vision_error());
-        }
-        let action = action.trim().to_ascii_lowercase();
-        if !AI_ACTIONS.contains(&action.as_str()) {
-            return Err(EngineError::new(
+        let action = SkillAction::parse(action).ok_or_else(|| {
+            EngineError::new(
                 "不支持的截图操作。",
-                "支持翻译文字（translate）、解释图片（explain）或自定义图片技能（custom）。",
-            ));
-        }
-        let requested_target = target_lang
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| settings.picker.default_target_lang.clone());
-        let requested_skill = skill_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string);
+                "支持提取文字（ocr）、翻译（translate）、解释图片（explain）或图片技能（custom）。",
+            )
+        })?;
+        let requested_skill = trimmed(skill_id);
+        let requested_target =
+            trimmed(target_lang).unwrap_or_else(|| settings.picker.default_target_lang.clone());
+        // Validates the custom skill (enabled kind=image) and renders the prompt.
+        let meta = resolve_skill_meta(
+            &settings,
+            action,
+            requested_skill.as_deref(),
+            &requested_target,
+        )?;
 
-        let task = match action.as_str() {
-            "translate" => AiTask::Translate {
-                target_lang: requested_target,
-            },
-            "explain" => AiTask::Vision {
-                system: crate::engine::DEFAULT_EXPLAIN_IMAGE_PROMPT.to_string(),
-            },
-            _ => {
-                let Some(skill_id) = requested_skill else {
-                    return Err(EngineError::new(
-                        "缺少图片技能标识。",
-                        "请选择要使用的图片技能后重试。",
-                    ));
-                };
-                let Some(skill) = settings
-                    .picker
-                    .custom_skills
-                    .iter()
-                    .find(|skill| skill.id == skill_id)
-                else {
-                    return Err(EngineError::new(
-                        "技能不存在（可能已被删除）",
-                        "请在设置 → 划词行为中重新添加该技能。",
-                    ));
-                };
-                if skill.kind != "image" {
-                    return Err(EngineError::new(
-                        "该技能不是图片技能。",
-                        "请在设置中把技能类型改为「图片」，或改用文字技能。",
-                    ));
-                }
-                if !settings.picker.skills.iter().any(|id| id == &skill.id) {
-                    return Err(EngineError::new(
-                        "技能未启用",
-                        "请在设置 → 划词行为中启用该技能。",
-                    ));
-                }
-                let target = crate::engine::resolve_target_lang(&requested_target, "");
-                AiTask::Vision {
-                    system: crate::engine::render_image_prompt(&skill.prompt, &target),
-                }
-            }
-        };
-
-        let image = {
+        // 1. Crop the region from the captured monitor.
+        let (image, data_url, anchor, scale) = {
             let guard = lock(&self.session);
             let Some(session) = guard.as_ref() else {
                 return Err(not_ready_error());
@@ -348,19 +481,181 @@ impl CaptureService {
                 .iter()
                 .find(|shot| shot.index == index)
                 .ok_or_else(|| missing_monitor_error(index))?;
-            crop_image(&shot.image, rect)?
+            let (left, top, width, height) = clamp_rect(&shot.image, rect).ok_or_else(|| {
+                EngineError::new("选区无效。", "请重新框选一个有效的区域后再试。")
+            })?;
+            let image = image::imageops::crop_imm(&shot.image, left, top, width, height).to_image();
+            let data_url = png_data_url(&image)?;
+            let (image_width, image_height) = shot.image.dimensions();
+            let anchor = anchor_bottom_right(
+                shot.x,
+                shot.y,
+                image_width,
+                image_height,
+                left,
+                top,
+                width,
+                height,
+            );
+            // The selection may end exactly on a monitor edge; use the centre of
+            // the captured monitor so the DPI factor is always the right one.
+            let scale = crate::win32::monitor_scale_factor(
+                shot.x + shot.width as i32 / 2,
+                shot.y + shot.height as i32 / 2,
+            );
+            (image, data_url, anchor, scale)
         };
-        let data_url = png_data_url(&image)?;
-        let request_id = normalize_request_id(request_id);
-        let app = app.clone();
-        tauri::async_runtime::spawn(async move {
-            run_ai(app, image, data_url, task, request_id).await;
+
+        // 2. Image clipboard; a failure only flips the flag, the flow continues.
+        let clipboard = write_clipboard_image(app, &image);
+
+        // 3. Remember the capture for retry / follow-up.
+        *lock(&self.last) = Some(LastCapture {
+            image: image.clone(),
+            data_url: data_url.clone(),
+            action,
+            skill_id: meta.skill_id.clone(),
+            target_lang: requested_target.clone(),
+            label: meta.label.clone(),
+            ocr_text: None,
         });
-        Ok(())
+
+        // 4. Close the overlays and show the picker at the selection anchor.
+        self.close(app);
+        let payload = PickerPayload {
+            text: String::new(),
+            program_name: "截图".to_string(),
+            anchor_x: anchor.0,
+            anchor_y: anchor.1,
+            scale_factor: scale,
+            config: picker_config(&settings),
+        };
+        if !crate::windows::show_picker(app, &payload) {
+            return Err(EngineError::new(
+                "无法显示结果面板。",
+                "请重试；若问题持续请重启程序。",
+            ));
+        }
+
+        // 5. Tell the picker which panel to open and what is streaming into it.
+        let request_id = normalize_request_id(request_id);
+        let hint = if clipboard {
+            "截图已复制到剪贴板"
+        } else {
+            "图片复制到剪贴板失败，但不影响识别与翻译"
+        };
+        let _ = app.emit_to(
+            crate::windows::PICKER_LABEL,
+            EVENT_PICKER_IMAGE,
+            json!({
+                "requestId": request_id,
+                "action": action.as_str(),
+                "skillId": meta.skill_id,
+                "label": meta.label,
+                "targetLang": requested_target,
+                "clipboard": clipboard,
+                "hint": hint,
+            }),
+        );
+
+        log_of(app).map(|log| {
+            log.info(&format!(
+                "screenshot skill: action={} label={} clipboard={} chars={}x{} request={request_id}",
+                action.as_str(),
+                meta.label,
+                clipboard,
+                image.width(),
+                image.height()
+            ))
+        });
+
+        Ok(CaptureJob {
+            request_id,
+            action,
+            image,
+            data_url,
+            target_lang: requested_target,
+            system_prompt: meta.system_prompt,
+            ocr_text: None,
+            clipboard,
+        })
     }
 
-    /// Destroys every overlay window and forgets the session.
+    /// Builds (and re-validates) the job that repeats the last screenshot
+    /// action; `ocr`/`translate` re-run OCR as required by contract §10.3.
+    pub fn retry(&self, app: &AppHandle, request_id: String) -> Result<CaptureJob, EngineError> {
+        let settings = settings_of(app)?;
+        let last = lock(&self.last).clone().ok_or_else(|| {
+            EngineError::new("没有可重试的截图。", "请重新截图（快捷键）后再试一次。")
+        })?;
+        let skill_id = if last.skill_id.is_empty() {
+            None
+        } else {
+            Some(last.skill_id.as_str())
+        };
+        let meta = resolve_skill_meta(&settings, last.action, skill_id, &last.target_lang)?;
+        // A retry always recognizes the text again (the previous OCR may have
+        // been a transient failure) and drops the cache.
+        if let Some(current) = lock(&self.last).as_mut() {
+            current.ocr_text = None;
+        }
+        log_of(app).map(|log| {
+            log.info(&format!(
+                "screenshot retry: action={} label={} request={request_id}",
+                last.action.as_str(),
+                last.label
+            ))
+        });
+        Ok(CaptureJob {
+            request_id,
+            action: last.action,
+            image: last.image,
+            data_url: last.data_url,
+            target_lang: last.target_lang,
+            system_prompt: meta.system_prompt,
+            ocr_text: None,
+            clipboard: false,
+        })
+    }
+
+    /// Builds a follow-up job for the last screenshot. Vision actions keep the
+    /// image, OCR/translate actions keep (or lazily compute) the OCR text.
+    pub fn followup(
+        &self,
+        request_id: String,
+        question: String,
+        previous_answer: String,
+        history: Vec<(String, String)>,
+    ) -> Result<FollowupJob, EngineError> {
+        let last = lock(&self.last).clone().ok_or_else(|| {
+            EngineError::new("没有可追问的截图。", "请重新截图（快捷键）后再试一次。")
+        })?;
+        Ok(FollowupJob {
+            request_id,
+            image: last.image,
+            data_url: last.data_url,
+            action: last.action,
+            ocr_text: last.ocr_text,
+            question,
+            previous_answer,
+            history,
+        })
+    }
+
+    /// Caches OCR text for the capture it belongs to (the last capture may have
+    /// been replaced by a newer screenshot while the stream was running).
+    fn cache_ocr_text(&self, data_url: &str, text: &str) {
+        if let Some(last) = lock(&self.last).as_mut() {
+            if last.data_url == data_url && last.ocr_text.is_none() {
+                last.ocr_text = Some(text.to_string());
+            }
+        }
+    }
+
+    /// Destroys every overlay window and forgets the session. The last capture
+    /// stays available for retry / follow-up (contract §10.3).
     pub fn close(&self, app: &AppHandle) {
+        self.epoch.fetch_add(1, Ordering::SeqCst);
         crate::windows::close_capture_windows(app);
         *lock(&self.session) = None;
     }
@@ -372,7 +667,16 @@ impl Default for CaptureService {
     }
 }
 
-/// Entry point used by the commands and by the Win+Shift+X action worker.
+/// Resets [`CaptureService::starting`] on drop, including on panic.
+struct StartGuard<'a>(&'a AtomicBool);
+
+impl Drop for StartGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Entry point used by the commands and by the hotkey worker.
 pub async fn start_capture(
     app: &AppHandle,
     state: &AppState,
@@ -382,62 +686,117 @@ pub async fn start_capture(
 }
 
 // ---------------------------------------------------------------------------
-// AI streaming
+// Streaming into the picker result panel
 // ---------------------------------------------------------------------------
 
-async fn run_ai(
+/// Starts the background stream of a screenshot skill (contract §10.3 step 7).
+/// Only one stream may run at a time; it is registered on `translate_task` so
+/// `picker_abort_translate` and picker close can abort it.
+pub fn spawn_capture_job(app: AppHandle, state: Arc<AppState>, job: CaptureJob) {
+    state.abort_translate();
+    let task_app = app.clone();
+    let task_state = state.clone();
+    let request_id = job.request_id.clone();
+    let task_request_id = request_id.clone();
+    let handle = tauri::async_runtime::spawn(async move {
+        if let Err(error) = run_capture_job(task_app.clone(), task_state, job).await {
+            emit_error(&task_app, &task_request_id, &error);
+        }
+    });
+    *lock(&state.translate_task) = Some(TranslateTask { request_id, handle });
+}
+
+/// Starts a follow-up question stream for the last screenshot.
+pub fn spawn_followup_job(app: AppHandle, state: Arc<AppState>, job: FollowupJob) {
+    state.abort_translate();
+    let task_app = app.clone();
+    let task_state = state.clone();
+    let request_id = job.request_id.clone();
+    let task_request_id = request_id.clone();
+    let handle = tauri::async_runtime::spawn(async move {
+        if let Err(error) = run_followup_job(task_app.clone(), task_state, job).await {
+            emit_error(&task_app, &task_request_id, &error);
+        }
+    });
+    *lock(&state.translate_task) = Some(TranslateTask { request_id, handle });
+}
+
+async fn run_capture_job(
     app: AppHandle,
-    image: RgbaImage,
-    data_url: String,
-    task: AiTask,
-    request_id: String,
-) {
-    let result = match task {
-        AiTask::Translate { target_lang } => {
-            run_translate(app.clone(), image, target_lang, request_id.clone()).await
+    state: Arc<AppState>,
+    job: CaptureJob,
+) -> Result<(), EngineError> {
+    let request_id = job.request_id.clone();
+    match job.action {
+        // Windows OCR → one chunk with the full text → done.
+        SkillAction::Ocr => {
+            let text = recognize_text(&job.image).await?;
+            state.capture.cache_ocr_text(&job.data_url, &text);
+            emit_chunk(&app, &request_id, &text);
+            emit_done(&app, &request_id);
+            Ok(())
         }
-        AiTask::Vision { system } => {
-            run_vision(app.clone(), data_url, system, request_id.clone()).await
+        // OCR → text translation stream.
+        SkillAction::Translate => {
+            let text = match job.ocr_text.clone() {
+                Some(cached) => cached,
+                None => {
+                    let text = recognize_text(&job.image).await?;
+                    state.capture.cache_ocr_text(&job.data_url, &text);
+                    text
+                }
+            };
+            let target = crate::engine::resolve_target_lang(&job.target_lang, &text);
+            let engine = engine_of(&app)?;
+            let mut stream = engine.translate_stream(&text, &target).await?;
+            stream_chunks(&app, &request_id, &mut stream).await?;
+            emit_done(&app, &request_id);
+            Ok(())
         }
-    };
-    if let Err(error) = result {
-        emit_capture_event(
-            &app,
-            json!({
-                "requestId": request_id,
-                "type": "error",
-                "message": error.message,
-                "hint": error.hint,
-            }),
-        );
+        // Image → vision model with the rendered instruction.
+        SkillAction::Explain | SkillAction::Custom => {
+            let engine = engine_of(&app)?;
+            let mut stream = engine
+                .vision_stream(&job.data_url, &job.system_prompt)
+                .await?;
+            stream_chunks(&app, &request_id, &mut stream).await?;
+            emit_done(&app, &request_id);
+            Ok(())
+        }
     }
 }
 
-async fn run_vision(
+async fn run_followup_job(
     app: AppHandle,
-    data_url: String,
-    system: String,
-    request_id: String,
+    state: Arc<AppState>,
+    job: FollowupJob,
 ) -> Result<(), EngineError> {
+    let request_id = job.request_id.clone();
     let engine = engine_of(&app)?;
-    let mut stream = engine.vision_stream(&data_url, &system).await?;
+    let mut stream = if job.action.is_vision() {
+        engine
+            .vision_followup_stream(
+                &job.data_url,
+                &job.previous_answer,
+                &job.question,
+                &job.history,
+            )
+            .await?
+    } else {
+        let text = match job.ocr_text.clone() {
+            Some(cached) => cached,
+            None => {
+                let text = recognize_text(&job.image).await?;
+                state.capture.cache_ocr_text(&job.data_url, &text);
+                text
+            }
+        };
+        engine
+            .followup_stream(&text, &job.previous_answer, &job.question, &job.history)
+            .await?
+    };
     stream_chunks(&app, &request_id, &mut stream).await?;
-    emit_capture_event(&app, json!({"requestId": request_id, "type": "done"}));
-    Ok(())
-}
-
-async fn run_translate(
-    app: AppHandle,
-    image: RgbaImage,
-    requested_target: String,
-    request_id: String,
-) -> Result<(), EngineError> {
-    let text = recognize_text(&image).await?;
-    let target = crate::engine::resolve_target_lang(&requested_target, &text);
-    let engine = engine_of(&app)?;
-    let mut stream = engine.translate_stream(&text, &target).await?;
-    stream_chunks(&app, &request_id, &mut stream).await?;
-    emit_capture_event(&app, json!({"requestId": request_id, "type": "done"}));
+    emit_done(&app, &request_id);
     Ok(())
 }
 
@@ -452,10 +811,7 @@ async fn stream_chunks(
                 if chunk.is_empty() {
                     continue;
                 }
-                emit_capture_event(
-                    app,
-                    json!({"requestId": request_id, "type": "chunk", "text": chunk}),
-                );
+                emit_chunk(app, request_id, &chunk);
             }
             Err(error) => return Err(error),
         }
@@ -463,17 +819,117 @@ async fn stream_chunks(
     Ok(())
 }
 
-fn emit_capture_event(app: &AppHandle, payload: Value) {
-    for (label, window) in app.webview_windows() {
-        if label.starts_with(crate::windows::CAPTURE_PREFIX) {
-            let _ = window.emit(CAPTURE_EVENT, payload.clone());
+fn emit_translate_event(app: &AppHandle, payload: Value) {
+    let _ = app.emit_to(crate::windows::PICKER_LABEL, EVENT_TRANSLATE, payload);
+}
+
+fn emit_chunk(app: &AppHandle, request_id: &str, text: &str) {
+    emit_translate_event(
+        app,
+        json!({ "requestId": request_id, "type": "chunk", "text": text }),
+    );
+}
+
+fn emit_done(app: &AppHandle, request_id: &str) {
+    emit_translate_event(app, json!({ "requestId": request_id, "type": "done" }));
+}
+
+fn emit_error(app: &AppHandle, request_id: &str, error: &EngineError) {
+    emit_translate_event(
+        app,
+        json!({
+            "requestId": request_id,
+            "type": "error",
+            "message": error.message,
+            "hint": error.hint,
+        }),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Skill metadata / image helpers
+// ---------------------------------------------------------------------------
+
+/// Resolves the label, custom skill id and vision system prompt for an action.
+/// Custom skills must exist, be `kind=image` and be enabled (contract §10.3).
+fn resolve_skill_meta(
+    settings: &Settings,
+    action: SkillAction,
+    skill_id: Option<&str>,
+    target_lang: &str,
+) -> Result<SkillMeta, EngineError> {
+    match action {
+        SkillAction::Ocr => Ok(SkillMeta {
+            label: "提取文字".to_string(),
+            skill_id: String::new(),
+            system_prompt: String::new(),
+        }),
+        SkillAction::Translate => Ok(SkillMeta {
+            label: "翻译".to_string(),
+            skill_id: String::new(),
+            system_prompt: String::new(),
+        }),
+        SkillAction::Explain => Ok(SkillMeta {
+            label: "解释图片".to_string(),
+            skill_id: String::new(),
+            system_prompt: crate::engine::DEFAULT_EXPLAIN_IMAGE_PROMPT.to_string(),
+        }),
+        SkillAction::Custom => {
+            let Some(skill_id) = skill_id.map(str::trim).filter(|id| !id.is_empty()) else {
+                return Err(EngineError::new(
+                    "缺少图片技能标识。",
+                    "请选择要使用的图片技能后重试。",
+                ));
+            };
+            let Some(skill) = image_skill(settings, skill_id) else {
+                return Err(EngineError::new(
+                    "技能不存在（可能已被删除）",
+                    "请在设置 → 划词行为中重新添加该技能。",
+                ));
+            };
+            if !settings.picker.skills.iter().any(|id| id == &skill.id) {
+                return Err(EngineError::new(
+                    "技能未启用",
+                    "请在设置 → 划词行为中启用该技能。",
+                ));
+            }
+            let target = crate::engine::resolve_target_lang(target_lang, "");
+            Ok(SkillMeta {
+                label: skill.label.clone(),
+                skill_id: skill.id.clone(),
+                system_prompt: crate::engine::render_image_prompt(&skill.prompt, &target),
+            })
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// OCR / image helpers
-// ---------------------------------------------------------------------------
+/// Finds a custom skill that acts on images.
+fn image_skill<'a>(
+    settings: &'a Settings,
+    skill_id: &str,
+) -> Option<&'a crate::settings::CustomSkill> {
+    settings
+        .picker
+        .custom_skills
+        .iter()
+        .find(|skill| skill.id == skill_id && skill.kind == "image")
+}
+
+/// Writes an RGBA bitmap to the system image clipboard; returns whether it
+/// worked (the screenshot flow continues either way, contract §10.3).
+fn write_clipboard_image(app: &AppHandle, image: &RgbaImage) -> bool {
+    let (width, height) = image.dimensions();
+    let clipboard_image = tauri::image::Image::new_owned(image.clone().into_raw(), width, height);
+    match app.clipboard().write_image(&clipboard_image) {
+        Ok(()) => true,
+        Err(error) => {
+            if let Some(log) = log_of(app) {
+                log.warn(&format!("screenshot clipboard write failed: {error}"));
+            }
+            false
+        }
+    }
+}
 
 /// Runs the OS OCR engine on an RGBA bitmap (blocking work on a worker thread).
 async fn recognize_text(image: &RgbaImage) -> Result<String, EngineError> {
@@ -552,7 +1008,28 @@ fn crop_image(image: &RgbaImage, rect: &HitRect) -> Result<RgbaImage, EngineErro
     Ok(image::imageops::crop_imm(image, x, y, width, height).to_image())
 }
 
-/// ENCODE the image as PNG bytes.
+/// Physical screen position of the bottom-right corner of a clamped selection.
+/// Kept one pixel inside the captured monitor: a selection ending exactly on a
+/// monitor edge must not resolve to the neighbouring monitor's work area.
+fn anchor_bottom_right(
+    origin_x: i32,
+    origin_y: i32,
+    image_width: u32,
+    image_height: u32,
+    left: u32,
+    top: u32,
+    width: u32,
+    height: u32,
+) -> (i32, i32) {
+    let max_x = image_width.saturating_sub(1);
+    let max_y = image_height.saturating_sub(1);
+    (
+        origin_x + (left + width).min(max_x) as i32,
+        origin_y + (top + height).min(max_y) as i32,
+    )
+}
+
+/// Encodes the image as PNG bytes.
 fn png_bytes(image: &RgbaImage) -> Result<Vec<u8>, EngineError> {
     let mut cursor = Cursor::new(Vec::new());
     DynamicImage::ImageRgba8(image.clone())
@@ -573,60 +1050,47 @@ fn png_data_url(image: &RgbaImage) -> Result<String, EngineError> {
 // Small helpers
 // ---------------------------------------------------------------------------
 
+fn trimmed(value: Option<String>) -> Option<String> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
 fn not_ready_error() -> EngineError {
     EngineError::new(
         "截图尚未准备好。",
-        "请稍候片刻再试，或重新发起截图（Win+Shift+X）。",
+        "请稍候片刻再试，或重新发起截图（快捷键）。",
     )
 }
 
 fn missing_monitor_error(index: u32) -> EngineError {
     EngineError::new(
         format!("找不到第 {} 块屏幕。", index + 1),
-        "请重新发起截图（Win+Shift+X）。",
-    )
-}
-
-fn local_vision_error() -> EngineError {
-    EngineError::new(
-        "本地模型不支持图片理解。",
-        "请在「设置 → 翻译服务」切换到在线 API，并使用支持视觉的模型（如 GPT-4o / Qwen-VL）；也可以改用「提取文字」。",
+        "请重新发起截图后重试。",
     )
 }
 
 fn settings_of(app: &AppHandle) -> Result<Settings, EngineError> {
-    app.try_state::<std::sync::Arc<AppState>>()
+    app.try_state::<Arc<AppState>>()
         .map(|state| state.settings.get())
         .ok_or_else(not_ready_error)
 }
 
-fn engine_of(app: &AppHandle) -> Result<std::sync::Arc<EngineService>, EngineError> {
-    app.try_state::<std::sync::Arc<AppState>>()
+fn engine_of(app: &AppHandle) -> Result<Arc<EngineService>, EngineError> {
+    app.try_state::<Arc<AppState>>()
         .map(|state| state.engine.clone())
         .ok_or_else(not_ready_error)
 }
 
-/// Finds an enabled-or-not custom skill that acts on images.
-fn image_skill<'a>(
-    settings: &'a Settings,
-    skill_id: &str,
-) -> Option<&'a crate::settings::CustomSkill> {
-    settings
-        .picker
-        .custom_skills
-        .iter()
-        .find(|skill| skill.id == skill_id && skill.kind == "image")
+fn log_of(app: &AppHandle) -> Option<Logger> {
+    app.try_state::<Arc<AppState>>()
+        .map(|state| state.log.clone())
 }
 
 fn normalize_request_id(request_id: Option<String>) -> String {
-    let provided = request_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    match provided {
-        Some(value) => value.to_string(),
-        None => next_request_id(),
-    }
+    trimmed(request_id).unwrap_or_else(next_request_id)
 }
 
 fn next_request_id() -> String {
@@ -638,13 +1102,432 @@ fn next_request_id() -> String {
     format!("capture-{millis}-{sequence}")
 }
 
+// ---------------------------------------------------------------------------
+// Screenshot hotkey (contract §10.4)
+// ---------------------------------------------------------------------------
+
+/// Result of `capture_set_hotkey`, mapped to the contract's JSON by the command.
+pub enum SetHotkeyOutcome {
+    Applied {
+        shortcut: String,
+        /// Set when the shortcut works but persisting it failed.
+        warning: Option<String>,
+    },
+    Failed {
+        /// Shortcut still in effect (the previous one).
+        shortcut: String,
+        error: String,
+        hint: String,
+    },
+}
+
+/// A re-registration request handed to the hotkey thread. The reply channel
+/// returns the registration result (`Err` carries message + hint).
+struct HotkeyRequest {
+    shortcut: Shortcut,
+    reply: mpsc::Sender<Result<(), EngineError>>,
+}
+
+/// Outcome of planning a shortcut update from settings + renderer input.
+#[derive(Debug, PartialEq, Eq)]
+enum HotkeyUpdate {
+    Unchanged(Shortcut),
+    Change {
+        previous: Option<Shortcut>,
+        requested: Shortcut,
+    },
+}
+
+/// Plans a hotkey update: identical shortcut → no-op; anything else → change.
+/// Invalid renderer input normalizes to the default shortcut (contract §10.4).
+fn plan_hotkey_update(current: &str, requested: &str) -> HotkeyUpdate {
+    let normalized = normalize_shortcut(requested);
+    let requested = parse_shortcut(&normalized).unwrap_or_else(default_shortcut);
+    match parse_shortcut(current) {
+        Some(current) if current == requested => HotkeyUpdate::Unchanged(current),
+        _ => HotkeyUpdate::Change {
+            previous: parse_shortcut(current),
+            requested,
+        },
+    }
+}
+
+fn default_shortcut() -> Shortcut {
+    parse_shortcut(DEFAULT_REGION_SHORTCUT).expect("the default shortcut must parse")
+}
+
+/// Native `(modifier flags, virtual key)` pair for `RegisterHotKey`. Includes
+/// `MOD_NOREPEAT` so holding the keys down fires the screenshot exactly once.
+fn native_hotkey(shortcut: Shortcut) -> (u32, u32) {
+    let mut modifiers = MOD_NOREPEAT_RAW;
+    if shortcut.modifiers.alt {
+        modifiers |= MOD_ALT_RAW;
+    }
+    if shortcut.modifiers.ctrl {
+        modifiers |= MOD_CONTROL_RAW;
+    }
+    if shortcut.modifiers.shift {
+        modifiers |= MOD_SHIFT_RAW;
+    }
+    if shortcut.modifiers.win {
+        modifiers |= MOD_WIN_RAW;
+    }
+    (modifiers, virtual_key(shortcut.key))
+}
+
+fn virtual_key(key: ShortcutKey) -> u32 {
+    match key {
+        ShortcutKey::Letter(letter) => letter as u32,
+        ShortcutKey::Digit(digit) => u32::from(b'0') + u32::from(digit),
+        // VK_F1 (0x70) … VK_F24 (0x87).
+        ShortcutKey::Function(number) => 0x70 + u32::from(number) - 1,
+        // VK_SNAPSHOT
+        ShortcutKey::Named("PrintScreen") => 0x2C,
+        // VK_SPACE
+        ShortcutKey::Named("Space") => 0x20,
+        // VK_TAB
+        ShortcutKey::Named("Tab") => 0x09,
+        // VK_RETURN
+        ShortcutKey::Named("Enter") => 0x0D,
+        // VK_ESCAPE
+        ShortcutKey::Named("Esc") => 0x1B,
+        // VK_BACK
+        ShortcutKey::Named("Backspace") => 0x08,
+        // VK_INSERT
+        ShortcutKey::Named("Insert") => 0x2D,
+        // VK_DELETE
+        ShortcutKey::Named("Delete") => 0x2E,
+        // VK_HOME
+        ShortcutKey::Named("Home") => 0x24,
+        // VK_END
+        ShortcutKey::Named("End") => 0x23,
+        // VK_PRIOR (Page Up)
+        ShortcutKey::Named("PageUp") => 0x21,
+        // VK_NEXT (Page Down)
+        ShortcutKey::Named("PageDown") => 0x22,
+        // VK_UP
+        ShortcutKey::Named("Up") => 0x26,
+        // VK_DOWN
+        ShortcutKey::Named("Down") => 0x28,
+        // VK_LEFT
+        ShortcutKey::Named("Left") => 0x25,
+        // VK_RIGHT
+        ShortcutKey::Named("Right") => 0x27,
+        // The settings parser only produces the keys above; keep the compiler
+        // happy without panicking at runtime.
+        ShortcutKey::Named(_) => 0,
+    }
+}
+
+/// Registers `new` after unregistering the old shortcut; when registration
+/// fails the previous shortcut is restored so the app never loses its hotkey.
+fn swap_hotkey<U, R>(
+    unregister: U,
+    previous: Option<Shortcut>,
+    new: Shortcut,
+    mut register: R,
+) -> Result<(), EngineError>
+where
+    U: FnOnce(),
+    R: FnMut(Shortcut) -> bool,
+{
+    unregister();
+    if register(new) {
+        return Ok(());
+    }
+    if let Some(previous) = previous {
+        let _ = register(previous);
+    }
+    Err(EngineError::new(
+        "快捷键注册失败（可能已被其他程序占用）",
+        "请换一个组合键后重试",
+    ))
+}
+
+/// Applies `capture_set_hotkey`: normalize → no-op when unchanged → re-register
+/// on the hotkey thread → persist + broadcast `state-changed` (contract §10.4).
+pub fn set_hotkey(app: &AppHandle, raw: &str) -> SetHotkeyOutcome {
+    let state = app.try_state::<Arc<AppState>>();
+    let settings_shortcut = state
+        .as_ref()
+        .map(|state| state.settings.get().capture.region_shortcut.clone())
+        .unwrap_or_else(|| DEFAULT_REGION_SHORTCUT.to_string());
+    // Compare against the shortcut that is actually registered, not the
+    // persisted one: after a failed startup registration the two differ, and
+    // re-saving the same shortcut must retry the registration (an empty value
+    // forces a change, i.e. "no hotkey is registered right now").
+    let current = (*lock(&CURRENT_HOTKEY))
+        .map(|shortcut| shortcut.label())
+        .unwrap_or_default();
+    match plan_hotkey_update(&current, raw) {
+        HotkeyUpdate::Unchanged(shortcut) => SetHotkeyOutcome::Applied {
+            shortcut: shortcut.label(),
+            warning: None,
+        },
+        HotkeyUpdate::Change { requested, .. } => {
+            if let Err(error) = request_hotkey_change(requested) {
+                return SetHotkeyOutcome::Failed {
+                    shortcut: if current.is_empty() {
+                        normalize_shortcut(&settings_shortcut)
+                    } else {
+                        current
+                    },
+                    error: error.message,
+                    hint: error.hint,
+                };
+            }
+            let shortcut = requested.label();
+            let Some(state) = state else {
+                return SetHotkeyOutcome::Applied {
+                    shortcut,
+                    warning: Some("快捷键已生效，但应用状态不可用，未能保存设置。".to_string()),
+                };
+            };
+            match state
+                .settings
+                .update_json(json!({ "capture": { "regionShortcut": shortcut.clone() } }))
+            {
+                Ok(_) => {
+                    if let Some(log) = log_of(app) {
+                        log.info(&format!("screenshot hotkey updated to {shortcut}"));
+                    }
+                    crate::commands::broadcast_state(app, &state);
+                    SetHotkeyOutcome::Applied {
+                        shortcut,
+                        warning: None,
+                    }
+                }
+                Err(error) => {
+                    if let Some(log) = log_of(app) {
+                        log.warn(&format!(
+                            "screenshot hotkey {shortcut} applied but not persisted: {error}"
+                        ));
+                    }
+                    SetHotkeyOutcome::Applied {
+                        shortcut,
+                        warning: Some(format!("快捷键已生效，但保存设置失败：{error}")),
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Asks the hotkey thread to re-register `shortcut` and waits (bounded) for the
+/// result. Returns the thread's message + hint on failure.
+fn request_hotkey_change(shortcut: Shortcut) -> Result<(), EngineError> {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW;
+
+    let thread_id = HOTKEY_THREAD_ID.load(Ordering::SeqCst);
+    if thread_id == 0 {
+        return Err(EngineError::new(
+            "截图快捷键服务尚未就绪。",
+            "请重启程序后重试。",
+        ));
+    }
+    let (sender, receiver) = mpsc::channel();
+    *lock(&PENDING_HOTKEY) = Some(HotkeyRequest {
+        shortcut,
+        reply: sender,
+    });
+    let posted =
+        unsafe { PostThreadMessageW(thread_id, HOTKEY_RELOAD_MESSAGE, WPARAM(0), LPARAM(0)) };
+    if posted.is_err() {
+        *lock(&PENDING_HOTKEY) = None;
+        return Err(EngineError::new(
+            "无法通知快捷键服务。",
+            "请重试；若仍失败请重启程序。",
+        ));
+    }
+    match receiver.recv_timeout(Duration::from_millis(1_500)) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(error),
+        Err(_) => {
+            *lock(&PENDING_HOTKEY) = None;
+            Err(EngineError::new(
+                "快捷键更新超时。",
+                "请重试；若仍失败请重启程序。",
+            ))
+        }
+    }
+}
+
+/// Registers a screenshot hotkey on a dedicated Windows message thread. The
+/// thread also handles `WM_APP+1` re-registration requests triggered by
+/// `capture_set_hotkey`, so changing the shortcut never restarts the app.
+pub fn start_hotkey_listener(app: AppHandle) {
+    let thread_app = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("lexora-capture-hotkey".to_string())
+        .spawn(move || {
+            use windows::Win32::System::Threading::GetCurrentThreadId;
+            use windows::Win32::UI::Input::KeyboardAndMouse::UnregisterHotKey;
+            use windows::Win32::UI::WindowsAndMessaging::{
+                GetMessageW, PeekMessageW, MSG, PM_NOREMOVE, WM_HOTKEY,
+            };
+
+            fn register(shortcut: Shortcut) -> windows::core::Result<()> {
+                use windows::Win32::UI::Input::KeyboardAndMouse::{
+                    RegisterHotKey, HOT_KEY_MODIFIERS,
+                };
+                let (modifiers, virtual_key) = native_hotkey(shortcut);
+                unsafe {
+                    RegisterHotKey(None, HOTKEY_ID, HOT_KEY_MODIFIERS(modifiers), virtual_key)
+                }
+            }
+
+            let thread_id = unsafe { GetCurrentThreadId() };
+            // Create the thread's message queue before registering the hotkey or
+            // publishing the thread id: `PostThreadMessageW` (used by
+            // `capture_set_hotkey`) only works once the queue exists.
+            let mut queue_message = MSG::default();
+            unsafe {
+                let _ = PeekMessageW(&mut queue_message, None, 0, 0, PM_NOREMOVE);
+            }
+
+            // Startup registration follows the persisted setting; a failure is
+            // only logged so a conflicting shortcut never blocks the app.
+            let initial = thread_app
+                .try_state::<Arc<AppState>>()
+                .map(|state| state.settings.get().capture.region_shortcut.clone())
+                .and_then(|value| parse_shortcut(&value))
+                .unwrap_or_else(default_shortcut);
+            match register(initial) {
+                Ok(()) => {
+                    *lock(&CURRENT_HOTKEY) = Some(initial);
+                    if let Some(log) = log_of(&thread_app) {
+                        log.info(&format!(
+                            "screenshot hotkey registered: {}",
+                            initial.label()
+                        ));
+                    }
+                }
+                Err(error) => {
+                    *lock(&CURRENT_HOTKEY) = None;
+                    if let Some(log) = log_of(&thread_app) {
+                        log.warn(&format!(
+                            "screenshot hotkey {} registration failed: {error:?}",
+                            initial.label()
+                        ));
+                    }
+                }
+            }
+            HOTKEY_THREAD_ID.store(thread_id, Ordering::SeqCst);
+
+            loop {
+                let mut message = MSG::default();
+                let result = unsafe { GetMessageW(&mut message, None, 0, 0) };
+                if result.0 <= 0 {
+                    break;
+                }
+                if message.message == HOTKEY_RELOAD_MESSAGE {
+                    let Some(request) = lock(&PENDING_HOTKEY).take() else {
+                        continue;
+                    };
+                    let previous = *lock(&CURRENT_HOTKEY);
+                    let outcome = swap_hotkey(
+                        || unsafe {
+                            let _ = UnregisterHotKey(None, HOTKEY_ID);
+                        },
+                        previous,
+                        request.shortcut,
+                        |shortcut| register(shortcut).is_ok(),
+                    );
+                    match outcome {
+                        Ok(()) => {
+                            *lock(&CURRENT_HOTKEY) = Some(request.shortcut);
+                            if let Some(log) = log_of(&thread_app) {
+                                log.info(&format!(
+                                    "screenshot hotkey registered: {}",
+                                    request.shortcut.label()
+                                ));
+                            }
+                            let _ = request.reply.send(Ok(()));
+                        }
+                        Err(error) => {
+                            if let Some(log) = log_of(&thread_app) {
+                                log.warn(&format!(
+                                    "screenshot hotkey {} rejected: {}",
+                                    request.shortcut.label(),
+                                    error.message
+                                ));
+                            }
+                            let _ = request.reply.send(Err(error));
+                        }
+                    }
+                    continue;
+                }
+                if message.message != WM_HOTKEY {
+                    continue;
+                }
+                if message.wParam.0 as i32 != HOTKEY_ID {
+                    continue;
+                }
+                let app = thread_app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let Some(state) = app.try_state::<Arc<AppState>>() else {
+                        return;
+                    };
+                    let state = state.inner().clone();
+                    state
+                        .log
+                        .info("screenshot hotkey pressed: starting capture");
+                    if let Err(error) = start_capture(&app, &state, None).await {
+                        state.log.warn(&format!(
+                            "hotkey screenshot failed: {} / {}",
+                            error.message, error.hint
+                        ));
+                    }
+                });
+            }
+
+            unsafe {
+                let _ = UnregisterHotKey(None, HOTKEY_ID);
+            }
+            *lock(&CURRENT_HOTKEY) = None;
+            HOTKEY_THREAD_ID.store(0, Ordering::SeqCst);
+        });
+    if let Err(error) = spawned {
+        let logger = log_of(&app);
+        if let Some(logger) = logger {
+            logger.warn(&format!(
+                "could not start screenshot hotkey thread: {error}"
+            ));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::CustomSkill;
     use image::Rgba;
 
     fn pixel_image() -> RgbaImage {
         RgbaImage::from_fn(10, 10, |x, y| Rgba([x as u8, y as u8, 0, 255]))
+    }
+
+    fn image_skill_settings() -> Settings {
+        let mut settings = Settings::default();
+        settings.picker.custom_skills = vec![
+            CustomSkill {
+                id: "custom-text".to_string(),
+                label: "文字技能".to_string(),
+                icon: "star".to_string(),
+                kind: "text".to_string(),
+                prompt: "Explain {text}".to_string(),
+            },
+            CustomSkill {
+                id: "custom-image".to_string(),
+                label: "图片技能".to_string(),
+                icon: "wand".to_string(),
+                kind: "image".to_string(),
+                prompt: "Extract {text} in {target}".to_string(),
+            },
+        ];
+        settings.picker.skills = vec!["custom-image".to_string()];
+        settings
     }
 
     #[test]
@@ -807,23 +1690,7 @@ mod tests {
 
     #[test]
     fn only_image_skills_are_preset_candidates() {
-        let mut settings = Settings::default();
-        settings.picker.custom_skills = vec![
-            crate::settings::CustomSkill {
-                id: "custom-text".to_string(),
-                label: "文字技能".to_string(),
-                icon: "star".to_string(),
-                kind: "text".to_string(),
-                prompt: "Explain {text}".to_string(),
-            },
-            crate::settings::CustomSkill {
-                id: "custom-image".to_string(),
-                label: "图片技能".to_string(),
-                icon: "wand".to_string(),
-                kind: "image".to_string(),
-                prompt: "Extract {text} in {target}".to_string(),
-            },
-        ];
+        let settings = image_skill_settings();
         assert!(image_skill(&settings, "custom-text").is_none());
         assert_eq!(
             image_skill(&settings, "custom-image").map(|skill| skill.label.as_str()),
@@ -831,76 +1698,220 @@ mod tests {
         );
         assert!(image_skill(&settings, "custom-missing").is_none());
     }
-}
 
-/// Registers the global Win+Shift+X hotkey on a dedicated Windows message
-/// thread. This is independent of the rdev input hook (which only tracks text
-/// selection) and works even when no Lexora window has keyboard focus.
-pub fn start_hotkey_listener(app: AppHandle) {
-    let thread_app = app.clone();
-    let spawned = std::thread::Builder::new()
-        .name("lexora-capture-hotkey".to_string())
-        .spawn(move || unsafe {
-            use windows::Win32::UI::Input::KeyboardAndMouse::{
-                RegisterHotKey, UnregisterHotKey, MOD_SHIFT, MOD_WIN,
-            };
-            use windows::Win32::UI::WindowsAndMessaging::{GetMessageW, MSG, WM_HOTKEY};
+    #[test]
+    fn skill_actions_parse_the_contract_values() {
+        assert_eq!(SkillAction::parse("ocr"), Some(SkillAction::Ocr));
+        assert_eq!(
+            SkillAction::parse("  Translate "),
+            Some(SkillAction::Translate)
+        );
+        assert_eq!(SkillAction::parse("EXPLAIN"), Some(SkillAction::Explain));
+        assert_eq!(SkillAction::parse("custom"), Some(SkillAction::Custom));
+        assert_eq!(SkillAction::parse("ai"), None);
+        assert_eq!(SkillAction::parse(""), None);
+        assert!(!SkillAction::Ocr.is_vision());
+        assert!(!SkillAction::Translate.is_vision());
+        assert!(SkillAction::Explain.is_vision());
+        assert!(SkillAction::Custom.is_vision());
+    }
 
-            const HOTKEY_ID: i32 = 0x4c58; // 'LX'
-            if let Err(error) = RegisterHotKey(
-                None,
-                HOTKEY_ID,
-                MOD_WIN | MOD_SHIFT,
-                0x58, // X
-            ) {
-                let logger = thread_app
-                    .try_state::<std::sync::Arc<AppState>>()
-                    .map(|state| state.log.clone());
-                if let Some(logger) = logger {
-                    logger.warn(&format!(
-                        "Win+Shift+X hotkey registration failed: {error:?}"
-                    ));
-                }
-                return;
-            }
+    #[test]
+    fn skill_meta_validates_custom_image_skills() {
+        let settings = image_skill_settings();
+        let target = "auto";
+        // Built-in actions need no skill id.
+        assert_eq!(
+            resolve_skill_meta(&settings, SkillAction::Ocr, None, target)
+                .unwrap()
+                .label,
+            "提取文字"
+        );
+        assert_eq!(
+            resolve_skill_meta(&settings, SkillAction::Translate, None, target)
+                .unwrap()
+                .label,
+            "翻译"
+        );
+        let explain = resolve_skill_meta(&settings, SkillAction::Explain, None, target).unwrap();
+        assert_eq!(explain.label, "解释图片");
+        assert!(!explain.system_prompt.is_empty());
+        // Image skills render `{text}` / `{target}` for the vision model.
+        let custom =
+            resolve_skill_meta(&settings, SkillAction::Custom, Some("custom-image"), target)
+                .unwrap();
+        assert_eq!(custom.label, "图片技能");
+        assert_eq!(custom.skill_id, "custom-image");
+        assert!(!custom.system_prompt.contains("{text}"));
+        assert!(!custom.system_prompt.contains("{target}"));
+        // Missing / text / disabled skills are rejected.
+        assert!(resolve_skill_meta(&settings, SkillAction::Custom, None, target).is_err());
+        assert!(
+            resolve_skill_meta(&settings, SkillAction::Custom, Some("custom-text"), target)
+                .is_err()
+        );
+        let mut disabled = settings;
+        disabled.picker.skills = vec!["translate".to_string()];
+        assert!(
+            resolve_skill_meta(&disabled, SkillAction::Custom, Some("custom-image"), target)
+                .is_err()
+        );
+    }
 
-            loop {
-                let mut message = MSG::default();
-                let result = GetMessageW(&mut message, None, 0, 0);
-                if result.0 <= 0 {
-                    break;
-                }
-                if message.message != WM_HOTKEY {
-                    continue;
-                }
-                let app = thread_app.clone();
-                tauri::async_runtime::spawn(async move {
-                    let Some(state) = app.try_state::<std::sync::Arc<AppState>>() else {
-                        return;
-                    };
-                    let state = state.inner().clone();
-                    state
-                        .log
-                        .info("hotkey Win+Shift+X: starting screenshot capture");
-                    if let Err(error) = start_capture(&app, &state, None).await {
-                        state.log.warn(&format!(
-                            "hotkey screenshot failed: {} / {}",
-                            error.message, error.hint
-                        ));
-                    }
-                });
-            }
+    #[test]
+    fn selection_anchor_is_the_bottom_right_corner() {
+        // Normal selection: exclusive bottom-right corner in physical pixels.
+        assert_eq!(
+            anchor_bottom_right(1920, -1080, 1920, 1080, 10, 20, 30, 40),
+            (1960, -1020)
+        );
+        // A selection touching the monitor edge stays one pixel inside, so the
+        // picker uses the captured monitor's work area and DPI.
+        assert_eq!(anchor_bottom_right(0, 0, 100, 80, 90, 70, 10, 10), (99, 79));
+        assert_eq!(anchor_bottom_right(0, 0, 1, 1, 0, 0, 1, 1), (0, 0));
+        assert_eq!(
+            anchor_bottom_right(-1920, 0, 1920, 1080, 1919, 0, 1, 1),
+            (-1, 1)
+        );
+    }
 
-            let _ = UnregisterHotKey(None, HOTKEY_ID);
-        });
-    if let Err(error) = spawned {
-        let logger = app
-            .try_state::<std::sync::Arc<AppState>>()
-            .map(|state| state.log.clone());
-        if let Some(logger) = logger {
-            logger.warn(&format!(
-                "could not start screenshot hotkey thread: {error}"
-            ));
+    #[test]
+    fn native_hotkey_maps_modifiers_and_virtual_keys() {
+        let hotkey = |text: &str| native_hotkey(parse_shortcut(text).unwrap());
+        assert_eq!(
+            hotkey("Win+Shift+X"),
+            (MOD_WIN_RAW | MOD_SHIFT_RAW | MOD_NOREPEAT_RAW, 0x58)
+        );
+        assert_eq!(
+            hotkey("Ctrl+Alt+P"),
+            (MOD_CONTROL_RAW | MOD_ALT_RAW | MOD_NOREPEAT_RAW, 0x50)
+        );
+        // MOD_NOREPEAT is always present.
+        assert_eq!(hotkey("Alt+1").0 & MOD_NOREPEAT_RAW, MOD_NOREPEAT_RAW);
+        // Letters / digits.
+        assert_eq!(hotkey("Ctrl+Q").1, u32::from(b'Q'));
+        assert_eq!(hotkey("Win+0").1, u32::from(b'0'));
+        assert_eq!(hotkey("Win+9").1, u32::from(b'9'));
+        // Function keys: VK_F1 = 0x70 … VK_F24 = 0x87.
+        assert_eq!(hotkey("Ctrl+F1").1, 0x70);
+        assert_eq!(hotkey("Ctrl+F12").1, 0x7B);
+        assert_eq!(hotkey("Ctrl+F24").1, 0x87);
+        // Named keys.
+        for (text, expected) in [
+            ("Ctrl+PrintScreen", 0x2C),
+            ("Ctrl+Space", 0x20),
+            ("Ctrl+Tab", 0x09),
+            ("Ctrl+Enter", 0x0D),
+            ("Ctrl+Esc", 0x1B),
+            ("Ctrl+Backspace", 0x08),
+            ("Ctrl+Insert", 0x2D),
+            ("Ctrl+Delete", 0x2E),
+            ("Ctrl+Home", 0x24),
+            ("Ctrl+End", 0x23),
+            ("Ctrl+PageUp", 0x21),
+            ("Ctrl+PageDown", 0x22),
+            ("Ctrl+Up", 0x26),
+            ("Ctrl+Down", 0x28),
+            ("Ctrl+Left", 0x25),
+            ("Ctrl+Right", 0x27),
+        ] {
+            assert_eq!(hotkey(text).1, expected, "text={text}");
         }
+    }
+
+    #[test]
+    fn hotkey_plan_detects_unchanged_and_changed_shortcuts() {
+        let default = default_shortcut();
+        assert_eq!(
+            plan_hotkey_update("Win+Shift+X", "win+shift+x"),
+            HotkeyUpdate::Unchanged(default)
+        );
+        // An invalid renderer value normalizes to the default shortcut.
+        assert_eq!(
+            plan_hotkey_update("Win+Shift+X", "not a shortcut"),
+            HotkeyUpdate::Unchanged(default)
+        );
+        match plan_hotkey_update("Win+Shift+X", "ctrl+alt+p") {
+            HotkeyUpdate::Change {
+                previous,
+                requested,
+            } => {
+                assert_eq!(previous, Some(default));
+                assert_eq!(requested, parse_shortcut("Ctrl+Alt+P").unwrap());
+                assert_eq!(requested.label(), "Ctrl+Alt+P");
+            }
+            other => panic!("expected a change, got {other:?}"),
+        }
+        // An unparsable persisted value has nothing to roll back to.
+        match plan_hotkey_update("", "Ctrl+Alt+P") {
+            HotkeyUpdate::Change { previous, .. } => assert!(previous.is_none()),
+            other => panic!("expected a change, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn failed_hotkey_registration_restores_the_previous_shortcut() {
+        let previous = parse_shortcut("Win+Shift+X").unwrap();
+        let requested = parse_shortcut("Ctrl+Alt+P").unwrap();
+
+        // Only the old shortcut is free: the requested one fails and the old
+        // one is registered again so the app keeps its screenshot hotkey.
+        let mut attempts = Vec::new();
+        let result = swap_hotkey(
+            || {},
+            Some(previous),
+            requested,
+            |shortcut| {
+                attempts.push(shortcut);
+                shortcut == previous
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(attempts, vec![requested, previous]);
+        let error = result.unwrap_err();
+        assert!(error.message.contains("快捷键注册失败"));
+        assert_eq!(error.hint, "请换一个组合键后重试");
+
+        // Without a previous shortcut there is nothing to restore.
+        let mut attempts = Vec::new();
+        assert!(swap_hotkey(
+            || {},
+            None,
+            requested,
+            |shortcut| {
+                attempts.push(shortcut);
+                false
+            }
+        )
+        .is_err());
+        assert_eq!(attempts, vec![requested]);
+
+        // A successful registration never touches the old shortcut.
+        let mut attempts = Vec::new();
+        swap_hotkey(
+            || {},
+            Some(previous),
+            requested,
+            |shortcut| {
+                attempts.push(shortcut);
+                true
+            },
+        )
+        .unwrap();
+        assert_eq!(attempts, vec![requested]);
+
+        // The old shortcut is unregistered before the new one is registered.
+        let order = std::cell::RefCell::new(Vec::new());
+        swap_hotkey(
+            || order.borrow_mut().push("unregister"),
+            None,
+            requested,
+            |_| {
+                order.borrow_mut().push("register");
+                true
+            },
+        )
+        .unwrap();
+        assert_eq!(order.into_inner(), vec!["unregister", "register"]);
     }
 }
