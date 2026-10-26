@@ -21,6 +21,12 @@
   /* Mouse-wheel zoom: one notch = 10%, hard floor 15% (user requirement). */
   var ZOOM_STEP = 1.1;
   var ZOOM_HINT_MS = 900;
+  /* Generic icon for custom image skills without a known icon key. */
+  var FALLBACK_SKILL_ICON =
+    '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" ' +
+    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"></path>' +
+    "</svg>";
 
   var state = {
     id: readPinId(),
@@ -47,6 +53,8 @@
     /* Edit mode: annotation canvas + image-skill toolbar (Esc leaves it). */
     editing: false,
     editBusy: false,
+    /* Shape used by the 形状 tool (chosen from the shape picker). */
+    editShape: "rect",
     editSkillCalls: 0,
     editExportCalls: 0
   };
@@ -127,14 +135,14 @@
     dom.editCanvas = byId("pin-edit-canvas");
     dom.editUndo = byId("pin-edit-undo");
     dom.editRedo = byId("pin-edit-redo");
+    dom.editShapeButton = document.querySelector(".pin-edit-shape");
+    dom.shapeMenu = byId("pin-shape-menu");
+    dom.shapeButtons = Array.prototype.slice.call(
+      dom.shapeMenu ? dom.shapeMenu.querySelectorAll("[data-edit-shape]") : []
+    );
+    dom.customSkills = byId("pin-edit-custom-skills");
     dom.editToolButtons = Array.prototype.slice.call(
       document.querySelectorAll("[data-edit-tool]")
-    );
-    dom.editSkillButtons = Array.prototype.slice.call(
-      document.querySelectorAll("[data-edit-skill]")
-    );
-    dom.editActionButtons = Array.prototype.slice.call(
-      document.querySelectorAll("[data-edit-action]")
     );
   }
 
@@ -147,6 +155,7 @@
     subscribeClose();
     window.addEventListener("resize", syncScrollable);
     load();
+    loadEditSkills();
   }
 
   function bindEvents() {
@@ -188,6 +197,22 @@
     if (dom.editBar) {
       dom.editBar.addEventListener("click", onEditBarClick);
     }
+    if (dom.shapeMenu) {
+      dom.shapeMenu.addEventListener("click", onShapeMenuClick);
+    }
+    /* Any press outside the edit toolbar/shape menu closes the shape picker. */
+    document.addEventListener("mousedown", function (event) {
+      if (dom.shapeMenu && !dom.shapeMenu.hidden) {
+        var target = event.target;
+        if (
+          !target ||
+          !target.closest ||
+          (!target.closest(".pin-shape-menu") && !target.closest(".pin-edit-shape"))
+        ) {
+          closeShapeMenu();
+        }
+      }
+    });
     if (dom.editUndo) {
       dom.editUndo.addEventListener("click", function () {
         if (editor) {
@@ -493,6 +518,7 @@
       return;
     }
     hideMenu();
+    closeShapeMenu();
     state.editing = true;
     state.editBusy = false;
     if (dom.toolbar) {
@@ -522,6 +548,7 @@
     }
     state.editing = false;
     state.editBusy = false;
+    closeShapeMenu();
     if (editor) {
       editor.setTool(null);
       editor.reset();
@@ -603,38 +630,124 @@
     event.stopPropagation();
     var tool = button.getAttribute("data-edit-tool");
     if (tool) {
+      if (tool === "shape") {
+        toggleShapeMenu(button);
+        return;
+      }
+      closeShapeMenu();
       selectEditTool(button, tool);
       return;
     }
     var skill = button.getAttribute("data-edit-skill");
     if (skill) {
-      runEditSkill(skill);
+      closeShapeMenu();
+      runEditSkill(skill, button.getAttribute("data-skill-id") || "");
       return;
     }
     var action = button.getAttribute("data-edit-action");
-    if (action === "copy") {
-      exportEditAnnotations(false);
+    if (action === "undo") {
+      if (editor) {
+        editor.undo();
+      }
+    } else if (action === "redo") {
+      if (editor) {
+        editor.redo();
+      }
+    } else if (action === "cancel") {
+      exitEdit();
     } else if (action === "exit") {
       exportEditAnnotations(true);
     }
   }
 
-  function selectEditTool(button, tool) {
+  /* Activates an annotation tool; `shape` is only used by the shape picker. */
+  function selectEditTool(button, tool, shape) {
     if (!editor) {
       return;
     }
     if (tool) {
-      var shape = button ? button.getAttribute("data-edit-shape") || "" : "";
       editor.setTool(tool);
-      if (tool === "shape" && shape) {
-        editor.setOption("shapeMode", shape);
+      if (tool === "shape") {
+        if (shape) {
+          state.editShape = shape;
+        }
+        editor.setOption("shapeMode", state.editShape || "rect");
       }
     } else {
       editor.setTool(null);
     }
+    var active = tool === "shape" ? dom.editShapeButton : button;
     dom.editToolButtons.forEach(function (item) {
-      item.classList.toggle("is-active", item === button);
+      item.classList.toggle("is-active", item === active);
+      item.setAttribute("aria-pressed", item === active ? "true" : "false");
     });
+    if (shape) {
+      dom.shapeButtons.forEach(function (item) {
+        item.classList.toggle(
+          "is-active",
+          item.getAttribute("data-edit-shape") === shape
+        );
+      });
+    }
+  }
+
+  function applyEditShape(shape) {
+    var value = String(shape || "")
+      .trim()
+      .toLowerCase();
+    if (!value) {
+      return;
+    }
+    closeShapeMenu();
+    selectEditTool(dom.editShapeButton, "shape", value);
+  }
+
+  /* Shape picker floating above the 形状 button. */
+  function toggleShapeMenu(button) {
+    if (!dom.shapeMenu) {
+      return;
+    }
+    if (!dom.shapeMenu.hidden) {
+      closeShapeMenu();
+      return;
+    }
+    var anchor = button || dom.editShapeButton;
+    dom.shapeMenu.hidden = false;
+    var rect = anchor ? anchor.getBoundingClientRect() : null;
+    var width = dom.shapeMenu.offsetWidth || 148;
+    var height = dom.shapeMenu.offsetHeight || 36;
+    var left = rect ? rect.left + rect.width / 2 - width / 2 : 8;
+    var top = rect ? rect.top - height - 6 : 8;
+    left = Math.max(4, Math.min(left, window.innerWidth - width - 4));
+    if (top < 4) {
+      top = rect ? rect.bottom + 6 : 8;
+    }
+    dom.shapeMenu.style.left = Math.round(left) + "px";
+    dom.shapeMenu.style.top = Math.round(top) + "px";
+    dom.shapeButtons.forEach(function (item) {
+      item.classList.toggle(
+        "is-active",
+        item.getAttribute("data-edit-shape") === state.editShape
+      );
+    });
+  }
+
+  function closeShapeMenu() {
+    if (dom.shapeMenu) {
+      dom.shapeMenu.hidden = true;
+    }
+  }
+
+  function onShapeMenuClick(event) {
+    var button =
+      event.target && event.target.closest
+        ? event.target.closest("[data-edit-shape]")
+        : null;
+    if (!button) {
+      return;
+    }
+    event.stopPropagation();
+    applyEditShape(button.getAttribute("data-edit-shape"));
   }
 
   function updateEditBar() {
@@ -645,12 +758,111 @@
     if (dom.editRedo) {
       dom.editRedo.disabled = busy || !editor || !editor.canRedo();
     }
-    dom.editSkillButtons.forEach(function (button) {
+    var skillButtons = document.querySelectorAll(
+      "#pin-edit-bar [data-edit-skill]"
+    );
+    Array.prototype.forEach.call(skillButtons, function (button) {
       button.disabled = busy;
     });
-    dom.editActionButtons.forEach(function (button) {
+    var actionButtons = document.querySelectorAll(
+      "#pin-edit-bar [data-edit-action]"
+    );
+    Array.prototype.forEach.call(actionButtons, function (button) {
+      if (button === dom.editUndo || button === dom.editRedo) {
+        return;
+      }
       button.disabled = busy;
     });
+  }
+
+  /* ---- Custom image skills in the edit toolbar -------------------------- */
+
+  /* Reads the picker settings and renders one toolbar button per enabled
+   * `kind: "image"` custom skill (same order as the screenshot toolbar). */
+  function loadEditSkills() {
+    var api = window.settingsAPI;
+    if (!api || typeof api.getState !== "function" || !dom.customSkills) {
+      return;
+    }
+    Promise.resolve(api.getState()).then(
+      function (result) {
+        if (state.closed) {
+          return;
+        }
+        var payload = result && (result.state || result);
+        var picker = payload && payload.settings && payload.settings.picker;
+        if (!picker) {
+          return;
+        }
+        renderCustomSkillButtons(picker.captureSkills, picker.customSkills);
+      },
+      function () {
+        /* No custom buttons in this environment (browser preview). */
+      }
+    );
+  }
+
+  function renderCustomSkillButtons(rawSkills, rawCustom) {
+    if (!dom.customSkills) {
+      return;
+    }
+    dom.customSkills.textContent = "";
+    var skills = Object.create(null);
+    (Array.isArray(rawCustom) ? rawCustom : []).forEach(function (entry) {
+      if (!entry || typeof entry !== "object") {
+        return;
+      }
+      var id = String(entry.id == null ? "" : entry.id).trim();
+      var kind = String(entry.kind == null ? "" : entry.kind)
+        .trim()
+        .toLowerCase();
+      if (!id || kind !== "image") {
+        return;
+      }
+      skills[id] = entry;
+    });
+    var order = Array.isArray(rawSkills) ? rawSkills : [];
+    order.forEach(function (rawId) {
+      var id = String(rawId == null ? "" : rawId).trim();
+      var skill = skills[id];
+      if (!skill) {
+        return;
+      }
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "tool-btn pin-edit-custom";
+      button.setAttribute("data-edit-skill", "custom");
+      button.setAttribute("data-skill-id", id);
+      button.title = String(skill.label || "");
+      button.setAttribute("aria-label", String(skill.label || ""));
+      button.innerHTML =
+        customSkillIconMarkup(skill.icon) + '<span class="label"></span>';
+      var icon = button.querySelector("svg");
+      if (icon) {
+        icon.setAttribute("class", "icon");
+        icon.setAttribute("aria-hidden", "true");
+      }
+      var label = button.querySelector(".label");
+      if (label) {
+        label.textContent = String(skill.label || "");
+      }
+      dom.customSkills.appendChild(button);
+    });
+    updateEditBar();
+  }
+
+  function customSkillIconMarkup(key) {
+    if (window.LP && typeof window.LP.customSkillIconSvg === "function") {
+      try {
+        var svg = String(window.LP.customSkillIconSvg(key) || "");
+        if (svg) {
+          return svg;
+        }
+      } catch (error) {
+        /* fall through to the generic icon */
+      }
+    }
+    return FALLBACK_SKILL_ICON;
   }
 
   function editAnnotationsPng() {
@@ -673,7 +885,7 @@
     );
   }
 
-  function runEditSkill(action) {
+  function runEditSkill(action, skillId) {
     if (!state.editing || state.editBusy) {
       return;
     }
@@ -690,7 +902,7 @@
         state.id,
         makePinRequestId(),
         action,
-        "",
+        skillId || "",
         "auto",
         editAnnotationsPng()
       );
@@ -994,8 +1206,12 @@
     }
     event.preventDefault();
     /* Esc leaves the edit mode (annotations are discarded) before it closes
-     * the pin (contract §11.5). */
+     * the pin (contract §11.5); an open shape picker closes first. */
     if (state.editing) {
+      if (dom.shapeMenu && !dom.shapeMenu.hidden) {
+        closeShapeMenu();
+        return;
+      }
       exitEdit();
       return;
     }
