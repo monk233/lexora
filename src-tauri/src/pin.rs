@@ -133,8 +133,9 @@ const WHOLE_VIEW_WORK_RATIO: f64 = 0.92;
 
 /// A long screenshot is shown whole only when that leaves at least this many
 /// logical pixels of width; otherwise the readable width wins and the pin
-/// scrolls inside its window.
-const WHOLE_VIEW_MIN_LOGICAL_WIDTH: f64 = 160.0;
+/// scrolls inside its window. 120px keeps even a 9:1 page visible end to end
+/// while still avoiding unrecognisably thin strips.
+const WHOLE_VIEW_MIN_LOGICAL_WIDTH: f64 = 120.0;
 
 /// Logical display size of a pinned image: physical pixels divided by the DPI
 /// scale, scaled down to at most 70% of the work area, tiny snippets enlarged
@@ -306,7 +307,7 @@ pub fn create_pin(
             )
         }
     };
-    let (logical_w, logical_h) =
+    let (logical_w, _logical_h) =
         pin_display_size(width, height, scale, work.width(), work.height());
     let scale = if scale.is_finite() && scale > 0.1 {
         scale
@@ -314,10 +315,24 @@ pub fn create_pin(
         1.0
     };
     let physical_w = ((logical_w * scale).round() as u32).max(1);
-    let physical_h = ((logical_h * scale).round() as u32).max(1);
-    // The image is rendered at the window width; if that makes it taller than
-    // the window (long screenshot), the pin scrolls inside the window.
-    let scrollable = pin_is_scrollable(logical_w, logical_h, width, height);
+    // Derive the window height from the rendered aspect ratio so the scaled
+    // picture's height equals the window height exactly; independent rounding of
+    // both sides could clip a few pixels (and show a scrollbar for a fitted long
+    // screenshot). Long screenshots taller than the whole-view cap scroll.
+    let rendered_h = ((physical_w as f64) * height as f64 / width as f64)
+        .round()
+        .max(1.0) as u32;
+    let whole_view_cap_h = ((work.height().max(1) as f64) * WHOLE_VIEW_WORK_RATIO)
+        .round()
+        .max(1.0) as u32;
+    let scrollable = rendered_h > whole_view_cap_h.saturating_add(2);
+    let physical_h = if scrollable {
+        whole_view_cap_h.max(1)
+    } else {
+        rendered_h
+    };
+    let logical_w = physical_w as f64 / scale;
+    let logical_h = physical_h as f64 / scale;
     let position = match anchor_point {
         /* Keep the image exactly where the selection was; only clamp it back
          * into the work area when the display size differs from the selection. */

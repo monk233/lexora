@@ -10,13 +10,17 @@
   <link rel="stylesheet" href="longshot.css">
 </head>
 <body>
-  <!-- Minimal growing preview of the manual long screenshot (contract §11.14.1).
-       Only the stitched image: no header, footer, status pill or error banner.
-       The shell sizes this opaque window to the stitched aspect ratio. -->
-  <div class="longshot-card" id="longshot-root">
-    <img class="longshot-image" id="longshot-image" alt="" draggable="false" hidden>
-    <img class="longshot-image" id="longshot-image-buffer" alt="" draggable="false"
-         aria-hidden="true" hidden>
+  <!-- Minimal preview of the manual long screenshot (contract §11.14.1).
+       Transparent frameless window: only the blue frame (same colour/weight as
+       the screenshot selection border) around the stitched image. The shell
+       sizes this window once; the picture scales to fit and gets narrower as the
+       image grows. No header, footer, status pill, error banner or white card. -->
+  <div class="longshot-root" id="longshot-root">
+    <div class="longshot-frame" id="longshot-frame">
+      <img class="longshot-image" id="longshot-image" alt="" draggable="false" hidden>
+      <img class="longshot-image" id="longshot-image-buffer" alt="" draggable="false"
+           aria-hidden="true" hidden>
+    </div>
     <div class="longshot-empty" id="longshot-empty">正在拼接…</div>
   </div>
 

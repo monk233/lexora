@@ -85,6 +85,7 @@
     dom.bar = byId("ls-bar");
     dom.directions = byId("ls-directions");
     dom.autoscroll = byId("ls-autoscroll");
+    dom.autoscrollLabel = byId("ls-autoscroll-label");
     dom.status = byId("ls-status");
     dom.cancel = byId("ls-cancel");
     dom.finish = byId("ls-finish");
@@ -204,15 +205,22 @@
       dom.finish.disabled = locked || !state.ready;
     }
     if (dom.autoscroll) {
-      dom.autoscroll.classList.toggle("is-active", state.autoscroll === true);
+      var autoscrollActive = state.autoscroll === true;
+      dom.autoscroll.classList.toggle("is-active", autoscrollActive);
       dom.autoscroll.setAttribute(
         "aria-pressed",
-        state.autoscroll ? "true" : "false"
+        autoscrollActive ? "true" : "false"
       );
       dom.autoscroll.disabled = locked || !state.ready;
+      if (dom.autoscrollLabel) {
+        dom.autoscrollLabel.textContent = autoscrollActive ? "停止滚动" : "自动滚动";
+      }
+      dom.autoscroll.title = autoscrollActive
+        ? "停止自动滚动"
+        : "自动滚动：程序按稳定步长滚动页面并拼接（推荐）";
     }
     if (!state.lastError && !state.done) {
-      var prefix = state.autoscroll ? "自动滚动 · " : "";
+      var prefix = state.autoscroll ? "自动滚动中 · " : "";
       setStatus(
         prefix +
           "第 " +

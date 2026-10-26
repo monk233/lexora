@@ -1,20 +1,17 @@
 /* Lexora manual-scroll long-screenshot preview window (contract §11.14.1).
  *
- * QQ-style minimal preview: an OPAQUE frameless window whose size follows the
- * stitched image (the shell resizes it), holding only the image. No header,
- * footer, status pill, error banner or toast — direction / cancel / finish live
- * in the separate control bar below the selection.
- *
- * The window is deliberately opaque: a transparent window repaints through the
- * DWM alpha compositor on every resize, which flickered while the preview grew.
+ * Transparent frameless window with nothing but a blue frame (same colour and
+ * weight as the screenshot selection border) around the stitched image. The
+ * shell sizes the window once; the picture is scaled to fit and gets narrower as
+ * the long screenshot grows. The window never resizes, so a transparent window
+ * can never flicker through the DWM alpha compositor.
  */
 
 :root {
   color-scheme: light;
 
-  --surface: #ffffff;
+  --selection-border: #4f46e5;
   --text-faint: #94a3b8;
-  --border: #e2e8f0;
 
   --font-ui: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
 }
@@ -34,7 +31,7 @@ body {
   margin: 0;
   padding: 0;
   overflow: hidden;
-  background: var(--surface);
+  background: transparent;
 }
 
 body {
@@ -48,27 +45,36 @@ body {
   cursor: default;
 }
 
-/* ---- Image -------------------------------------------------------------- */
+/* ---- Selection-coloured frame + image ---------------------------------- */
 
-.longshot-card {
+.longshot-root {
   position: absolute;
   inset: 0;
+  background: transparent;
+}
+
+.longshot-frame {
+  position: absolute;
+  left: 0;
+  top: 0;
   overflow: hidden;
-  background: var(--surface);
+  border: 2px solid var(--selection-border);
+  border-radius: 2px;
+  background: transparent;
+  box-shadow: 0 1px 6px rgba(15, 23, 42, 0.25);
 }
 
 /* Two stacked layers: the incoming image decodes on the back layer and is only
- * promoted to the front once decoded — no flashing, no fade transition (a
- * transition would itself look like a flicker at 25 updates/s). */
+ * promoted to the front once decoded — no flashing, no fade transition. */
 .longshot-image {
   position: absolute;
-  inset: 6px;
+  inset: 0;
   display: block;
-  width: calc(100% - 12px);
-  height: calc(100% - 12px);
-  object-fit: fill;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
   opacity: 0;
-  background: var(--surface);
+  background: transparent;
   -webkit-user-drag: none;
   user-select: none;
 }
@@ -77,14 +83,18 @@ body {
   opacity: 1;
 }
 
+/* First-frame placeholder: a dark translucent pill, never a white surface. */
 .longshot-empty {
   position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-faint);
-  font-size: 11.5px;
+  left: 50%;
+  top: 50%;
+  padding: 4px 10px;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.6);
+  color: #e2e8f0;
+  font-size: 11px;
   letter-spacing: 0.02em;
+  white-space: nowrap;
   pointer-events: none;
 }

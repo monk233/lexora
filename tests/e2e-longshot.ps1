@@ -42,6 +42,12 @@ public class Win32LS {
       System.Threading.Thread.Sleep(40);
     }
   }
+  [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+  public static void PressEscape() {
+    keybd_event(0x1B, 0, 0, UIntPtr.Zero);
+    System.Threading.Thread.Sleep(70);
+    keybd_event(0x1B, 0, 2, UIntPtr.Zero);
+  }
   public static void Activate(IntPtr hwnd) {
     ShowWindow(hwnd, 9);
     IntPtr fg = GetForegroundWindow();
@@ -186,21 +192,30 @@ try {
   "BAR_BELOW_SELECTION_X=$([Math]::Abs($barObj.screenX - $selLeft) -le 2) BAR_BELOW_SELECTION_Y=$($barObj.screenY -ge ($selBottom + 3) -and $barObj.screenY -le ($selBottom + 10))"
 
   # Preview window: narrow strip, modest height while only the first frame exists.
-  $pre0 = Cdp 'longshot\.html' "(() => ({winW: window.innerWidth, winH: window.innerHeight, screenX: window.screenX, screenY: window.screenY, imgHidden: document.getElementById('longshot-image').hidden, promptNodes: document.querySelectorAll('.longshot-meta, .longshot-error, .longshot-toast').length, state: window.__longshotState ? {w: window.__longshotState.width, h: window.__longshotState.height, frames: window.__longshotState.frames} : null}))()"
+  $pre0 = Cdp 'longshot\.html' "(() => ({winW: window.innerWidth, winH: window.innerHeight, screenX: window.screenX, screenY: window.screenY, imgHidden: document.getElementById('longshot-image').hidden, promptNodes: document.querySelectorAll('.longshot-meta, .longshot-error, .longshot-toast, .longshot-card').length, frame: (() => { const f = document.getElementById('longshot-frame'); const r = f.getBoundingClientRect(); return {w: Math.round(r.width), h: Math.round(r.height), border: getComputedStyle(f).borderTopColor, borderW: getComputedStyle(f).borderTopWidth}; })(), state: window.__longshotState ? {w: window.__longshotState.width, h: window.__longshotState.height, frames: window.__longshotState.frames} : null}))()"
   "PREVIEW_BEFORE=$pre0"
   $pre0Obj = $pre0 | ConvertFrom-Json
-  "PREVIEW_WIDTH_DOUBLED=$([Math]::Abs($pre0Obj.winW - 472) -le 2) PREVIEW_NO_PROMPTS=$($pre0Obj.promptNodes -eq 0)"
+  "PREVIEW_FIXED_WIDTH=$([Math]::Abs($pre0Obj.winW - 560) -le 2) PREVIEW_HEIGHT_OK=$($pre0Obj.winH -ge 500 -and $pre0Obj.winH -le 760) PREVIEW_NO_PROMPTS=$($pre0Obj.promptNodes -eq 0) PREVIEW_BLUE_FRAME=$($pre0Obj.frame.border -eq 'rgb(79, 70, 229)' -and $pre0Obj.frame.borderW -eq '2px')"
 
   # --- auto-scroll mode: the shell scrolls the target app and stitches -------
+  # Auto-scroll starts scrolling once the pointer is inside the selection and
+  # stops when it leaves, so move the pointer there first.
+  [Win32LS]::MoveAbs([int](($selLeft + $selRight) / 2), [int](($selTop + $selBottom) / 2))
+  Start-Sleep -Milliseconds 200
   $autoOn = Cdp 'longshot-bar\.html' "(() => { const b = document.getElementById('ls-autoscroll'); if (!b) return {error: 'no autoscroll button'}; b.click(); return {clicked: true}; })()"
   "AUTOSCROLL_CLICK=$autoOn"
-  Start-Sleep -Seconds 4
+  [Win32LS]::MoveAbs([int](($selLeft + $selRight) / 2), [int](($selTop + $selBottom) / 2))
+  Start-Sleep -Seconds 5
   $autoState = Cdp 'longshot-bar\.html' "window.__TAURI__.core.invoke('longshot_state')"
   "AUTOSCROLL_STATE=$autoState"
   $autoStateObj = $autoState | ConvertFrom-Json
-  "AUTOSCROLL_WORKED=$($autoStateObj.frames -gt 1 -and $autoStateObj.autoscroll -eq $true)"
+  $autoLabel = (Cdp 'longshot-bar\.html' "(() => document.getElementById('ls-autoscroll-label').textContent)()") | ConvertFrom-Json
+  "AUTOSCROLL_LABEL=$autoLabel"
+  $autoPressed = (Cdp 'longshot-bar\.html' "(() => document.getElementById('ls-autoscroll').getAttribute('aria-pressed'))()") | ConvertFrom-Json
+  "AUTOSCROLL_PRESSED=$autoPressed"
+  "AUTOSCROLL_WORKED=$($autoStateObj.frames -gt 1 -and $autoStateObj.autoscroll -eq $true -and $autoPressed -eq 'true')"
   $autoOff = Cdp 'longshot-bar\.html' "(() => { const b = document.getElementById('ls-autoscroll'); b.click(); return {clicked: true}; })()"
-  Start-Sleep -Milliseconds 700
+  Start-Sleep -Milliseconds 800
   $autoOffState = Cdp 'longshot-bar\.html' "window.__TAURI__.core.invoke('longshot_state')"
   "AUTOSCROLL_OFF_STATE=$autoOffState"
 
@@ -247,6 +262,44 @@ try {
   $pinObj = $pinState | ConvertFrom-Json
   "PIN_WHOLE_VISIBLE=$([Math]::Abs($pinObj.imgH - $pinObj.winH) -le 2) PIN_NO_SCROLLBAR=$(-not $pinObj.scrollable)"
   & node (Join-Path $root "tests\cdp-screenshot.mjs") $CdpPort 'pin\.html' (Join-Path $shotDir "longshot-pin.png") "light" 2>&1 | Out-Null
+
+  # --- Esc cancels a running long screenshot -------------------------------
+  # Close the pin first: it is always-on-top and would cover the next selection.
+  $pinClose = Cdp 'pin\.html' "(() => { const id = window.__pinState ? window.__pinState.id : 0; if (!id) return 'no-id'; window.__TAURI__.core.invoke('pin_close', {id: id}); return 'closed'; })()"
+  "ESC_PIN_CLOSE=$pinClose"
+  Start-Sleep -Milliseconds 600
+  [Win32LS]::Activate($npTarget.MainWindowHandle)
+  Start-Sleep -Milliseconds 400
+  $captureStart2 = Cdp 'tauri\.localhost/$' "window.__TAURI__.core.invoke('start_capture',{}).then(r => r).catch(e => ({error: String(e)}))"
+  "ESC_CAPTURE_START=$captureStart2"
+  if (Wait-Target 'capture\.html') {
+    Start-Sleep -Seconds 1
+    [Win32LS]::MoveAbs($selLeft, $selTop)
+    Start-Sleep -Milliseconds 150
+    [Win32LS]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 80
+    for ($step = 1; $step -le 10; $step++) {
+      $x = $selLeft + [int](($selRight - $selLeft) * $step / 10)
+      $y = $selTop + [int](($selBottom - $selTop) * $step / 10)
+      [Win32LS]::MoveAbs($x, $y)
+      Start-Sleep -Milliseconds 30
+    }
+    [Win32LS]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Seconds 1
+    $lsClick2 = Cdp 'capture\.html' "(() => { const b = document.querySelector('#capture-bar [data-action=longshot]'); if (!b) return {error: 'no longshot button'}; b.click(); return {clicked: true}; })()"
+    "ESC_LONGSHOT_CLICK=$lsClick2"
+    $bar2 = Wait-Target 'longshot-bar\.html'
+    "ESC_BAR_STARTED=$([bool]$bar2)"
+    Start-Sleep -Milliseconds 900
+    [Win32LS]::PressEscape()
+    Start-Sleep -Seconds 2
+    $remaining = @(Get-Targets | Where-Object { $_.url -match 'longshot' }).Count
+    "ESC_REMAINING_WINDOWS=$remaining"
+    "ESC_CANCEL_WORKED=$($remaining -eq 0)"
+    $results.EscCancelled = ($remaining -eq 0)
+  } else {
+    "ESC_CANCEL_WORKED=False (capture overlay did not reopen)"
+  }
 
   $results.CaptureReady = $ready
   $results.BarState = $barState

@@ -70,6 +70,21 @@ pub fn scroll_wheel_horizontal(notches: i32) -> bool {
     send_wheel(MOUSEEVENTF_HWHEEL, notches)
 }
 
+/// Whether Escape was pressed since the previous call (`GetAsyncKeyState`'s low
+/// bit remembers the press until it is queried). Used by the manual long
+/// screenshot: Esc cancels it even though the overlay is click-through and the
+/// keyboard focus belongs to the scrolled application.
+pub fn escape_pressed() -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_ESCAPE};
+    unsafe { (GetAsyncKeyState(VK_ESCAPE.0 as i32) & 0x0001) != 0 }
+}
+
+/// Whether the physical cursor is inside `(left, top, width, height)`.
+pub fn cursor_inside(left: i32, top: i32, width: i32, height: i32) -> bool {
+    let (x, y) = cursor_physical();
+    x >= left && x < left.saturating_add(width) && y >= top && y < top.saturating_add(height)
+}
+
 fn send_wheel(flags: windows::Win32::UI::Input::KeyboardAndMouse::MOUSE_EVENT_FLAGS, notches: i32) -> bool {
     if notches == 0 {
         return true;

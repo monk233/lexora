@@ -2900,6 +2900,26 @@ pub(crate) fn png_data_url(image: &RgbaImage) -> Result<String, EngineError> {
     Ok(format!("data:image/png;base64,{encoded}"))
 }
 
+/// `data:image/jpeg;base64,...` URL for the long-screenshot preview: JPEG
+/// encoding is several times cheaper than PNG for a window-sized image and keeps
+/// the per-frame IPC payload small (the preview refreshes ~10x/s).
+pub(crate) fn preview_jpeg_data_url(image: &RgbaImage, quality: u8) -> Result<String, EngineError> {
+    use std::io::Cursor;
+    let mut cursor = Cursor::new(Vec::new());
+    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(
+        &mut cursor,
+        quality.clamp(1, 100),
+    );
+    encoder.encode_image(image).map_err(|error| {
+        EngineError::new(
+            "编码长截图预览失败。",
+            format!("请重试；若问题持续请重启程序（{error}）。"),
+        )
+    })?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(cursor.into_inner());
+    Ok(format!("data:image/jpeg;base64,{encoded}"))
+}
+
 /// Error for a renderer-provided annotation layer that cannot be decoded.
 fn annotation_error() -> EngineError {
     EngineError::new(

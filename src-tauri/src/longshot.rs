@@ -28,7 +28,7 @@ use tauri::{
 };
 
 use crate::capture::{
-    clamp_rect, find_overlap, find_overlap_prepend, frames_identical, png_data_url,
+    clamp_rect, find_overlap, find_overlap_prepend, frames_identical, preview_jpeg_data_url,
     write_clipboard_image, HitRect, LongshotSeed, Stitched,
 };
 use crate::engine::EngineError;
@@ -48,38 +48,31 @@ pub const EVENT_STARTED: &str = "longshot-started";
 /// Rust → capture overlay windows: the manual session was cancelled.
 pub const EVENT_CANCELLED: &str = "longshot-cancelled";
 
-/// Preview window logical width (doubled from the first QQ-style strip: the
-/// stitched content is readable at a glance).
-const PREVIEW_LOGICAL_WIDTH: f64 = 472.0;
-/// Preview window inner padding (logical pixels) around the image card.
-const PREVIEW_PADDING_CSS: f64 = 6.0;
-/// Preview window may cover at most this share of the work area.
-const PREVIEW_MAX_WORK_RATIO: f64 = 0.86;
-/// Upper/lower bounds for the preview window height in logical pixels.
-const PREVIEW_MAX_LOGICAL_HEIGHT: f64 = 920.0;
-const PREVIEW_MIN_LOGICAL_HEIGHT: f64 = 160.0;
-/// Resize the preview window only when its logical height changed by more than
-/// this (and at most every [`PREVIEW_RESIZE_INTERVAL`]), so the ~25 fps stitcher
-/// does not make the window flicker by resizing it on every frame.
-const PREVIEW_MIN_RESIZE_CSS: f64 = 6.0;
-const PREVIEW_RESIZE_INTERVAL: Duration = Duration::from_millis(140);
+/// Preview window layout: FIXED height (bounded), width follows the stitched
+/// aspect ratio (it narrows as the image grows) and the window sits under the
+/// control bar; the content is scaled to fit the window.
+const PREVIEW_MAX_WORK_RATIO: f64 = 0.62;
+const PREVIEW_MAX_LOGICAL_HEIGHT: f64 = 760.0;
+const PREVIEW_MIN_LOGICAL_HEIGHT: f64 = 240.0;
+const PREVIEW_WIDTH_MIN: u32 = 90;
+const PREVIEW_WIDTH_MAX: u32 = 560;
 /// Gap between the selection and the preview / control bar (physical pixels).
 const PREVIEW_GAP: i32 = 8;
 /// Control bar logical size (white floating card, capture-toolbar style).
 const BAR_LOGICAL_WIDTH: f64 = 660.0;
 const BAR_LOGICAL_HEIGHT: f64 = 56.0;
-/// Screen grabbing cadence of the background stitcher (~25 fps). QQ's long
-/// screenshot does not throttle the user's scrolling; grabbing often enough is
-/// what keeps the overlaps detectable while flicking, and ~40ms also avoids
-/// capturing half-scrolled frames.
-const FRAME_INTERVAL: Duration = Duration::from_millis(40);
+/// How long the grab loop waits for a new frame from the continuous capture
+/// session before looping again (the session pushes a frame only when the screen
+/// changes, so an idle desktop simply waits here).
+const FRAME_WAIT: Duration = Duration::from_millis(160);
 /// Auto-scroll mode (ShareX-style scrolling capture): the shell scrolls the
 /// target application itself in small steps, waits for the frame to settle and
 /// only then stitches. Deterministic steps make the overlap search trivial and
 /// remove the "user scrolled but nothing was stitched" failures that happen when
-/// a frame is grabbed while the page is still animating.
-const AUTOSCROLL_NOTCHES: i32 = 3;
-const AUTOSCROLL_SETTLE: Duration = Duration::from_millis(240);
+/// a frame is grabbed while the page is still animating. The cursor is never
+/// moved; scrolling stops when the pointer leaves the selection.
+const AUTOSCROLL_NOTCHES: i32 = 2;
+const AUTOSCROLL_SETTLE: Duration = Duration::from_millis(520);
 /// Stop auto-scrolling after this many identical frames (end of the content).
 const AUTOSCROLL_STOP_STREAK: u32 = 2;
 /// Size limits (contract §11.14).
@@ -202,10 +195,12 @@ struct Runtime {
     /// `longshot_finish` so the exported image cannot miss a late frame).
     finished: Arc<AtomicBool>,
     geometry: Geometry,
-    /// Work area of the selection monitor (preview window resizing).
+    /// Work area of the selection monitor (preview window layout).
     work: win32::WorkArea,
     /// DPI scale of the selection monitor.
     scale: f64,
+    /// Physical size of the control bar window (preview layout below it).
+    bar_physical: (i32, i32),
 }
 
 fn session_cell() -> &'static Mutex<Option<Arc<Runtime>>> {
@@ -279,40 +274,77 @@ fn set_overlay_click_through(app: &AppHandle, ignore: bool) -> usize {
 // Pure layout / direction helpers (unit-tested below)
 // ---------------------------------------------------------------------------
 
-/// Logical preview window size for one stitched image: fixed narrow width, the
-/// height follows the content aspect ratio (the preview grows while the user
-/// scrolls, like QQ's long-screenshot preview), capped by the work area and by
-/// the room between the selection top and the work-area bottom.
-fn preview_window_size_for(
+/// Logical preview window size + physical position for the long screenshot.
+///
+/// The preview window has a **fixed size** (stable window = no flicker) and the
+/// image inside it is scaled to fit, so as the stitched image grows the picture
+/// gets narrower while the window stays put; the blue frame the renderer draws
+/// follows the picture, so visually the preview narrows with the length. It sits
+/// **under the control bar** (under the selection), above the selection when
+/// there is no room below, beside the selection as the last fallback.
+fn preview_placement(
     display_width: u32,
     display_height: u32,
     scale: f64,
     work: &win32::WorkArea,
-    selection_top: i32,
-) -> (f64, f64) {
+    selection: (i32, i32, i32, i32),
+    bar_physical: (i32, i32),
+) -> ((f64, f64), (i32, i32)) {
     let scale = if scale.is_finite() && scale > 0.1 {
         scale
     } else {
         1.0
     };
-    let content_width = (PREVIEW_LOGICAL_WIDTH - PREVIEW_PADDING_CSS * 2.0).max(1.0);
-    let ratio = content_width / display_width.max(1) as f64;
-    let content_height = (display_height.max(1) as f64 * ratio).max(1.0);
-    let max_by_work = (work.height().max(1) as f64 * PREVIEW_MAX_WORK_RATIO / scale)
-        .min(PREVIEW_MAX_LOGICAL_HEIGHT);
-    let available_below_selection =
-        ((work.bottom - selection_top).max(1) as f64 / scale - PREVIEW_GAP as f64)
-            .max(PREVIEW_MIN_LOGICAL_HEIGHT);
-    let max_height = max_by_work
-        .min(available_below_selection)
+    let (left, top, sel_width, height) = selection;
+    let bottom = top.saturating_add(height);
+    let max_height = ((work.height().max(1) as f64) * PREVIEW_MAX_WORK_RATIO / scale)
+        .min(PREVIEW_MAX_LOGICAL_HEIGHT)
         .max(PREVIEW_MIN_LOGICAL_HEIGHT);
-    let desired = content_height + PREVIEW_PADDING_CSS * 2.0;
-    // Small stitched images get a small window; the minimum only applies when the
-    // content itself is taller than it.
-    let lower = PREVIEW_MIN_LOGICAL_HEIGHT.min(desired);
-    let upper = max_height.max(lower);
-    let height = desired.clamp(lower, upper);
-    (PREVIEW_LOGICAL_WIDTH, height)
+    let preview_width = (PREVIEW_WIDTH_MAX as f64)
+        .min((work.width().max(1) as f64) / scale * 0.5)
+        .max(PREVIEW_WIDTH_MIN as f64);
+    let _ = (display_width, display_height);
+    let gap = PREVIEW_GAP as f64;
+    let bar_height = bar_physical.1.max(1) as f64 / scale;
+    let make = |height: f64| -> ((f64, f64), (i32, i32)) {
+        let h = height.max(PREVIEW_MIN_LOGICAL_HEIGHT);
+        let physical = (
+            ((preview_width * scale).round() as i32).max(1),
+            ((h * scale).round() as i32).max(1),
+        );
+        ((preview_width, h), physical)
+    };
+    let below_room =
+        ((work.bottom - bottom) as f64 / scale - bar_height - 3.0 * gap).max(0.0);
+    if below_room >= PREVIEW_MIN_LOGICAL_HEIGHT {
+        let (size, physical) = make(max_height.min(below_room));
+        let y = bottom + PREVIEW_GAP + bar_physical.1.max(1) + PREVIEW_GAP;
+        return (
+            size,
+            win32::clamp_to_work_area(left, y, physical.0, physical.1, work),
+        );
+    }
+    let above_room = ((top - work.top) as f64 / scale - bar_height - 3.0 * gap).max(0.0);
+    if above_room >= PREVIEW_MIN_LOGICAL_HEIGHT {
+        let (size, physical) = make(max_height.min(above_room));
+        let y = top - PREVIEW_GAP - bar_physical.1.max(1) - PREVIEW_GAP - physical.1;
+        return (
+            size,
+            win32::clamp_to_work_area(left, y, physical.0, physical.1, work),
+        );
+    }
+    // Last resort: beside the selection (left when there is room, else right).
+    let (size, physical) = make(max_height);
+    let right = left.saturating_add(sel_width);
+    let x = if left - work.left >= physical.0 + PREVIEW_GAP {
+        left - PREVIEW_GAP - physical.0
+    } else {
+        right + PREVIEW_GAP
+    };
+    (
+        size,
+        win32::clamp_to_work_area(x, top, physical.0, physical.1, work),
+    )
 }
 
 /// Physical top-left position of the floating control bar: below the selection
@@ -334,26 +366,6 @@ fn control_bar_position(
         bottom + PREVIEW_GAP
     };
     win32::clamp_to_work_area(left, y, window_width, window_height, work)
-}
-
-/// Physical top-left position of the preview window: left of the selection when
-/// there is room, otherwise right of it; vertically aligned with the selection
-/// top and clamped into the work area (contract §11.14).
-fn preview_window_position(
-    selection: (i32, i32, i32, i32),
-    window: (i32, i32),
-    work: &win32::WorkArea,
-) -> (i32, i32) {
-    let (left, top, width, _height) = selection;
-    let (window_width, window_height) = (window.0.max(1), window.1.max(1));
-    let right = left.saturating_add(width);
-    let left_space = left - work.left;
-    let x = if left_space >= window_width + PREVIEW_GAP {
-        left - PREVIEW_GAP - window_width
-    } else {
-        right + PREVIEW_GAP
-    };
-    win32::clamp_to_work_area(x, top, window_width, window_height, work)
 }
 
 /// Insets a crop rectangle by the selection-border margin (≈2 CSS pixels,
@@ -458,24 +470,40 @@ fn display_preview_image(shared: &Shared, target_width: u32, target_height: u32)
     }
 }
 
-/// Physical pixel size of the preview window's image box for a stitched image.
+/// Window layout (logical size + physical position) of the preview for a stitched
+/// image.
+fn preview_placement_for(
+    runtime: &Runtime,
+    display_width: u32,
+    display_height: u32,
+) -> ((f64, f64), (i32, i32)) {
+    preview_placement(
+        display_width,
+        display_height,
+        runtime.scale,
+        &runtime.work,
+        runtime.geometry.screen_rect(),
+        runtime.bar_physical,
+    )
+}
+
+/// Physical pixel target for the preview JPEG: the stitched image scaled to fit
+/// the fixed preview window while keeping its aspect ratio (the renderer draws it
+/// centered inside the window and the blue frame follows the visible picture).
 fn preview_target_size(
     runtime: &Runtime,
     display_width: u32,
     display_height: u32,
 ) -> (u32, u32) {
-    let (logical_w, logical_h) = preview_window_size_for(
-        display_width,
-        display_height,
-        runtime.scale,
-        &runtime.work,
-        runtime.geometry.selection_screen.1,
-    );
-    let content_w =
-        ((logical_w - PREVIEW_PADDING_CSS * 2.0).max(1.0) * runtime.scale).round() as u32;
-    let content_h =
-        ((logical_h - PREVIEW_PADDING_CSS * 2.0).max(1.0) * runtime.scale).round() as u32;
-    (content_w.max(1), content_h.max(1))
+    let (_, physical) = preview_placement_for(runtime, display_width, display_height);
+    let window_w = physical.0.max(1) as f64;
+    let window_h = physical.1.max(1) as f64;
+    let display_w = display_width.max(1) as f64;
+    let display_h = display_height.max(1) as f64;
+    let fit = (window_w / display_w).min(window_h / display_h);
+    let width = (display_w * fit).round().clamp(48.0, 900.0) as u32;
+    let height = (display_h * fit).round().clamp(48.0, 1200.0) as u32;
+    (width, height)
 }
 
 /// Resets the stitcher for a direction switch. The preview immediately shows the
@@ -602,6 +630,13 @@ fn miss(shared: &mut Shared, frame: RgbaImage) -> Option<Value> {
 
 /// Background grab loop: `xcap::Monitor` is not `Send`, which is why it lives
 /// entirely inside one dedicated thread.
+///
+/// It uses ONE continuous WGC capture session (`video_recorder`) instead of a
+/// fresh `capture_image()` per frame: creating and tearing down a GraphicsCapture
+/// session every 40ms proved unreliable on real desktops (a session can stall or
+/// time out, after which the preview kept showing the first frame forever). The
+/// session pushes a frame whenever the screen changes; the loop drains to the
+/// newest one and stitches it.
 fn capture_loop(app: AppHandle, runtime: Arc<Runtime>) {
     // Publish "loop has exited" on every return path (including early errors).
     struct FinishGuard(Arc<AtomicBool>);
@@ -613,88 +648,204 @@ fn capture_loop(app: AppHandle, runtime: Arc<Runtime>) {
     let _finished = FinishGuard(runtime.finished.clone());
 
     let geometry = runtime.geometry;
-    let monitors = match xcap::Monitor::all() {
-        Ok(monitors) => monitors,
-        Err(error) => {
-            log_warn(
-                &app,
-                &format!("longshot: cannot enumerate monitors: {error}"),
-            );
-            runtime.stop.store(true, Ordering::SeqCst);
-            return;
-        }
-    };
-    let monitor = monitors
-        .iter()
-        .find(|monitor| {
-            monitor.x().unwrap_or(i32::MIN) == geometry.origin_x
-                && monitor.y().unwrap_or(i32::MIN) == geometry.origin_y
-                && monitor.width().unwrap_or(0) == geometry.monitor_width
-                && monitor.height().unwrap_or(0) == geometry.monitor_height
-        })
-        .or_else(|| monitors.first());
-    let Some(monitor) = monitor else {
-        log_warn(&app, "longshot: no monitor available for grabbing");
-        runtime.stop.store(true, Ordering::SeqCst);
-        return;
-    };
-    let capture_rect = geometry.capture_rect();
-    let preview_window = app.get_webview_window(LONG_SHOT_LABEL);
-    let mut preview_physical: Option<(u32, u32)> = None;
-    let mut last_preview_resize = std::time::Instant::now()
-        .checked_sub(PREVIEW_RESIZE_INTERVAL)
-        .unwrap_or_else(std::time::Instant::now);
-    let mut failures = 0u32;
-    let mut logged_stalled = false;
-    let mut logged_limit = false;
-    let mut identical_streak = 0u32;
-    let mut fallback_shown = false;
     let (selection_x, selection_y, selection_w, selection_h) = geometry.screen_rect();
     let selection_center = (
         selection_x + selection_w / 2,
         selection_y + selection_h / 2,
     );
+    // Pick the monitor under the selection directly: matching by position/size
+    // could fail (toolkit vs physical geometry) and the old fallback to the first
+    // monitor could grab the wrong screen on multi-monitor setups.
+    let monitor = match xcap::Monitor::from_point(selection_center.0, selection_center.1) {
+        Ok(monitor) => monitor,
+        Err(error) => {
+            log_warn(
+                &app,
+                &format!("longshot: monitor lookup failed: {error}"),
+            );
+            match xcap::Monitor::all() {
+                Ok(mut monitors) if !monitors.is_empty() => monitors.swap_remove(0),
+                Ok(_) => {
+                    log_warn(&app, "longshot: no monitor available for grabbing");
+                    runtime.stop.store(true, Ordering::SeqCst);
+                    return;
+                }
+                Err(error) => {
+                    log_warn(
+                        &app,
+                        &format!("longshot: cannot enumerate monitors: {error}"),
+                    );
+                    runtime.stop.store(true, Ordering::SeqCst);
+                    return;
+                }
+            }
+        }
+    };
+    let capture_rect = geometry.capture_rect();
+    let preview_window = app.get_webview_window(LONG_SHOT_LABEL);
+    let mut logged_stalled = false;
+    let mut logged_limit = false;
+    let mut identical_streak = 0u32;
+    let mut fallback_shown = false;
     let loop_started = std::time::Instant::now();
+
+    // One continuous capture session for the whole long screenshot.
+    let (recorder, receiver) = match monitor.video_recorder() {
+        Ok((recorder, receiver)) => {
+            if recorder.start().is_ok() {
+                (Some(recorder), Some(receiver))
+            } else {
+                log_warn(
+                    &app,
+                    "longshot: continuous capture did not start, using per-frame grabs",
+                );
+                (None, None)
+            }
+        }
+        Err(error) => {
+            log_warn(
+                &app,
+                &format!("longshot: continuous capture unavailable: {error}"),
+            );
+            (None, None)
+        }
+    };
+    if let Some(recorder) = &recorder {
+        // A stale Escape press from before the session started.
+        let _ = win32::escape_pressed();
+        let _ = recorder;
+    }
+    let mut grab_failures = 0u32;
+    /// True once auto-scrolling actually started (the pointer entered the
+    /// selection). While false the loop waits for the pointer instead of stopping
+    /// immediately: the user has just clicked the control bar below the selection.
+    let mut autoscroll_armed = false;
+
     while !runtime.stop.load(Ordering::SeqCst) {
-        let started = std::time::Instant::now();
+        // Esc cancels the whole long screenshot (the overlay is click-through and
+        // the keyboard focus belongs to the scrolled application).
+        if win32::escape_pressed() {
+            log_info(&app, "longshot: cancelled with Escape");
+            crate::longshot::cancel(&app);
+            break;
+        }
         let (autoscroll, direction) = {
             let shared = lock(&runtime.shared);
             (shared.autoscroll, shared.direction)
         };
-        if autoscroll {
-            /* ShareX-style stepped scrolling: scroll the application under the
-             * selection, then wait for it to settle before grabbing. */
-            let _ = win32::set_cursor_position(selection_center.0, selection_center.1);
-            match direction {
-                Direction::Horizontal => {
-                    win32::scroll_wheel_horizontal(AUTOSCROLL_NOTCHES);
-                }
-                Direction::Vertical => {
-                    win32::scroll_wheel_notches(AUTOSCROLL_NOTCHES);
-                }
-            }
-            std::thread::sleep(AUTOSCROLL_SETTLE);
+        if !autoscroll {
+            autoscroll_armed = false;
         }
-        let captured = match monitor.capture_image() {
-            Ok(captured) => {
-                failures = 0;
-                captured
+        let mut scrolled_this_round = false;
+        if autoscroll {
+            let pointer_inside = win32::cursor_inside(
+                selection_x,
+                selection_y,
+                selection_w,
+                selection_h,
+            );
+            if pointer_inside {
+                autoscroll_armed = true;
+                match direction {
+                    Direction::Horizontal => {
+                        win32::scroll_wheel_horizontal(AUTOSCROLL_NOTCHES);
+                    }
+                    Direction::Vertical => {
+                        win32::scroll_wheel_notches(AUTOSCROLL_NOTCHES);
+                    }
+                }
+                scrolled_this_round = true;
+                std::thread::sleep(AUTOSCROLL_SETTLE);
+            } else if autoscroll_armed {
+                // The pointer left the selection after scrolling started: stop.
+                let progress = {
+                    let mut shared = lock(&runtime.shared);
+                    shared.autoscroll = false;
+                    progress_payload(&shared)
+                };
+                emit_progress(&app, progress);
+                autoscroll_armed = false;
+                log_info(
+                    &app,
+                    "longshot: auto-scroll stopped (pointer left the selection)",
+                );
+            } else {
+                // Waiting for the pointer to come back into the selection; do not
+                // scroll other windows and do not stop the mode.
+                std::thread::sleep(Duration::from_millis(120));
             }
-            Err(error) => {
-                failures = failures.saturating_add(1);
-                if failures == 3 {
-                    log_warn(&app, &format!("longshot: frame grab failed: {error}"));
+        }
+
+        let captured = if let Some(receiver) = &receiver {
+            match receiver.recv_timeout(FRAME_WAIT) {
+                Ok(first) => {
+                    // Drain the backlog: only the newest frame matters.
+                    let mut latest = first;
+                    while let Ok(next) = receiver.try_recv() {
+                        latest = next;
+                    }
+                    RgbaImage::from_raw(latest.width, latest.height, latest.raw)
                 }
-                if failures >= 12 {
-                    log_warn(&app, "longshot: too many failed grabs, stopping");
-                    runtime.stop.store(true, Ordering::SeqCst);
+                Err(_) => None,
+            }
+        } else {
+            match monitor.capture_image() {
+                Ok(captured) => {
+                    grab_failures = 0;
+                    Some(captured)
                 }
-                std::thread::sleep(FRAME_INTERVAL);
-                continue;
+                Err(error) => {
+                    grab_failures = grab_failures.saturating_add(1);
+                    if grab_failures == 3 {
+                        log_warn(&app, &format!("longshot: frame grab failed: {error}"));
+                    }
+                    None
+                }
             }
         };
+
+        let Some(captured) = captured else {
+            if autoscroll && scrolled_this_round {
+                identical_streak = identical_streak.saturating_add(1);
+                if identical_streak >= AUTOSCROLL_STOP_STREAK {
+                    identical_streak = 0;
+                    let progress = {
+                        let mut shared = lock(&runtime.shared);
+                        shared.autoscroll = false;
+                        progress_payload(&shared)
+                    };
+                    emit_progress(&app, progress);
+                    log_info(&app, "longshot: auto-scroll reached the end");
+                }
+            }
+            maybe_show_preview_fallback(
+                &preview_window,
+                &mut fallback_shown,
+                loop_started.elapsed(),
+            );
+            continue;
+        };
+        identical_streak = 0;
+
         let Some((left, top, width, height)) = clamp_rect(&captured, &capture_rect) else {
-            std::thread::sleep(FRAME_INTERVAL);
+            if grab_failures <= 3 {
+                grab_failures = grab_failures.saturating_add(1);
+                log_warn(
+                    &app,
+                    &format!(
+                        "longshot: frame {}x{} smaller than the capture region at ({},{})",
+                        captured.width(),
+                        captured.height(),
+                        capture_rect.x,
+                        capture_rect.y
+                    ),
+                );
+            }
+            maybe_show_preview_fallback(
+                &preview_window,
+                &mut fallback_shown,
+                loop_started.elapsed(),
+            );
             continue;
         };
         let frame = image::imageops::crop_imm(&captured, left, top, width, height).to_image();
@@ -718,106 +869,37 @@ fn capture_loop(app: AppHandle, runtime: Arc<Runtime>) {
                     "longshot: size limit reached, further frames are ignored",
                 );
             }
-            // The preview window follows the stitched image height (QQ-style
-            // growing strip). Resizing is throttled (>= 6px and every 140ms):
-            // resizing the window on every stitched frame flickered.
-            if let Some(window) = &preview_window {
-                if last_preview_resize.elapsed() >= PREVIEW_RESIZE_INTERVAL {
-                    resize_preview_window(
-                        window,
-                        &runtime,
-                        &progress,
-                        &mut preview_physical,
-                    );
-                    last_preview_resize = std::time::Instant::now();
-                }
-            }
             emit_progress(&app, progress);
-            identical_streak = 0;
-        } else if autoscroll {
-            // No new content while auto-scrolling: the page reached its end.
-            identical_streak += 1;
-            if identical_streak >= AUTOSCROLL_STOP_STREAK {
-                identical_streak = 0;
-                let progress = {
-                    let mut shared = lock(&runtime.shared);
-                    shared.autoscroll = false;
-                    progress_payload(&shared)
-                };
-                emit_progress(&app, progress);
-                log_info(&app, "longshot: auto-scroll reached the end");
-            }
         }
-        // Fallback: if the renderer never signals that the first preview frame is
-        // ready (e.g. a broken page), still show the preview after a few seconds.
-        if !fallback_shown
-            && preview_window.is_some()
-            && loop_started.elapsed() >= Duration::from_secs(3)
-        {
-            fallback_shown = true;
-            if let Some(window) = &preview_window {
-                let _ = window.show();
-            }
-        }
-        // Grabbing cadence: aim for ~25 fps; the grab itself may already take
-        // longer than the interval on high-DPI screens, in which case the loop
-        // simply runs as fast as it can. Auto-scroll already sleeps for the
-        // settle delay, so it only needs a short pause here.
-        let interval = if autoscroll {
-            Duration::from_millis(20)
-        } else {
-            FRAME_INTERVAL
-        };
-        if let Some(rest) = interval.checked_sub(started.elapsed()) {
-            std::thread::sleep(rest);
-        }
+        maybe_show_preview_fallback(
+            &preview_window,
+            &mut fallback_shown,
+            loop_started.elapsed(),
+        );
+    }
+    if let Some(recorder) = recorder {
+        let _ = recorder.stop();
     }
 }
 
-/// Resizes the preview window so its height matches the stitched image aspect
-/// ratio. Called from the grab thread with the progress payload.
-fn resize_preview_window(
-    window: &tauri::WebviewWindow,
-    runtime: &Runtime,
-    progress: &Value,
-    last: &mut Option<(u32, u32)>,
+/// Shows the preview window after a few seconds even if the renderer never
+/// reports its first painted frame (broken page), so the feature stays usable.
+fn maybe_show_preview_fallback(
+    preview_window: &Option<tauri::WebviewWindow>,
+    shown: &mut bool,
+    elapsed: Duration,
 ) {
-    let display_width = progress.get("width").and_then(Value::as_u64).unwrap_or(0) as u32;
-    let display_height = progress.get("height").and_then(Value::as_u64).unwrap_or(0) as u32;
-    if display_width == 0 || display_height == 0 {
+    if *shown || elapsed < Duration::from_secs(3) {
         return;
     }
-    let scale = runtime.scale;
-    let (logical_w, logical_h) = preview_window_size_for(
-        display_width,
-        display_height,
-        scale,
-        &runtime.work,
-        runtime.geometry.selection_screen.1,
-    );
-    let physical = (
-        ((logical_w * scale).round() as u32).max(1),
-        ((logical_h * scale).round() as u32).max(1),
-    );
-    let changed = match last {
-        None => true,
-        Some((width, height)) => {
-            *width != physical.0
-                || (*height as i64 - physical.1 as i64).unsigned_abs() as f64
-                    > PREVIEW_MIN_RESIZE_CSS * scale
-        }
-    };
-    if !changed {
-        return;
-    }
-    if window
-        .set_size(PhysicalSize::new(physical.0.max(1), physical.1.max(1)))
-        .is_ok()
-    {
-        *last = Some(physical);
+    *shown = true;
+    if let Some(window) = preview_window {
+        let _ = window.show();
     }
 }
 
+/// Applies the fixed preview window layout once (the window never resizes: a
+/// stable window is what keeps the transparent preview flicker-free).
 /// Sends one progress payload to every long-screenshot surface (preview + bar).
 fn emit_progress(app: &AppHandle, progress: Value) {
     let _ = app.emit_to(LONG_SHOT_LABEL, EVENT_PROGRESS, progress.clone());
@@ -987,22 +1069,6 @@ fn start_impl(app: &AppHandle, index: u32, rect: &HitRect) -> Result<Value, Engi
         selection_screen,
     };
     let (initial_width, initial_height) = first_frame.dimensions();
-    let logical_size = preview_window_size_for(
-        initial_width,
-        initial_height,
-        scale,
-        &work,
-        selection_screen.1,
-    );
-    let physical_size = (
-        ((logical_size.0 * scale).round() as u32).max(1),
-        ((logical_size.1 * scale).round() as u32).max(1),
-    );
-    let position = preview_window_position(
-        geometry.screen_rect(),
-        (physical_size.0 as i32, physical_size.1 as i32),
-        &work,
-    );
     let bar_logical = (BAR_LOGICAL_WIDTH, BAR_LOGICAL_HEIGHT);
     let bar_physical = (
         ((bar_logical.0 * scale).round() as u32).max(1),
@@ -1012,6 +1078,18 @@ fn start_impl(app: &AppHandle, index: u32, rect: &HitRect) -> Result<Value, Engi
         geometry.screen_rect(),
         (bar_physical.0 as i32, bar_physical.1 as i32),
         &work,
+    );
+    let (logical_size, position) = preview_placement(
+        initial_width,
+        initial_height,
+        scale,
+        &work,
+        geometry.screen_rect(),
+        (bar_physical.0 as i32, bar_physical.1 as i32),
+    );
+    let physical_size = (
+        ((logical_size.0 * scale).round() as u32).max(1),
+        ((logical_size.1 * scale).round() as u32).max(1),
     );
 
     // The overlay stays visible (live selection frame + dimmed outside) but must
@@ -1085,6 +1163,7 @@ fn start_impl(app: &AppHandle, index: u32, rect: &HitRect) -> Result<Value, Engi
         geometry,
         work,
         scale,
+        bar_physical: (bar_physical.0 as i32, bar_physical.1 as i32),
     });
     *lock(session_cell()) = Some(runtime.clone());
 
@@ -1265,7 +1344,7 @@ fn preview_payload() -> Result<Value, EngineError> {
             display_preview_image(&shared, target_width, target_height),
         )
     };
-    let data_url = png_data_url(&image)?;
+    let data_url = preview_jpeg_data_url(&image, 78)?;
     {
         let mut shared = lock(&runtime.shared);
         if shared.revision == revision {
@@ -1428,11 +1507,10 @@ pub fn cancel(app: &AppHandle) {
 mod tests {
     use super::{
         choose_merge, control_bar_position, display_dimensions, exceeds_limits, inset_crop,
-        orient_frame, preview_window_position, preview_window_size_for, progress_payload,
-        reset_stitch, Direction, Geometry, MergeSide, Shared, BAR_LOGICAL_HEIGHT,
-        BAR_LOGICAL_WIDTH, EVENT_CANCELLED, EVENT_STARTED, LONG_SHOT_BAR_LABEL, LONG_SHOT_LABEL,
-        MAX_PIXELS, PREVIEW_LOGICAL_WIDTH, PREVIEW_MAX_LOGICAL_HEIGHT, PREVIEW_MIN_LOGICAL_HEIGHT,
-        PREVIEW_PADDING_CSS,
+        orient_frame, preview_placement, progress_payload, reset_stitch, Direction, Geometry,
+        MergeSide, Shared, BAR_LOGICAL_HEIGHT, BAR_LOGICAL_WIDTH, EVENT_CANCELLED, EVENT_STARTED,
+        LONG_SHOT_BAR_LABEL, LONG_SHOT_LABEL, MAX_PIXELS, PREVIEW_MIN_LOGICAL_HEIGHT,
+        PREVIEW_WIDTH_MAX,
     };
     use crate::capture::{find_overlap, find_overlap_prepend, Stitched};
     use crate::win32::WorkArea;
@@ -1497,41 +1575,53 @@ mod tests {
     }
 
     #[test]
-    fn preview_window_height_follows_the_stitched_image() {
-        // Narrow strip: fixed width, height from the content aspect ratio.
-        let (width, height) = preview_window_size_for(600, 300, 1.0, &work(), 100);
-        assert_eq!(width, PREVIEW_LOGICAL_WIDTH);
-        let content_width = PREVIEW_LOGICAL_WIDTH - PREVIEW_PADDING_CSS * 2.0;
-        let expected = 300.0 * (content_width / 600.0) + PREVIEW_PADDING_CSS * 2.0;
-        assert!(
-            (height - expected).abs() < 0.01,
-            "height={height} expected={expected}"
-        );
-        // A long image grows the preview until the work-area cap.
-        let (_, tall) = preview_window_size_for(600, 10_000, 1.0, &work(), 100);
-        assert!(
-            (tall - PREVIEW_MAX_LOGICAL_HEIGHT).abs() < 0.01,
-            "tall={tall}"
-        );
-        // 150% display: the same cap in logical pixels.
-        let hidpi_work = WorkArea {
-            left: 0,
-            top: 0,
-            right: 3840,
-            bottom: 2160,
-        };
-        let (_, hidpi) = preview_window_size_for(600, 10_000, 1.5, &hidpi_work, 100);
-        assert!((hidpi - PREVIEW_MAX_LOGICAL_HEIGHT).abs() < 0.01, "hidpi={hidpi}");
-        // Small work area still yields a usable window.
+    fn preview_window_is_fixed_and_sits_below_the_bar() {
+        // Selection 600×300 at (100,100), bar 56 tall: room below the bar.
+        let selection = (100, 100, 600, 300);
+        let bar = (BAR_LOGICAL_WIDTH as i32, BAR_LOGICAL_HEIGHT as i32);
+        let ((width, height), position) =
+            preview_placement(600, 300, 1.0, &work(), selection, bar);
+        assert!((height - 600.0).abs() < 0.01, "height={height}");
+        assert!((width - PREVIEW_WIDTH_MAX as f64).abs() < 0.01, "width={width}");
+        // 100 + 300 + 8 (gap) + 56 (bar) + 8 (gap) = 472.
+        assert_eq!(position, (100, 472));
+
+        // The window never resizes as the image grows (the picture inside it
+        // narrows instead; the renderer scales it to fit).
+        let ((tall_width, tall_height), tall_position) =
+            preview_placement(600, 6_000, 1.0, &work(), selection, bar);
+        assert!((tall_height - 600.0).abs() < 0.01, "tall_height={tall_height}");
+        assert!((tall_width - width).abs() < 0.01, "tall_width={tall_width}");
+        assert_eq!(tall_position, position);
+
+        // A selection at the bottom of the screen places the preview above it.
+        let low_selection = (100, 700, 600, 300);
+        let ((_, low_height), low_position) =
+            preview_placement(600, 300, 1.0, &work(), low_selection, bar);
+        assert!(low_height >= PREVIEW_MIN_LOGICAL_HEIGHT);
+        assert!(low_position.1 < 700, "y={}", low_position.1);
+    }
+
+    #[test]
+    fn preview_falls_back_beside_the_selection() {
+        // Work area too small above/below: the preview goes beside the selection.
         let small = WorkArea {
             left: 0,
             top: 0,
             right: 800,
-            bottom: 600,
+            bottom: 300,
         };
-        let (_, height) = preview_window_size_for(600, 10_000, 1.0, &small, 40);
+        let selection = (300, 100, 150, 100);
+        let bar = (BAR_LOGICAL_WIDTH as i32, BAR_LOGICAL_HEIGHT as i32);
+        let ((preview_width, height), position) =
+            preview_placement(400, 300, 1.0, &small, selection, bar);
         assert!(height >= PREVIEW_MIN_LOGICAL_HEIGHT - 0.01);
-        assert!(height <= 600.0 * 0.86 + 0.01, "height={height}");
+        assert!(position.0 >= 0 && position.1 >= 0);
+        assert!(
+            position.0 + (preview_width as i32) <= small.width() + 1,
+            "x={} width={preview_width} should stay inside the work area",
+            position.0
+        );
     }
 
     #[test]
@@ -1548,26 +1638,6 @@ mod tests {
         // Horizontal clamp keeps it on screen.
         let placed = control_bar_position((1700, 200, 300, 200), bar, &work());
         assert_eq!(placed.0, 1920 - BAR_LOGICAL_WIDTH as i32);
-    }
-
-    #[test]
-    fn preview_window_prefers_the_left_side_then_the_right() {
-        // Enough room on the left: 900 - 8 - 360 = 532.
-        assert_eq!(
-            preview_window_position((900, 300, 400, 300), (360, 500), &work()),
-            (532, 300)
-        );
-        // Not enough room: place it right of the selection: 500 + 8 = 508.
-        assert_eq!(
-            preview_window_position((100, 300, 400, 300), (360, 500), &work()),
-            (508, 300)
-        );
-        // Right side would overflow: clamped into the work area.
-        let placed = preview_window_position((100, 300, 1700, 300), (360, 500), &work());
-        assert_eq!(placed.0, 1920 - 360);
-        // Vertical clamp keeps the whole window visible.
-        let placed = preview_window_position((900, 1000, 400, 300), (360, 500), &work());
-        assert_eq!(placed.1, 1080 - 500);
     }
 
     #[test]
