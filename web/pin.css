@@ -20,6 +20,9 @@
   --primary-soft: #eef2ff;
   --danger: #dc2626;
   --danger-soft: #fef2f2;
+  --success: #059669;
+  --success-strong: #047857;
+  --success-soft: #ecfdf5;
 
   --radius-sm: 7px;
   --radius-md: 10px;
@@ -223,6 +226,8 @@ body.is-editing .pin-toolbar {
   position: fixed;
   left: 50%;
   bottom: 8px;
+  /* The shell grows the pin window so this bar sits OUTSIDE the image (below
+   * it, or above when there is no room below) like the screenshot toolbar. */
   z-index: 30;
   display: flex;
   align-items: center;
@@ -241,6 +246,13 @@ body.is-editing .pin-toolbar {
 
 .pin-edit-custom-skills {
   display: contents;
+}
+
+/* The toolbar strip was added above the image: pin the bar to the window top
+ * and let the renderer push the image down by `topPadding`. */
+.pin-edit-bar.is-above {
+  top: 8px;
+  bottom: auto;
 }
 
 .tool-btn {
@@ -307,19 +319,46 @@ body.is-editing .pin-toolbar {
   color: var(--danger);
 }
 
+.tool-btn-danger .icon {
+  color: var(--danger);
+}
+
 .tool-btn-danger:hover:not(:disabled) {
   background: var(--danger-soft);
   color: var(--danger);
 }
 
+.tool-btn-danger:hover:not(:disabled) .icon {
+  color: var(--danger);
+}
+
+/* Green confirmation (same as the screenshot toolbar): accept the annotations,
+ * save them to the pin and copy it. */
 .tool-btn-confirm {
-  background: var(--primary);
-  color: #ffffff;
+  color: var(--success);
+  font-weight: 600;
+}
+
+.tool-btn-confirm .icon {
+  color: var(--success);
 }
 
 .tool-btn-confirm:hover:not(:disabled) {
-  background: #4338ca;
-  color: #ffffff;
+  background: var(--success-soft);
+  color: var(--success-strong);
+}
+
+.tool-btn-confirm:hover:not(:disabled) .icon {
+  color: var(--success-strong);
+}
+
+/* Compact mode (picker.compact): icons only, like the screenshot toolbar. */
+.pin-edit-bar.compact .tool-btn {
+  padding: 0 9px;
+}
+
+.pin-edit-bar.compact .tool-btn .label {
+  display: none;
 }
 
 .bar-sep {

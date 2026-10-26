@@ -1382,6 +1382,8 @@
           height: 0,
           scrollable: false,
         };
+      case "pin_edit_window":
+        return { ok: true, editing: args.editing === true, topPadding: 0 };
       case "pin_skill":
         return { ok: true, clipboard: false };
       case "pin_export_annotations":
@@ -2362,6 +2364,15 @@
         id: Number(id) || 0,
         annotations: annotations ? String(annotations) : "",
         apply: apply === true,
+      });
+    },
+    /* Grows/restores the pin window for the edit-mode toolbar so it floats
+     * outside the image; replies with {editing, topPadding, toolbarHeight}. */
+    editWindow: function (id, editing, toolbarHeight) {
+      return safeInvoke("pin_edit_window", {
+        id: Number(id) || 0,
+        editing: editing === true,
+        toolbarHeight: Number(toolbarHeight) || 0,
       });
     },
     /* Mouse-wheel zoom (1 = one image pixel per physical pixel; the shell

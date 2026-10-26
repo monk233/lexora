@@ -925,6 +925,22 @@ pub fn pin_export_annotations(
     }
 }
 
+/// Grows (or restores) a pinned window so the edit-mode toolbar floats outside
+/// the image (contract §11.5). `toolbar_height` is logical pixels; the reply
+/// carries `topPadding` for the renderer when the strip was added above.
+#[tauri::command]
+pub fn pin_edit_window(
+    app: AppHandle,
+    id: u64,
+    editing: bool,
+    toolbar_height: f64,
+) -> Value {
+    match crate::pin::edit_window(&app, id, editing, toolbar_height) {
+        Ok(payload) => payload,
+        Err(error) => json!({ "ok": false, "error": error.message, "hint": error.hint }),
+    }
+}
+
 /// Writes the pinned image to the system clipboard.
 #[tauri::command]
 pub fn pin_copy(app: AppHandle, id: u64) -> Value {

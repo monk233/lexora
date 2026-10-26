@@ -55,6 +55,11 @@
     editBusy: false,
     /* Shape used by the 形状 tool (chosen from the shape picker). */
     editShape: "rect",
+    /* picker.compact: edit toolbar shows icons only (like the screenshot bar). */
+    compact: false,
+    /* The shell grew the window so the toolbar floats outside the image. */
+    editOutside: false,
+    editTopPad: 0,
     editSkillCalls: 0,
     editExportCalls: 0
   };
@@ -539,7 +544,12 @@
       editor.setTool(null);
     }
     selectEditTool(null, null);
+    applyCompactToEditBar();
     updateEditBar();
+    /* Let the shell grow the window so the toolbar floats outside the image
+     * (like the screenshot toolbar). Long screenshots keep the overlay bar: the
+     * window is a scroll viewport and has no outside strip. */
+    requestEditWindow(true);
   }
 
   function exitEdit() {
@@ -549,6 +559,7 @@
     state.editing = false;
     state.editBusy = false;
     closeShapeMenu();
+    requestEditWindow(false);
     if (editor) {
       editor.setTool(null);
       editor.reset();
@@ -564,6 +575,79 @@
     }
     document.body.classList.remove("is-editing");
     updateEditBar();
+  }
+
+  /* ---- Edit toolbar placement (outside the image) ----------------------- */
+
+  function applyCompactToEditBar() {
+    if (dom.editBar) {
+      dom.editBar.classList.toggle("compact", state.compact === true);
+    }
+  }
+
+  /* Asks the shell to grow the window by the toolbar height so the bar sits
+   * outside the image. The strip is added below the image, or above it when the
+   * screen has no room below (the shell reports `topPadding` then and the image
+   * is pushed down inside the window so it stays where it was). */
+  function requestEditWindow(editing) {
+    if (!API || typeof API.editWindow !== "function" || !dom.editBar) {
+      return;
+    }
+    if (!editing) {
+      try {
+        Promise.resolve(API.editWindow(state.id, false, 0)).catch(function () {
+          /* the window keeps its current size */
+        });
+      } catch (error) {
+        /* the window keeps its current size */
+      }
+      resetEditWindowLayout();
+      return;
+    }
+    if (state.scrollable || dom.editBar.hidden) {
+      resetEditWindowLayout();
+      return;
+    }
+    var height = dom.editBar.offsetHeight || 0;
+    var imageHeight = dom.image ? dom.image.clientHeight : 0;
+    if (height <= 0 || imageHeight <= 0) {
+      resetEditWindowLayout();
+      return;
+    }
+    var toolbarHeight = Math.ceil(height + 12);
+    var request;
+    try {
+      request = API.editWindow(state.id, true, toolbarHeight);
+    } catch (error) {
+      request = Promise.reject(error);
+    }
+    Promise.resolve(request).then(
+      function (result) {
+        if (!state.editing || !result || result.ok === false) {
+          resetEditWindowLayout();
+          return;
+        }
+        var topPadding = positiveNumber(result.topPadding);
+        state.editOutside = true;
+        state.editTopPad = topPadding;
+        document.body.style.paddingTop = topPadding > 0 ? topPadding + "px" : "";
+        dom.editBar.classList.toggle("is-above", topPadding > 0);
+        /* The window grew: keep the annotation surface matched to the image. */
+        layoutEditCanvas();
+      },
+      function () {
+        resetEditWindowLayout();
+      }
+    );
+  }
+
+  function resetEditWindowLayout() {
+    state.editOutside = false;
+    state.editTopPad = 0;
+    document.body.style.paddingTop = "";
+    if (dom.editBar) {
+      dom.editBar.classList.remove("is-above");
+    }
   }
 
   function initEditor() {
@@ -794,7 +878,14 @@
         if (!picker) {
           return;
         }
+        state.compact = picker.compact === true;
+        applyCompactToEditBar();
         renderCustomSkillButtons(picker.captureSkills, picker.customSkills);
+        /* Compact mode changes the toolbar height: re-measure the outside strip
+         * when the editor is already open. */
+        if (state.editing) {
+          requestEditWindow(true);
+        }
       },
       function () {
         /* No custom buttons in this environment (browser preview). */

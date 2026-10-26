@@ -40,6 +40,17 @@ const MAX_READABLE_UPSCALE: f64 = 4.0;
 /// A pinned window is never displayed smaller than this (logical pixels).
 const MIN_READABLE_LOGICAL: f64 = 48.0;
 
+/// Window geometry saved while the pin is in edit mode. The window is enlarged
+/// so the annotation toolbar can float **outside** the image, exactly like the
+/// screenshot toolbar floats outside the selection (contract §11.5).
+#[derive(Debug, Clone, Copy)]
+struct EditRestore {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+}
+
 struct PinEntry {
     image: RgbaImage,
     /// Lazily encoded `data:image/png;base64,...` handed to `pin.html`.
@@ -49,6 +60,8 @@ struct PinEntry {
     scrollable: bool,
     /// Mouse-wheel zoom of the window relative to the image's 1:1 physical size.
     zoom: f64,
+    /// Original window geometry while the edit-mode toolbar is expanded.
+    edit_restore: Option<EditRestore>,
 }
 
 /// In-memory pin images plus the forward-only id counter.
@@ -69,6 +82,7 @@ impl PinRegistry {
                 data_url: None,
                 scrollable,
                 zoom: initial_zoom,
+                edit_restore: None,
             },
         );
         id
@@ -545,6 +559,134 @@ pub fn export_annotations(
         "width": width,
         "height": height,
         "dataUrl": data_url,
+    }))
+}
+
+/// Grows (or restores) the pin window for the edit-mode toolbar
+/// (`pin_edit_window`, contract §11.5). The window gets an extra transparent
+/// strip below the image — or above it when there is no room below — so the
+/// toolbar floats **outside** the image like the screenshot toolbar floats
+/// outside the selection. `toolbar_height` is logical pixels; `topPadding` in
+/// the reply tells the renderer how far the image must move down inside the
+/// window when the strip was added above it.
+pub fn edit_window(
+    app: &AppHandle,
+    id: u64,
+    editing: bool,
+    toolbar_height: f64,
+) -> Result<Value, EngineError> {
+    let Some(window) = app.get_webview_window(&label_for(id)) else {
+        return Err(pin_missing_error());
+    };
+    let scale = window
+        .scale_factor()
+        .ok()
+        .filter(|scale| scale.is_finite() && *scale > 0.1)
+        .unwrap_or(1.0);
+    let toolbar = if toolbar_height.is_finite() {
+        (toolbar_height.clamp(0.0, 4000.0) * scale).round() as i32
+    } else {
+        0
+    };
+
+    if !editing {
+        let restore = {
+            let mut registry = lock_registry();
+            let Some(entry) = registry.get_mut(id) else {
+                return Err(pin_missing_error());
+            };
+            entry.edit_restore.take()
+        };
+        let Some(restore) = restore else {
+            return Ok(json!({ "ok": true, "editing": false, "topPadding": 0.0 }));
+        };
+        window
+            .set_size(PhysicalSize::new(
+                restore.width.max(1) as u32,
+                restore.height.max(1) as u32,
+            ))
+            .and_then(|_| window.set_position(PhysicalPosition::new(restore.x, restore.y)))
+            .map_err(|error| {
+                EngineError::new("无法收起编辑工具栏。", format!("请重试（{error}）。"))
+            })?;
+        log_info(
+            app,
+            &format!(
+                "pin edit window closed: id={id} restored={}x{} at ({},{})",
+                restore.width, restore.height, restore.x, restore.y
+            ),
+        );
+        return Ok(json!({ "ok": true, "editing": false, "topPadding": 0.0 }));
+    }
+
+    // First call records the original geometry; repeated layout passes (compact
+    // mode, toolbar wrapping) always start from it so the window never grows
+    // step by step.
+    let saved = {
+        let mut registry = lock_registry();
+        let Some(entry) = registry.get_mut(id) else {
+            return Err(pin_missing_error());
+        };
+        entry.edit_restore.take()
+    };
+    let base = match saved {
+        Some(restore) => restore,
+        None => {
+            let position = window.outer_position().map_err(|error| {
+                EngineError::new("无法展开编辑工具栏。", format!("请重试（{error}）。"))
+            })?;
+            let size = window.outer_size().map_err(|error| {
+                EngineError::new("无法展开编辑工具栏。", format!("请重试（{error}）。"))
+            })?;
+            let restore = EditRestore {
+                x: position.x,
+                y: position.y,
+                width: size.width as i32,
+                height: size.height as i32,
+            };
+            if let Some(entry) = lock_registry().get_mut(id) {
+                entry.edit_restore = Some(restore);
+            }
+            restore
+        }
+    };
+    // Snap back to the original size first: the strip is always computed from
+    // the unexpanded window.
+    let _ = window.set_size(PhysicalSize::new(
+        base.width.max(1) as u32,
+        base.height.max(1) as u32,
+    ));
+    let _ = window.set_position(PhysicalPosition::new(base.x, base.y));
+    let work = win32::work_area_physical(base.x + base.width / 2, base.y + base.height / 2);
+    let can_down = base.y + base.height + toolbar <= work.bottom;
+    let can_up = base.y - toolbar >= work.top;
+    let (new_y, top_padding, new_height) = if can_down || !can_up {
+        (base.y, 0, base.height + toolbar)
+    } else {
+        (base.y - toolbar, toolbar, base.height + toolbar)
+    };
+    window
+        .set_size(PhysicalSize::new(
+            base.width.max(1) as u32,
+            new_height.max(1) as u32,
+        ))
+        .and_then(|_| window.set_position(PhysicalPosition::new(base.x, new_y)))
+        .map_err(|error| EngineError::new("无法展开编辑工具栏。", format!("请重试（{error}）。")))?;
+    if let Some(entry) = lock_registry().get_mut(id) {
+        entry.edit_restore = Some(base);
+    }
+    log_info(
+        app,
+        &format!(
+            "pin edit window: id={id} base={}x{} toolbar={toolbar} top_padding={top_padding} at ({},{})",
+            base.width, base.height, base.x, new_y
+        ),
+    );
+    Ok(json!({
+        "ok": true,
+        "editing": true,
+        "topPadding": top_padding as f64 / scale,
+        "toolbarHeight": toolbar as f64 / scale,
     }))
 }
 
