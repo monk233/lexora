@@ -27,6 +27,10 @@
     'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
     '<path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"></path>' +
     "</svg>";
+  /* Annotation palette geometry (same values as the screenshot overlay). */
+  var PALETTE_GAP = 8;
+  var FLOATING_PANEL_GAP = 6;
+  var EDGE_PAD = 8;
 
   var state = {
     id: readPinId(),
@@ -61,6 +65,12 @@
     editOutside: false,
     editTopPad: 0,
     editLeftPad: 0,
+    /* Last {width,height} requested from the shell, to avoid redundant resizes. */
+    editLayoutRequest: "",
+    /* Annotation palette (same interaction as the screenshot overlay). */
+    pickingColor: false,
+    colorPopoverOpen: false,
+    customColorOpen: false,
     /* Image CSS size captured before the edit window is widened: the image keeps
      * it while editing (the shell only adds transparent space around it). */
     editImageWidth: 0,
@@ -82,11 +92,34 @@
   var zoomSeq = 0;
   var zoomHintTimer = 0;
   var editor = null;
+  /* Custom colour picker state (identical to capture.js, contract §11.10.3). */
+  var hsvState = { hue: 0, saturation: 1, value: 1 };
+  var hsvDragging = false;
+  var hueDragging = false;
 
   /* ---- Small helpers --------------------------------------------------- */
 
   function byId(id) {
     return document.getElementById(id);
+  }
+
+  function clamp(value, minimum, maximum) {
+    return Math.min(maximum, Math.max(minimum, value));
+  }
+
+  function each(list, callback) {
+    Array.prototype.forEach.call(list || [], callback);
+  }
+
+  function numberOr(value, fallback) {
+    var number = Number(value);
+    return isFinite(number) ? number : fallback;
+  }
+
+  function setHidden(node, hidden) {
+    if (node) {
+      node.hidden = hidden === true;
+    }
   }
 
   function readPinId() {
@@ -123,7 +156,8 @@
       return false;
     }
     return !!target.closest(
-      ".pin-toolbar, .pin-menu, .pin-error, .pin-toast, .pin-edit-bar"
+      ".pin-toolbar, .pin-menu, .pin-error, .pin-toast, .pin-edit-bar, " +
+        ".capture-palette, .palette-color-popover, .palette-custom-color"
     );
   }
 
@@ -148,14 +182,27 @@
     dom.editUndo = byId("pin-edit-undo");
     dom.editRedo = byId("pin-edit-redo");
     dom.editShapeButton = document.querySelector(".pin-edit-shape");
-    dom.shapeMenu = byId("pin-shape-menu");
-    dom.shapeButtons = Array.prototype.slice.call(
-      dom.shapeMenu ? dom.shapeMenu.querySelectorAll("[data-edit-shape]") : []
-    );
     dom.customSkills = byId("pin-edit-custom-skills");
     dom.editToolButtons = Array.prototype.slice.call(
       document.querySelectorAll("[data-edit-tool]")
     );
+    /* ---- Annotation palette (same component as the screenshot overlay) ---- */
+    dom.palette = byId("capture-palette");
+    dom.shapeButtons = Array.prototype.slice.call(
+      document.querySelectorAll("#capture-palette [data-shape]")
+    );
+    dom.colorButton = byId("palette-color-button");
+    dom.colorSwatch = byId("palette-color-swatch");
+    dom.colorPopover = byId("palette-color-popover");
+    dom.customColorPanel = byId("palette-custom-color");
+    dom.hsv = byId("palette-hsv");
+    dom.hsvCursor = byId("palette-hsv-cursor");
+    dom.hue = byId("palette-hue");
+    dom.hueThumb = byId("palette-hue-thumb");
+    dom.rgbR = byId("palette-rgb-r");
+    dom.rgbG = byId("palette-rgb-g");
+    dom.rgbB = byId("palette-rgb-b");
+    dom.customPreview = byId("palette-custom-preview");
   }
 
   function boot() {
@@ -165,7 +212,11 @@
     }
     bindEvents();
     subscribeClose();
-    window.addEventListener("resize", syncScrollable);
+    window.addEventListener("resize", function () {
+      syncScrollable();
+      layoutPalette();
+      layoutFloatingPanels();
+    });
     load();
     loadEditSkills();
   }
@@ -209,22 +260,7 @@
     if (dom.editBar) {
       dom.editBar.addEventListener("click", onEditBarClick);
     }
-    if (dom.shapeMenu) {
-      dom.shapeMenu.addEventListener("click", onShapeMenuClick);
-    }
-    /* Any press outside the edit toolbar/shape menu closes the shape picker. */
-    document.addEventListener("mousedown", function (event) {
-      if (dom.shapeMenu && !dom.shapeMenu.hidden) {
-        var target = event.target;
-        if (
-          !target ||
-          !target.closest ||
-          (!target.closest(".pin-shape-menu") && !target.closest(".pin-edit-shape"))
-        ) {
-          closeShapeMenu();
-        }
-      }
-    });
+    bindPaletteControls();
     /* Undo/redo are handled by the delegated click listener on the edit bar
      * (onEditBarClick); binding them here too would run them twice. */
   }
@@ -518,7 +554,8 @@
       return;
     }
     hideMenu();
-    closeShapeMenu();
+    closeAllColorPanels();
+    setHidden(dom.palette, true);
     state.editing = true;
     state.editBusy = false;
     state.editForceCompact = false;
@@ -551,6 +588,7 @@
     selectEditTool(null, null);
     applyCompactToEditBar();
     updateEditBar();
+    syncPalette();
     /* Let the shell grow the window so the toolbar floats outside the image
      * (like the screenshot toolbar). Long screenshots keep the overlay bar: the
      * window is a scroll viewport and has no outside strip. */
@@ -563,13 +601,17 @@
     }
     state.editing = false;
     state.editBusy = false;
-    closeShapeMenu();
+    state.editLayoutRequest = "";
+    stopColorPicking();
+    closeAllColorPanels();
+    setHidden(dom.palette, true);
     if (editor) {
       editor.setTool(null);
       editor.reset();
     }
     if (dom.editBar) {
       dom.editBar.hidden = true;
+      dom.editBar.style.bottom = "";
     }
     if (dom.editCanvas) {
       dom.editCanvas.hidden = true;
@@ -623,11 +665,28 @@
     return { width: width, height: height };
   }
 
+  /* Natural size of the annotation palette while it is visible. The shell grows
+   * the window by this size too, so the palette sits next to the edit bar
+   * exactly like the screenshot overlay's property bar. */
+  function measurePalette() {
+    if (!dom.palette || dom.palette.hidden) {
+      return null;
+    }
+    var width = Math.ceil(dom.palette.offsetWidth || 0);
+    var height = Math.ceil(dom.palette.offsetHeight || 0);
+    if (width <= 0 || height <= 0) {
+      return null;
+    }
+    return { width: width, height: height };
+  }
+
   /* Asks the shell to grow the window so the bar floats outside the image and
    * fits in ONE row, anchored to the left edge (exactly like the screenshot
-   * toolbar). The strip is added below the image, or above it when the screen
-   * has no room below (the shell reports `topPadding`/`leftPadding` then and the
-   * image is pushed inside the window so it stays where it was). */
+   * toolbar). The window is also grown for the annotation palette below the bar
+   * (shape / stroke-fill / width / colour / font / mosaic properties), and the
+   * bar itself moves up so the palette keeps the same below-the-bar position as
+   * in the screenshot overlay. `topPadding`/`leftPadding` keep the image where
+   * it was when the strip had to be added above / the window shifted left. */
   function requestEditWindow(editing, retried) {
     if (!API || typeof API.editWindow !== "function" || !dom.editBar) {
       resetEditWindowLayout();
@@ -649,31 +708,51 @@
         }
       );
     }
-    var size = measureEditBar();
-    if (!size) {
+    var barSize = measureEditBar();
+    if (!barSize) {
       resetEditWindowLayout();
       return null;
     }
+    var paletteSize = measurePalette();
+    var contentWidth = Math.max(barSize.width, paletteSize ? paletteSize.width : 0);
     /* A narrow work area cannot fit the labelled bar: fall back to the
      * icons-only layout (the screenshot toolbar's compact mode) so the bar can
      * never wrap. */
     if (
       !state.compact &&
       !state.editForceCompact &&
-      size.width + 16 > screenWidth() - 16
+      contentWidth + 16 > screenWidth() - 16
     ) {
       state.editForceCompact = true;
       applyCompactToEditBar();
-      size = measureEditBar();
-      if (!size) {
+      barSize = measureEditBar();
+      if (!barSize) {
         resetEditWindowLayout();
         return null;
       }
+      contentWidth = Math.max(barSize.width, paletteSize ? paletteSize.width : 0);
     }
-    var toolbarWidth = size.width + 16;
+    var toolbarWidth = contentWidth + 16;
     /* Long screenshots fill the window vertically, so there is no outside strip:
-     * the bar stays overlaid on the image, but it is still widened to one row. */
-    var toolbarHeight = state.scrollable ? 0 : size.height + 12;
+     * the bar stays overlaid on the image, but it is still widened to one row
+     * (and the palette floats over the image because there is no strip room).
+     * The 16px slack absorbs the shell/WebView rounding of the fractional
+     * layout sizes so the palette always stays below the bar. */
+    var toolbarHeight = state.scrollable
+      ? 0
+      : barSize.height +
+        12 +
+        (paletteSize ? paletteSize.height + PALETTE_GAP + 16 : 0);
+    var signature = toolbarWidth + "x" + toolbarHeight;
+    /* Every range/colour input triggers the lost palettes' sync, but the window
+     * only has to change when the measured content size changes. */
+    applyEditBarPlacement();
+    layoutPalette();
+    layoutFloatingPanels();
+    if (signature === state.editLayoutRequest && state.editOutside) {
+      return null;
+    }
+    state.editLayoutRequest = signature;
     var request;
     try {
       request = API.editWindow(state.id, true, toolbarHeight, toolbarWidth);
@@ -691,13 +770,45 @@
           /* The work area limited the width: shrink to icons and retry once. */
           state.editForceCompact = true;
           applyCompactToEditBar();
+          state.editLayoutRequest = "";
           requestEditWindow(true, true);
+          return;
         }
+        /* The shell clamps the palette to the window when even the icons-only
+         * bar is wider than the work area: let it wrap instead of clipping. */
+        fitPaletteToWindow();
       },
       function () {
         resetEditWindowLayout();
       }
     );
+  }
+
+  /* Palette below the edit bar: the bar moves up by the palette height so the
+   * property bar keeps the screenshot-overlay position (never over the bar).
+   * +2px absorbs the fractional/rounded layout sizes so the colour-space test in
+   * layoutPalette never flips the palette above the bar because of rounding. */
+  function applyEditBarPlacement() {
+    if (!dom.editBar) {
+      return;
+    }
+    var paletteSize = measurePalette();
+    var bottom = paletteSize ? paletteSize.height + PALETTE_GAP + 10 : 0;
+    dom.editBar.style.bottom = bottom > 0 ? bottom + "px" : "";
+  }
+
+  /* When the work area is narrower than the natural palette the shell could not
+   * fit both: allow the palette to wrap inside the window instead of clipping. */
+  function fitPaletteToWindow() {
+    if (!dom.palette || dom.palette.hidden) {
+      return;
+    }
+    var available = Math.max(120, (window.innerWidth || 0) - 2 * EDGE_PAD);
+    if (dom.palette.offsetWidth > available) {
+      dom.palette.style.maxWidth = available + "px";
+      dom.palette.style.width = "";
+      layoutPalette();
+    }
   }
 
   function applyEditWindowLayout(result) {
@@ -714,20 +825,30 @@
        * selection; `leftPadding` is the transparent part added on the left. */
       dom.editBar.style.left = Math.round(leftPadding + 8) + "px";
     }
-    /* The window grew: keep the annotation surface matched to the image. */
+    applyEditBarPlacement();
+    /* The window grew: keep the annotation surface matched to the image, and
+     * re-anchor the palette + colour panels to the new bar position. */
     layoutEditCanvas();
+    layoutPalette();
+    layoutFloatingPanels();
   }
 
   function resetEditWindowLayout() {
     state.editOutside = false;
     state.editTopPad = 0;
     state.editLeftPad = 0;
+    state.editLayoutRequest = "";
     document.body.style.paddingTop = "";
     document.body.style.paddingLeft = "";
     document.body.style.removeProperty("--pin-image-width");
     if (dom.editBar) {
       dom.editBar.classList.remove("is-above");
       dom.editBar.style.left = "";
+      dom.editBar.style.bottom = "";
+    }
+    if (dom.palette) {
+      dom.palette.style.maxWidth = "";
+      dom.palette.style.width = "";
     }
   }
 
@@ -795,28 +916,18 @@
     event.stopPropagation();
     var tool = button.getAttribute("data-edit-tool");
     if (tool) {
-      /* Same interaction as the screenshot toolbar: clicking a tool activates it,
-       * clicking the active tool again leaves annotation mode. The shape button
-       * also opens the sub-mode picker (the screenshot bar has a palette for
-       * this; the pin has no palette, so its floating menu takes that role). */
-      var activeTool = button.classList.contains("is-active");
-      if (activeTool) {
-        closeShapeMenu();
+      /* Same interaction as the screenshot toolbar: clicking a tool activates it
+       * (and shows the annotation palette), clicking the active tool again
+       * leaves annotation mode. */
+      if (button.classList.contains("is-active")) {
         selectEditTool(null, null);
         return;
       }
-      if (tool === "shape") {
-        selectEditTool(dom.editShapeButton, "shape", state.editShape || "rect");
-        toggleShapeMenu(button);
-        return;
-      }
-      closeShapeMenu();
       selectEditTool(button, tool);
       return;
     }
     var skill = button.getAttribute("data-edit-skill");
     if (skill) {
-      closeShapeMenu();
       runEditSkill(skill, button.getAttribute("data-skill-id") || "");
       return;
     }
@@ -836,94 +947,796 @@
     }
   }
 
-  /* Activates an annotation tool; `shape` is only used by the shape picker. */
-  function selectEditTool(button, tool, shape) {
+  /* Activates an annotation tool (null = leave annotation mode) and refreshes
+   * the palette / history buttons exactly like the screenshot overlay. */
+  function selectEditTool(button, tool) {
     if (!editor) {
       return;
     }
     if (tool) {
       editor.setTool(tool);
       if (tool === "shape") {
-        if (shape) {
-          state.editShape = shape;
-        }
         editor.setOption("shapeMode", state.editShape || "rect");
       }
     } else {
       editor.setTool(null);
     }
-    var active = tool === "shape" ? dom.editShapeButton : button;
     dom.editToolButtons.forEach(function (item) {
-      item.classList.toggle("is-active", item === active);
-      item.setAttribute("aria-pressed", item === active ? "true" : "false");
+      var active = item === button;
+      item.classList.toggle("is-active", active);
+      item.setAttribute("aria-pressed", active ? "true" : "false");
     });
-    if (shape) {
-      dom.shapeButtons.forEach(function (item) {
-        item.classList.toggle(
-          "is-active",
-          item.getAttribute("data-edit-shape") === shape
-        );
+    syncPalette();
+  }
+
+  /* ---- Annotation palette (same component + interaction as the capture tool) ---- *
+   * Everything below mirrors capture.js §11.10: the palette sits below the edit
+   * bar (pin.js grows the window for it), only the groups relevant to the active
+   * tool stay visible, and the colour popover / custom HSV / eyedropper behave
+   * identically. The eyedropper samples the pinned image itself. */
+
+  function currentTool() {
+    return editor && typeof editor.getTool === "function"
+      ? editor.getTool()
+      : null;
+  }
+
+  function bindPaletteControls() {
+    if (dom.palette) {
+      dom.palette.addEventListener("click", onPaletteClick);
+    }
+    bindColorControls();
+    bindRange("palette-width", "width");
+    bindRange("palette-font-size", "fontSize");
+    bindRange("palette-mosaic-size", "mosaicSize");
+    bindPaletteShapeButtons();
+  }
+
+  function bindPaletteShapeButtons() {
+    each(dom.shapeButtons, function (button) {
+      button.addEventListener("click", function (event) {
+        event.preventDefault();
+        applyShapeMode(button.getAttribute("data-shape"));
+      });
+    });
+  }
+
+  function bindRange(id, optionKey) {
+    var range = byId(id);
+    if (!range) {
+      return;
+    }
+    range.addEventListener("input", function () {
+      setEditorOption(optionKey, range.value);
+    });
+  }
+
+  function onPaletteClick(event) {
+    var target = event.target;
+    if (!target || !target.closest) {
+      return;
+    }
+    var fillNode = target.closest("[data-fill]");
+    if (fillNode) {
+      event.preventDefault();
+      setEditorOption("fill", fillNode.getAttribute("data-fill"));
+      return;
+    }
+    var bgNode = target.closest("[data-bg-color]");
+    if (bgNode) {
+      event.preventDefault();
+      setEditorOption("textBg", bgNode.getAttribute("data-bg-color") || "");
+      return;
+    }
+    var boldNode = target.closest("#palette-bold, [data-bold]");
+    if (boldNode && editor) {
+      event.preventDefault();
+      setEditorOption("bold", !editor.getOptions().bold);
+    }
+  }
+
+  function setEditorOption(key, value) {
+    if (!editor) {
+      return;
+    }
+    editor.setOption(key, value);
+    syncPalette();
+  }
+
+  function applyShapeMode(mode) {
+    if (editor) {
+      editor.setShapeMode(mode);
+    }
+    state.editShape = mode;
+    syncShapeButtons();
+    syncPalette();
+  }
+
+  function syncShapeButtons() {
+    var mode =
+      editor && typeof editor.getOptions === "function"
+        ? editor.getOptions().shapeMode
+        : state.editShape;
+    each(dom.shapeButtons, function (button) {
+      var active = String(button.getAttribute("data-shape")) === String(mode);
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+  }
+
+  function syncPalette() {
+    if (!dom.palette) {
+      return;
+    }
+    var tool = currentTool();
+    if (!state.editing || !tool || !editor) {
+      setHidden(dom.palette, true);
+      closeAllColorPanels();
+      requestEditWindow(true);
+      return;
+    }
+    setHidden(dom.palette, false);
+    each(dom.palette.querySelectorAll("[data-tools]"), function (group) {
+      var tools = String(group.getAttribute("data-tools") || "").split(/\s+/);
+      setHidden(group, tools.indexOf(tool) < 0);
+    });
+    syncFillVisibility(tool);
+    syncPaletteValues();
+    syncColorUi();
+    syncShapeButtons();
+    applyEditBarPlacement();
+    layoutPalette();
+    layoutFloatingPanels();
+    /* The palette is part of the strip: let the shell grow/shrink the window. */
+    requestEditWindow(true);
+  }
+
+  /* The straight-line shape has no fill, so its segmented control is hidden. */
+  function syncFillVisibility(tool) {
+    var node = byId("palette-fill");
+    if (!node || !editor) {
+      return;
+    }
+    var hideLine =
+      tool === "shape" && editor.getOptions().shapeMode === "line";
+    if (hideLine) {
+      var wrapper = node.closest("[data-tools]") || node;
+      setHidden(wrapper, true);
+    }
+  }
+
+  function syncPaletteValues() {
+    if (!editor) {
+      return;
+    }
+    var options = editor.getOptions();
+    setRangeValue("palette-width", "palette-width-value", options.width);
+    setRangeValue("palette-font-size", "palette-font-size-value", options.fontSize);
+    setRangeValue(
+      "palette-mosaic-size",
+      "palette-mosaic-size-value",
+      options.mosaicSize
+    );
+    var bold = byId("palette-bold");
+    if (bold) {
+      bold.classList.toggle("is-active", options.bold === true);
+      bold.setAttribute("aria-pressed", options.bold ? "true" : "false");
+    }
+    each(dom.palette.querySelectorAll("[data-fill]"), function (node) {
+      var active = node.getAttribute("data-fill") === options.fill;
+      node.classList.toggle("is-active", active);
+      node.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+    each(dom.palette.querySelectorAll("[data-bg-color]"), function (node) {
+      var value = node.getAttribute("data-bg-color") || "";
+      var active = value === (options.textBg || "");
+      node.classList.toggle("is-active", active);
+      node.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+  }
+
+  function setRangeValue(rangeId, labelId, value) {
+    var range = byId(rangeId);
+    if (range) {
+      range.value = String(value);
+    }
+    var label = byId(labelId);
+    if (label) {
+      label.textContent = String(value) + " px";
+    }
+  }
+
+  /* Palette sits **below** the edit bar (left-aligned to it, clamped to the
+   * window) and flips above when the space below is too small — same algorithm
+   * as capture.js. The shell reserves the strip room for it. */
+  function layoutPalette() {
+    if (!dom.palette || dom.palette.hidden || !dom.editBar || dom.editBar.hidden) {
+      return;
+    }
+    var paletteWidth = dom.palette.offsetWidth || 0;
+    var paletteHeight = dom.palette.offsetHeight || 0;
+    if (!paletteWidth || !paletteHeight) {
+      return;
+    }
+    var size = viewportSize();
+    var barRect = dom.editBar.getBoundingClientRect();
+    var left = clamp(
+      barRect.left,
+      EDGE_PAD,
+      Math.max(EDGE_PAD, size.width - paletteWidth - EDGE_PAD)
+    );
+    var belowTop = barRect.bottom + PALETTE_GAP;
+    var aboveTop = barRect.top - paletteHeight - PALETTE_GAP;
+    var top;
+    if (size.height - belowTop >= paletteHeight + EDGE_PAD) {
+      top = belowTop;
+    } else if (aboveTop >= EDGE_PAD) {
+      top = aboveTop;
+    } else {
+      top = clamp(
+        belowTop,
+        EDGE_PAD,
+        Math.max(EDGE_PAD, size.height - paletteHeight - EDGE_PAD)
+      );
+    }
+    dom.palette.style.left = Math.round(left) + "px";
+    dom.palette.style.top = Math.round(top) + "px";
+    dom.palette.style.right = "";
+    dom.palette.style.bottom = "";
+  }
+
+  function viewportSize() {
+    return {
+      width: Math.max(1, window.innerWidth || 0),
+      height: Math.max(1, window.innerHeight || 0)
+    };
+  }
+
+  /* ---- Colour panel (§11.10.3): preset popover, custom HSV picker, eyedropper ---- */
+
+  function parseHexColor(value) {
+    var hex = String(value == null ? "" : value).trim();
+    if (!/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(hex)) {
+      return null;
+    }
+    var body = hex.slice(1);
+    if (body.length === 3) {
+      body = body[0] + body[0] + body[1] + body[1] + body[2] + body[2];
+    }
+    return {
+      r: parseInt(body.slice(0, 2), 16),
+      g: parseInt(body.slice(2, 4), 16),
+      b: parseInt(body.slice(4, 6), 16)
+    };
+  }
+
+  function channelHex(channel) {
+    var value = Math.max(0, Math.min(255, Math.round(numberOr(channel, 0))));
+    var hex = value.toString(16);
+    return hex.length === 1 ? "0" + hex : hex;
+  }
+
+  function rgbToHex(red, green, blue) {
+    return "#" + channelHex(red) + channelHex(green) + channelHex(blue);
+  }
+
+  function rgbToHsv(red, green, blue) {
+    var r = Math.max(0, Math.min(255, numberOr(red, 0))) / 255;
+    var g = Math.max(0, Math.min(255, numberOr(green, 0))) / 255;
+    var b = Math.max(0, Math.min(255, numberOr(blue, 0))) / 255;
+    var maximum = Math.max(r, g, b);
+    var minimum = Math.min(r, g, b);
+    var delta = maximum - minimum;
+    var hue = 0;
+    if (delta > 0.00001) {
+      if (maximum === r) {
+        hue = ((g - b) / delta) % 6;
+      } else if (maximum === g) {
+        hue = (b - r) / delta + 2;
+      } else {
+        hue = (r - g) / delta + 4;
+      }
+      hue *= 60;
+      if (hue < 0) {
+        hue += 360;
+      }
+    }
+    return {
+      hue: hue,
+      saturation: maximum === 0 ? 0 : delta / maximum,
+      value: maximum
+    };
+  }
+
+  function hsvToRgb(hue, saturation, value) {
+    var h = ((numberOr(hue, 0) % 360) + 360) % 360;
+    var s = clamp(numberOr(saturation, 0), 0, 1);
+    var v = clamp(numberOr(value, 0), 0, 1);
+    var c = v * s;
+    var x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+    var m = v - c;
+    var r = 0;
+    var g = 0;
+    var b = 0;
+    if (h < 60) {
+      r = c;
+      g = x;
+    } else if (h < 120) {
+      r = x;
+      g = c;
+    } else if (h < 180) {
+      g = c;
+      b = x;
+    } else if (h < 240) {
+      g = x;
+      b = c;
+    } else if (h < 300) {
+      r = x;
+      b = c;
+    } else {
+      r = c;
+      b = x;
+    }
+    return {
+      r: Math.round((r + m) * 255),
+      g: Math.round((g + m) * 255),
+      b: Math.round((b + m) * 255)
+    };
+  }
+
+  function currentColorHex() {
+    return editor ? String(editor.getOptions().color || "#ef4444") : "#ef4444";
+  }
+
+  function positionFloatingPanel(panel, anchorRect) {
+    if (!panel) {
+      return;
+    }
+    var panelWidth = panel.offsetWidth || 0;
+    var panelHeight = panel.offsetHeight || 0;
+    if (!panelWidth || !panelHeight) {
+      return;
+    }
+    var size = viewportSize();
+    var left = clamp(
+      anchorRect.left,
+      EDGE_PAD,
+      Math.max(EDGE_PAD, size.width - panelWidth - EDGE_PAD)
+    );
+    var belowTop = anchorRect.bottom + FLOATING_PANEL_GAP;
+    var aboveTop = anchorRect.top - panelHeight - FLOATING_PANEL_GAP;
+    var top;
+    if (size.height - belowTop >= panelHeight + EDGE_PAD) {
+      top = belowTop;
+    } else if (aboveTop >= EDGE_PAD) {
+      top = aboveTop;
+    } else {
+      top = clamp(
+        belowTop,
+        EDGE_PAD,
+        Math.max(EDGE_PAD, size.height - panelHeight - EDGE_PAD)
+      );
+    }
+    panel.style.left = Math.round(left) + "px";
+    panel.style.top = Math.round(top) + "px";
+    panel.style.right = "";
+    panel.style.bottom = "";
+  }
+
+  function colorAnchorRect() {
+    var node = dom.colorButton || dom.palette || dom.editBar;
+    if (!node || typeof node.getBoundingClientRect !== "function") {
+      return {
+        left: EDGE_PAD,
+        right: EDGE_PAD,
+        top: EDGE_PAD,
+        bottom: EDGE_PAD,
+        width: 0,
+        height: 0
+      };
+    }
+    return node.getBoundingClientRect();
+  }
+
+  /* Applies a colour to the shared editor state and every colour surface. */
+  function pushColor(hex) {
+    var color = String(hex || "").trim();
+    if (!parseHexColor(color)) {
+      return;
+    }
+    color = color.toLowerCase();
+    if (editor) {
+      editor.setOption("color", color);
+    }
+    if (dom.colorSwatch) {
+      dom.colorSwatch.style.background = color;
+    }
+    if (dom.customPreview) {
+      dom.customPreview.style.background = color;
+    }
+    if (dom.colorButton) {
+      dom.colorButton.title = "颜色 " + color;
+      dom.colorButton.setAttribute("aria-label", "颜色 " + color);
+    }
+    each(document.querySelectorAll(".palette-color[data-color]"), function (node) {
+      var value = String(node.getAttribute("data-color") || "").toLowerCase();
+      node.classList.toggle("is-active", value === color);
+    });
+  }
+
+  function syncColorUi() {
+    pushColor(currentColorHex());
+  }
+
+  function syncHsvFromColor() {
+    var color = parseHexColor(currentColorHex());
+    if (color) {
+      hsvState = rgbToHsv(color.r, color.g, color.b);
+    }
+  }
+
+  /* Refresh the HSV cursor, hue thumb, preview and RGB inputs without touching
+   * the editor colour (callers decide when to apply it). */
+  function renderHsvUi() {
+    var rgb = hsvToRgb(hsvState.hue, hsvState.saturation, hsvState.value);
+    var hex = rgbToHex(rgb.r, rgb.g, rgb.b);
+    if (dom.hsv) {
+      dom.hsv.style.backgroundColor =
+        "hsl(" + Math.round(hsvState.hue) + ", 100%, 50%)";
+      if (dom.hsvCursor) {
+        var hsvWidth = dom.hsv.clientWidth || 0;
+        var hsvHeight = dom.hsv.clientHeight || 0;
+        dom.hsvCursor.style.left =
+          Math.round(hsvState.saturation * Math.max(1, hsvWidth)) + "px";
+        dom.hsvCursor.style.top =
+          Math.round((1 - hsvState.value) * Math.max(1, hsvHeight)) + "px";
+      }
+    }
+    if (dom.hueThumb) {
+      dom.hueThumb.style.left = (hsvState.hue / 360) * 100 + "%";
+    }
+    if (dom.customPreview) {
+      dom.customPreview.style.background = hex;
+    }
+    setNumberInputValue(dom.rgbR, rgb.r);
+    setNumberInputValue(dom.rgbG, rgb.g);
+    setNumberInputValue(dom.rgbB, rgb.b);
+  }
+
+  function setNumberInputValue(input, value) {
+    if (!input || document.activeElement === input) {
+      return;
+    }
+    input.value = String(value);
+  }
+
+  function applyHsvColor() {
+    var rgb = hsvToRgb(hsvState.hue, hsvState.saturation, hsvState.value);
+    pushColor(rgbToHex(rgb.r, rgb.g, rgb.b));
+    renderHsvUi();
+  }
+
+  function applyRgbColor(red, green, blue) {
+    var r = Math.round(clamp(numberOr(red, 0), 0, 255));
+    var g = Math.round(clamp(numberOr(green, 0), 0, 255));
+    var b = Math.round(clamp(numberOr(blue, 0), 0, 255));
+    hsvState = rgbToHsv(r, g, b);
+    pushColor(rgbToHex(r, g, b));
+    renderHsvUi();
+  }
+
+  /* ---- floating panels ------------------------------------------------- */
+
+  function openColorPopover() {
+    if (!dom.colorPopover) {
+      return;
+    }
+    closeCustomColor();
+    setHidden(dom.colorPopover, false);
+    state.colorPopoverOpen = true;
+    syncColorUi();
+    positionFloatingPanel(dom.colorPopover, colorAnchorRect());
+  }
+
+  function closeColorPopover() {
+    if (!dom.colorPopover) {
+      return;
+    }
+    setHidden(dom.colorPopover, true);
+    state.colorPopoverOpen = false;
+    if (dom.colorButton) {
+      dom.colorButton.setAttribute("aria-expanded", "false");
+    }
+  }
+
+  function toggleColorPopover() {
+    if (state.colorPopoverOpen) {
+      closeColorPopover();
+    } else {
+      openColorPopover();
+    }
+  }
+
+  function openCustomColor() {
+    if (!dom.customColorPanel) {
+      return;
+    }
+    closeColorPopover();
+    syncHsvFromColor();
+    setHidden(dom.customColorPanel, false);
+    state.customColorOpen = true;
+    positionFloatingPanel(dom.customColorPanel, colorAnchorRect());
+    renderHsvUi();
+  }
+
+  function closeCustomColor() {
+    if (!dom.customColorPanel) {
+      return;
+    }
+    setHidden(dom.customColorPanel, true);
+    state.customColorOpen = false;
+  }
+
+  function closeAllColorPanels() {
+    closeColorPopover();
+    closeCustomColor();
+  }
+
+  function layoutFloatingPanels() {
+    var anchor = colorAnchorRect();
+    if (state.colorPopoverOpen && dom.colorPopover) {
+      positionFloatingPanel(dom.colorPopover, anchor);
+    }
+    if (state.customColorOpen && dom.customColorPanel) {
+      positionFloatingPanel(dom.customColorPanel, anchor);
+      renderHsvUi();
+    }
+  }
+
+  function onColorPopoverClick(event) {
+    var target = event.target;
+    if (!target || !target.closest) {
+      return;
+    }
+    var preset = target.closest("[data-color]");
+    if (preset) {
+      event.preventDefault();
+      pushColor(preset.getAttribute("data-color"));
+      closeColorPopover();
+      return;
+    }
+    if (target.closest("#palette-color-custom")) {
+      event.preventDefault();
+      openCustomColor();
+      return;
+    }
+    if (target.closest("#palette-eyedropper")) {
+      event.preventDefault();
+      startColorPicking();
+    }
+  }
+
+  function onCustomColorClick(event) {
+    var target = event.target;
+    if (!target || !target.closest) {
+      return;
+    }
+    if (target.closest("#palette-eyedropper")) {
+      event.preventDefault();
+      startColorPicking();
+    }
+  }
+
+  /* ---- HSV square / hue bar / RGB inputs ------------------------------- */
+
+  function updateHsvFromPointer(event) {
+    if (!dom.hsv) {
+      return;
+    }
+    var rect = dom.hsv.getBoundingClientRect();
+    if (!rect.width || !rect.height) {
+      return;
+    }
+    hsvState.saturation = clamp(
+      (numberOr(event.clientX, rect.left) - rect.left) / rect.width,
+      0,
+      1
+    );
+    hsvState.value = 1 - clamp(
+      (numberOr(event.clientY, rect.top) - rect.top) / rect.height,
+      0,
+      1
+    );
+    applyHsvColor();
+  }
+
+  function updateHueFromPointer(event) {
+    if (!dom.hue) {
+      return;
+    }
+    var rect = dom.hue.getBoundingClientRect();
+    if (!rect.width) {
+      return;
+    }
+    hsvState.hue =
+      clamp((numberOr(event.clientX, rect.left) - rect.left) / rect.width, 0, 1) *
+      360;
+    applyHsvColor();
+  }
+
+  function bindDragSurface(node, onMove, onStop) {
+    if (!node) {
+      return;
+    }
+    var dragging = false;
+    node.addEventListener("pointerdown", function (event) {
+      if (event.button !== undefined && event.button !== 0) {
+        return;
+      }
+      event.preventDefault();
+      dragging = true;
+      try {
+        node.setPointerCapture(event.pointerId);
+      } catch (error) {
+        /* pointer capture is an optimisation only */
+      }
+      onMove(event);
+    });
+    node.addEventListener("pointermove", function (event) {
+      if (!dragging) {
+        return;
+      }
+      event.preventDefault();
+      onMove(event);
+    });
+    var stop = function (event) {
+      if (!dragging) {
+        return;
+      }
+      dragging = false;
+      if (typeof onStop === "function") {
+        onStop(event);
+      }
+    };
+    node.addEventListener("pointerup", stop);
+    node.addEventListener("pointercancel", stop);
+  }
+
+  function bindColorControls() {
+    if (dom.colorButton) {
+      dom.colorButton.addEventListener("click", function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleColorPopover();
       });
     }
+    if (dom.colorPopover) {
+      dom.colorPopover.addEventListener("click", onColorPopoverClick);
+    }
+    if (dom.customColorPanel) {
+      dom.customColorPanel.addEventListener("click", onCustomColorClick);
+    }
+    bindDragSurface(
+      dom.hsv,
+      function (event) {
+        hsvDragging = true;
+        updateHsvFromPointer(event);
+      },
+      function () {
+        hsvDragging = false;
+      }
+    );
+    bindDragSurface(
+      dom.hue,
+      function (event) {
+        hueDragging = true;
+        updateHueFromPointer(event);
+      },
+      function () {
+        hueDragging = false;
+      }
+    );
+    bindRgbInput(dom.rgbR);
+    bindRgbInput(dom.rgbG);
+    bindRgbInput(dom.rgbB);
+    document.addEventListener("pointerdown", onDocumentPointerDownCapture, true);
   }
 
-  function applyEditShape(shape) {
-    var value = String(shape || "")
-      .trim()
-      .toLowerCase();
-    if (!value) {
+  function bindRgbInput(input) {
+    if (!input) {
       return;
     }
-    closeShapeMenu();
-    selectEditTool(dom.editShapeButton, "shape", value);
-  }
-
-  /* Shape picker floating above the 形状 button. */
-  function toggleShapeMenu(button) {
-    if (!dom.shapeMenu) {
-      return;
-    }
-    if (!dom.shapeMenu.hidden) {
-      closeShapeMenu();
-      return;
-    }
-    var anchor = button || dom.editShapeButton;
-    dom.shapeMenu.hidden = false;
-    var rect = anchor ? anchor.getBoundingClientRect() : null;
-    var width = dom.shapeMenu.offsetWidth || 148;
-    var height = dom.shapeMenu.offsetHeight || 36;
-    var left = rect ? rect.left + rect.width / 2 - width / 2 : 8;
-    var top = rect ? rect.top - height - 6 : 8;
-    left = Math.max(4, Math.min(left, window.innerWidth - width - 4));
-    if (top < 4) {
-      top = rect ? rect.bottom + 6 : 8;
-    }
-    dom.shapeMenu.style.left = Math.round(left) + "px";
-    dom.shapeMenu.style.top = Math.round(top) + "px";
-    dom.shapeButtons.forEach(function (item) {
-      item.classList.toggle(
-        "is-active",
-        item.getAttribute("data-edit-shape") === state.editShape
+    var update = function () {
+      applyRgbColor(
+        dom.rgbR ? dom.rgbR.value : 0,
+        dom.rgbG ? dom.rgbG.value : 0,
+        dom.rgbB ? dom.rgbB.value : 0
       );
+    };
+    input.addEventListener("input", update);
+    input.addEventListener("change", update);
+    input.addEventListener("blur", function () {
+      renderHsvUi();
     });
   }
 
-  function closeShapeMenu() {
-    if (dom.shapeMenu) {
-      dom.shapeMenu.hidden = true;
-    }
-  }
-
-  function onShapeMenuClick(event) {
-    var button =
-      event.target && event.target.closest
-        ? event.target.closest("[data-edit-shape]")
-        : null;
-    if (!button) {
+  /* Click outside any colour panel closes the topmost ones (§11.10.1). */
+  function onDocumentPointerDownCapture(event) {
+    if (state.pickingColor) {
       return;
     }
+    if (!state.colorPopoverOpen && !state.customColorOpen) {
+      return;
+    }
+    var target = event.target;
+    if (target && target.closest) {
+      if (
+        target.closest(
+          "#palette-color-popover, #palette-custom-color, #palette-color-button, #palette-color-group"
+        )
+      ) {
+        return;
+      }
+    }
+    closeAllColorPanels();
+  }
+
+  /* ---- eyedropper (§11.10.3): samples the pinned image itself ---------- */
+
+  function startColorPicking() {
+    if (state.pickingColor) {
+      return;
+    }
+    if (!editor || typeof editor.sampleColor !== "function") {
+      toast("当前无法取色，请重试", "error");
+      return;
+    }
+    state.pickingColor = true;
+    closeAllColorPanels();
+    document.body.classList.add("picking-color");
+    document.addEventListener("pointerdown", onColorPickPointerDown, true);
+  }
+
+  function stopColorPicking() {
+    if (!state.pickingColor) {
+      return;
+    }
+    state.pickingColor = false;
+    document.body.classList.remove("picking-color");
+    document.removeEventListener("pointerdown", onColorPickPointerDown, true);
+    hsvDragging = false;
+    hueDragging = false;
+  }
+
+  function onColorPickPointerDown(event) {
+    if (!state.pickingColor) {
+      return;
+    }
+    if (event.button !== undefined && event.button !== 0) {
+      return;
+    }
+    event.preventDefault();
     event.stopPropagation();
-    applyEditShape(button.getAttribute("data-edit-shape"));
+    var color = null;
+    var rect = dom.image ? dom.image.getBoundingClientRect() : null;
+    if (rect && rect.width > 0 && rect.height > 0) {
+      try {
+        color = editor.sampleColor(
+          event.clientX - rect.left,
+          event.clientY - rect.top
+        );
+      } catch (error) {
+        color = null;
+      }
+    }
+    stopColorPicking();
+    if (color) {
+      pushColor(color);
+      syncHsvFromColor();
+      toast("已吸取颜色 " + color, "success");
+    } else {
+      toast("此处无法取色", "error");
+    }
   }
 
   function updateEditBar() {
@@ -1406,11 +2219,23 @@
       return;
     }
     event.preventDefault();
-    /* Esc leaves the edit mode (annotations are discarded) before it closes
-     * the pin (contract §11.5); an open shape picker closes first. */
+    /* Same Esc ladder as the screenshot overlay (contract §11.10): eyedropper ->
+     * custom colour panel -> preset popover -> active tool -> leave edit mode. */
     if (state.editing) {
-      if (dom.shapeMenu && !dom.shapeMenu.hidden) {
-        closeShapeMenu();
+      if (state.pickingColor) {
+        stopColorPicking();
+        return;
+      }
+      if (state.customColorOpen) {
+        closeCustomColor();
+        return;
+      }
+      if (state.colorPopoverOpen) {
+        closeColorPopover();
+        return;
+      }
+      if (currentTool()) {
+        selectEditTool(null, null);
         return;
       }
       exitEdit();

@@ -1,7 +1,8 @@
 param(
   [string]$AppExe = "E:\document\workspace\AIProjects\lingopick\src-tauri\target\debug\lexora.exe",
   [int]$CdpPort = 9336,
-  [switch]$RightSide
+  [switch]$RightSide,
+  [switch]$Compact
 )
 
 # End-to-end check for the pinned-window edit toolbar (contract §11.5):
@@ -58,9 +59,11 @@ Get-Process lexora -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Milliseconds 400
 if (Test-Path $dataDir) { Remove-Item $dataDir -Recurse -Force }
 New-Item -ItemType Directory -Path (Join-Path $dataDir "logs"), (Join-Path $dataDir "models") -Force | Out-Null
+$compactValue = if ($Compact) { "true" } else { "false" }
 $settings = @'
-{"version":1,"picker":{"enabled":true,"skills":["translate","summarize","explain","read","copy"],"compact":false,"defaultTargetLang":"auto","blacklist":[],"maxChars":5000},"provider":{"mode":"online","online":{"preset":"custom","baseUrl":"http://127.0.0.1:8770/v1","apiKey":"test-key","model":"mock-qwen","timeoutMs":20000,"temperature":0.2,"maxTokens":512},"local":{"contextSize":4096,"threads":0,"gpuLayers":0,"autoStart":false}},"app":{"closeToTray":true,"startAtLogin":false,"theme":"light"}}
+{"version":1,"picker":{"enabled":true,"skills":["translate","summarize","explain","read","copy"],"compact":__COMPACT__,"defaultTargetLang":"auto","blacklist":[],"maxChars":5000},"provider":{"mode":"online","online":{"preset":"custom","baseUrl":"http://127.0.0.1:8770/v1","apiKey":"test-key","model":"mock-qwen","timeoutMs":20000,"temperature":0.2,"maxTokens":512},"local":{"contextSize":4096,"threads":0,"gpuLayers":0,"autoStart":false}},"app":{"closeToTray":true,"startAtLogin":false,"theme":"light"}}
 '@
+$settings = $settings.Replace("__COMPACT__", $compactValue)
 [System.IO.File]::WriteAllText((Join-Path $dataDir "settings.json"), $settings, [System.Text.UTF8Encoding]::new($false))
 New-Item -ItemType Directory -Force -Path $shotDir | Out-Null
 
@@ -152,20 +155,41 @@ try {
   $editJson = Cdp 'pin\.html' "JSON.stringify((() => { const bar = document.getElementById('pin-edit-bar'); const img = document.getElementById('pin-image'); const r = bar.getBoundingClientRect(); const ir = img.getBoundingClientRect(); const cs = getComputedStyle(bar); const btns = Array.from(bar.querySelectorAll('button')).map(b => b.dataset.editTool || b.dataset.editSkill || b.dataset.editAction || '?'); return {editing: window.__pinState.editing, leftPad: window.__pinState.editLeftPad, topPad: window.__pinState.editTopPad, outside: window.__pinState.editOutside, winW: window.innerWidth, winH: window.innerHeight, dpr: window.devicePixelRatio, bar: {left: r.left, top: r.top, width: r.width, height: r.height, scrollW: bar.scrollWidth, clientW: bar.clientWidth, bottom: r.bottom}, image: {left: ir.left, top: ir.top, width: ir.width, height: ir.height}, flexWrap: cs.flexWrap, justify: cs.justifyContent, buttons: btns, oneRow: r.height < 60, fits: bar.scrollWidth <= bar.clientWidth + 1}; })())"
   "PIN_EDIT=$editJson"
 
-  # --- shape button: click activates + opens the sub-menu -------------------
-  $shapeJson = Cdp 'pin\.html' "JSON.stringify((() => { const b = document.querySelector('#pin-edit-bar [data-edit-tool=shape]'); if (!b) return {error: 'no shape button'}; b.click(); const menu = document.getElementById('pin-shape-menu'); const active = b.classList.contains('is-active'); const pressed = b.getAttribute('aria-pressed'); const editorTool = window.__pinEditor ? window.__pinEditor.getTool() : null; return {active: active, pressed: pressed, menuOpen: !menu.hidden, editorTool: editorTool}; })())"
-  "SHAPE_STATE=$shapeJson"
-  # close the menu and leave the tool again
-  $shapeOff = Cdp 'pin\.html' "(() => { const b = document.querySelector('#pin-edit-bar [data-edit-tool=shape]'); b.click(); const menu = document.getElementById('pin-shape-menu'); return JSON.stringify({active: b.classList.contains('is-active'), menuOpen: !menu.hidden, editorTool: window.__pinEditor ? window.__pinEditor.getTool() : null}); })()"
-  "SHAPE_OFF=$shapeOff"
+  # --- shape button: click activates the tool + shows the annotation palette --
+  $shapeJson = Cdp 'pin\.html' "(() => { const b = document.querySelector('#pin-edit-bar [data-edit-tool=shape]'); if (!b) return {error: 'no shape button'}; b.click(); return {clicked: true}; })()"
+  "SHAPE_CLICK=$shapeJson"
+  Start-Sleep -Milliseconds 1500
+  $paletteJson = Cdp 'pin\.html' "(() => { const p = document.getElementById('capture-palette'); const bar = document.getElementById('pin-edit-bar'); const pr = p.getBoundingClientRect(); const br = bar.getBoundingClientRect(); const groups = Array.from(p.querySelectorAll('[data-tools]')).filter(g => !g.hidden).map(g => g.id || Array.from(g.classList).join('.')); return {paletteHidden: p.hidden, palette: {left: pr.left, top: pr.top, width: pr.width, height: pr.height, bottom: pr.bottom}, bar: {top: br.top, bottom: br.bottom, height: br.height, bottomStyle: bar.style.bottom}, winW: window.innerWidth, winH: window.innerHeight, visibleGroups: groups, shapeActive: document.querySelector('#pin-edit-bar [data-edit-tool=shape]').classList.contains('is-active'), tool: window.__pinEditor ? window.__pinEditor.getTool() : null, oneRow: pr.height < 60, belowBar: Math.abs(pr.top - (br.bottom + 8)) < 2}; })()"
+  "PALETTE_STATE=$paletteJson"
+  & node (Join-Path $root "tests\cdp-screenshot.mjs") $CdpPort 'pin\.html' (Join-Path $shotDir "pin-edit-palette-shape.png") "light" 2>&1 | Out-Null
 
-  # --- screenshot the pin window for visual review --------------------------
+  # --- palette controls: shape sub-mode, fill, width, colour popover ---------
+  $paletteControls = Cdp 'pin\.html' "(() => { document.querySelector('#capture-palette [data-shape=circle]').click(); document.querySelector('#capture-palette [data-fill=fill]').click(); const w = document.getElementById('palette-width'); w.value = '10'; w.dispatchEvent(new Event('input', {bubbles: true})); document.getElementById('palette-color-button').click(); const pop = document.getElementById('palette-color-popover'); const popOpen = !pop.hidden; pop.querySelectorAll('.palette-color')[5].click(); const o = window.__pinEditor.getOptions(); return {shapeMode: o.shapeMode, fill: o.fill, width: o.width, color: o.color, popoverOpened: popOpen, popoverClosed: document.getElementById('palette-color-popover').hidden, widthLabel: document.getElementById('palette-width-value').textContent}; })()"
+  "PALETTE_CONTROLS=$paletteControls"
+
+  # --- custom colour panel + eyedropper (samples the pinned image) -----------
+  $paletteCustom = Cdp 'pin\.html' "(() => { document.getElementById('palette-color-button').click(); document.querySelector('#palette-color-popover #palette-color-custom').click(); const panel = document.getElementById('palette-custom-color'); const open = !panel.hidden; const img = document.getElementById('pin-image'); const r = img.getBoundingClientRect(); document.getElementById('palette-eyedropper').click(); const picking = document.body.classList.contains('picking-color'); document.dispatchEvent(new PointerEvent('pointerdown', {clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, button: 0, bubbles: true})); const o = window.__pinEditor.getOptions(); return {customOpen: open, pickingStarted: picking, pickingStopped: !document.body.classList.contains('picking-color'), colorAfter: o.color}; })()"
+  "PALETTE_CUSTOM=$paletteCustom"
+
+  # --- text tool groups + a single-row palette screenshot --------------------
+  $textGroups = Cdp 'pin\.html' "(() => { document.querySelector('#pin-edit-bar [data-edit-tool=text]').click(); const p = document.getElementById('capture-palette'); const groups = Array.from(p.querySelectorAll('[data-tools]')).filter(g => !g.hidden).map(g => g.id || Array.from(g.classList).join('.')); return {groups: groups, tool: window.__pinEditor ? window.__pinEditor.getTool() : null}; })()"
+  "TEXT_GROUPS=$textGroups"
+  Start-Sleep -Milliseconds 1200
+  & node (Join-Path $root "tests\cdp-screenshot.mjs") $CdpPort 'pin\.html' (Join-Path $shotDir "pin-edit-palette.png") "light" 2>&1 | Out-Null
+
+  # leave the tool again (Esc-like) and capture the plain edit bar
+  $shapeOff = Cdp 'pin\.html' "(() => { const b = document.querySelector('#pin-edit-bar [data-edit-tool=text]'); b.click(); return JSON.stringify({paletteHidden: document.getElementById('capture-palette').hidden, tool: window.__pinEditor ? window.__pinEditor.getTool() : null}); })()"
+  "TOOL_OFF=$shapeOff"
+  Start-Sleep -Milliseconds 1200
   & node (Join-Path $root "tests\cdp-screenshot.mjs") $CdpPort 'pin\.html' (Join-Path $shotDir "pin-edit-toolbar.png") "light" 2>&1 | Out-Null
 
   $results.CaptureReady = $ready
   $results.PinLoaded = $loaded
   $results.EditState = $editJson
-  $results.ShapeState = $shapeJson
+  $results.Palette = $paletteJson
+  $results.PaletteControls = $paletteControls
+  $results.PaletteCustom = $paletteCustom
+  $results.TextGroups = $textGroups
 } catch {
   "ERROR: $($_.Exception.Message)"
   $results.Error = $_.Exception.Message
