@@ -318,8 +318,8 @@ pub struct SelectionService {
 
 - `windows::show_settings(app)`：显示/聚焦 settings（最小化还原）。
 - `windows::show_picker(app, payload) -> bool`：按物理锚点 + 该显示器 scale 计算逻辑坐标，初始 440×56，`x = anchor/scale - 40`（限制工作区）、`y = anchor/scale + 12`，下方放不下翻到上方；clamp 到工作区；`show`（**不调用 `set_focus`**，picker 窗口配置 `focusable: false`）；`app.emit_to("picker","picker-data", payload)`；记录最近 payload 供 `picker_ready` 补发。
-- `windows::resize_picker(app, w, h) -> Option<bounds>`：不再有 200–780×40–620 人工限制；非法/非正尺寸回退基础尺寸，合法值 1..=100000，位置仍 clamp 到工作区内；设置 LogicalSize/Position 后返回最终 bounds。
-- `windows::move_picker_by(app, dx, dy) -> Option<(f64, f64)>`：按逻辑像素 delta 移动 picker 窗口（结果面板标题栏拖动），clamp 到工作区，返回新的逻辑左上角坐标。
+- `windows::resize_picker(app, w, h) -> Option<bounds>`：不再有 200–780×40–620 人工限制；非法/非正尺寸回退基础尺寸，合法值 1..=100000，位置 clamp 到**虚拟桌面**（所有显示器）内，面板可跨屏；设置 LogicalSize/Position 后返回最终 bounds。
+- `windows::move_picker_by(app, dx, dy) -> Option<(f64, f64)>`：按逻辑像素 delta 移动 picker 窗口（结果面板标题栏拖动），clamp 到**虚拟桌面**（所有显示器）内，可自由拖到任意显示器，返回新的逻辑左上角坐标。
 - `windows::hide_picker(app)`：隐藏 + 清空 pinned + emit `picker-hidden`。
 - `is_picker_visible` / `picker_scale_factor`。
 - tray 菜单：显示设置、启用划词（勾选，更新 settings）、本地引擎状态（未启动可「启动本地模型」）、退出。
@@ -365,7 +365,7 @@ pub struct SelectionService {
   - 结果区渲染 Markdown（安全子集，HTML 先转义）：标题、粗体/斜体/删除线、行内代码、代码块、有序/无序列表、引用、分隔线、表格、http(s) 链接（链接点击经 `open_external` 打开，不在 webview 内导航）；流式输出按 rAF 合并重渲染，用户向上翻阅时不强制滚到底部。
   - 朗读：仅用 `window.speechSynthesis`（Windows 系统语音）；无语音时提示「系统未安装可用的语音包：Windows 设置 → 时间和语言 → 语音」。朗读中再次点击是「停止朗读」，必须静默恢复按钮态，不提示失败（忽略 `interrupted`/`canceled` 错误）。
   - 结果面板可通过标题栏空白处拖动整个工具窗口（`picker_drag_panel`，每次 mousemove 发送屏幕坐标差值的逻辑像素 delta）；按钮/语言下拉区域不触发拖动。
-- 结果面板右下角提供缩放手柄：拖动调用 `picker_resize`（无最大限制；最小窗口 360×240，窗口位置仍 clamp 到工作区），尺寸写入 localStorage `lexora.panelSize`，下次打开沿用；手动调整后 `.panel` 填满窗口、内容自适应不再覆盖用户尺寸；双击手柄恢复自动大小。
+- 结果面板右下角提供缩放手柄：拖动调用 `picker_resize`（无最大限制；最小窗口 360×240，窗口位置 clamp 到虚拟桌面，可跨屏），尺寸写入 localStorage `lexora.panelSize`，下次打开沿用；手动调整后 `.panel` 填满窗口、内容自适应不再覆盖用户尺寸；双击手柄恢复自动大小。
 - 面板模式（picker.panelMode）：`auto`（默认）无滚动条、窗口随内容自动变高、隐藏缩放手柄；`scroll` 使用固定窗口高度、panel-body 内部滚动，可拖拽缩放并记忆尺寸（不小于 360×240）。
 - 面板粘滞：结果面板打开时后端 panel_open=true，键盘/右键/滚轮不会隐藏；未钉住时点击面板外区域仍隐藏（钉住则保持）。点击继续提问输入框时按需激活 picker 窗口以获取键盘焦点，关闭面板后恢复非激活。
 - 工具栏胶囊在鼠标滚轮/触摸板滚动时自动隐藏；结果面板打开时 wheel 事件不隐藏面板。关闭结果面板时直接隐藏整个 picker（不再回退显示工具栏胶囊）。
@@ -439,7 +439,7 @@ pub struct SelectionService {
 ### 10.2 overlay 交互（QQ 式选择阶段 + 编辑阶段）
 - **全局物理选区**：选区以虚拟桌面**物理坐标**（`state.selection`）为准，因此可以跨多个显示器框选，也可以在编辑阶段跨显示器移动/缩放。每个 overlay 只渲染与本屏相交的片段（遮罩镂空、四条边只画真正落在本屏的边、8 个手柄只显示落在本屏的），所有 overlay 通过 `capture-selection-state` 广播同步（`{phase, rect, owner}`，28ms 节流）。工具栏/尺寸标签/hint 只出现在选区右下角所在显示器（owner）。
 - **选择阶段（进入截图后的默认状态）**：无选区、无工具栏；整屏暗遮罩，鼠标所在窗口自动吸附高亮（`capture_hover_at` 按 z-order 取顶层窗口，优先 DWM 扩展边框；排除本进程/桌面/任务栏/工具窗/最小化/cloaked/空标题/过小窗口）。鼠标可自由跨显示器移动：每个 overlay 只高亮与本屏相交的部分，物理坐标用 `capture_monitor_info` 的显示器原点换算到本屏 CSS；鼠标离开本屏（`mouseout`）时清除本屏吸附。
-- **QQ 取色放大镜**：选择/编辑阶段鼠标旁跟随一个组件——上方 15×15 物理像素放大（最近邻 + 网格 + 中心高亮框），下方显示物理坐标 `(x, y)`、色值 `#RRGGBB` 与「按 C 复制色号」；`C` 通过 `capture_copy_text` 写入剪贴板并提示「已复制」。靠近屏幕边缘自动翻转/夹紧，鼠标在工具栏/颜色面板/标注工具激活时隐藏。
+- **QQ 取色放大镜**：选择/编辑阶段鼠标旁跟随一个组件——上方 15×15 物理像素放大（最近邻 + 网格 + 中心高亮框），下方显示物理坐标 `(x, y)`、色值 `#RRGGBB` 与「按 C 复制色号」；`C` 通过 `capture_copy_text` 写入剪贴板并提示「已复制」。键盘焦点只落在一个 overlay 上，而鼠标可以停在另一台显示器，因此 `C` 由焦点页通过 `capture-copy-color` 广播给所有 overlay，只有**当前显示放大镜**的页面执行复制（无需先点击那块屏幕）。靠近屏幕边缘自动翻转/夹紧，鼠标在工具栏/颜色面板/标注工具激活时隐藏。
 - **确认选区**：单击 = 选中吸附窗口（整个窗口矩形，可跨屏），单击空白桌面/任务栏 = 当前显示器全屏；两者都会显示工具栏并进入编辑阶段。拖动超过 4 CSS px = 自由框选（预览框 + 尺寸标签，可跨屏），松开后显示工具栏；全局坐标按 `capture_layout` 的虚拟屏 bounds clamp。
 - **编辑阶段**：选区按全局裁切，跨屏时由 Rust `crop_global` 逐显示器拼接（未覆盖的屏幕间隙填黑）；标注与长截图只支持单显示器，**跨屏选区时这两类按钮自动禁用**（标注工具 disabled，长截图提示不支持）。
 - **选区内拖动平移**：`mousedown` 落在本屏可见片段内（工具条/手柄除外）→ move 模式；`mousemove` 用全局坐标平移矩形、尺寸不变、clamp 到虚拟屏 bounds；松开后广播最终矩形并按右下角重新选 owner。
@@ -643,7 +643,7 @@ editor.renderToPng(rectCss) -> string|null
 ### 11.5 钉在桌面
 - 每个 pin 一个窗口 label `pin-<id>`：无边框、透明、always on top、skip_taskbar、resizable=false、visible=false（先建后显示）。宽度 = 图片物理宽度 / DPI，最大不超过工作区宽 70%；高度 = min(图片逻辑高度, 工作区高 70%)——超长图（长截图）保持可读宽度、窗口内容可滚动，不整体缩成细条；位置在鼠标附近并 clamp 到工作区。
 - 普通图片（高度未超出窗口）**不显示滚动条**：`body` 默认 `overflow: hidden`，仅当图片实际高度大于窗口时由 `pin.js` 加 `is-scrollable` 类启用滚动；滚动条复用项目现有样式（8px、透明轨道、圆角 999 的 `--border-strong` 滑块，hover `--text-faint`）。
-- `pin.html`（新文件）：加载后调用 `pinAPI.ready(id)` 取图并显示；鼠标按住任意位置拖动窗口（`pin_drag` 增量）；双击关闭；Esc 关闭；悬停右上角显示两个小按钮「复制」「关闭」；右键菜单含「复制」「关闭」。
+- `pin.html`（新文件）：加载后调用 `pinAPI.ready(id)` 取图并显示；鼠标按住任意位置拖动窗口（`pin_drag` 增量，位置 clamp 到虚拟桌面，可拖到任意显示器）；双击关闭；Esc 关闭；悬停右上角显示两个小按钮「复制」「关闭」；右键菜单含「复制」「关闭」。
 - `window.pinAPI = { ready(id), drag(id,dx,dy), copy(id), close(id) }`（tauri-api.js 提供 + mock）。
 - 关闭 pin 不退出截图流程（截图 overlay 已关闭）。
 

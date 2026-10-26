@@ -2227,6 +2227,26 @@
         }
       });
     },
+    /* Keyboard focus stays on one overlay while the pointer can be on another
+     * monitor, so "C" (copy the loupe colour) is broadcast to every overlay;
+     * only the one currently showing the loupe performs the clipboard write. */
+    broadcastCopyColor: function () {
+      if (!LIVE || !eventApi || typeof eventApi.emit !== "function") {
+        return Promise.resolve();
+      }
+      try {
+        return Promise.resolve(eventApi.emit("capture-copy-color", {}));
+      } catch (error) {
+        return Promise.resolve();
+      }
+    },
+    onCopyColor: function (callback) {
+      return subscribe("capture-copy-color", function (payload) {
+        if (typeof callback === "function") {
+          callback(payload);
+        }
+      });
+    },
     /* Re-uses the hidden overlay windows: the shell arms them for a new capture
      * (they fetch the fresh screenshot themselves and report `ready`). The
      * listener is pinned to this overlay window so the arm payload of another

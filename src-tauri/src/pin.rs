@@ -286,8 +286,8 @@ pub fn ready(id: u64) -> Result<Value, EngineError> {
     }))
 }
 
-/// Moves a pin window by a logical-pixel delta and clamps it into the work area
-/// (`pin_drag`, contract §11.5).
+/// Moves a pin window by a logical-pixel delta and clamps it into the virtual
+/// desktop so it can travel across monitors (`pin_drag`, contract §11.5).
 pub fn drag(app: &AppHandle, id: u64, dx: f64, dy: f64) -> Result<(), EngineError> {
     let Some(window) = app.get_webview_window(&label_for(id)) else {
         return Err(pin_missing_error());
@@ -305,11 +305,9 @@ pub fn drag(app: &AppHandle, id: u64, dx: f64, dy: f64) -> Result<(), EngineErro
         .map_err(|error| EngineError::new("无法移动钉图。", format!("请重试（{error}）。")))?;
     let x = current.x + (dx * scale).round() as i32;
     let y = current.y + (dy * scale).round() as i32;
-    let work = win32::work_area_physical(
-        current.x + size.width as i32 / 2,
-        current.y + size.height as i32 / 2,
-    );
-    let (x, y) = win32::clamp_to_work_area(x, y, size.width as i32, size.height as i32, &work);
+    // A pinned image may be dragged across monitors: clamp to the whole virtual
+    // desktop, not to the work area of the monitor it currently sits on.
+    let (x, y) = win32::clamp_to_virtual_screen(x, y, size.width as i32, size.height as i32);
     let _ = window.set_position(PhysicalPosition::new(x, y));
     Ok(())
 }

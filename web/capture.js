@@ -447,6 +447,7 @@
     bindEvents();
     subscribeArmed();
     subscribeSelectionState();
+    subscribeCopyColor();
     subscribeLongshotEvents();
     /* The arm event of the very first capture can fire before this page starts
      * listening (the shell creates the window and captures right away), so the
@@ -463,6 +464,38 @@
       API.onArmed(onArmed);
     } catch (error) {
       /* The page still works for the first capture without arm events. */
+    }
+  }
+
+  /* The keyboard focus stays on ONE overlay while the pointer may be on another
+   * monitor, so "C" is broadcast: the overlay that currently shows the loupe
+   * (the one under the pointer) copies its colour, wherever the focus is. */
+  function subscribeCopyColor() {
+    if (!API || typeof API.onCopyColor !== "function") {
+      return;
+    }
+    try {
+      API.onCopyColor(onCopyColorRequest);
+    } catch (error) {
+      /* The focused page still copies its own colour directly. */
+    }
+  }
+
+  function onCopyColorRequest() {
+    if (state.loupeVisible) {
+      copyLoupeColor();
+    }
+  }
+
+  function requestLoupeCopy() {
+    if (!API || typeof API.broadcastCopyColor !== "function") {
+      copyLoupeColor();
+      return;
+    }
+    try {
+      API.broadcastCopyColor();
+    } catch (error) {
+      copyLoupeColor();
     }
   }
 
@@ -2700,10 +2733,13 @@
       }
     }
 
-    /* QQ colour loupe: "C" copies the colour currently under the pointer. */
+    /* QQ colour loupe: "C" copies the colour under the pointer. The loupe lives
+     * on the overlay under the pointer, which may not own the keyboard focus, so
+     * the request is broadcast to every overlay (see subscribeCopyColor). */
     if (!typing && !event.ctrlKey && !event.metaKey && !event.altKey) {
-      if (key.toLowerCase() === "c" && copyLoupeColor()) {
+      if (key.toLowerCase() === "c") {
         event.preventDefault();
+        requestLoupeCopy();
         return;
       }
     }

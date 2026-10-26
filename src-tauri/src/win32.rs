@@ -17,10 +17,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetDoubleClickTime, SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_WHEEL, MOUSEINPUT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, GetAncestor, GetCursorPos, GetForegroundWindow, GetWindowLongPtrW,
-    GetWindowThreadProcessId, SetCursorPos, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos,
-    WindowFromPoint, GA_ROOT, GWL_EXSTYLE, HWND_TOP, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_NOZORDER, WHEEL_DELTA, WS_EX_NOACTIVATE,
+    BringWindowToTop, GetAncestor, GetCursorPos, GetForegroundWindow, GetSystemMetrics,
+    GetWindowLongPtrW, GetWindowThreadProcessId, SetCursorPos, SetForegroundWindow,
+    SetWindowLongPtrW, SetWindowPos, WindowFromPoint, GA_ROOT, GWL_EXSTYLE, HWND_TOP,
+    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WHEEL_DELTA,
+    WS_EX_NOACTIVATE,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -183,6 +185,42 @@ pub fn clamp_to_work_area(x: i32, y: i32, width: i32, height: i32, work: &WorkAr
         work.top
     };
     (x, y)
+}
+
+/// Bounding box of the whole virtual desktop in **physical** pixels, i.e. every
+/// monitor combined. The origin is negative when a monitor sits left of / above
+/// the primary one. Used to let panels and pinned windows travel between
+/// monitors instead of being clamped to the work area of a single monitor.
+pub fn virtual_screen_bounds() -> WorkArea {
+    unsafe {
+        let left = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        let top = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        let width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        let height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        if width > 0 && height > 0 {
+            WorkArea {
+                left,
+                top,
+                right: left + width,
+                bottom: top + height,
+            }
+        } else {
+            // Metrics unavailable: fall back to a conservative single screen.
+            WorkArea {
+                left: 0,
+                top: 0,
+                right: 1920,
+                bottom: 1080,
+            }
+        }
+    }
+}
+
+/// Clamps a window position so the whole window stays inside the **virtual
+/// desktop** (all monitors). Unlike `clamp_to_work_area` this does not lock a
+/// panel to one monitor, so it can be dragged across monitors (user request).
+pub fn clamp_to_virtual_screen(x: i32, y: i32, width: i32, height: i32) -> (i32, i32) {
+    clamp_to_work_area(x, y, width, height, &virtual_screen_bounds())
 }
 
 /// Maximum interval between two clicks of a double click (system setting).

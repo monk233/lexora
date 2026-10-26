@@ -264,8 +264,8 @@ pub fn take_pending() -> Option<PickerData> {
 /// `width`/`height` are logical pixels; there is no product size limit anymore,
 /// only basic sanitizing (`NaN`/infinite/<=0 fall back to the base size, at
 /// least 1 px, absurd values capped by [`MAX_PANEL_DIMENSION`]). The window is
-/// kept inside the work area of the monitor under it. Returns the final bounds
-/// in logical pixels.
+/// kept inside the virtual desktop (all monitors), so panels can move across
+/// monitors. Returns the final bounds in logical pixels.
 pub fn resize_picker(app: &tauri::AppHandle, width: f64, height: f64) -> Option<serde_json::Value> {
     let window = app.get_webview_window(PICKER_LABEL)?;
     let scale = window
@@ -282,24 +282,15 @@ pub fn resize_picker(app: &tauri::AppHandle, width: f64, height: f64) -> Option<
     let current = window
         .outer_position()
         .unwrap_or(PhysicalPosition::new(0, 0));
-    let center_x = current.x + (physical_width / 2).max(1);
-    let center_y = current.y + (physical_height / 2).max(1);
-    let work = win32::work_area_physical(center_x, center_y);
-
-    let mut x = current.x;
-    let mut y = current.y;
-    let max_x = work.right - physical_width;
-    if max_x >= work.left {
-        x = x.clamp(work.left, max_x);
-    } else {
-        x = work.left;
-    }
-    let max_y = work.bottom - physical_height;
-    if max_y >= work.top {
-        y = y.clamp(work.top, max_y);
-    } else {
-        y = work.top;
-    }
+    // Keep the whole panel inside the virtual desktop (all monitors) instead of
+    // the work area of one monitor, so a panel can live on / cross any monitor
+    // (user request: panels must be freely movable between displays).
+    let (x, y) = win32::clamp_to_virtual_screen(
+        current.x,
+        current.y,
+        physical_width,
+        physical_height,
+    );
 
     let _ = window.set_size(PhysicalSize::new(
         physical_width as u32,
@@ -323,7 +314,8 @@ pub fn resize_picker(app: &tauri::AppHandle, width: f64, height: f64) -> Option<
 }
 
 /// Moves the picker window by a logical-pixel delta (panel header drag) and
-/// clamps it inside the work area. Returns the new logical top-left position.
+/// clamps it inside the virtual desktop, so the panel can be dragged across
+/// monitors. Returns the new logical top-left position.
 pub fn move_picker_by(app: &tauri::AppHandle, dx: f64, dy: f64) -> Option<(f64, f64)> {
     let window = app.get_webview_window(PICKER_LABEL)?;
     if !window.is_visible().unwrap_or(false) {
@@ -339,11 +331,9 @@ pub fn move_picker_by(app: &tauri::AppHandle, dx: f64, dy: f64) -> Option<(f64, 
     let x = current.x + (dx * scale).round() as i32;
     let y = current.y + (dy * scale).round() as i32;
 
-    let work = win32::work_area_physical(
-        current.x + size.width as i32 / 2,
-        current.y + size.height as i32 / 2,
-    );
-    let (x, y) = win32::clamp_to_work_area(x, y, size.width as i32, size.height as i32, &work);
+    // The virtual desktop (not one monitor's work area) keeps the drag free to
+    // cross displays (user request).
+    let (x, y) = win32::clamp_to_virtual_screen(x, y, size.width as i32, size.height as i32);
 
     let _ = window.set_position(PhysicalPosition::new(x, y));
     Some((x as f64 / scale, y as f64 / scale))
