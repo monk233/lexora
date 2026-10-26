@@ -1297,6 +1297,15 @@
         }
         return { ok: true, direction: mockLongshot.direction };
       }
+      case "longshot_preview_ready":
+        return { ok: true, shown: false };
+      case "longshot_autoscroll": {
+        var autoscrollOn = args.enabled === true;
+        if (mockLongshot) {
+          mockLongshot.autoscroll = autoscrollOn;
+        }
+        return { ok: true, autoscroll: autoscrollOn };
+      }
       case "longshot_finish": {
         mockPinSeq += 1;
         var longshotPinId = mockPinSeq;
@@ -2306,6 +2315,17 @@
     },
     preview: function () {
       return safeInvoke("longshot_preview", {});
+    },
+    /* Shows the preview window only after the first stitched frame is painted
+     * (the window is created hidden so a long screenshot never starts with a
+     * white flash). Resolves with {ok, shown}. */
+    previewReady: function () {
+      return safeInvoke("longshot_preview_ready", {});
+    },
+    /* ShareX-style stepped auto-scrolling: the shell scrolls the target app in
+     * small settled steps so stitching is deterministic. */
+    autoscroll: function (enabled) {
+      return safeInvoke("longshot_autoscroll", { enabled: enabled === true });
     },
     direction: function (direction) {
       return safeInvoke("longshot_direction", {

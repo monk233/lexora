@@ -797,3 +797,10 @@ editor.renderToPng(rectCss) -> string|null
 - **高速/鲁棒拼接**：抓帧 ~25fps（40ms 间隔，抓完立即下一帧，抓取本身更慢时全速）；最小重叠从 10% 降到 **3%**（快速滚动时步长大也能匹配）；重叠搜索改为两阶段：对**每个**候选做稀疏评分（不漏真实值）→ 前 24 个候选做密集精确评分 → 在「几乎同样好」的候选里选**最接近上一帧步长（expected）**的那个（重复文本行不会拼错位置）。连续 3 帧无匹配才置 `stalled`（单帧撕裂静默跳过），不限制用户滚动速度。方向切换后下一帧以**当前屏幕内容**重新同步（`resync`），不再卡在最初首帧导致后续无法拼接。
 - **完成后完整展示**：长截图钉图（§11.5 `pin_display_size`）优先「整图适配」：整个长图缩放到工作区高度 92% 内，宽度不窄于 160 逻辑 px 时直接完整显示（无滚动条）；更极端的细长图才保持可读宽度并在窗口内滚动（高度上限同样提高到 92%）。
 - 验收：`tests/e2e-longshot.ps1` —— 控制栏出现在选区下方（x 对齐、y = 选区底 + 4~10）、预览窗口宽 472 且高度随滚动增长、无 stalled、方向切换后继续滚动仍能拼接、完成后 pin 无滚动条且图片高度 = 窗口高度（整图可见）。
+
+### 11.14.3 第二十五轮修订：无白闪启动 + 自动滚动（ShareX 式）+ 抗干扰匹配
+- **预览无白闪启动**：预览窗口创建时 `visible(false)`，开始长截图只显示控制栏；前端 `longshot.html` 在**首张预览图 decode 并切换后**调用 `longshot_preview_ready`，Rust 才 `show()` 预览窗口（show 后把焦点还给选区下的应用）。抓帧线程有 3 秒兜底：若前端异常未上报，也会自动显示预览。这样不会出现"开始长截图先闪一下白色预览窗"。
+- **自动滚动模式**（控制栏新增「自动滚动」toggle，参考开源的 ShareX Scrolling Capture 思路）：开启后由 shell 自己滚动目标应用——每个周期把光标移到选区中心（`SetCursorPos`），发送滚轮 `SendInput`（竖向 `MOUSEEVENTF_WHEEL`、横向 `MOUSEEVENTF_HWHEEL`，每次 3 格，正数=向下/向右），等待 240ms 让页面渲染稳定后再抓帧拼接；因此每帧位移固定、无滚动动画期，重叠匹配几乎不会失败。连续 2 帧完全相同（页面到底）时自动退出自动滚动。手动滚动始终可用（可随时叠加/接管）。`longshot_state` 与 `longshot-progress` 增加 `autoscroll` 字段，控制栏按钮据此高亮；完成/取消/方向切换时自动滚动随会话复位。
+- **抗干扰匹配**：重叠评分的横向采样跳过左右各约 4%（`overlap_sample_x`），避免选区里的滚动条滑块、窗口边框/阴影在滚动时污染差异值；重叠阈值从 3.0 放宽到 **7.0**（`LONGSHOT_OVERLAP_MAX_MEAN_DIFF`），容忍网页滚动中的抗锯齿/小动画/重渲染差异——被拒绝的一帧就是永远丢失的内容，宁可宽松再用 `expected` 步长消歧。
+- 新增命令：`longshot_preview_ready {} -> {ok, shown}`、`longshot_autoscroll {enabled} -> {ok, autoscroll}`（`window.longshotAPI.previewReady()` / `.autoscroll(enabled)`）。
+- 验收：e2e —— 点击「自动滚动」4 秒内 `frames` 从 1 涨到 6、`height` 564→1819 且 `autoscroll=true`；关闭后手动滚动继续拼接到 12 帧；完成后 pin 整图可见。

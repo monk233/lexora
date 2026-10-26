@@ -14,7 +14,8 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetDoubleClickTime, SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_WHEEL, MOUSEINPUT,
+    GetDoubleClickTime, SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_HWHEEL,
+    MOUSEEVENTF_WHEEL, MOUSEINPUT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, GetAncestor, GetCursorPos, GetForegroundWindow, GetSystemMetrics,
@@ -57,13 +58,23 @@ pub fn set_cursor_position(x: i32, y: i32) {
     }
 }
 
-/// Sends `notches` mouse-wheel steps (negative data = scroll down) through
+/// Sends `notches` mouse-wheel steps (positive = scroll down) through
 /// `SendInput`, i.e. exactly what a real wheel would generate. Returns whether
 /// the input was accepted by the OS.
 pub fn scroll_wheel_notches(notches: i32) -> bool {
+    send_wheel(MOUSEEVENTF_WHEEL, notches)
+}
+
+/// Sends `notches` horizontal wheel steps (positive = scroll right).
+pub fn scroll_wheel_horizontal(notches: i32) -> bool {
+    send_wheel(MOUSEEVENTF_HWHEEL, notches)
+}
+
+fn send_wheel(flags: windows::Win32::UI::Input::KeyboardAndMouse::MOUSE_EVENT_FLAGS, notches: i32) -> bool {
     if notches == 0 {
         return true;
     }
+    // A negative wheel delta scrolls down/right.
     let delta = -(WHEEL_DELTA as i32 * notches);
     let input = INPUT {
         r#type: INPUT_MOUSE,
@@ -72,7 +83,7 @@ pub fn scroll_wheel_notches(notches: i32) -> bool {
                 dx: 0,
                 dy: 0,
                 mouseData: delta as u32,
-                dwFlags: MOUSEEVENTF_WHEEL,
+                dwFlags: flags,
                 time: 0,
                 dwExtraInfo: 0,
             },

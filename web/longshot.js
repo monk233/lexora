@@ -34,7 +34,8 @@
     stateCalls: 0,
     previewCalls: 0,
     progressEvents: 0,
-    imageSrcLength: 0
+    imageSrcLength: 0,
+    previewShown: false
   };
 
   /* Test/debug hook used by the CDP checks in tests/ and manual QA. */
@@ -253,6 +254,18 @@
       state.imageSrcLength = dataUrl.length;
       if (dom.empty) {
         dom.empty.hidden = true;
+      }
+      /* The window is created hidden: show it only now that the first frame is
+       * actually painted, so the start of a long screenshot never flashes white. */
+      if (!state.previewShown && API && typeof API.previewReady === "function") {
+        state.previewShown = true;
+        try {
+          Promise.resolve(API.previewReady()).catch(function () {
+            /* the shell shows it after a fallback delay anyway */
+          });
+        } catch (error) {
+          /* the shell shows it after a fallback delay anyway */
+        }
       }
     }
 

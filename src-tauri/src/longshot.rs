@@ -66,13 +66,22 @@ const PREVIEW_RESIZE_INTERVAL: Duration = Duration::from_millis(140);
 /// Gap between the selection and the preview / control bar (physical pixels).
 const PREVIEW_GAP: i32 = 8;
 /// Control bar logical size (white floating card, capture-toolbar style).
-const BAR_LOGICAL_WIDTH: f64 = 540.0;
+const BAR_LOGICAL_WIDTH: f64 = 660.0;
 const BAR_LOGICAL_HEIGHT: f64 = 56.0;
 /// Screen grabbing cadence of the background stitcher (~25 fps). QQ's long
 /// screenshot does not throttle the user's scrolling; grabbing often enough is
 /// what keeps the overlaps detectable while flicking, and ~40ms also avoids
 /// capturing half-scrolled frames.
 const FRAME_INTERVAL: Duration = Duration::from_millis(40);
+/// Auto-scroll mode (ShareX-style scrolling capture): the shell scrolls the
+/// target application itself in small steps, waits for the frame to settle and
+/// only then stitches. Deterministic steps make the overlap search trivial and
+/// remove the "user scrolled but nothing was stitched" failures that happen when
+/// a frame is grabbed while the page is still animating.
+const AUTOSCROLL_NOTCHES: i32 = 3;
+const AUTOSCROLL_SETTLE: Duration = Duration::from_millis(240);
+/// Stop auto-scrolling after this many identical frames (end of the content).
+const AUTOSCROLL_STOP_STREAK: u32 = 2;
 /// Size limits (contract §11.14).
 const MAX_VERTICAL_HEIGHT: u32 = 30_000;
 const MAX_HORIZONTAL_WIDTH: u32 = 40_000;
@@ -175,6 +184,10 @@ struct Shared {
     /// After a direction switch the next grabbed frame becomes the new base:
     /// the user has already scrolled away from the original first frame.
     resync: bool,
+    /// Auto-scroll mode: the grab thread scrolls the target app itself in small
+    /// steps and waits for the frame to settle before stitching (ShareX-style
+    /// scrolling capture), so matching is deterministic while it runs.
+    autoscroll: bool,
     stalled: bool,
     limit_reached: bool,
     revision: u64,
@@ -471,6 +484,7 @@ fn preview_target_size(
 /// away from where the long screenshot was started.
 fn reset_stitch(shared: &mut Shared, direction: Direction) {
     let first = orient_frame(shared.first_frame.clone(), direction);
+    let autoscroll = shared.autoscroll;
     *shared = Shared {
         direction,
         first_frame: shared.first_frame.clone(),
@@ -481,6 +495,7 @@ fn reset_stitch(shared: &mut Shared, direction: Direction) {
         frames: 1,
         misses: 0,
         resync: true,
+        autoscroll,
         stalled: false,
         limit_reached: false,
         revision: shared.revision.wrapping_add(1),
@@ -496,6 +511,7 @@ fn progress_payload(shared: &Shared) -> Value {
         "frames": shared.frames,
         "revision": shared.revision,
         "stalled": shared.stalled,
+        "autoscroll": shared.autoscroll,
     })
 }
 
@@ -517,6 +533,7 @@ fn stitch_frame(runtime: &Runtime, frame: RgbaImage) -> Option<Value> {
     if shared.resync {
         /* Direction switched: restart from what is on screen right now. */
         let revision = shared.revision.wrapping_add(1);
+        let autoscroll = shared.autoscroll;
         let first_frame = oriented.clone();
         *shared = Shared {
             direction,
@@ -528,6 +545,7 @@ fn stitch_frame(runtime: &Runtime, frame: RgbaImage) -> Option<Value> {
             frames: 1,
             misses: 0,
             resync: false,
+            autoscroll,
             stalled: false,
             limit_reached: false,
             revision,
@@ -629,8 +647,34 @@ fn capture_loop(app: AppHandle, runtime: Arc<Runtime>) {
     let mut failures = 0u32;
     let mut logged_stalled = false;
     let mut logged_limit = false;
+    let mut identical_streak = 0u32;
+    let mut fallback_shown = false;
+    let (selection_x, selection_y, selection_w, selection_h) = geometry.screen_rect();
+    let selection_center = (
+        selection_x + selection_w / 2,
+        selection_y + selection_h / 2,
+    );
+    let loop_started = std::time::Instant::now();
     while !runtime.stop.load(Ordering::SeqCst) {
         let started = std::time::Instant::now();
+        let (autoscroll, direction) = {
+            let shared = lock(&runtime.shared);
+            (shared.autoscroll, shared.direction)
+        };
+        if autoscroll {
+            /* ShareX-style stepped scrolling: scroll the application under the
+             * selection, then wait for it to settle before grabbing. */
+            let _ = win32::set_cursor_position(selection_center.0, selection_center.1);
+            match direction {
+                Direction::Horizontal => {
+                    win32::scroll_wheel_horizontal(AUTOSCROLL_NOTCHES);
+                }
+                Direction::Vertical => {
+                    win32::scroll_wheel_notches(AUTOSCROLL_NOTCHES);
+                }
+            }
+            std::thread::sleep(AUTOSCROLL_SETTLE);
+        }
         let captured = match monitor.capture_image() {
             Ok(captured) => {
                 failures = 0;
@@ -689,11 +733,42 @@ fn capture_loop(app: AppHandle, runtime: Arc<Runtime>) {
                 }
             }
             emit_progress(&app, progress);
+            identical_streak = 0;
+        } else if autoscroll {
+            // No new content while auto-scrolling: the page reached its end.
+            identical_streak += 1;
+            if identical_streak >= AUTOSCROLL_STOP_STREAK {
+                identical_streak = 0;
+                let progress = {
+                    let mut shared = lock(&runtime.shared);
+                    shared.autoscroll = false;
+                    progress_payload(&shared)
+                };
+                emit_progress(&app, progress);
+                log_info(&app, "longshot: auto-scroll reached the end");
+            }
+        }
+        // Fallback: if the renderer never signals that the first preview frame is
+        // ready (e.g. a broken page), still show the preview after a few seconds.
+        if !fallback_shown
+            && preview_window.is_some()
+            && loop_started.elapsed() >= Duration::from_secs(3)
+        {
+            fallback_shown = true;
+            if let Some(window) = &preview_window {
+                let _ = window.show();
+            }
         }
         // Grabbing cadence: aim for ~25 fps; the grab itself may already take
         // longer than the interval on high-DPI screens, in which case the loop
-        // simply runs as fast as it can.
-        if let Some(rest) = FRAME_INTERVAL.checked_sub(started.elapsed()) {
+        // simply runs as fast as it can. Auto-scroll already sleeps for the
+        // settle delay, so it only needs a short pause here.
+        let interval = if autoscroll {
+            Duration::from_millis(20)
+        } else {
+            FRAME_INTERVAL
+        };
+        if let Some(rest) = interval.checked_sub(started.elapsed()) {
             std::thread::sleep(rest);
         }
     }
@@ -997,6 +1072,7 @@ fn start_impl(app: &AppHandle, index: u32, rect: &HitRect) -> Result<Value, Engi
         frames: 1,
         misses: 0,
         resync: false,
+        autoscroll: false,
         stalled: false,
         limit_reached: false,
         revision: 0,
@@ -1027,14 +1103,11 @@ fn start_impl(app: &AppHandle, index: u32, rect: &HitRect) -> Result<Value, Engi
 
     // Session state is ready before the pages become visible, so their first
     // `longshot_state`/`longshot_preview` calls already succeed.
-    if let Err(error) = preview.show() {
-        forget_session(app);
-        destroy_longshot_windows(app);
-        return Err(EngineError::new(
-            "无法显示长截图预览窗口。",
-            format!("请重试或重启程序（{error}）。"),
-        ));
-    }
+    //
+    // The preview window stays HIDDEN here: showing it before the first stitched
+    // frame is painted flashed a white window at the start of every long
+    // screenshot. `longshot_preview_ready` shows it once the renderer has the
+    // first image decoded (the grab thread has a 3s fallback show).
     if let Err(error) = bar.show() {
         forget_session(app);
         destroy_longshot_windows(app);
@@ -1043,7 +1116,7 @@ fn start_impl(app: &AppHandle, index: u32, rect: &HitRect) -> Result<Value, Engi
             format!("请重试或重启程序（{error}）。"),
         ));
     }
-    // Showing the windows can still activate them on some systems (Tauri calls
+    // Showing the control bar can still activate it on some systems (Tauri calls
     // SetForegroundWindow), which would swallow the user's wheel input. Hand the
     // focus back to the application under the selection.
     let _ = win32::focus_window_at(center.0, center.1);
@@ -1096,7 +1169,50 @@ pub fn longshot_state() -> Value {
         "stalled": shared.stalled,
         "done": shared.limit_reached,
         "revision": shared.revision,
+        "autoscroll": shared.autoscroll,
     })
+}
+
+/// `longshot_preview_ready {}` — the renderer decoded the first preview frame:
+/// show the preview window now. It is created hidden so the start of a long
+/// screenshot never flashes a white window.
+#[tauri::command]
+pub fn longshot_preview_ready(app: AppHandle) -> Value {
+    let Some(window) = app.get_webview_window(LONG_SHOT_LABEL) else {
+        return json!({ "ok": false });
+    };
+    if window.is_visible().unwrap_or(false) {
+        return json!({ "ok": true, "shown": false });
+    }
+    let shown = window.show().is_ok();
+    if shown {
+        if let Some(runtime) = active_runtime() {
+            let (left, top, width, height) = runtime.geometry.screen_rect();
+            let _ = win32::focus_window_at(left + width / 2, top + height / 2);
+        }
+    }
+    json!({ "ok": shown, "shown": shown })
+}
+
+/// `longshot_autoscroll {enabled}` — toggles ShareX-style stepped auto-scrolling:
+/// the shell scrolls the target application itself in small settled steps (the
+/// grab thread does the actual scrolling), which makes stitching deterministic.
+#[tauri::command]
+pub fn longshot_autoscroll(app: AppHandle, enabled: bool) -> Value {
+    let Some(runtime) = active_runtime() else {
+        return json!({
+            "ok": false,
+            "error": not_running_error().message,
+            "hint": not_running_error().hint,
+        });
+    };
+    let (payload, active) = {
+        let mut shared = lock(&runtime.shared);
+        shared.autoscroll = enabled && !shared.limit_reached;
+        (progress_payload(&shared), shared.autoscroll)
+    };
+    emit_progress(&app, payload);
+    json!({ "ok": true, "autoscroll": active })
 }
 
 /// `longshot_preview {}` — PNG data URL of the current stitched image. The PNG is
@@ -1491,6 +1607,7 @@ mod tests {
             frames: 4,
             misses: 0,
             resync: false,
+            autoscroll: false,
             stalled: true,
             limit_reached: true,
             revision: 9,
@@ -1636,6 +1753,7 @@ mod tests {
             frames: 2,
             misses: 0,
             resync: false,
+            autoscroll: false,
             stalled: true,
             limit_reached: false,
             revision: 7,

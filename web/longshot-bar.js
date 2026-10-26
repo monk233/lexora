@@ -26,6 +26,8 @@
     directionCalls: 0,
     finishCalls: 0,
     cancelCalls: 0,
+    autoscroll: false,
+    autoscrollCalls: 0,
     lastError: ""
   };
 
@@ -82,6 +84,7 @@
   function cacheDom() {
     dom.bar = byId("ls-bar");
     dom.directions = byId("ls-directions");
+    dom.autoscroll = byId("ls-autoscroll");
     dom.status = byId("ls-status");
     dom.cancel = byId("ls-cancel");
     dom.finish = byId("ls-finish");
@@ -115,6 +118,9 @@
     }
     if (dom.finish) {
       dom.finish.addEventListener("click", finish);
+    }
+    if (dom.autoscroll) {
+      dom.autoscroll.addEventListener("click", toggleAutoscroll);
     }
   }
 
@@ -153,6 +159,9 @@
     var frames = positiveNumber(result.frames);
     if (frames) {
       state.frames = frames;
+    }
+    if (typeof result.autoscroll === "boolean") {
+      state.autoscroll = result.autoscroll;
     }
     updateUi();
   }
@@ -194,9 +203,24 @@
     if (dom.finish) {
       dom.finish.disabled = locked || !state.ready;
     }
+    if (dom.autoscroll) {
+      dom.autoscroll.classList.toggle("is-active", state.autoscroll === true);
+      dom.autoscroll.setAttribute(
+        "aria-pressed",
+        state.autoscroll ? "true" : "false"
+      );
+      dom.autoscroll.disabled = locked || !state.ready;
+    }
     if (!state.lastError && !state.done) {
+      var prefix = state.autoscroll ? "自动滚动 · " : "";
       setStatus(
-        "第 " + (state.frames || 1) + " 帧 · " + state.width + " × " + state.height,
+        prefix +
+          "第 " +
+          (state.frames || 1) +
+          " 帧 · " +
+          state.width +
+          " × " +
+          state.height,
         ""
       );
     }
@@ -256,6 +280,45 @@
       .catch(function (error) {
         state.direction = next === "horizontal" ? "vertical" : "horizontal";
         flashStatus("切换拼接方向失败：" + errorText(error), "error");
+      })
+      .then(function () {
+        state.busy = false;
+        updateUi();
+      });
+  }
+
+  /* Auto-scroll toggle: the shell scrolls the target app in small settled steps,
+   * so the user does not have to scroll manually. */
+  function toggleAutoscroll() {
+    if (state.busy || state.done) {
+      return;
+    }
+    var next = !state.autoscroll;
+    state.busy = true;
+    state.autoscrollCalls += 1;
+    state.autoscroll = next;
+    updateUi();
+    var request;
+    try {
+      request =
+        API && typeof API.autoscroll === "function"
+          ? API.autoscroll(next)
+          : Promise.reject(new Error("长截图服务不可用"));
+    } catch (error) {
+      request = Promise.reject(error);
+    }
+    Promise.resolve(request)
+      .then(function (result) {
+        if (!result || result.ok === false) {
+          state.autoscroll = !next;
+          flashStatus(failureText(result, "切换自动滚动失败"), "error");
+          return;
+        }
+        state.autoscroll = result.autoscroll === true;
+      })
+      .catch(function (error) {
+        state.autoscroll = !next;
+        flashStatus("切换自动滚动失败：" + errorText(error), "error");
       })
       .then(function () {
         state.busy = false;

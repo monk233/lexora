@@ -116,10 +116,12 @@ const LONGSHOT_MAX_OVERLAP_RATIO: f64 = 0.90;
 const LONGSHOT_ROW_DIFF_THRESHOLD: f64 = 8.0;
 const LONGSHOT_SAME_FRAME_THRESHOLD: f64 = 3.0;
 /// Maximum mean absolute RGB difference allowed for an overlap candidate. A
-/// smooth-scrolled frame can be offset by a fraction of a pixel, so text edges
-/// differ while the overall image matches; the mean stays far below this bar for
-/// a real overlap and far above it for unrelated content.
-const LONGSHOT_OVERLAP_MAX_MEAN_DIFF: f64 = 3.0;
+/// smooth-scrolled frame can be offset by a fraction of a pixel, and web pages
+/// may animate/re-render while scrolling, so text edges differ while the overall
+/// image matches; the mean stays far below this bar for a real overlap and far
+/// above it for unrelated content. Erring on the tolerant side matters: a
+/// rejected frame is content that never gets stitched.
+const LONGSHOT_OVERLAP_MAX_MEAN_DIFF: f64 = 7.0;
 /// Monotonic part of generated request ids.
 static REQUEST_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -1769,6 +1771,16 @@ where
     Some(candidates[0].1)
 }
 
+/// Horizontal sample window used by the overlap scorers: skips ~4% on each side
+/// so a scrollbar slider, window border or CSS shadow inside the selection does
+/// not swamp the match score while the page scrolls.
+fn overlap_sample_x(width: u32) -> (u32, u32) {
+    let margin = (width / 25).max(1);
+    let start = margin.min(width.saturating_sub(1));
+    let end = width.saturating_sub(margin).max(start + 1).min(width);
+    (start, end)
+}
+
 /// Sparse version of [`overlap_mean_difference`] used for the coarse pass.
 fn coarse_overlap_difference(
     stitched: &Stitched,
@@ -1776,7 +1788,8 @@ fn coarse_overlap_difference(
     overlap: u32,
     width: u32,
 ) -> f64 {
-    let step_x = (width / 16).max(1);
+    let (x_start, x_end) = overlap_sample_x(width);
+    let step_x = ((x_end - x_start) / 16).max(1);
     let sample_rows = overlap.clamp(1, 16);
     let row_step = (overlap / sample_rows).max(1);
     let start_y = stitched.height() - overlap;
@@ -1785,8 +1798,8 @@ fn coarse_overlap_difference(
     let mut row = 0;
     while row < overlap {
         let stitched_y = start_y + row;
-        let mut x = 0;
-        while x < width {
+        let mut x = x_start;
+        while x < x_end {
             let above = stitched_pixel(stitched, x, stitched_y);
             let below = next.get_pixel(x, row);
             for channel in 0..3 {
@@ -1810,7 +1823,8 @@ fn coarse_overlap_difference(
 /// mean (instead of a hard per-pixel count) tolerates the fractional-pixel
 /// offsets produced by smooth scrolling.
 fn overlap_mean_difference(stitched: &Stitched, next: &RgbaImage, overlap: u32, width: u32) -> f64 {
-    let step_x = (width / 96).max(1);
+    let (x_start, x_end) = overlap_sample_x(width);
+    let step_x = ((x_end - x_start) / 96).max(1);
     let sample_rows = overlap.clamp(1, 96);
     let row_step = (overlap / sample_rows).max(1);
     let start_y = stitched.height() - overlap;
@@ -1819,8 +1833,8 @@ fn overlap_mean_difference(stitched: &Stitched, next: &RgbaImage, overlap: u32, 
     let mut row = 0;
     while row < overlap {
         let stitched_y = start_y + row;
-        let mut x = 0;
-        while x < width {
+        let mut x = x_start;
+        while x < x_end {
             let above = stitched_pixel(stitched, x, stitched_y);
             let below = next.get_pixel(x, row);
             for channel in 0..3 {
@@ -1845,7 +1859,8 @@ fn coarse_prepend_difference(
     overlap: u32,
     width: u32,
 ) -> f64 {
-    let step_x = (width / 16).max(1);
+    let (x_start, x_end) = overlap_sample_x(width);
+    let step_x = ((x_end - x_start) / 16).max(1);
     let sample_rows = overlap.clamp(1, 16);
     let row_step = (overlap / sample_rows).max(1);
     let start_y = next.height().saturating_sub(overlap);
@@ -1855,8 +1870,8 @@ fn coarse_prepend_difference(
     while row < overlap {
         let stitched_y = row;
         let next_y = start_y + row;
-        let mut x = 0;
-        while x < width {
+        let mut x = x_start;
+        while x < x_end {
             let above = stitched_pixel(stitched, x, stitched_y);
             let below = next.get_pixel(x, next_y);
             for channel in 0..3 {
@@ -1877,7 +1892,8 @@ fn coarse_prepend_difference(
 /// Mean absolute RGB difference between the top `overlap` rows of `stitched` and
 /// the bottom `overlap` rows of `next` (prepend direction).
 fn prepend_mean_difference(stitched: &Stitched, next: &RgbaImage, overlap: u32, width: u32) -> f64 {
-    let step_x = (width / 96).max(1);
+    let (x_start, x_end) = overlap_sample_x(width);
+    let step_x = ((x_end - x_start) / 96).max(1);
     let sample_rows = overlap.clamp(1, 96);
     let row_step = (overlap / sample_rows).max(1);
     let start_y = next.height().saturating_sub(overlap);
@@ -1887,8 +1903,8 @@ fn prepend_mean_difference(stitched: &Stitched, next: &RgbaImage, overlap: u32, 
     while row < overlap {
         let stitched_y = row;
         let next_y = start_y + row;
-        let mut x = 0;
-        while x < width {
+        let mut x = x_start;
+        while x < x_end {
             let above = stitched_pixel(stitched, x, stitched_y);
             let below = next.get_pixel(x, next_y);
             for channel in 0..3 {

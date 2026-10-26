@@ -171,7 +171,12 @@ try {
   $barTarget = Wait-Target 'longshot-bar\.html'
   $previewTarget = Wait-Target 'longshot\.html'
   "LONGSHOT_TARGETS=bar:$([bool]$barTarget) preview:$([bool]$previewTarget)"
-  if (-not $barTarget -or -not $previewTarget) { throw "longshot windows missing" }
+  if (-not $barTarget -or -not $previewTarget) {
+    "TARGETS_NOW=" + (($(Get-Targets) | ForEach-Object { $_.url }) -join ' | ')
+    $logPathNow = Join-Path $dataDir "logs\main.log"
+    if (Test-Path $logPathNow) { "LOG_TAIL=" + ((Get-Content $logPathNow -Encoding UTF8 | Select-Object -Last 20) -join ' // ') }
+    throw "longshot windows missing"
+  }
   Start-Sleep -Milliseconds 800
 
   # Control bar must sit right below the selection (same place as the toolbar).
@@ -186,7 +191,20 @@ try {
   $pre0Obj = $pre0 | ConvertFrom-Json
   "PREVIEW_WIDTH_DOUBLED=$([Math]::Abs($pre0Obj.winW - 472) -le 2) PREVIEW_NO_PROMPTS=$($pre0Obj.promptNodes -eq 0)"
 
-  # --- scroll the Notepad page: the preview must grow ---------------------
+  # --- auto-scroll mode: the shell scrolls the target app and stitches -------
+  $autoOn = Cdp 'longshot-bar\.html' "(() => { const b = document.getElementById('ls-autoscroll'); if (!b) return {error: 'no autoscroll button'}; b.click(); return {clicked: true}; })()"
+  "AUTOSCROLL_CLICK=$autoOn"
+  Start-Sleep -Seconds 4
+  $autoState = Cdp 'longshot-bar\.html' "window.__TAURI__.core.invoke('longshot_state')"
+  "AUTOSCROLL_STATE=$autoState"
+  $autoStateObj = $autoState | ConvertFrom-Json
+  "AUTOSCROLL_WORKED=$($autoStateObj.frames -gt 1 -and $autoStateObj.autoscroll -eq $true)"
+  $autoOff = Cdp 'longshot-bar\.html' "(() => { const b = document.getElementById('ls-autoscroll'); b.click(); return {clicked: true}; })()"
+  Start-Sleep -Milliseconds 700
+  $autoOffState = Cdp 'longshot-bar\.html' "window.__TAURI__.core.invoke('longshot_state')"
+  "AUTOSCROLL_OFF_STATE=$autoOffState"
+
+  # --- scroll the Notepad page manually: the preview must grow ---------------
   [Win32LS]::MoveAbs([int](($selLeft + $selRight) / 2), [int](($selTop + $selBottom) / 2))
   Start-Sleep -Milliseconds 200
   for ($batch = 0; $batch -lt 6; $batch++) {

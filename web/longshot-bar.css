@@ -241,6 +241,36 @@ button {
   color: var(--success-strong);
 }
 
+/* Auto-scroll toggle: highlighted while the shell is scrolling the target app. */
+.ls-btn-autoscroll {
+  color: var(--text-muted);
+}
+
+.ls-btn-autoscroll .icon {
+  color: var(--text-muted);
+}
+
+.ls-btn-autoscroll:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--primary);
+}
+
+.ls-btn-autoscroll:hover:not(:disabled) .icon {
+  color: var(--primary);
+}
+
+.ls-btn-autoscroll.is-active,
+.ls-btn-autoscroll[aria-pressed="true"] {
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.ls-btn-autoscroll.is-active .icon,
+.ls-btn-autoscroll[aria-pressed="true"] .icon {
+  color: var(--primary);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .ls-seg,
   .ls-btn,
