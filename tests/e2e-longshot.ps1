@@ -195,7 +195,7 @@ try {
   $pre0 = Cdp 'longshot\.html' "(() => ({winW: window.innerWidth, winH: window.innerHeight, screenX: window.screenX, screenY: window.screenY, imgHidden: document.getElementById('longshot-image').hidden, promptNodes: document.querySelectorAll('.longshot-meta, .longshot-error, .longshot-toast, .longshot-card').length, frame: (() => { const f = document.getElementById('longshot-frame'); const r = f.getBoundingClientRect(); return {w: Math.round(r.width), h: Math.round(r.height), border: getComputedStyle(f).borderTopColor, borderW: getComputedStyle(f).borderTopWidth}; })(), state: window.__longshotState ? {w: window.__longshotState.width, h: window.__longshotState.height, frames: window.__longshotState.frames} : null}))()"
   "PREVIEW_BEFORE=$pre0"
   $pre0Obj = $pre0 | ConvertFrom-Json
-  "PREVIEW_FIXED_WIDTH=$([Math]::Abs($pre0Obj.winW - 560) -le 2) PREVIEW_HEIGHT_OK=$($pre0Obj.winH -ge 500 -and $pre0Obj.winH -le 760) PREVIEW_NO_PROMPTS=$($pre0Obj.promptNodes -eq 0) PREVIEW_BLUE_FRAME=$($pre0Obj.frame.border -eq 'rgb(79, 70, 229)' -and $pre0Obj.frame.borderW -eq '2px')"
+  "PREVIEW_SIDE=$([Math]::Abs($pre0Obj.screenX - 570) -le 6) PREVIEW_BOTTOM_ALIGNED=$([Math]::Abs($pre0Obj.screenY - 199) -le 6) PREVIEW_ASPECT=$([Math]::Abs($pre0Obj.winW - 481) -le 6 -and [Math]::Abs($pre0Obj.winH - 380) -le 6) PREVIEW_NO_PROMPTS=$($pre0Obj.promptNodes -eq 0) PREVIEW_BLUE_FRAME=$($pre0Obj.frame.border -eq 'rgb(79, 70, 229)' -and $pre0Obj.frame.borderW -eq '2px')"
 
   # --- auto-scroll mode: the shell scrolls the target app and stitches -------
   # Auto-scroll starts scrolling once the pointer is inside the selection and
@@ -229,8 +229,10 @@ try {
   Start-Sleep -Milliseconds 1200
   $state1 = Cdp 'longshot-bar\.html' "window.__TAURI__.core.invoke('longshot_state')"
   "LONGSHOT_STATE_AFTER_SCROLL=$state1"
-  $pre1 = Cdp 'longshot\.html' "(() => ({winW: window.innerWidth, winH: window.innerHeight, state: window.__longshotState ? {w: window.__longshotState.width, h: window.__longshotState.height, frames: window.__longshotState.frames, renders: window.__longshotState.renders, src: window.__longshotState.imageSrcLength} : null}))()"
+  $pre1 = Cdp 'longshot\.html' "(() => ({winW: window.innerWidth, winH: window.innerHeight, screenX: window.screenX, screenY: window.screenY, state: window.__longshotState ? {w: window.__longshotState.width, h: window.__longshotState.height, frames: window.__longshotState.frames, renders: window.__longshotState.renders, src: window.__longshotState.imageSrcLength} : null}))()"
   "PREVIEW_AFTER=$pre1"
+  $pre1Obj = $pre1 | ConvertFrom-Json
+  "PREVIEW_AFTER_NARROWED=$($pre1Obj.winW -le 100 -and [Math]::Abs($pre1Obj.screenX - 570) -le 6 -and [Math]::Abs($pre1Obj.screenY - 199) -le 6)"
 
   # --- direction switch resets and keeps working ---------------------------
   $dirClick = Cdp 'longshot-bar\.html' "(() => { document.querySelector('[data-direction=horizontal]').click(); return {clicked: true}; })()"

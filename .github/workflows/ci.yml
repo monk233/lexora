@@ -1,11 +1,11 @@
 name: CI
 
+# Build & test only when a release tag is pushed (or manually dispatched):
+# pushing to master/main must not start CI.
 on:
   push:
-    branches: [master, main]
-    paths-ignore:
-      - 'docs/**'
-      - '**/*.md'
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 concurrency:

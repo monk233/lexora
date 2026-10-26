@@ -95,7 +95,6 @@
     if (!dom.root || !dom.image) {
       return;
     }
-    window.addEventListener("resize", layoutFrame);
     subscribeLongshot();
     initialLoad();
   }
@@ -257,7 +256,6 @@
       if (dom.empty) {
         dom.empty.hidden = true;
       }
-      layoutFrame();
       /* The window is created hidden: show it only now that the first frame is
        * actually painted, so the start of a long screenshot never flashes white. */
       if (!state.previewShown && API && typeof API.previewReady === "function") {
@@ -290,35 +288,6 @@
     if (target.complete && target.naturalWidth > 0) {
       apply();
     }
-  }
-
-  /* The preview window has a fixed size (stable window = no flicker); the image
-   * is scaled to fit inside it, and the blue frame is sized around the visible
-   * picture, so visually the preview narrows as the stitched image grows. */
-  var FRAME_BORDER = 2;
-
-  function layoutFrame() {
-    var frame = dom.frame;
-    var img = dom.image;
-    if (!frame || !img) {
-      return;
-    }
-    var nw = positiveNumber(img.naturalWidth);
-    var nh = positiveNumber(img.naturalHeight);
-    if (!nw || !nh) {
-      return;
-    }
-    var vw = Math.max(1, window.innerWidth || 0);
-    var vh = Math.max(1, window.innerHeight || 0);
-    var avail_w = Math.max(1, vw - FRAME_BORDER * 2);
-    var avail_h = Math.max(1, vh - FRAME_BORDER * 2);
-    var fit = Math.min(avail_w / nw, avail_h / nh);
-    var width = Math.max(1, Math.round(nw * fit)) + FRAME_BORDER * 2;
-    var height = Math.max(1, Math.round(nh * fit)) + FRAME_BORDER * 2;
-    frame.style.width = width + "px";
-    frame.style.height = height + "px";
-    frame.style.left = "0px";
-    frame.style.top = Math.round((vh - height) / 2) + "px";
   }
 
   /* ---- Initial load + low-frequency state fallback ---------------------- */

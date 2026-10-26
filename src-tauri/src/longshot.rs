@@ -56,6 +56,11 @@ const PREVIEW_MAX_LOGICAL_HEIGHT: f64 = 760.0;
 const PREVIEW_MIN_LOGICAL_HEIGHT: f64 = 240.0;
 const PREVIEW_WIDTH_MIN: u32 = 90;
 const PREVIEW_WIDTH_MAX: u32 = 560;
+/// Throttle for preview window resizes: the width follows the aspect ratio and
+/// changes with every stitch, so resize at most every 200ms and only for
+/// meaningful changes.
+const PREVIEW_MIN_RESIZE_CSS: f64 = 6.0;
+const PREVIEW_RESIZE_INTERVAL: Duration = Duration::from_millis(200);
 /// Gap between the selection and the preview / control bar (physical pixels).
 const PREVIEW_GAP: i32 = 8;
 /// Control bar logical size (white floating card, capture-toolbar style).
@@ -274,76 +279,56 @@ fn set_overlay_click_through(app: &AppHandle, ignore: bool) -> usize {
 // Pure layout / direction helpers (unit-tested below)
 // ---------------------------------------------------------------------------
 
-/// Logical preview window size + physical position for the long screenshot.
+/// Logical preview window size + physical position.
 ///
-/// The preview window has a **fixed size** (stable window = no flicker) and the
-/// image inside it is scaled to fit, so as the stitched image grows the picture
-/// gets narrower while the window stays put; the blue frame the renderer draws
-/// follows the picture, so visually the preview narrows with the length. It sits
-/// **under the control bar** (under the selection), above the selection when
-/// there is no room below, beside the selection as the last fallback.
+/// The preview hugs the **side of the selection** (right when there is room,
+/// otherwise left) and is **bottom-aligned with the selection**; its height is
+/// fixed (bounded by the selection height and the work area) while the width
+/// follows the stitched aspect ratio, so the window narrows as the long
+/// screenshot grows and the image fills it edge to edge (no big white/transparent
+/// letterbox window around the picture).
 fn preview_placement(
     display_width: u32,
     display_height: u32,
     scale: f64,
     work: &win32::WorkArea,
     selection: (i32, i32, i32, i32),
-    bar_physical: (i32, i32),
+    _bar_physical: (i32, i32),
 ) -> ((f64, f64), (i32, i32)) {
     let scale = if scale.is_finite() && scale > 0.1 {
         scale
     } else {
         1.0
     };
-    let (left, top, sel_width, height) = selection;
-    let bottom = top.saturating_add(height);
+    let (left, top, sel_width, sel_height) = selection;
+    let right = left.saturating_add(sel_width);
+    let bottom = top.saturating_add(sel_height);
+    let aspect = display_width.max(1) as f64 / display_height.max(1) as f64;
     let max_height = ((work.height().max(1) as f64) * PREVIEW_MAX_WORK_RATIO / scale)
         .min(PREVIEW_MAX_LOGICAL_HEIGHT)
         .max(PREVIEW_MIN_LOGICAL_HEIGHT);
-    let preview_width = (PREVIEW_WIDTH_MAX as f64)
-        .min((work.width().max(1) as f64) / scale * 0.5)
-        .max(PREVIEW_WIDTH_MIN as f64);
-    let _ = (display_width, display_height);
-    let gap = PREVIEW_GAP as f64;
-    let bar_height = bar_physical.1.max(1) as f64 / scale;
-    let make = |height: f64| -> ((f64, f64), (i32, i32)) {
-        let h = height.max(PREVIEW_MIN_LOGICAL_HEIGHT);
-        let physical = (
-            ((preview_width * scale).round() as i32).max(1),
-            ((h * scale).round() as i32).max(1),
-        );
-        ((preview_width, h), physical)
-    };
-    let below_room =
-        ((work.bottom - bottom) as f64 / scale - bar_height - 3.0 * gap).max(0.0);
-    if below_room >= PREVIEW_MIN_LOGICAL_HEIGHT {
-        let (size, physical) = make(max_height.min(below_room));
-        let y = bottom + PREVIEW_GAP + bar_physical.1.max(1) + PREVIEW_GAP;
-        return (
-            size,
-            win32::clamp_to_work_area(left, y, physical.0, physical.1, work),
-        );
-    }
-    let above_room = ((top - work.top) as f64 / scale - bar_height - 3.0 * gap).max(0.0);
-    if above_room >= PREVIEW_MIN_LOGICAL_HEIGHT {
-        let (size, physical) = make(max_height.min(above_room));
-        let y = top - PREVIEW_GAP - bar_physical.1.max(1) - PREVIEW_GAP - physical.1;
-        return (
-            size,
-            win32::clamp_to_work_area(left, y, physical.0, physical.1, work),
-        );
-    }
-    // Last resort: beside the selection (left when there is room, else right).
-    let (size, physical) = make(max_height);
-    let right = left.saturating_add(sel_width);
-    let x = if left - work.left >= physical.0 + PREVIEW_GAP {
-        left - PREVIEW_GAP - physical.0
+    let selection_height = (sel_height.max(1) as f64) / scale;
+    let height = max_height.min(selection_height.max(PREVIEW_MIN_LOGICAL_HEIGHT));
+    let width = (height * aspect).clamp(PREVIEW_WIDTH_MIN as f64, PREVIEW_WIDTH_MAX as f64);
+    let physical = (
+        ((width * scale).round() as i32).max(1),
+        ((height * scale).round() as i32).max(1),
+    );
+    let gap = PREVIEW_GAP;
+    // Side of the selection: right when there is room, otherwise left; clamp as
+    // the last resort.
+    let x = if work.right - right >= physical.0 + gap {
+        right + gap
+    } else if left - work.left >= physical.0 + gap {
+        left - gap - physical.0
     } else {
-        right + PREVIEW_GAP
+        work.right - physical.0
     };
+    // Bottom edge aligned with the selection bottom.
+    let y = bottom - physical.1;
     (
-        size,
-        win32::clamp_to_work_area(x, top, physical.0, physical.1, work),
+        (width, height),
+        win32::clamp_to_work_area(x, y, physical.0, physical.1, work),
     )
 }
 
@@ -487,22 +472,17 @@ fn preview_placement_for(
     )
 }
 
-/// Physical pixel target for the preview JPEG: the stitched image scaled to fit
-/// the fixed preview window while keeping its aspect ratio (the renderer draws it
-/// centered inside the window and the blue frame follows the visible picture).
+/// Physical pixel target for the preview JPEG: the window is already shaped to
+/// the stitched image (fixed height, aspect-ratio width), so the target is the
+/// window's client size, capped so the JPEG stays cheap to encode/send.
 fn preview_target_size(
     runtime: &Runtime,
     display_width: u32,
     display_height: u32,
 ) -> (u32, u32) {
     let (_, physical) = preview_placement_for(runtime, display_width, display_height);
-    let window_w = physical.0.max(1) as f64;
-    let window_h = physical.1.max(1) as f64;
-    let display_w = display_width.max(1) as f64;
-    let display_h = display_height.max(1) as f64;
-    let fit = (window_w / display_w).min(window_h / display_h);
-    let width = (display_w * fit).round().clamp(48.0, 900.0) as u32;
-    let height = (display_h * fit).round().clamp(48.0, 1200.0) as u32;
+    let width = (physical.0 as u32).clamp(60, 900);
+    let height = (physical.1 as u32).clamp(60, 1200);
     (width, height)
 }
 
@@ -683,6 +663,10 @@ fn capture_loop(app: AppHandle, runtime: Arc<Runtime>) {
     };
     let capture_rect = geometry.capture_rect();
     let preview_window = app.get_webview_window(LONG_SHOT_LABEL);
+    let mut preview_physical: Option<(u32, u32, i32, i32)> = None;
+    let mut last_preview_resize = std::time::Instant::now()
+        .checked_sub(PREVIEW_RESIZE_INTERVAL)
+        .unwrap_or_else(std::time::Instant::now);
     let mut logged_stalled = false;
     let mut logged_limit = false;
     let mut identical_streak = 0u32;
@@ -716,9 +700,9 @@ fn capture_loop(app: AppHandle, runtime: Arc<Runtime>) {
         let _ = recorder;
     }
     let mut grab_failures = 0u32;
-    /// True once auto-scrolling actually started (the pointer entered the
-    /// selection). While false the loop waits for the pointer instead of stopping
-    /// immediately: the user has just clicked the control bar below the selection.
+    // True once auto-scrolling actually started (the pointer entered the
+    // selection). While false the loop waits for the pointer instead of stopping
+    // immediately: the user has just clicked the control bar below the selection.
     let mut autoscroll_armed = false;
 
     while !runtime.stop.load(Ordering::SeqCst) {
@@ -869,6 +853,12 @@ fn capture_loop(app: AppHandle, runtime: Arc<Runtime>) {
                     "longshot: size limit reached, further frames are ignored",
                 );
             }
+            if let Some(window) = &preview_window {
+                if last_preview_resize.elapsed() >= PREVIEW_RESIZE_INTERVAL {
+                    resize_preview_window(window, &runtime, &progress, &mut preview_physical);
+                    last_preview_resize = std::time::Instant::now();
+                }
+            }
             emit_progress(&app, progress);
         }
         maybe_show_preview_fallback(
@@ -879,6 +869,50 @@ fn capture_loop(app: AppHandle, runtime: Arc<Runtime>) {
     }
     if let Some(recorder) = recorder {
         let _ = recorder.stop();
+    }
+}
+
+/// Sizes/moves the preview window to the side of the selection, bottom-aligned,
+/// with its width following the stitched aspect ratio (throttled by the caller).
+fn resize_preview_window(
+    window: &tauri::WebviewWindow,
+    runtime: &Runtime,
+    progress: &Value,
+    last: &mut Option<(u32, u32, i32, i32)>,
+) {
+    let display_width = progress.get("width").and_then(Value::as_u64).unwrap_or(0) as u32;
+    let display_height = progress.get("height").and_then(Value::as_u64).unwrap_or(0) as u32;
+    if display_width == 0 || display_height == 0 {
+        return;
+    }
+    let scale = runtime.scale;
+    let (_, position) = preview_placement_for(runtime, display_width, display_height);
+    let (logical_w, logical_h) =
+        preview_placement_for(runtime, display_width, display_height).0;
+    let physical = (
+        ((logical_w * scale).round() as u32).max(1),
+        ((logical_h * scale).round() as u32).max(1),
+    );
+    let next = (physical.0, physical.1, position.0, position.1);
+    let changed = match last {
+        None => true,
+        Some((width, height, x, y)) => {
+            *width != next.0
+                || (*height as i64 - next.1 as i64).unsigned_abs() as f64
+                    > PREVIEW_MIN_RESIZE_CSS * scale
+                || (*x - next.2).abs() > 1
+                || (*y - next.3).abs() > 1
+        }
+    };
+    if !changed {
+        return;
+    }
+    let sized = window
+        .set_size(PhysicalSize::new(physical.0.max(1), physical.1.max(1)))
+        .is_ok();
+    if sized {
+        let _ = window.set_position(PhysicalPosition::new(position.0, position.1));
+        *last = Some(next);
     }
 }
 
@@ -1510,7 +1544,7 @@ mod tests {
         orient_frame, preview_placement, progress_payload, reset_stitch, Direction, Geometry,
         MergeSide, Shared, BAR_LOGICAL_HEIGHT, BAR_LOGICAL_WIDTH, EVENT_CANCELLED, EVENT_STARTED,
         LONG_SHOT_BAR_LABEL, LONG_SHOT_LABEL, MAX_PIXELS, PREVIEW_MIN_LOGICAL_HEIGHT,
-        PREVIEW_WIDTH_MAX,
+        PREVIEW_WIDTH_MAX, PREVIEW_WIDTH_MIN,
     };
     use crate::capture::{find_overlap, find_overlap_prepend, Stitched};
     use crate::win32::WorkArea;
@@ -1575,36 +1609,34 @@ mod tests {
     }
 
     #[test]
-    fn preview_window_is_fixed_and_sits_below_the_bar() {
-        // Selection 600×300 at (100,100), bar 56 tall: room below the bar.
+    fn preview_sits_beside_the_selection_bottom_aligned() {
+        // Selection 600×300 at (100,100): preview to its right (700+8), bottom
+        // aligned with the selection bottom (400), height = selection height,
+        // width = height × aspect (2:1, capped at 560).
         let selection = (100, 100, 600, 300);
         let bar = (BAR_LOGICAL_WIDTH as i32, BAR_LOGICAL_HEIGHT as i32);
         let ((width, height), position) =
             preview_placement(600, 300, 1.0, &work(), selection, bar);
-        assert!((height - 600.0).abs() < 0.01, "height={height}");
+        assert!((height - 300.0).abs() < 0.01, "height={height}");
         assert!((width - PREVIEW_WIDTH_MAX as f64).abs() < 0.01, "width={width}");
-        // 100 + 300 + 8 (gap) + 56 (bar) + 8 (gap) = 472.
-        assert_eq!(position, (100, 472));
+        assert_eq!(position, (708, 100));
 
-        // The window never resizes as the image grows (the picture inside it
-        // narrows instead; the renderer scales it to fit).
+        // A very long image keeps height/bottom alignment and narrows.
         let ((tall_width, tall_height), tall_position) =
             preview_placement(600, 6_000, 1.0, &work(), selection, bar);
-        assert!((tall_height - 600.0).abs() < 0.01, "tall_height={tall_height}");
-        assert!((tall_width - width).abs() < 0.01, "tall_width={tall_width}");
-        assert_eq!(tall_position, position);
+        assert!((tall_height - 300.0).abs() < 0.01, "tall_height={tall_height}");
+        assert!((tall_width - PREVIEW_WIDTH_MIN as f64).abs() < 0.01, "width={tall_width}");
+        assert_eq!(tall_position, (708, 100));
 
-        // A selection at the bottom of the screen places the preview above it.
-        let low_selection = (100, 700, 600, 300);
-        let ((_, low_height), low_position) =
-            preview_placement(600, 300, 1.0, &work(), low_selection, bar);
-        assert!(low_height >= PREVIEW_MIN_LOGICAL_HEIGHT);
-        assert!(low_position.1 < 700, "y={}", low_position.1);
+        // No room on the right: the preview moves to the left side.
+        let right_edge = (1700, 100, 200, 300);
+        let (_, placed) = preview_placement(600, 300, 1.0, &work(), right_edge, bar);
+        assert!(placed.0 < 1700, "x={} should be left of the selection", placed.0);
+        assert!(placed.0 >= 0);
     }
 
     #[test]
-    fn preview_falls_back_beside_the_selection() {
-        // Work area too small above/below: the preview goes beside the selection.
+    fn preview_stays_inside_the_work_area_when_both_sides_are_tight() {
         let small = WorkArea {
             left: 0,
             top: 0,
@@ -1621,6 +1653,11 @@ mod tests {
             position.0 + (preview_width as i32) <= small.width() + 1,
             "x={} width={preview_width} should stay inside the work area",
             position.0
+        );
+        assert!(
+            position.1 + (height as i32) <= small.height() + 1,
+            "y={} height={height} should stay inside the work area",
+            position.1
         );
     }
 
