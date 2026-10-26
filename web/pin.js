@@ -18,6 +18,9 @@
   var PREVIEW = !(window.__TAURI__ && window.__TAURI__.core);
   var TOAST_MS = 2600;
   var CLOSE_ANIMATION_MS = 140;
+  /* Mouse-wheel zoom: one notch = 10%, hard floor 15% (user requirement). */
+  var ZOOM_STEP = 1.1;
+  var ZOOM_HINT_MS = 900;
 
   var state = {
     id: readPinId(),
@@ -35,7 +38,12 @@
     dragTotal: { x: 0, y: 0 },
     lastDrag: { dx: 0, dy: 0 },
     copyCalls: 0,
-    closeCalls: 0
+    closeCalls: 0,
+    /* Mouse-wheel zoom (1 = one image pixel per physical pixel). */
+    zoom: 1,
+    minZoom: 0.15,
+    maxZoom: 1,
+    zoomCalls: 0
   };
 
   /* Test/debug hook used by the CDP checks in tests/ and manual QA. */
@@ -44,6 +52,10 @@
   var dom = {};
   var drag = null;
   var toastTimer = 0;
+  var pendingZoom = null;
+  var zoomFrame = 0;
+  var zoomSeq = 0;
+  var zoomHintTimer = 0;
 
   /* ---- Small helpers --------------------------------------------------- */
 
@@ -98,6 +110,7 @@
     dom.copyBtn = byId("pin-copy");
     dom.closeBtn = byId("pin-close");
     dom.toast = byId("pin-toast");
+    dom.zoom = byId("pin-zoom");
     dom.error = byId("pin-error");
     dom.errorText = byId("pin-error-text");
     dom.errorClose = byId("pin-error-close");
@@ -119,6 +132,9 @@
     document.addEventListener("mousedown", onMouseDown);
     document.addEventListener("contextmenu", onContextMenu);
     document.addEventListener("keydown", onKeyDown);
+    /* The wheel zooms the pinned image; passive:false so the page can stop the
+     * browser scroll (long screenshots scroll via their scrollbar instead). */
+    window.addEventListener("wheel", onWheel, { passive: false });
 
     if (dom.copyBtn) {
       dom.copyBtn.addEventListener("click", function (event) {
@@ -235,6 +251,15 @@
      * browser preview, where there is no shell. */
     state.expectedScrollable =
       payload && typeof payload.scrollable === "boolean" ? payload.scrollable : null;
+    if (payload && isFinite(Number(payload.zoom)) && Number(payload.zoom) > 0) {
+      state.zoom = Number(payload.zoom);
+    }
+    if (payload && Number(payload.minZoom) > 0) {
+      state.minZoom = Number(payload.minZoom);
+    }
+    if (payload && Number(payload.maxZoom) > 0) {
+      state.maxZoom = Number(payload.maxZoom);
+    }
     state.error = "";
     hideError();
 
@@ -324,6 +349,92 @@
         dom.toast.hidden = true;
       }
     }, TOAST_MS);
+  }
+
+  /* ---- Mouse-wheel zoom -------------------------------------------------- */
+
+  /* Wheel zooms the pinned image: the shell resizes the window (the image is
+   * rendered at the window width) keeping its centre. The floor is 15% (user
+   * requirement); the ceiling is the zoom the pin started with, so a small
+   * snippet can always grow back. Long screenshots keep scrolling via their
+   * scrollbar because the wheel is reserved for zooming. */
+  function onWheel(event) {
+    if (state.closed || state.error || !state.loaded || state.dragging) {
+      return;
+    }
+    if (isUiTarget(event.target)) {
+      return;
+    }
+    event.preventDefault();
+    var direction = event.deltaY < 0 ? 1 : -1;
+    var factor = Math.pow(ZOOM_STEP, direction);
+    var minimum = state.minZoom > 0 ? state.minZoom : 0.15;
+    var maximum = state.maxZoom > 0 ? state.maxZoom : 1;
+    var next = (state.zoom || 1) * factor;
+    next = Math.min(maximum, Math.max(minimum, next));
+    if (Math.abs(next - state.zoom) < 0.001) {
+      return;
+    }
+    queueZoom(next);
+  }
+
+  function queueZoom(next) {
+    pendingZoom = next;
+    if (zoomFrame) {
+      return;
+    }
+    zoomFrame = window.requestAnimationFrame(flushZoom);
+  }
+
+  function flushZoom() {
+    zoomFrame = 0;
+    var next = pendingZoom;
+    pendingZoom = null;
+    if (!next || state.closed || !API || typeof API.zoom !== "function") {
+      return;
+    }
+    state.zoomCalls += 1;
+    var seq = zoomSeq + 1;
+    zoomSeq = seq;
+    var request;
+    try {
+      request = API.zoom(state.id, next);
+    } catch (error) {
+      request = Promise.reject(error);
+    }
+    Promise.resolve(request).then(
+      function (result) {
+        if (seq !== zoomSeq || state.closed) {
+          return;
+        }
+        if (result && result.ok === false) {
+          return;
+        }
+        state.zoom = positiveNumber(result && result.zoom) || next;
+        if (result && typeof result.scrollable === "boolean") {
+          state.expectedScrollable = result.scrollable;
+        }
+        syncScrollable();
+        showZoomHint();
+      },
+      function () {
+        /* Keep the previous zoom; the next wheel event retries. */
+      }
+    );
+  }
+
+  function showZoomHint() {
+    if (!dom.zoom) {
+      return;
+    }
+    dom.zoom.textContent = Math.round((state.zoom || 1) * 100) + "%";
+    dom.zoom.hidden = false;
+    window.clearTimeout(zoomHintTimer);
+    zoomHintTimer = window.setTimeout(function () {
+      if (dom.zoom) {
+        dom.zoom.hidden = true;
+      }
+    }, ZOOM_HINT_MS);
   }
 
   /* ---- Actions --------------------------------------------------------- */

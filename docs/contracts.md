@@ -637,13 +637,13 @@ editor.renderToPng(rectCss) -> string|null
 - `capture_skill {requestId, index, rect, action, skillId?, targetLang?, annotations?}`：同上合成后的图片用于剪贴板与 AI（OCR/转写/视觉均使用合成图）。
 - `capture_pin {index, rect, annotations?} -> {ok, id, width, height, error?, hint?}`：合成 → 存入内存 registry（可多个）→ 创建 pin 窗口（见 11.5）。
 - `capture_longshot {index, rect} -> {ok, width, height, pinId?, frames?, error?, hint?}`：见 11.6。长截图忽略标注（v1 文档注明）。
-- pin 命令：`pin_ready {id} -> {ok, dataUrl, width, height, scrollable, error?}`（`scrollable` = 图片高于窗口、需窗口内滚动，用于 pin.js 精确控制滚动条，普通图片为 false）、`pin_drag {id, dx, dy} -> {ok}`、`pin_copy {id} -> {ok, error?, hint?}`、`pin_close {id} -> {ok}`。
+- pin 命令：`pin_ready {id} -> {ok, dataUrl, width, height, scrollable, zoom, minZoom, maxZoom, error?}`（`scrollable` = 图片高于窗口、需窗口内滚动，用于 pin.js 精确控制滚动条，普通图片为 false；`zoom` 为当前滚轮缩放，1.0 = 原图 1:1 物理像素）、`pin_drag {id, dx, dy} -> {ok}`、`pin_zoom {id, zoom} -> {ok, zoom, minZoom, maxZoom, width, height, scrollable, error?, hint?}`（滚轮缩放，窗口居中缩放并 clamp 到 15%..初始比例）、`pin_copy {id} -> {ok, error?, hint?}`、`pin_close {id} -> {ok}`。
 - 事件（Rust → capture-*）：`capture-longshot-progress {frame, height}`、`capture-longshot-done {ok, width, height, pinId?, error?}`；Rust → pin-*：`pin-close {id}`。
 
 ### 11.5 钉在桌面
 - 每个 pin 一个窗口 label `pin-<id>`：无边框、透明、always on top、skip_taskbar、resizable=false、visible=false（先建后显示）。宽度 = 图片物理宽度 / DPI，最大不超过工作区宽 70%；高度 = min(图片逻辑高度, 工作区高 70%)——超长图（长截图）保持可读宽度、窗口内容可滚动，不整体缩成细条；位置在鼠标附近并 clamp 到工作区。
 - 普通图片（高度未超出窗口）**不显示滚动条**：`body` 默认 `overflow: hidden`，仅当图片实际高度大于窗口时由 `pin.js` 加 `is-scrollable` 类启用滚动；滚动条复用项目现有样式（8px、透明轨道、圆角 999 的 `--border-strong` 滑块，hover `--text-faint`）。
-- `pin.html`（新文件）：加载后调用 `pinAPI.ready(id)` 取图并显示；鼠标按住任意位置拖动窗口（`pin_drag` 增量，位置 clamp 到虚拟桌面，可拖到任意显示器）；双击关闭；Esc 关闭；悬停右上角显示两个小按钮「复制」「关闭」；右键菜单含「复制」「关闭」。
+- `pin.html`（新文件）：加载后调用 `pinAPI.ready(id)` 取图并显示；鼠标按住任意位置拖动窗口（`pin_drag` 增量，位置 clamp 到虚拟桌面，可拖到任意显示器）；**鼠标滚轮缩放**（`pin_zoom`，每格约 10%，范围 15%～初始比例；窗口以中心缩放，底部短暂显示百分比；长图高度仍受工作区 70% 上限并用滚动条浏览，滚轮留给缩放）；双击关闭；Esc 关闭；悬停右上角显示两个小按钮「复制」「关闭」；右键菜单含「复制」「关闭」。
 - `window.pinAPI = { ready(id), drag(id,dx,dy), copy(id), close(id) }`（tauri-api.js 提供 + mock）。
 - 关闭 pin 不退出截图流程（截图 overlay 已关闭）。
 

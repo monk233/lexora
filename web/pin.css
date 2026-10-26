@@ -217,6 +217,23 @@ body.is-dragging .pin-image {
   color: var(--danger);
 }
 
+/* Mouse-wheel zoom percentage, briefly shown at the bottom centre. */
+.pin-zoom {
+  position: fixed;
+  left: 50%;
+  bottom: 10px;
+  z-index: 45;
+  padding: 3px 10px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.82);
+  color: #f8fafc;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
 .pin-error {
   position: fixed;
   left: 50%;

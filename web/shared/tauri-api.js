@@ -1367,8 +1367,21 @@
           width: readyPin.width,
           height: readyPin.height,
           scrollable: false,
+          zoom: 1,
+          minZoom: 0.15,
+          maxZoom: 1,
         };
       }
+      case "pin_zoom":
+        return {
+          ok: true,
+          zoom: Number(args.zoom) || 1,
+          minZoom: 0.15,
+          maxZoom: 1,
+          width: 0,
+          height: 0,
+          scrollable: false,
+        };
       case "pin_drag":
       case "pin_copy":
       case "pin_close":
@@ -2322,6 +2335,14 @@
         id: Number(id) || 0,
         dx: Number(dx) || 0,
         dy: Number(dy) || 0,
+      });
+    },
+    /* Mouse-wheel zoom (1 = one image pixel per physical pixel; the shell
+     * clamps it to 15%..initial). Replies with {zoom, width, height, scrollable}. */
+    zoom: function (id, zoom) {
+      return safeInvoke("pin_zoom", {
+        id: Number(id) || 0,
+        zoom: Number(zoom) || 0,
       });
     },
     copy: function (id) {

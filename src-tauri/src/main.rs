@@ -234,6 +234,7 @@ fn main() {
             longshot::longshot_cancel,
             commands::pin_ready,
             commands::pin_drag,
+            commands::pin_zoom,
             commands::pin_copy,
             commands::pin_close,
             commands::picker_ready,

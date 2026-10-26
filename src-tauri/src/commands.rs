@@ -860,6 +860,16 @@ pub fn pin_drag(app: AppHandle, id: u64, dx: f64, dy: f64) -> Value {
     }
 }
 
+/// Resizes a pinned window from the mouse wheel (zoom, 15% minimum; contract
+/// §11.5). Returns the applied zoom, the window size and whether it scrolls.
+#[tauri::command]
+pub fn pin_zoom(app: AppHandle, id: u64, zoom: f64) -> Value {
+    match crate::pin::zoom(&app, id, zoom) {
+        Ok(payload) => payload,
+        Err(error) => json!({ "ok": false, "error": error.message, "hint": error.hint }),
+    }
+}
+
 /// Writes the pinned image to the system clipboard.
 #[tauri::command]
 pub fn pin_copy(app: AppHandle, id: u64) -> Value {

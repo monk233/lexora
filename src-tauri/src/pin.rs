@@ -13,7 +13,8 @@ use image::RgbaImage;
 use serde_json::{json, Value};
 use tauri::window::Color;
 use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, WebviewUrl,
+    WebviewWindowBuilder,
 };
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
@@ -27,6 +28,9 @@ pub const PIN_PREFIX: &str = "pin-";
 pub const EVENT_PIN_CLOSE: &str = "pin-close";
 /// A pin may cover at most this share of the work area; larger images scale down.
 const MAX_WORK_AREA_RATIO: f64 = 0.70;
+/// Lowest zoom a pinned image can be scaled to with the mouse wheel (15%, user
+/// requirement). 100% means one image pixel per physical pixel.
+const PIN_ZOOM_MIN: f64 = 0.15;
 /// Very small snippets are enlarged for readability, but never more than this.
 const MAX_READABLE_UPSCALE: f64 = 4.0;
 /// A pinned window is never displayed smaller than this (logical pixels).
@@ -39,6 +43,12 @@ struct PinEntry {
     /// `true` when the image is taller than its window (long screenshot): the
     /// pin scrolls inside the window, and only then a scrollbar may appear.
     scrollable: bool,
+    /// Mouse-wheel zoom of the window relative to the image's 1:1 physical size.
+    zoom: f64,
+    /// Zoom the window started with (large screenshots below 1.0, tiny snippets
+    /// above it); it is the upper wheel limit, so a pin can always grow back to
+    /// its initial size.
+    initial_zoom: f64,
 }
 
 /// In-memory pin images plus the forward-only id counter.
@@ -49,7 +59,7 @@ struct PinRegistry {
 }
 
 impl PinRegistry {
-    fn insert(&mut self, image: RgbaImage, scrollable: bool) -> u64 {
+    fn insert(&mut self, image: RgbaImage, scrollable: bool, initial_zoom: f64) -> u64 {
         self.next_id += 1;
         let id = self.next_id;
         self.entries.insert(
@@ -58,6 +68,8 @@ impl PinRegistry {
                 image,
                 data_url: None,
                 scrollable,
+                zoom: initial_zoom,
+                initial_zoom,
             },
         );
         id
@@ -174,6 +186,47 @@ fn pin_is_scrollable(display_w: f64, display_h: f64, width: u32, height: u32) ->
     rendered > display_h + 1.0
 }
 
+/// Logical window size of a pin at `zoom` (1.0 = image pixel per physical
+/// pixel). Tall screenshots keep the work-area height cap and scroll inside the
+/// window instead of growing beyond the screen (contract §11.5).
+fn pin_zoom_size(
+    width: u32,
+    height: u32,
+    scale: f64,
+    zoom: f64,
+    work_height: i32,
+) -> (f64, f64) {
+    let scale = if scale.is_finite() && scale > 0.1 {
+        scale
+    } else {
+        1.0
+    };
+    let base_w = (width.max(1) as f64 / scale).max(1.0);
+    let base_h = (height.max(1) as f64 / scale).max(1.0);
+    let logical_w = (base_w * zoom).max(1.0);
+    let logical_h = (base_h * zoom).max(1.0);
+    let max_h = ((work_height.max(1) as f64) * MAX_WORK_AREA_RATIO / scale).max(1.0);
+    let tall = base_h / base_w >= TALL_IMAGE_ASPECT;
+    let display_h = if tall { logical_h.min(max_h) } else { logical_h };
+    let physical_w = ((logical_w * scale).round() as i64).max(1);
+    let physical_h = ((display_h * scale).round() as i64).max(1);
+    (physical_w as f64 / scale, physical_h as f64 / scale)
+}
+
+/// Clamps a renderer-provided zoom into `[15%, max(initial zoom, 100%)]`.
+/// Non-finite values fall back to the initial zoom so a broken wheel event can
+/// never collapse or blow up a pin.
+fn clamp_pin_zoom(value: f64, initial_zoom: f64) -> f64 {
+    let initial = if initial_zoom.is_finite() && initial_zoom > PIN_ZOOM_MIN {
+        initial_zoom
+    } else {
+        1.0
+    };
+    let max_zoom = initial.max(1.0);
+    let value = if value.is_finite() { value } else { initial };
+    value.clamp(PIN_ZOOM_MIN, max_zoom)
+}
+
 fn log_info(app: &AppHandle, message: &str) {
     if let Some(state) = app.try_state::<Arc<AppState>>() {
         state.log.info(message);
@@ -209,8 +262,13 @@ pub fn create_pin(app: &AppHandle, image: RgbaImage) -> Result<(u64, u32, u32), 
         physical_h as i32,
         &work,
     );
+    // 100% zoom means one image pixel per physical pixel: derive the wheel zoom
+    // the window starts at (large screenshots start below 1.0, tiny snippets
+    // above it; it is also the upper wheel limit).
+    let base_logical_w = (width as f64 / scale).max(1.0);
+    let initial_zoom = (logical_w / base_logical_w).max(PIN_ZOOM_MIN);
 
-    let id = lock_registry().insert(image, scrollable);
+    let id = lock_registry().insert(image, scrollable, initial_zoom);
     let label = label_for(id);
     let window = match WebviewWindowBuilder::new(
         app,
@@ -278,11 +336,17 @@ pub fn ready(id: u64) -> Result<Value, EngineError> {
     let (width, height) = entry.image.dimensions();
     let data_url = entry.data_url.clone().unwrap_or_default();
     let scrollable = entry.scrollable;
+    let zoom = entry.zoom;
+    let min_zoom = PIN_ZOOM_MIN;
+    let max_zoom = entry.initial_zoom.max(1.0);
     Ok(json!({
         "dataUrl": data_url,
         "width": width,
         "height": height,
         "scrollable": scrollable,
+        "zoom": zoom,
+        "minZoom": min_zoom,
+        "maxZoom": max_zoom,
     }))
 }
 
@@ -310,6 +374,69 @@ pub fn drag(app: &AppHandle, id: u64, dx: f64, dy: f64) -> Result<(), EngineErro
     let (x, y) = win32::clamp_to_virtual_screen(x, y, size.width as i32, size.height as i32);
     let _ = window.set_position(PhysicalPosition::new(x, y));
     Ok(())
+}
+
+/// Mouse-wheel zoom of one pin window (`pin_zoom`, contract §11.5): the window
+/// keeps its centre, the zoom is clamped to `[15%, max(initial, 100%)]` and a
+/// long screenshot keeps the work-area height cap (it scrolls instead of growing
+/// past the screen).
+pub fn zoom(app: &AppHandle, id: u64, zoom: f64) -> Result<Value, EngineError> {
+    let Some(window) = app.get_webview_window(&label_for(id)) else {
+        return Err(pin_missing_error());
+    };
+    let (width, height, initial_zoom) = {
+        let registry = lock_registry();
+        let Some(entry) = registry.entries.get(&id) else {
+            return Err(pin_missing_error());
+        };
+        let (width, height) = entry.image.dimensions();
+        (width, height, entry.initial_zoom)
+    };
+    let scale = window
+        .scale_factor()
+        .ok()
+        .filter(|scale| scale.is_finite() && *scale > 0.1)
+        .unwrap_or(1.0);
+    let next = clamp_pin_zoom(zoom, initial_zoom);
+    let current = window
+        .outer_position()
+        .map_err(|error| EngineError::new("无法缩放钉图。", format!("请重试（{error}）。")))?;
+    let old_size = window
+        .outer_size()
+        .map_err(|error| EngineError::new("无法缩放钉图。", format!("请重试（{error}）。")))?;
+    let center_x = current.x + old_size.width as i32 / 2;
+    let center_y = current.y + old_size.height as i32 / 2;
+    let work = win32::work_area_physical(center_x, center_y);
+    let (logical_w, logical_h) = pin_zoom_size(width, height, scale, next, work.height());
+    let physical_w = ((logical_w * scale).round() as i32).max(1);
+    let physical_h = ((logical_h * scale).round() as i32).max(1);
+    let x = center_x - physical_w / 2;
+    let y = center_y - physical_h / 2;
+    let (x, y) = win32::clamp_to_virtual_screen(x, y, physical_w, physical_h);
+    let scrollable = pin_is_scrollable(logical_w, logical_h, width, height);
+    window
+        .set_size(LogicalSize::new(logical_w, logical_h))
+        .and_then(|_| window.set_position(PhysicalPosition::new(x, y)))
+        .map_err(|error| EngineError::new("无法缩放钉图。", format!("请重试（{error}）。")))?;
+    if let Some(entry) = lock_registry().get_mut(id) {
+        entry.zoom = next;
+        entry.scrollable = scrollable;
+    }
+    log_info(
+        app,
+        &format!(
+            "pin zoom: id={id} zoom={next:.3} display={logical_w:.0}x{logical_h:.0} at ({x},{y})"
+        ),
+    );
+    Ok(json!({
+        "ok": true,
+        "zoom": next,
+        "minZoom": PIN_ZOOM_MIN,
+        "maxZoom": initial_zoom.max(1.0),
+        "width": logical_w,
+        "height": logical_h,
+        "scrollable": scrollable,
+    }))
 }
 
 /// Writes the pin image to the system clipboard (`pin_copy`, contract §11.5).
@@ -357,8 +484,8 @@ pub fn pin_count() -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        pin_display_size, pin_id_from_label, pin_is_scrollable, pin_window_position, PinRegistry,
-        MAX_WORK_AREA_RATIO,
+        clamp_pin_zoom, pin_display_size, pin_id_from_label, pin_is_scrollable, pin_window_position,
+        pin_zoom_size, PinRegistry, MAX_WORK_AREA_RATIO, PIN_ZOOM_MIN,
     };
     use crate::win32::WorkArea;
     use image::{Rgba, RgbaImage};
@@ -377,6 +504,40 @@ mod tests {
     }
 
     #[test]
+    fn pin_zoom_scales_the_window_and_keeps_long_screenshots_capped() {
+        // 100% = one image pixel per physical pixel.
+        assert_eq!(pin_zoom_size(1000, 500, 1.0, 1.0, 1080), (1000.0, 500.0));
+        // 15% minimum window size.
+        assert_eq!(
+            pin_zoom_size(1000, 500, 1.0, PIN_ZOOM_MIN, 1080),
+            (150.0, 75.0)
+        );
+        // On a 150% screen the same physical image is 2/3 of the logical size.
+        let (width, height) = pin_zoom_size(1000, 500, 1.5, 1.0, 1440);
+        assert!((width - 666.6667).abs() < 0.01, "width={width}");
+        assert!((height - 333.3333).abs() < 0.01, "height={height}");
+        // A tall screenshot keeps the readable width and the work-area height cap
+        // (pin.js enables scrolling instead of growing past the screen).
+        let (width, height) = pin_zoom_size(1000, 30000, 1.0, 0.5, 1080);
+        assert_eq!(width, 500.0);
+        assert!((height - 756.0).abs() < 0.01, "height={height}");
+    }
+
+    #[test]
+    fn pin_zoom_clamps_to_fifteen_percent_and_the_initial_upper_bound() {
+        // Never smaller than 15% (user requirement).
+        assert_eq!(clamp_pin_zoom(0.05, 1.0), PIN_ZOOM_MIN);
+        assert_eq!(clamp_pin_zoom(0.5, 1.0), 0.5);
+        // A 100% pin cannot be blown up past its original size.
+        assert_eq!(clamp_pin_zoom(2.0, 1.0), 1.0);
+        // Tiny snippets start above 100% and may grow back to that size.
+        assert_eq!(clamp_pin_zoom(2.5, 2.0), 2.0);
+        assert_eq!(clamp_pin_zoom(f64::NAN, 1.0), 1.0);
+        // A broken initial zoom falls back to a sane 100% maximum.
+        assert_eq!(clamp_pin_zoom(5.0, 0.0), 1.0);
+    }
+
+    #[test]
     fn pin_labels_expose_their_id() {
         assert_eq!(pin_id_from_label("pin-1"), Some(1));
         assert_eq!(pin_id_from_label("pin-42"), Some(42));
@@ -389,8 +550,8 @@ mod tests {
     #[test]
     fn pin_ids_are_monotonic_and_removal_cleans_up() {
         let mut registry = PinRegistry::default();
-        let first = registry.insert(image(4, 4), false);
-        let second = registry.insert(image(5, 5), false);
+        let first = registry.insert(image(4, 4), false, 1.0);
+        let second = registry.insert(image(5, 5), false, 1.0);
         assert_eq!((first, second), (1, 2));
         assert_eq!(registry.len(), 2);
         assert!(registry.get_mut(first).is_some());
@@ -398,7 +559,7 @@ mod tests {
         assert_eq!(registry.len(), 1);
         assert!(registry.remove(first).is_none());
         // Ids are never reused, even after a closed pin.
-        let third = registry.insert(image(6, 6), false);
+        let third = registry.insert(image(6, 6), false, 1.0);
         assert_eq!(third, 3);
         assert!(registry.get_mut(second).is_some());
         // Removing everything leaves an empty registry that keeps counting.
@@ -406,7 +567,7 @@ mod tests {
         assert_eq!(registry.len(), 1);
         assert!(registry.remove(third).is_some());
         assert_eq!(registry.len(), 0);
-        assert_eq!(registry.insert(image(1, 1), false), 4);
+        assert_eq!(registry.insert(image(1, 1), false, 1.0), 4);
     }
 
     #[test]
