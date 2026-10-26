@@ -449,14 +449,17 @@
   }
 
   /* The reused overlay window was armed for another capture: restart the whole
-   * flow (contract §10.1). `index` identifies the monitor the shell captured. */
-  function onArmed(payload) {
+   * flow (contract §10.1). This page only ever renders the monitor from its own
+   * URL, so the arm payload is deliberately ignored: a listener without a pinned
+   * target also receives the `emit_to` events addressed to the other overlays,
+   * and adopting the last index used to turn every page into the secondary
+   * monitor — only that overlay then became visible (multi-monitor bug). */
+  function onArmed() {
     if (!dom.shot) {
       return;
     }
     state.armedCount += 1;
-    var index = payload && Number(payload.index);
-    beginCapture(isFinite(index) && index >= 0 ? Math.floor(index) : state.monitor);
+    beginCapture(state.monitor);
   }
 
   function bindEvents() {

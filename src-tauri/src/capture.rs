@@ -17,8 +17,8 @@
 //! Arming emits `capture-armed {index}`; the page resets itself, fetches the
 //! cached data URL via `capture_monitor_info`, paints it and calls
 //! `capture_ready`, which shows that overlay window (already transparent, no
-//! black/white flash). As a safety net the shell shows all overlays 2.5 s after
-//! `start` in case the renderer never reports readiness.
+//! black/white flash). As a safety net the shell shows every overlay whose
+//! renderer still has not reported readiness 2.5 s after `start`.
 //!
 //! Panel skills (`capture_skill`): crop the region from the session, copy the
 //! image to the system clipboard, remember it as [`LastCapture`], hide the
@@ -44,6 +44,7 @@
 //! the target application themselves. The old automatic `capture_longshot` is
 //! deprecated but kept for debugging.
 
+use std::collections::HashSet;
 use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -276,9 +277,11 @@ pub struct CaptureService {
     layout: Mutex<Option<Vec<CaptureGeometry>>>,
     /// Bumped on every session change so a stale 2.5 s fallback show is a no-op.
     epoch: AtomicU64,
-    /// Set when at least one overlay renderer reported `capture_ready`, so the
-    /// 2.5 s fallback does not re-show/refocus healthy overlays.
-    ready_signaled: AtomicBool,
+    /// Monitors whose overlay renderer reported `capture_ready` for the current
+    /// session. Readiness is tracked per monitor so the 2.5 s fallback only
+    /// shows the overlays whose renderer never painted: a single healthy
+    /// renderer must not mask another overlay that never became ready.
+    ready_monitors: Mutex<HashSet<u32>>,
     /// Guards against two overlapping `start` calls (e.g. the hotkey pressed
     /// again while the first screenshot is still being encoded).
     starting: AtomicBool,
@@ -294,15 +297,16 @@ impl CaptureService {
             last: Mutex::new(None),
             layout: Mutex::new(None),
             epoch: AtomicU64::new(0),
-            ready_signaled: AtomicBool::new(false),
+            ready_monitors: Mutex::new(HashSet::new()),
             starting: AtomicBool::new(false),
             longshot_running: AtomicBool::new(false),
         }
     }
 
-    /// Records that a capture overlay was painted and is about to be shown.
-    pub fn mark_ready(&self) {
-        self.ready_signaled.store(true, Ordering::SeqCst);
+    /// Records that the overlay of monitor `index` painted its screenshot and is
+    /// about to be shown.
+    pub fn mark_ready(&self, index: u32) {
+        lock(&self.ready_monitors).insert(index);
     }
 
     /// `true` while a screenshot session exists: the overlays are armed/shown
@@ -551,7 +555,7 @@ impl CaptureService {
             / 1024;
         let epoch = self.epoch.fetch_add(1, Ordering::SeqCst) + 1;
         // Session first, arm second: an armed renderer polls immediately.
-        self.ready_signaled.store(false, Ordering::SeqCst);
+        lock(&self.ready_monitors).clear();
         *lock(&self.session) = Some(Session { shots, preset });
         for geometry in &layout {
             let _ = app.emit_to(
@@ -561,27 +565,39 @@ impl CaptureService {
             );
         }
 
-        // Safety net: if the renderer never reports `capture_ready` (crashed
-        // webview, script error, …) the overlays are shown anyway. The flag is
-        // cleared when a renderer did report readiness, so a healthy capture
-        // never gets the extra show/refocus (real-world logs showed the noisy
-        // fallback firing 2.5 s after every successful capture).
+        // Safety net: if a renderer never reports `capture_ready` (crashed
+        // webview, script error, …) its overlay is shown anyway. Readiness is
+        // tracked **per monitor**, so a healthy renderer never suppresses the
+        // fallback of another overlay that never painted (a shared flag here
+        // used to leave the primary overlay invisible forever when only the
+        // secondary renderer reported ready).
         let fallback_app = app.clone();
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(OVERLAY_FALLBACK_DELAY).await;
             let Some(state) = fallback_app.try_state::<Arc<AppState>>() else {
                 return;
             };
-            if state.capture.epoch.load(Ordering::SeqCst) != epoch
-                || lock(&state.capture.session).is_none()
-                || state.capture.ready_signaled.load(Ordering::SeqCst)
-            {
+            if state.capture.epoch.load(Ordering::SeqCst) != epoch {
                 return;
             }
-            state
-                .log
-                .warn("screenshot overlay fallback: capture_ready not received, showing overlays");
-            crate::windows::show_all_capture_windows(&fallback_app);
+            let missing = {
+                let guard = lock(&state.capture.session);
+                let Some(session) = guard.as_ref() else {
+                    return;
+                };
+                let ready = lock(&state.capture.ready_monitors);
+                missing_ready_monitors(&session.shots, &ready)
+            };
+            if missing.is_empty() {
+                return;
+            }
+            state.log.warn(&format!(
+                "screenshot overlay fallback: capture_ready missing for monitors {missing:?}, \
+                 showing those overlays"
+            ));
+            for index in missing {
+                crate::windows::show_capture_window(&fallback_app, index);
+            }
         });
 
         let total_ms = started.elapsed().as_millis();
@@ -2512,6 +2528,18 @@ fn trimmed(value: Option<String>) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Monitor indices whose overlay renderer has not reported `capture_ready` for
+/// `shots` yet. The 2.5 s fallback shows exactly these overlays: a renderer that
+/// did paint is never re-shown/refocused, and a missing signal on one monitor is
+/// not masked by the first monitor that reported ready (contract §10.1).
+fn missing_ready_monitors(shots: &[Shot], ready: &HashSet<u32>) -> Vec<u32> {
+    shots
+        .iter()
+        .map(|shot| shot.index)
+        .filter(|index| !ready.contains(index))
+        .collect()
+}
+
 fn not_ready_error() -> EngineError {
     EngineError::new(
         "截图尚未准备好。",
@@ -3005,6 +3033,22 @@ mod tests {
         // close/copy/skill clear the session and allow a new screenshot again.
         service.clear_session();
         assert!(!service.is_active());
+    }
+
+    #[test]
+    fn fallback_covers_only_monitors_without_a_ready_signal() {
+        let mut second = test_shot();
+        second.index = 1;
+        let shots = vec![test_shot(), second];
+        // Nothing reported readiness yet: both overlays get the fallback show.
+        assert_eq!(missing_ready_monitors(&shots, &HashSet::new()), vec![0, 1]);
+        // A healthy secondary renderer must not hide the missing primary one.
+        assert_eq!(
+            missing_ready_monitors(&shots, &HashSet::from([1])),
+            vec![0]
+        );
+        // Every renderer painted: a healthy capture gets no extra show.
+        assert!(missing_ready_monitors(&shots, &HashSet::from([0, 1])).is_empty());
     }
 
     #[test]

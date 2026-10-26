@@ -430,9 +430,9 @@ pub struct SelectionService {
 - **不隐藏自身窗口、且拍进截图（第五轮修正）**：截图期间设置窗口与划词工具面板保持打开，**并会被包含在冻结截图里**（用户明确要求；不做窗口排除、不隐藏）。唯一在此之前执行的是隐藏上一轮遗留的 overlay 窗口。
 - **输入抑制**：截图进行中 `SelectionService::set_capture_active(true)`；此状态下 picker 的 blur-hide 与全局钩子的 dismiss/outside-click 一律忽略，避免截图过程把工具面板/面板关掉。`capture_close`/`capture_skill`/`capture_copy` 结束时置回 false。
 - **并行预编码**：`start_capture` 先清 Session 并确保 overlay 已创建（webview 在后台开始加载），随后 `xcap` 抓取所有显示器，`spawn_blocking` 并行把每块屏编码为 **JPEG data URL（质量约 85）** 存入 `Session`。JPEG 替代 PNG：编码、IPC、webview 解码均快数倍，overlay 只用于显示；裁切/OCR/视觉请求始终从内存里的原始 `RgbaImage` 取像素，无损。
-- **arm 事件**：抓屏完成、`Session` 就绪后，Rust 向每个 overlay 窗口 emit `capture-armed {index}`；页面收到后重新初始化（重置选区/面板/错误状态）并拉取 `capture_monitor_info`。页面首次加载时同样主动拉取（配合 8–10s 轮询直到 Session 就绪）。
+- **arm 事件**：抓屏完成、`Session` 就绪后，Rust 向每个 overlay 窗口 emit `capture-armed {index}`；页面收到后重新初始化（重置选区/面板/错误状态）并拉取 `capture_monitor_info`。页面首次加载时同样主动拉取（配合 8–10s 轮询直到 Session 就绪）。页面身份**只取自身 URL 的 `monitor`**：监听器必须把 target 固定到当前窗口（`{ kind: "WebviewWindow", label }`），且不得用事件 payload 覆盖自己的 index——Tauri 的默认 `Any` 监听也会收到发给其他 overlay label 的 `emit_to` 事件。
 - `<img>.onload` 后计算尺寸、渲染 UI，并调用 **`capture_ready(index)`**；Rust 收到后 `show()` 对应 overlay（index 0 同时 `set_focus`）。
-- 兜底：Rust 在 `start` 后 2500ms 调 `show_all_capture_windows`（前端异常也能看到 overlay）。
+- 兜底：Rust 在 `start` 后 2500ms 只 `show()` 尚未 `capture_ready` 的 overlay（`ready_monitors` 按显示器记录；单个健康 overlay 不会掩盖另一个未就绪的显示器）。
 - overlay 页面**不显示**任何全屏 loading；仅当图片加载失败时显示白色错误条（重试/关闭）。抓屏期间窗口保持隐藏，因此没有黑屏过程。
 - 隐藏的 overlay 窗口不参与合成，因此抓屏不会把上一张截图/工具条拍进去；被 `WDA_EXCLUDEFROMCAPTURE` 排除的自身窗口也不会被拍进去。
 

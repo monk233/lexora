@@ -120,7 +120,7 @@
     });
   }
 
-  function subscribe(eventName, handler) {
+  function subscribe(eventName, handler, options) {
     if (!LIVE) {
       return mockSubscribe(eventName, handler);
     }
@@ -137,7 +137,7 @@
       } catch (error) {
         console.error("[tauri-api] handler failed for " + eventName, error);
       }
-    });
+    }, options);
     Promise.resolve(pending).then(
       function (dispose) {
         if (disposed) {
@@ -165,6 +165,27 @@
         unlisten = null;
       }
     };
+  }
+
+  /* Options that pin an event listener to the current window
+   * (`{ target: { kind: "WebviewWindow", label } }`). Tauri's `listen` defaults
+   * to the `Any` target, which also receives events that `emit_to` addressed
+   * to a *different* webview label; the capture overlays rely on this to keep
+   * each monitor's `capture-armed` payload to itself. Returns `undefined` when
+   * the label cannot be resolved (the listener then keeps the default target). */
+  function currentWebviewTarget() {
+    if (!LIVE || !tauri || !tauri.window || typeof tauri.window.getCurrentWindow !== "function") {
+      return undefined;
+    }
+    try {
+      var label = tauri.window.getCurrentWindow().label;
+      if (label) {
+        return { target: { kind: "WebviewWindow", label: String(label) } };
+      }
+    } catch (error) {
+      /* Fall back to the default target. */
+    }
+    return undefined;
   }
 
   /* ------------------------------------------------------------------ */
@@ -2145,13 +2166,19 @@
       return safeInvoke("capture_close", {});
     },
     /* Re-uses the hidden overlay windows: the shell arms them for a new capture
-     * (they fetch the fresh screenshot themselves and report `ready`). */
+     * (they fetch the fresh screenshot themselves and report `ready`). The
+     * listener is pinned to this overlay window so the arm payload of another
+     * monitor is never delivered here. */
     onArmed: function (callback) {
-      return subscribe("capture-armed", function (payload) {
-        if (typeof callback === "function") {
-          callback(payload);
-        }
-      });
+      return subscribe(
+        "capture-armed",
+        function (payload) {
+          if (typeof callback === "function") {
+            callback(payload);
+          }
+        },
+        currentWebviewTarget()
+      );
     },
   };
 

@@ -593,7 +593,7 @@ pub fn capture_monitor_info(state: State<'_, Arc<AppState>>, index: u32) -> Valu
 /// the screenshot image has been painted (contract §10.1, no black flash).
 #[tauri::command]
 pub fn capture_ready(app: AppHandle, state: State<'_, Arc<AppState>>, index: u32) -> Value {
-    state.capture.mark_ready();
+    state.capture.mark_ready(index);
     if crate::windows::show_capture_window(&app, index) {
         json!({ "ok": true })
     } else {
