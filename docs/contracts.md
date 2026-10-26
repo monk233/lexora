@@ -641,7 +641,7 @@ editor.renderToPng(rectCss) -> string|null
 - 事件（Rust → capture-*）：`capture-longshot-progress {frame, height}`、`capture-longshot-done {ok, width, height, pinId?, error?}`；Rust → pin-*：`pin-close {id}`。
 
 ### 11.5 钉在桌面
-- 每个 pin 一个窗口 label `pin-<id>`：无边框、透明、always on top、skip_taskbar、resizable=false、visible=false（先建后显示）。宽度 = 图片物理宽度 / DPI，最大不超过工作区宽 70%；高度 = min(图片逻辑高度, 工作区高 70%)——超长图（长截图）保持可读宽度、窗口内容可滚动，不整体缩成细条；位置在鼠标附近并 clamp 到工作区。
+- 每个 pin 一个窗口 label `pin-<id>`：无边框、透明、always on top、skip_taskbar、resizable=false、visible=false（先建后显示）。宽度 = 图片物理宽度 / DPI，最大不超过工作区宽 70%；高度 = min(图片逻辑高度, 工作区高 70%)——超长图（长截图）保持可读宽度、窗口内容可滚动，不整体缩成细条。**位置 = 截图选区左上角**（单显示器用 `monitor 原点 + rect`，跨显示器用 `globalRect` 原点；自动滚动长截图用 `origin + crop`，手动长截图用 `geometry.selection_screen`），clamp 到该点所在显示器工作区；`create_pin(anchor=None)` 才退化为光标居中（内部兜底）。这样点「钉在桌面」后图片停在原选区位置，不会跟着截图工具栏（选区下方）的光标往下跳。
 - 普通图片（高度未超出窗口）**不显示滚动条**：`body` 默认 `overflow: hidden`，仅当图片实际高度大于窗口时由 `pin.js` 加 `is-scrollable` 类启用滚动；滚动条复用项目现有样式（8px、透明轨道、圆角 999 的 `--border-strong` 滑块，hover `--text-faint`）。
 - `pin.html`（新文件）：加载后调用 `pinAPI.ready(id)` 取图并显示；鼠标按住任意位置拖动窗口（`pin_drag` 增量，位置 clamp 到虚拟桌面，可拖到任意显示器）；**鼠标滚轮缩放**（`pin_zoom`，每格约 10%，最小 15%、放大无产品上限——以**图片左上角**为锚点，底部短暂显示百分比；长图高度仍受工作区 70% 上限并用滚动条浏览，滚轮留给缩放）；双击关闭；Esc 关闭；悬停右上角显示三个**图标按钮**「编辑」「复制」「关闭」——该操作区的**背景完全透明**（无卡片/边框/阴影，白色图标加阴影以便在任意图片上辨认）；右键菜单含「复制」「关闭」。
 - **钉图编辑模式**：点击「编辑」图标进入——图片上方叠加标注画布（复用 `capture-annotate.js`），出现**与截图工具栏同一组件设计**的白色卡片工具栏（图标 + 文字、32px 按钮、分隔线）：形状（点击即激活工具，属性栏提供矩形/圆形/直线子模式）、箭头、画笔、文字、序号、马赛克、撤回（Ctrl+Z）/重做（Ctrl+Y）、提取文字/翻译/解释图片（`pin_skill`，结果流入 picker 面板）、**已启用的自定义图片技能**（与截图工具栏同序）、取消（红色图标）、确认（绿色图标 + 文字）。**点击已激活的工具再次点击即退出该工具**（与截图工具栏一致）。

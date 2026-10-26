@@ -789,6 +789,33 @@ impl CaptureService {
         stitch_global(&session.shots, rect)
     }
 
+    /// Physical screen origin (top-left) of a selection: the global rect when the
+    /// selection spans monitors, otherwise the monitor origin plus the rect
+    /// offset. Used to place the pin window where the screenshot was taken.
+    pub fn selection_origin(
+        &self,
+        index: u32,
+        rect: &HitRect,
+        global_rect: Option<&GlobalRect>,
+    ) -> Result<(i32, i32), EngineError> {
+        if let Some(global) = global_rect {
+            return Ok((global.x, global.y));
+        }
+        let guard = lock(&self.session);
+        let Some(session) = guard.as_ref() else {
+            return Err(not_ready_error());
+        };
+        let shot = session
+            .shots
+            .iter()
+            .find(|shot| shot.index == index)
+            .ok_or_else(|| missing_monitor_error(index))?;
+        Ok((
+            shot.x + rect.x.round() as i32,
+            shot.y + rect.y.round() as i32,
+        ))
+    }
+
     /// Crops the selection for export: a `global_rect` takes the cross-monitor
     /// stitcher, otherwise the legacy single-monitor `index` + [`HitRect`] path
     /// is used. The annotation layer is composited over the crop either way
@@ -1235,6 +1262,11 @@ impl CaptureService {
             }
         };
         let first_height = request.first_frame.height();
+        // Where the selection was on screen: the stitched pin keeps that place.
+        let pin_origin = (
+            request.origin_x + request.crop.0 as i32,
+            request.origin_y + request.crop.1 as i32,
+        );
 
         // The wheel input must reach the application below the overlay, and the
         // overlay must never be part of a frame (contract §11.6).
@@ -1290,7 +1322,7 @@ impl CaptureService {
                     return Err(error);
                 }
                 let clipboard = write_clipboard_image(app, &image);
-                let pin = match crate::pin::create_pin(app, image) {
+                let pin = match crate::pin::create_pin(app, image, Some(pin_origin)) {
                     Ok(pin) => pin,
                     Err(error) => {
                         self.fail_longshot(app, &label, frames, height, stop, &error);

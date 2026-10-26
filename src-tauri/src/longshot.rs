@@ -984,7 +984,9 @@ fn finish_impl(app: &AppHandle) -> Result<Value, EngineError> {
     };
 
     let clipboard = write_clipboard_image(app, &image);
-    match crate::pin::create_pin(app, image) {
+    // Keep the stitched pin where the selection was on screen.
+    let (pin_x, pin_y, _, _) = runtime.geometry.screen_rect();
+    match crate::pin::create_pin(app, image, Some((pin_x, pin_y))) {
         Ok((pin_id, _, _)) => {
             let _ = take_runtime();
             // The overlay is visible again from the cancel path; finish closes

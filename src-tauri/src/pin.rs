@@ -254,14 +254,33 @@ fn log_info(app: &AppHandle, message: &str) {
 
 /// Stores `image` in the registry and creates its pin window. Returns the pin
 /// id plus the physical image size (`width`/`height` of the pinned screenshot).
-pub fn create_pin(app: &AppHandle, image: RgbaImage) -> Result<(u64, u32, u32), EngineError> {
+///
+/// `anchor` is the physical screen position the pinned image should keep: the
+/// original selection's top-left corner, so pinning a screenshot does not make
+/// it jump towards the cursor (the toolbar button sits below the selection).
+/// `None` falls back to the cursor-centred placement.
+pub fn create_pin(
+    app: &AppHandle,
+    image: RgbaImage,
+    anchor: Option<(i32, i32)>,
+) -> Result<(u64, u32, u32), EngineError> {
     let (width, height) = image.dimensions();
     if width == 0 || height == 0 {
         return Err(EngineError::new("钉图内容为空。", "请重新框选区域后再试。"));
     }
-    let cursor = win32::cursor_physical();
-    let scale = win32::monitor_scale_factor(cursor.0, cursor.1);
-    let work = win32::work_area_physical(cursor.0, cursor.1);
+    /* The work area and DPI scale follow the anchor when there is one (the pin
+     * stays where the screenshot was taken), otherwise the cursor. */
+    let (anchor_point, scale, work) = match anchor {
+        Some((x, y)) => (Some((x, y)), win32::monitor_scale_factor(x, y), win32::work_area_physical(x, y)),
+        None => {
+            let cursor = win32::cursor_physical();
+            (
+                None,
+                win32::monitor_scale_factor(cursor.0, cursor.1),
+                win32::work_area_physical(cursor.0, cursor.1),
+            )
+        }
+    };
     let (logical_w, logical_h) =
         pin_display_size(width, height, scale, work.width(), work.height());
     let scale = if scale.is_finite() && scale > 0.1 {
@@ -274,13 +293,27 @@ pub fn create_pin(app: &AppHandle, image: RgbaImage) -> Result<(u64, u32, u32), 
     // The image is rendered at the window width; if that makes it taller than
     // the window (long screenshot), the pin scrolls inside the window.
     let scrollable = pin_is_scrollable(logical_w, logical_h, width, height);
-    let position = pin_window_position(
-        cursor.0,
-        cursor.1,
-        physical_w as i32,
-        physical_h as i32,
-        &work,
-    );
+    let position = match anchor_point {
+        /* Keep the image exactly where the selection was; only clamp it back
+         * into the work area when the display size differs from the selection. */
+        Some((x, y)) => win32::clamp_to_work_area(
+            x,
+            y,
+            physical_w as i32,
+            physical_h as i32,
+            &work,
+        ),
+        None => {
+            let cursor = win32::cursor_physical();
+            pin_window_position(
+                cursor.0,
+                cursor.1,
+                physical_w as i32,
+                physical_h as i32,
+                &work,
+            )
+        }
+    };
     // 100% zoom means one image pixel per physical pixel: derive the wheel zoom
     // the window starts at (large screenshots start below 1.0, tiny snippets
     // above it; it is also the upper wheel limit).

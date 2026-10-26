@@ -668,7 +668,16 @@ pub async fn capture_pin(
             return Ok(json!({ "ok": false, "error": error.message, "hint": error.hint }));
         }
     };
-    match crate::pin::create_pin(&app, image) {
+    // Place the pin where the selection was, not at the cursor (the toolbar
+    // button that triggered this sits below the selection).
+    let origin = match state
+        .capture
+        .selection_origin(index, &rect, global_rect.as_ref())
+    {
+        Ok(origin) => Some(origin),
+        Err(_) => None,
+    };
+    match crate::pin::create_pin(&app, image, origin) {
         Ok((id, width, height)) => {
             state.capture.close(&app);
             Ok(json!({ "ok": true, "id": id, "width": width, "height": height }))

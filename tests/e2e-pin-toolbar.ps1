@@ -145,7 +145,7 @@ try {
   if (-not $loaded) { throw "pin page not loaded" }
   Start-Sleep -Milliseconds 500
 
-  $beforeJson = Cdp 'pin\.html' "JSON.stringify((() => { const img = document.getElementById('pin-image'); const r = img.getBoundingClientRect(); return {winW: window.innerWidth, winH: window.innerHeight, imgW: r.width, imgH: r.height, imgLeft: r.left, imgTop: r.top, barHidden: document.getElementById('pin-edit-bar').hidden}; })())"
+  $beforeJson = Cdp 'pin\.html' "JSON.stringify((() => { const img = document.getElementById('pin-image'); const r = img.getBoundingClientRect(); return {winW: window.innerWidth, winH: window.innerHeight, imgW: r.width, imgH: r.height, imgLeft: r.left, imgTop: r.top, barHidden: document.getElementById('pin-edit-bar').hidden, screenX: window.screenX, screenY: window.screenY}; })())"
   "PIN_BEFORE=$beforeJson"
 
   # --- enter edit mode + jump detection: the bar must not move while the
