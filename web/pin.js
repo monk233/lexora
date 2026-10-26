@@ -74,6 +74,7 @@
     /* Image CSS size captured before the edit window is widened: the image keeps
      * it while editing (the shell only adds transparent space around it). */
     editImageWidth: 0,
+    editImageHeight: 0,
     /* Structural fallback: icons-only bar when the work area is too narrow for
      * the labelled bar (the picture toolbar never wraps either). */
     editForceCompact: false,
@@ -562,6 +563,7 @@
     /* The shell widens the window for the single-row toolbar; pin the image to
      * the size it had before that so only transparent space is added around. */
     state.editImageWidth = dom.image ? dom.image.clientWidth || 0 : 0;
+    state.editImageHeight = dom.image ? dom.image.clientHeight || 0 : 0;
     if (state.editImageWidth > 0) {
       document.body.style.setProperty(
         "--pin-image-width",
@@ -573,6 +575,11 @@
     }
     if (dom.editBar) {
       dom.editBar.hidden = false;
+      /* Anchor the bar to the image, not to the window bottom: the shell grows
+       * the window asynchronously, so a bottom-anchored bar would first appear
+       * inside the image and then jump into the strip. With a top anchor it is
+       * simply clipped until the strip exists and appears in its final spot. */
+      placeEditBar();
     }
     if (dom.editCanvas) {
       dom.editCanvas.hidden = false;
@@ -736,17 +743,16 @@
     /* Long screenshots fill the window vertically, so there is no outside strip:
      * the bar stays overlaid on the image, but it is still widened to one row
      * (and the palette floats over the image because there is no strip room).
-     * The 16px slack absorbs the shell/WebView rounding of the fractional
-     * layout sizes so the palette always stays below the bar. */
+     * Otherwise the strip is: 4px above the bar + bar + 8px gap (+ palette +
+     * 12px bottom slack). The slack absorbs the shell/WebView rounding of the
+     * fractional layout sizes so the palette never flips above the bar. */
     var toolbarHeight = state.scrollable
       ? 0
-      : barSize.height +
-        12 +
-        (paletteSize ? paletteSize.height + PALETTE_GAP + 16 : 0);
+      : barSize.height + 12 + (paletteSize ? paletteSize.height + 12 : 0);
     var signature = toolbarWidth + "x" + toolbarHeight;
-    /* Every range/colour input triggers the lost palettes' sync, but the window
-     * only has to change when the measured content size changes. */
-    applyEditBarPlacement();
+    /* Every range/colour input triggers the palette sync, but the window only has
+     * to change when the measured content size changes. */
+    placeEditBar();
     layoutPalette();
     layoutFloatingPanels();
     if (signature === state.editLayoutRequest && state.editOutside) {
@@ -784,17 +790,35 @@
     );
   }
 
-  /* Palette below the edit bar: the bar moves up by the palette height so the
-   * property bar keeps the screenshot-overlay position (never over the bar).
-   * +2px absorbs the fractional/rounded layout sizes so the colour-space test in
-   * layoutPalette never flips the palette above the bar because of rounding. */
-  function applyEditBarPlacement() {
+  /* Places the edit bar. Normal pins anchor it to the IMAGE (top = image height
+   * + 4px, or above the image when the strip had to be added on top), never to
+   * the window bottom: the shell grows the window asynchronously, so a
+   * bottom-anchored bar would first show inside the image and then jump into the
+   * strip. Long screenshots keep the overlay bar at the window bottom (the
+   * window is a scroll viewport and has no outside strip). */
+  function placeEditBar() {
     if (!dom.editBar) {
       return;
     }
-    var paletteSize = measurePalette();
-    var bottom = paletteSize ? paletteSize.height + PALETTE_GAP + 10 : 0;
-    dom.editBar.style.bottom = bottom > 0 ? bottom + "px" : "";
+    if (state.scrollable) {
+      var paletteSize = measurePalette();
+      dom.editBar.style.top = "auto";
+      dom.editBar.style.bottom = paletteSize
+        ? paletteSize.height + PALETTE_GAP + 10 + "px"
+        : "";
+      return;
+    }
+    var barHeight = dom.editBar.offsetHeight || 0;
+    var top;
+    if (state.editTopPad > 0) {
+      /* Strip above the image: the bar sits just above the image, which the
+       * renderer pushes down by `topPadding`. */
+      top = state.editTopPad - barHeight - 4;
+    } else {
+      top = state.editImageHeight + 4;
+    }
+    dom.editBar.style.top = Math.round(top) + "px";
+    dom.editBar.style.bottom = "auto";
   }
 
   /* When the work area is narrower than the natural palette the shell could not
@@ -825,7 +849,7 @@
        * selection; `leftPadding` is the transparent part added on the left. */
       dom.editBar.style.left = Math.round(leftPadding + 8) + "px";
     }
-    applyEditBarPlacement();
+    placeEditBar();
     /* The window grew: keep the annotation surface matched to the image, and
      * re-anchor the palette + colour panels to the new bar position. */
     layoutEditCanvas();
@@ -844,6 +868,7 @@
     if (dom.editBar) {
       dom.editBar.classList.remove("is-above");
       dom.editBar.style.left = "";
+      dom.editBar.style.top = "";
       dom.editBar.style.bottom = "";
     }
     if (dom.palette) {
@@ -1084,7 +1109,7 @@
     syncPaletteValues();
     syncColorUi();
     syncShapeButtons();
-    applyEditBarPlacement();
+    placeEditBar();
     layoutPalette();
     layoutFloatingPanels();
     /* The palette is part of the strip: let the shell grow/shrink the window. */
@@ -1146,9 +1171,13 @@
     }
   }
 
-  /* Palette sits **below** the edit bar (left-aligned to it, clamped to the
-   * window) and flips above when the space below is too small — same algorithm
-   * as capture.js. The shell reserves the strip room for it. */
+  /* Palette placement. Normal pins pin the palette to the bar's side that the
+   * shell reserved room for (below the bar; above it when the strip was added on
+   * top) — never based on the current window height, because the window grows
+   * asynchronously and a space-based flip would move the palette after the
+   * resize. Until the strip exists it is simply clipped outside the window and
+   * appears in its final spot. Long screenshots have no strip, so there the
+   * palette flips to the side with room (same rule as the capture overlay). */
   function layoutPalette() {
     if (!dom.palette || dom.palette.hidden || !dom.editBar || dom.editBar.hidden) {
       return;
@@ -1165,19 +1194,26 @@
       EDGE_PAD,
       Math.max(EDGE_PAD, size.width - paletteWidth - EDGE_PAD)
     );
-    var belowTop = barRect.bottom + PALETTE_GAP;
-    var aboveTop = barRect.top - paletteHeight - PALETTE_GAP;
     var top;
-    if (size.height - belowTop >= paletteHeight + EDGE_PAD) {
-      top = belowTop;
-    } else if (aboveTop >= EDGE_PAD) {
-      top = aboveTop;
+    if (!state.scrollable) {
+      top =
+        state.editTopPad > 0
+          ? barRect.top - paletteHeight - PALETTE_GAP
+          : barRect.bottom + PALETTE_GAP;
     } else {
-      top = clamp(
-        belowTop,
-        EDGE_PAD,
-        Math.max(EDGE_PAD, size.height - paletteHeight - EDGE_PAD)
-      );
+      var belowTop = barRect.bottom + PALETTE_GAP;
+      var aboveTop = barRect.top - paletteHeight - PALETTE_GAP;
+      if (size.height - belowTop >= paletteHeight + EDGE_PAD) {
+        top = belowTop;
+      } else if (aboveTop >= EDGE_PAD) {
+        top = aboveTop;
+      } else {
+        top = clamp(
+          belowTop,
+          EDGE_PAD,
+          Math.max(EDGE_PAD, size.height - paletteHeight - EDGE_PAD)
+        );
+      }
     }
     dom.palette.style.left = Math.round(left) + "px";
     dom.palette.style.top = Math.round(top) + "px";

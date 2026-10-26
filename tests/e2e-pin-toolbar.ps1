@@ -148,17 +148,18 @@ try {
   $beforeJson = Cdp 'pin\.html' "JSON.stringify((() => { const img = document.getElementById('pin-image'); const r = img.getBoundingClientRect(); return {winW: window.innerWidth, winH: window.innerHeight, imgW: r.width, imgH: r.height, imgLeft: r.left, imgTop: r.top, barHidden: document.getElementById('pin-edit-bar').hidden}; })())"
   "PIN_BEFORE=$beforeJson"
 
-  # --- enter edit mode ------------------------------------------------------
-  $editClick = Cdp 'pin\.html' "(() => { const b = document.getElementById('pin-edit'); if (!b) return 'missing'; b.click(); return 'clicked'; })()"
+  # --- enter edit mode + jump detection: the bar must not move while the
+  #     shell grows the window asynchronously (top-anchored to the image).
+  $editClick = Cdp 'pin\.html' "(async () => { const b = document.getElementById('pin-edit'); if (!b) return {error: 'missing'}; b.click(); const bar = document.getElementById('pin-edit-bar'); const samples = []; for (let i = 0; i < 16; i++) { const r = bar.getBoundingClientRect(); samples.push([Math.round(r.top), Math.round(r.left), Math.round(r.height), window.innerHeight]); await new Promise(res => setTimeout(res, 40)); } return {samples: samples}; })()"
   "EDIT_CLICK=$editClick"
-  Start-Sleep -Seconds 2
+  Start-Sleep -Seconds 1
   $editJson = Cdp 'pin\.html' "JSON.stringify((() => { const bar = document.getElementById('pin-edit-bar'); const img = document.getElementById('pin-image'); const r = bar.getBoundingClientRect(); const ir = img.getBoundingClientRect(); const cs = getComputedStyle(bar); const btns = Array.from(bar.querySelectorAll('button')).map(b => b.dataset.editTool || b.dataset.editSkill || b.dataset.editAction || '?'); return {editing: window.__pinState.editing, leftPad: window.__pinState.editLeftPad, topPad: window.__pinState.editTopPad, outside: window.__pinState.editOutside, winW: window.innerWidth, winH: window.innerHeight, dpr: window.devicePixelRatio, bar: {left: r.left, top: r.top, width: r.width, height: r.height, scrollW: bar.scrollWidth, clientW: bar.clientWidth, bottom: r.bottom}, image: {left: ir.left, top: ir.top, width: ir.width, height: ir.height}, flexWrap: cs.flexWrap, justify: cs.justifyContent, buttons: btns, oneRow: r.height < 60, fits: bar.scrollWidth <= bar.clientWidth + 1}; })())"
   "PIN_EDIT=$editJson"
 
   # --- shape button: click activates the tool + shows the annotation palette --
-  $shapeJson = Cdp 'pin\.html' "(() => { const b = document.querySelector('#pin-edit-bar [data-edit-tool=shape]'); if (!b) return {error: 'no shape button'}; b.click(); return {clicked: true}; })()"
+  $shapeJson = Cdp 'pin\.html' "(async () => { const b = document.querySelector('#pin-edit-bar [data-edit-tool=shape]'); if (!b) return {error: 'no shape button'}; b.click(); const bar = document.getElementById('pin-edit-bar'); const pal = document.getElementById('capture-palette'); const samples = []; for (let i = 0; i < 16; i++) { const br = bar.getBoundingClientRect(); const pr = pal.hidden ? null : pal.getBoundingClientRect(); samples.push([Math.round(br.top), Math.round(br.height), pr ? Math.round(pr.top) : null, window.innerHeight]); await new Promise(res => setTimeout(res, 40)); } return {samples: samples}; })()"
   "SHAPE_CLICK=$shapeJson"
-  Start-Sleep -Milliseconds 1500
+  Start-Sleep -Milliseconds 500
   $paletteJson = Cdp 'pin\.html' "(() => { const p = document.getElementById('capture-palette'); const bar = document.getElementById('pin-edit-bar'); const pr = p.getBoundingClientRect(); const br = bar.getBoundingClientRect(); const groups = Array.from(p.querySelectorAll('[data-tools]')).filter(g => !g.hidden).map(g => g.id || Array.from(g.classList).join('.')); return {paletteHidden: p.hidden, palette: {left: pr.left, top: pr.top, width: pr.width, height: pr.height, bottom: pr.bottom}, bar: {top: br.top, bottom: br.bottom, height: br.height, bottomStyle: bar.style.bottom}, winW: window.innerWidth, winH: window.innerHeight, visibleGroups: groups, shapeActive: document.querySelector('#pin-edit-bar [data-edit-tool=shape]').classList.contains('is-active'), tool: window.__pinEditor ? window.__pinEditor.getTool() : null, oneRow: pr.height < 60, belowBar: Math.abs(pr.top - (br.bottom + 8)) < 2}; })()"
   "PALETTE_STATE=$paletteJson"
   & node (Join-Path $root "tests\cdp-screenshot.mjs") $CdpPort 'pin\.html' (Join-Path $shotDir "pin-edit-palette-shape.png") "light" 2>&1 | Out-Null
