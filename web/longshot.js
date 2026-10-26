@@ -1,17 +1,13 @@
 /* Lexora manual-scroll long-screenshot preview renderer (contract §11.14.1).
  *
- * Minimal QQ-style preview: the shell keeps stitching frames while the user
- * scrolls the target app (no speed limit) and emits
+ * Minimal QQ-style preview: only the stitched image, nothing else. The shell
+ * keeps stitching while the user scrolls the target app and emits
  * `longshot-progress {width,height,frames,revision,stalled}` after every stitch.
- * This page is event driven: a changed `revision` triggers a throttled
- * (≤80ms) `longshot_preview` fetch, and the PNG is decoded on a back <img>
- * layer before being promoted to the front (double buffering → no flashing).
- * A low-frequency `state` fallback (1s) only recovers missed events / stalled
- * flags. The window itself is resized by the shell to the stitched aspect ratio,
- * so the image always fills the card.
- *
- * Direction / cancel / finish live in the separate `longshot-bar` window below
- * the selection (the capture overlays are click-through while scrolling).
+ * This page is event driven: a changed `revision` triggers a throttled (≤80ms)
+ * `longshot_preview` fetch, and the PNG (already resized by the shell to the
+ * window's content box) is decoded on a back <img> layer before being promoted
+ * to the front (double buffering → no flashing). Window sizes are driven by the
+ * shell; the page itself has no controls and shows no status/error UI.
  */
 (function () {
   "use strict";
@@ -20,7 +16,6 @@
   var PREVIEW_MODE = !(window.__TAURI__ && window.__TAURI__.core);
   var PREVIEW_THROTTLE = 80;
   var STATE_FALLBACK = 1000;
-  var TOAST_MS = 2600;
 
   var state = {
     direction: "vertical",
@@ -36,12 +31,10 @@
     renders: 0,
     frontLayer: 0,
     lastRenderMs: 0,
-    lastProgressRevision: 0,
     stateCalls: 0,
     previewCalls: 0,
     progressEvents: 0,
-    imageSrcLength: 0,
-    lastError: ""
+    imageSrcLength: 0
   };
 
   /* Test/debug hook used by the CDP checks in tests/ and manual QA. */
@@ -50,12 +43,11 @@
   var dom = {};
   var previewTimer = 0;
   var fallbackTimer = 0;
-  var toastTimer = 0;
   var previewInflight = false;
   var previewQueued = false;
   var renderToken = 0;
 
-  /* ---- Small helpers --------------------------------------------------- */
+  /* ---- Helpers --------------------------------------------------------- */
 
   function byId(id) {
     return document.getElementById(id);
@@ -72,31 +64,9 @@
       : Date.now();
   }
 
-  function errorText(error) {
-    if (!error) {
-      return "未知错误";
-    }
-    if (typeof error === "string") {
-      return error;
-    }
-    if (typeof error.message === "string" && error.message) {
-      return error.message;
-    }
-    return String(error);
-  }
-
-  function failureText(result, fallback) {
-    var message = (result && result.error) || fallback;
-    var hint = (result && result.hint) || "";
-    return hint ? message + "：" + hint : message;
-  }
-
   function apiCall(name) {
     if (!API || typeof API[name] !== "function") {
-      return Promise.resolve({
-        ok: false,
-        error: "长截图服务不可用，请重启 Lexora 后再试。"
-      });
+      return Promise.resolve({ ok: false });
     }
     try {
       return Promise.resolve(API[name]());
@@ -109,19 +79,13 @@
     return state.done || state.cancelled;
   }
 
-  /* ---- DOM cache + boot ------------------------------------------------ */
+  /* ---- Boot ------------------------------------------------------------ */
 
   function cacheDom() {
     dom.root = byId("longshot-root");
-    dom.canvas = document.querySelector(".longshot-canvas");
     dom.image = byId("longshot-image");
     dom.imageBuffer = byId("longshot-image-buffer");
     dom.empty = byId("longshot-empty");
-    dom.meta = byId("longshot-meta");
-    dom.error = byId("longshot-error");
-    dom.errorText = byId("longshot-error-text");
-    dom.errorClose = byId("longshot-error-close");
-    dom.toast = byId("longshot-toast");
   }
 
   function boot() {
@@ -129,16 +93,8 @@
     if (!dom.root || !dom.image) {
       return;
     }
-    bindEvents();
     subscribeLongshot();
-    updateUi();
     initialLoad();
-  }
-
-  function bindEvents() {
-    if (dom.errorClose) {
-      dom.errorClose.addEventListener("click", hideError);
-    }
   }
 
   function subscribeLongshot() {
@@ -161,10 +117,10 @@
     }
   }
 
-  /* ---- State <-> UI ---------------------------------------------------- */
+  /* ---- State ------------------------------------------------------------ */
 
   function applyState(result) {
-    if (!result) {
+    if (!result || result.ok === false) {
       return { changed: false, revisionAdvanced: false };
     }
     var changed = false;
@@ -197,11 +153,10 @@
     if (revisionAdvanced) {
       state.revision = revision;
     }
-    updateUi();
     return { changed: changed, revisionAdvanced: revisionAdvanced };
   }
 
-  /* ---- Event-driven preview refresh ----------------------------------- */
+  /* ---- Preview refresh -------------------------------------------------- */
 
   function onProgress(payload) {
     if (!payload || state.done || state.cancelled) {
@@ -212,9 +167,6 @@
     var info = applyState(payload);
     var unrendered =
       progressRevision > 0 && progressRevision > state.renderedRevision;
-    if (progressRevision > state.lastProgressRevision) {
-      state.lastProgressRevision = progressRevision;
-    }
     if (info.changed || unrendered || PREVIEW_MODE) {
       schedulePreview();
     }
@@ -246,7 +198,6 @@
           return;
         }
         if (!result || result.ok === false) {
-          showError(failureText(result, "获取长截图预览失败"));
           return;
         }
         applyState(result);
@@ -254,14 +205,16 @@
           renderPreview(String(result.dataUrl));
         }
       })
-      .catch(function (error) {
-        showError("获取长截图预览失败：" + errorText(error));
+      .catch(function () {
+        /* transient while the session is closing; no UI surface */
       })
       .then(function () {
         previewInflight = false;
         if (previewQueued) {
           previewQueued = false;
-          schedulePreview();
+          if (!state.cancelled && !state.done) {
+            schedulePreview();
+          }
         }
       });
   }
@@ -301,7 +254,6 @@
       if (dom.empty) {
         dom.empty.hidden = true;
       }
-      updateUi();
     }
 
     target.classList.remove("is-front");
@@ -312,9 +264,6 @@
     };
     target.onerror = function () {
       target.onerror = null;
-      if (token === renderToken) {
-        showError("长截图预览加载失败");
-      }
     };
     target.src = dataUrl;
     if (typeof target.decode === "function") {
@@ -327,46 +276,21 @@
     }
   }
 
-  function clearPreview() {
-    renderToken += 1;
-    [dom.image, dom.imageBuffer].forEach(function (node) {
-      if (!node) {
-        return;
-      }
-      node.hidden = true;
-      node.classList.remove("is-front");
-      node.onload = null;
-      node.onerror = null;
-      node.removeAttribute("src");
-    });
-    state.frontLayer = 0;
-    state.imageSrcLength = 0;
-    state.lastRenderMs = 0;
-    if (dom.empty) {
-      dom.empty.hidden = false;
-      dom.empty.textContent = "正在重置拼接…";
-    }
-    hideError();
-  }
-
-  /* ---- Initial load + low-frequency state fallback --------------------- */
+  /* ---- Initial load + low-frequency state fallback ---------------------- */
 
   function initialLoad() {
     state.stateCalls += 1;
     apiCall("state")
       .then(function (result) {
-        if (!result || result.ok === false) {
-          showError(failureText(result, "读取长截图状态失败"));
-          return;
+        if (result && result.ok !== false) {
+          applyState(result);
         }
-        applyState(result);
       })
-      .catch(function (error) {
-        showError("读取长截图状态失败：" + errorText(error));
+      .catch(function () {
+        /* transient while the session is starting */
       })
       .then(function () {
         state.ready = true;
-        updateUi();
         fetchPreview();
         scheduleFallback();
       });
@@ -391,7 +315,6 @@
           return;
         }
         if (!result || result.ok === false) {
-          showError(failureText(result, "读取长截图状态失败"));
           return;
         }
         var info = applyState(result);
@@ -406,8 +329,8 @@
           fetchPreview();
         }
       })
-      .catch(function (error) {
-        showError("读取长截图状态失败：" + errorText(error));
+      .catch(function () {
+        /* transient while the session is closing; no UI surface */
       })
       .then(function () {
         if (!locked()) {
@@ -422,67 +345,10 @@
     window.clearTimeout(fallbackTimer);
     previewTimer = 0;
     fallbackTimer = 0;
-    updateUi();
-  }
-
-  /* ---- UI -------------------------------------------------------------- */
-
-  function updateUi() {
-    if (dom.meta) {
-      var width = state.width || 0;
-      var height = state.height || 0;
-      var frames = state.frames || 0;
-      if (state.width > 0) {
-        dom.meta.hidden = false;
-        dom.meta.textContent =
-          "第 " + frames + " 帧 · " + width + " × " + height;
-        if (state.stalled) {
-          dom.meta.setAttribute("data-tone", "stalled");
-          dom.meta.textContent = "拼接中… · " + width + " × " + height;
-        } else {
-          dom.meta.removeAttribute("data-tone");
-        }
-      } else {
-        dom.meta.hidden = true;
-      }
-    }
-  }
-
-  function showError(message) {
-    state.lastError = String(message || "");
-    if (dom.errorText) {
-      dom.errorText.textContent = state.lastError;
-    }
-    if (dom.error) {
-      dom.error.hidden = false;
-    }
-  }
-
-  function hideError() {
-    state.lastError = "";
-    if (dom.error) {
-      dom.error.hidden = true;
-    }
-  }
-
-  function toast(message, tone) {
-    if (!dom.toast) {
-      return;
-    }
-    dom.toast.textContent = String(message || "");
-    dom.toast.setAttribute("data-tone", tone || "info");
-    dom.toast.hidden = false;
-    window.clearTimeout(toastTimer);
-    toastTimer = window.setTimeout(function () {
-      if (dom.toast) {
-        dom.toast.hidden = true;
-      }
-    }, TOAST_MS);
   }
 
   /* Test/debug helper: force a state/preview refresh. */
   window.__longshotRefresh = function () {
-    hideError();
     return apiCall("state").then(function (result) {
       if (result && result.ok !== false) {
         applyState(result);

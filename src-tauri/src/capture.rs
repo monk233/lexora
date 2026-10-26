@@ -1582,6 +1582,28 @@ impl Stitched {
         out
     }
 
+    /// Nearest-neighbour resize to exactly `out_width`×`out_height` (used for the
+    /// long-screenshot preview, whose window keeps a fixed content box while the
+    /// stitched image grows: the encoded preview therefore never gets bigger).
+    pub(crate) fn resized_to(&self, out_width: u32, out_height: u32) -> RgbaImage {
+        let (width, height) = (self.width.max(1), self.height.max(1));
+        let out_width = out_width.max(1);
+        let out_height = out_height.max(1);
+        let mut out = RgbaImage::new(out_width, out_height);
+        let out_data = out.as_mut();
+        for y in 0..out_height {
+            let source_y = ((y as u64 * height as u64) / out_height as u64) as usize;
+            for x in 0..out_width {
+                let source_x = ((x as u64 * width as u64) / out_width as u64) as usize;
+                let source_offset = (source_y * width as usize + source_x) * 4;
+                let target_offset = (y as usize * out_width as usize + x as usize) * 4;
+                out_data[target_offset..target_offset + 4]
+                    .copy_from_slice(&self.data[source_offset..source_offset + 4]);
+            }
+        }
+        out
+    }
+
     pub(crate) fn into_image(self) -> RgbaImage {
         let width = self.width.max(1);
         let height = self.height.max(1);

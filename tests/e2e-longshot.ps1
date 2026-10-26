@@ -181,8 +181,10 @@ try {
   "BAR_BELOW_SELECTION_X=$([Math]::Abs($barObj.screenX - $selLeft) -le 2) BAR_BELOW_SELECTION_Y=$($barObj.screenY -ge ($selBottom + 3) -and $barObj.screenY -le ($selBottom + 10))"
 
   # Preview window: narrow strip, modest height while only the first frame exists.
-  $pre0 = Cdp 'longshot\.html' "(() => ({winW: window.innerWidth, winH: window.innerHeight, screenX: window.screenX, screenY: window.screenY, imgHidden: document.getElementById('longshot-image').hidden, state: window.__longshotState ? {w: window.__longshotState.width, h: window.__longshotState.height, frames: window.__longshotState.frames} : null}))()"
+  $pre0 = Cdp 'longshot\.html' "(() => ({winW: window.innerWidth, winH: window.innerHeight, screenX: window.screenX, screenY: window.screenY, imgHidden: document.getElementById('longshot-image').hidden, promptNodes: document.querySelectorAll('.longshot-meta, .longshot-error, .longshot-toast').length, state: window.__longshotState ? {w: window.__longshotState.width, h: window.__longshotState.height, frames: window.__longshotState.frames} : null}))()"
   "PREVIEW_BEFORE=$pre0"
+  $pre0Obj = $pre0 | ConvertFrom-Json
+  "PREVIEW_WIDTH_DOUBLED=$([Math]::Abs($pre0Obj.winW - 472) -le 2) PREVIEW_NO_PROMPTS=$($pre0Obj.promptNodes -eq 0)"
 
   # --- scroll the Notepad page: the preview must grow ---------------------
   [Win32LS]::MoveAbs([int](($selLeft + $selRight) / 2), [int](($selTop + $selBottom) / 2))

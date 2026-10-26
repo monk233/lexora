@@ -48,19 +48,21 @@ pub const EVENT_STARTED: &str = "longshot-started";
 /// Rust → capture overlay windows: the manual session was cancelled.
 pub const EVENT_CANCELLED: &str = "longshot-cancelled";
 
-/// Preview window logical width. QQ-style narrow strip: the height follows the
-/// stitched image so the preview grows while the user scrolls.
-const PREVIEW_LOGICAL_WIDTH: f64 = 236.0;
+/// Preview window logical width (doubled from the first QQ-style strip: the
+/// stitched content is readable at a glance).
+const PREVIEW_LOGICAL_WIDTH: f64 = 472.0;
 /// Preview window inner padding (logical pixels) around the image card.
 const PREVIEW_PADDING_CSS: f64 = 6.0;
 /// Preview window may cover at most this share of the work area.
 const PREVIEW_MAX_WORK_RATIO: f64 = 0.86;
 /// Upper/lower bounds for the preview window height in logical pixels.
-const PREVIEW_MAX_LOGICAL_HEIGHT: f64 = 900.0;
+const PREVIEW_MAX_LOGICAL_HEIGHT: f64 = 920.0;
 const PREVIEW_MIN_LOGICAL_HEIGHT: f64 = 160.0;
 /// Resize the preview window only when its logical height changed by more than
-/// this, so the ~35 fps stitcher does not call `set_size` every frame.
-const PREVIEW_MIN_RESIZE_CSS: f64 = 3.0;
+/// this (and at most every [`PREVIEW_RESIZE_INTERVAL`]), so the ~25 fps stitcher
+/// does not make the window flicker by resizing it on every frame.
+const PREVIEW_MIN_RESIZE_CSS: f64 = 6.0;
+const PREVIEW_RESIZE_INTERVAL: Duration = Duration::from_millis(140);
 /// Gap between the selection and the preview / control bar (physical pixels).
 const PREVIEW_GAP: i32 = 8;
 /// Control bar logical size (white floating card, capture-toolbar style).
@@ -75,9 +77,6 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(40);
 const MAX_VERTICAL_HEIGHT: u32 = 30_000;
 const MAX_HORIZONTAL_WIDTH: u32 = 40_000;
 const MAX_PIXELS: u64 = 64_000_000;
-/// The preview PNG is downscaled to about this display width before encoding
-/// (contract §11.14.1); the full-resolution image is used for clipboard/pin.
-const PREVIEW_TARGET_WIDTH: u32 = 480;
 /// Grab inset on each side of the selection in CSS pixels, converted to physical
 /// pixels with the monitor DPI scale so the selection border never lands in the
 /// stitched image (contract §11.14.1).
@@ -366,16 +365,6 @@ fn inset_crop(crop: (u32, u32, u32, u32), scale: f64) -> (u32, u32, u32, u32) {
     )
 }
 
-/// Downscale factor for the preview PNG so its display width is about
-/// [`PREVIEW_TARGET_WIDTH`] (never upscaled, contract §11.14.1).
-fn preview_scale_factor(display_width: u32) -> f64 {
-    if display_width == 0 || display_width <= PREVIEW_TARGET_WIDTH {
-        1.0
-    } else {
-        PREVIEW_TARGET_WIDTH as f64 / display_width as f64
-    }
-}
-
 /// Side of the stitched image a frame was merged on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MergeSide {
@@ -441,21 +430,39 @@ fn display_image(shared: &Shared) -> RgbaImage {
     }
 }
 
-/// Downscaled stitched image in the original orientation, used only for the
-/// preview IPC (about 720 px display width). The finish path uses the
-/// full-resolution [`display_image`].
-fn display_preview_image(shared: &Shared) -> RgbaImage {
-    let (display_width, _display_height) = display_dimensions(shared);
-    let scale = preview_scale_factor(display_width);
-    let scaled = if scale >= 1.0 {
-        shared.stitched.to_image()
-    } else {
-        shared.stitched.scaled_by(scale)
-    };
+/// Preview-sized stitched image: resized (non-uniformly, to match the preview
+/// window's content box) so the encoded PNG is always about one window large no
+/// matter how long the stitched image gets — constant encoding cost and no
+/// growing IPC payload. The finish path uses the full-resolution
+/// [`display_image`].
+fn display_preview_image(shared: &Shared, target_width: u32, target_height: u32) -> RgbaImage {
     match shared.direction {
-        Direction::Vertical => scaled,
-        Direction::Horizontal => image::imageops::rotate270(&scaled),
+        Direction::Vertical => shared.stitched.resized_to(target_width, target_height),
+        Direction::Horizontal => {
+            let rotated = shared.stitched.resized_to(target_height, target_width);
+            image::imageops::rotate270(&rotated)
+        }
     }
+}
+
+/// Physical pixel size of the preview window's image box for a stitched image.
+fn preview_target_size(
+    runtime: &Runtime,
+    display_width: u32,
+    display_height: u32,
+) -> (u32, u32) {
+    let (logical_w, logical_h) = preview_window_size_for(
+        display_width,
+        display_height,
+        runtime.scale,
+        &runtime.work,
+        runtime.geometry.selection_screen.1,
+    );
+    let content_w =
+        ((logical_w - PREVIEW_PADDING_CSS * 2.0).max(1.0) * runtime.scale).round() as u32;
+    let content_h =
+        ((logical_h - PREVIEW_PADDING_CSS * 2.0).max(1.0) * runtime.scale).round() as u32;
+    (content_w.max(1), content_h.max(1))
 }
 
 /// Resets the stitcher for a direction switch. The preview immediately shows the
@@ -616,6 +623,9 @@ fn capture_loop(app: AppHandle, runtime: Arc<Runtime>) {
     let capture_rect = geometry.capture_rect();
     let preview_window = app.get_webview_window(LONG_SHOT_LABEL);
     let mut preview_physical: Option<(u32, u32)> = None;
+    let mut last_preview_resize = std::time::Instant::now()
+        .checked_sub(PREVIEW_RESIZE_INTERVAL)
+        .unwrap_or_else(std::time::Instant::now);
     let mut failures = 0u32;
     let mut logged_stalled = false;
     let mut logged_limit = false;
@@ -665,18 +675,22 @@ fn capture_loop(app: AppHandle, runtime: Arc<Runtime>) {
                 );
             }
             // The preview window follows the stitched image height (QQ-style
-            // growing strip), throttled to meaningful height changes only.
+            // growing strip). Resizing is throttled (>= 6px and every 140ms):
+            // resizing the window on every stitched frame flickered.
             if let Some(window) = &preview_window {
-                resize_preview_window(
-                    window,
-                    &runtime,
-                    &progress,
-                    &mut preview_physical,
-                );
+                if last_preview_resize.elapsed() >= PREVIEW_RESIZE_INTERVAL {
+                    resize_preview_window(
+                        window,
+                        &runtime,
+                        &progress,
+                        &mut preview_physical,
+                    );
+                    last_preview_resize = std::time::Instant::now();
+                }
             }
             emit_progress(&app, progress);
         }
-        // Grabbing cadence: aim for ~35 fps; the grab itself may already take
+        // Grabbing cadence: aim for ~25 fps; the grab itself may already take
         // longer than the interval on high-DPI screens, in which case the loop
         // simply runs as fast as it can.
         if let Some(rest) = FRAME_INTERVAL.checked_sub(started.elapsed()) {
@@ -756,9 +770,10 @@ fn destroy_longshot_windows(app: &AppHandle) {
     destroy_control_bar(app);
 }
 
-/// Creates one non-activating long-screenshot window (transparent so the white
-/// card keeps rounded corners). The window stays hidden until the session state
-/// exists, so the page can already call `longshot_state` while it loads.
+/// Creates one non-activating long-screenshot window. The preview window is
+/// **opaque** (white card filling the window): a transparent window repaints
+/// through the DWM alpha compositor on every resize, which showed as flicker
+/// while the preview grew. The control bar stays transparent (it never resizes).
 fn create_longshot_window(
     app: &AppHandle,
     label: &str,
@@ -767,18 +782,24 @@ fn create_longshot_window(
     logical_size: (f64, f64),
     physical_size: (u32, u32),
     position: (i32, i32),
+    transparent: bool,
 ) -> Result<tauri::WebviewWindow, EngineError> {
+    let background = if transparent {
+        tauri::window::Color(0, 0, 0, 0)
+    } else {
+        tauri::window::Color(255, 255, 255, 255)
+    };
     let window = WebviewWindowBuilder::new(app, label, WebviewUrl::App(page.into()))
         .title(title)
         .decorations(false)
         .resizable(false)
         .always_on_top(true)
         .skip_taskbar(true)
-        .transparent(true)
+        .transparent(transparent)
         .shadow(false)
         .visible(false)
         .focused(false)
-        .background_color(tauri::window::Color(0, 0, 0, 0))
+        .background_color(background)
         .inner_size(logical_size.0, logical_size.1)
         .build()
         .map_err(|error| {
@@ -931,6 +952,7 @@ fn start_impl(app: &AppHandle, index: u32, rect: &HitRect) -> Result<Value, Engi
         logical_size,
         physical_size,
         position,
+        false,
     ) {
         Ok(window) => window,
         Err(error) => {
@@ -946,6 +968,7 @@ fn start_impl(app: &AppHandle, index: u32, rect: &HitRect) -> Result<Value, Engi
         bar_logical,
         bar_physical,
         bar_position,
+        true,
     ) {
         Ok(window) => window,
         Err(error) => {
@@ -1116,13 +1139,14 @@ fn preview_payload() -> Result<Value, EngineError> {
     let (revision, width, height, frames, direction, image) = {
         let shared = lock(&runtime.shared);
         let (width, height) = display_dimensions(&shared);
+        let (target_width, target_height) = preview_target_size(&runtime, width, height);
         (
             shared.revision,
             width,
             height,
             shared.frames,
             shared.direction,
-            display_preview_image(&shared),
+            display_preview_image(&shared, target_width, target_height),
         )
     };
     let data_url = png_data_url(&image)?;
@@ -1288,11 +1312,11 @@ pub fn cancel(app: &AppHandle) {
 mod tests {
     use super::{
         choose_merge, control_bar_position, display_dimensions, exceeds_limits, inset_crop,
-        orient_frame, preview_scale_factor, preview_window_position, preview_window_size_for,
-        progress_payload, reset_stitch, Direction, Geometry, MergeSide, Shared, BAR_LOGICAL_HEIGHT,
+        orient_frame, preview_window_position, preview_window_size_for, progress_payload,
+        reset_stitch, Direction, Geometry, MergeSide, Shared, BAR_LOGICAL_HEIGHT,
         BAR_LOGICAL_WIDTH, EVENT_CANCELLED, EVENT_STARTED, LONG_SHOT_BAR_LABEL, LONG_SHOT_LABEL,
         MAX_PIXELS, PREVIEW_LOGICAL_WIDTH, PREVIEW_MAX_LOGICAL_HEIGHT, PREVIEW_MIN_LOGICAL_HEIGHT,
-        PREVIEW_PADDING_CSS, PREVIEW_TARGET_WIDTH,
+        PREVIEW_PADDING_CSS,
     };
     use crate::capture::{find_overlap, find_overlap_prepend, Stitched};
     use crate::win32::WorkArea;
@@ -1328,7 +1352,6 @@ mod tests {
         assert_eq!(LONG_SHOT_BAR_LABEL, "longshot-bar");
         assert_eq!(EVENT_STARTED, "longshot-started");
         assert_eq!(EVENT_CANCELLED, "longshot-cancelled");
-        assert_eq!(PREVIEW_TARGET_WIDTH, 480);
     }
 
     #[test]
@@ -1525,15 +1548,12 @@ mod tests {
     }
 
     #[test]
-    fn preview_scales_to_the_preview_target_width() {
-        // 480 display px keeps the narrow preview sharp but cheap to encode.
-        assert!((preview_scale_factor(960) - 0.5).abs() < 1e-9);
-        assert_eq!(preview_scale_factor(480), 1.0);
-        assert_eq!(preview_scale_factor(360), 1.0);
-        assert_eq!(preview_scale_factor(0), 1.0);
+    fn preview_resize_matches_the_content_box() {
+        // The preview PNG is resized to the window's content box, so its size is
+        // constant no matter how long the stitched image grows.
         let stitched = Stitched::from_image(&noise_image(960, 1600, 3));
-        let scaled = stitched.scaled_by(preview_scale_factor(960));
-        assert_eq!(scaled.dimensions(), (480, 800));
+        let resized = stitched.resized_to(690, 1300);
+        assert_eq!(resized.dimensions(), (690, 1300));
     }
 
     #[test]

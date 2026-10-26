@@ -1,29 +1,20 @@
 /* Lexora manual-scroll long-screenshot preview window (contract §11.14.1).
  *
- * QQ-style minimal preview: a transparent frameless window whose size follows
- * the stitched image (the shell resizes it), holding one rounded white card that
- * the image fills. No header, no footer, no control buttons — direction / cancel
- * / finish live in the separate control bar below the selection. The only chrome
- * is a small translucent meta pill (size + frame counter) and the error/toast
- * surfaces.
+ * QQ-style minimal preview: an OPAQUE frameless window whose size follows the
+ * stitched image (the shell resizes it), holding only the image. No header,
+ * footer, status pill, error banner or toast — direction / cancel / finish live
+ * in the separate control bar below the selection.
+ *
+ * The window is deliberately opaque: a transparent window repaints through the
+ * DWM alpha compositor on every resize, which flickered while the preview grew.
  */
 
 :root {
   color-scheme: light;
 
   --surface: #ffffff;
-  --text: #0f172a;
   --text-faint: #94a3b8;
   --border: #e2e8f0;
-  --border-strong: #cbd5e1;
-  --danger: #dc2626;
-  --danger-soft: #fef2f2;
-  --success-strong: #047857;
-  --primary: #4f46e5;
-
-  --radius-md: 10px;
-  --radius-lg: 12px;
-  --shadow-card: 0 4px 18px rgba(15, 23, 42, 0.22);
 
   --font-ui: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
 }
@@ -43,11 +34,11 @@ body {
   margin: 0;
   padding: 0;
   overflow: hidden;
-  background: transparent;
+  background: var(--surface);
 }
 
 body {
-  color: var(--text);
+  color: var(--text-faint);
   font-family: var(--font-ui);
   font-size: 12px;
   line-height: 1.4;
@@ -57,44 +48,29 @@ body {
   cursor: default;
 }
 
-button {
-  font-family: inherit;
-}
-
-/* ---- Card --------------------------------------------------------------- */
+/* ---- Image -------------------------------------------------------------- */
 
 .longshot-card {
   position: absolute;
   inset: 0;
   overflow: hidden;
-  border-radius: var(--radius-lg);
   background: var(--surface);
-  box-shadow: var(--shadow-card);
-}
-
-.longshot-canvas {
-  position: absolute;
-  inset: 6px;
-  overflow: hidden;
-  border-radius: 7px;
-  background: #f8fafc;
 }
 
 /* Two stacked layers: the incoming image decodes on the back layer and is only
- * promoted to the front (opacity 1) once decoded — no flashing. The window is
- * sized to the image aspect ratio, so the image fills its box. */
+ * promoted to the front once decoded — no flashing, no fade transition (a
+ * transition would itself look like a flicker at 25 updates/s). */
 .longshot-image {
   position: absolute;
-  inset: 0;
+  inset: 6px;
   display: block;
-  width: 100%;
-  height: 100%;
+  width: calc(100% - 12px);
+  height: calc(100% - 12px);
   object-fit: fill;
   opacity: 0;
-  background: transparent;
+  background: var(--surface);
   -webkit-user-drag: none;
   user-select: none;
-  transition: opacity 90ms ease;
 }
 
 .longshot-image.is-front {
@@ -107,106 +83,8 @@ button {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #94a3b8;
+  color: var(--text-faint);
   font-size: 11.5px;
   letter-spacing: 0.02em;
   pointer-events: none;
-}
-
-/* Small translucent pill floating over the bottom of the preview. */
-.longshot-meta {
-  position: absolute;
-  left: 12px;
-  bottom: 12px;
-  max-width: calc(100% - 24px);
-  padding: 3px 8px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: rgba(15, 23, 42, 0.62);
-  color: #f1f5f9;
-  font-size: 10.5px;
-  font-variant-numeric: tabular-nums;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  pointer-events: none;
-}
-
-.longshot-meta[data-tone="stalled"] {
-  background: rgba(180, 83, 9, 0.82);
-}
-
-/* ---- Error + toast ------------------------------------------------------ */
-
-.longshot-error {
-  position: absolute;
-  left: 8px;
-  right: 8px;
-  bottom: 8px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--surface);
-  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.16);
-}
-
-.longshot-error-text {
-  overflow: hidden;
-  flex: 1 1 auto;
-  min-width: 0;
-  color: var(--danger);
-  font-size: 11.5px;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.longshot-error-close {
-  flex: 0 0 auto;
-  height: 22px;
-  padding: 0 8px;
-  border: 1px solid var(--border-strong);
-  border-radius: 6px;
-  background: var(--surface);
-  color: var(--text-faint);
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.longshot-error-close:hover {
-  background: #f1f5f9;
-  color: var(--text);
-}
-
-.longshot-toast {
-  position: absolute;
-  left: 50%;
-  bottom: 40px;
-  z-index: 20;
-  max-width: calc(100% - 16px);
-  padding: 5px 10px;
-  transform: translateX(-50%);
-  border-radius: 999px;
-  background: rgba(15, 23, 42, 0.78);
-  color: #f8fafc;
-  font-size: 11px;
-  text-align: center;
-  white-space: nowrap;
-  pointer-events: none;
-}
-
-.longshot-toast[data-tone="error"] {
-  background: rgba(153, 27, 27, 0.88);
-}
-
-.longshot-toast[data-tone="success"] {
-  background: rgba(4, 120, 87, 0.9);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .longshot-image {
-    transition: none;
-  }
 }
