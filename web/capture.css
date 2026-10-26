@@ -150,11 +150,21 @@ button {
   pointer-events: none;
 }
 
+/* Cross-monitor selection outline: the container is a viewport-sized overlay;
+ * capture.js positions the four edges and the eight handles in viewport
+ * coordinates, so a selection can span several monitors. */
 .capture-selection {
   position: fixed;
+  inset: 0;
   z-index: 12;
-  border: 1.5px solid var(--primary);
-  box-shadow: 0 0 0 1px rgba(79, 70, 229, 0.18);
+  pointer-events: none;
+}
+
+.selection-edge {
+  position: fixed;
+  z-index: 12;
+  background: var(--primary);
+  box-shadow: 0 0 0 0.5px rgba(79, 70, 229, 0.25);
   pointer-events: none;
 }
 
@@ -165,7 +175,7 @@ body.is-selecting .selection-handle {
 }
 
 .selection-handle {
-  position: absolute;
+  position: fixed;
   width: 11px;
   height: 11px;
   margin: -6px 0 0 -6px;
@@ -199,6 +209,57 @@ body.is-selecting .selection-handle {
 
 body.is-dragging .selection-handle {
   opacity: 0.5;
+}
+
+/* ---- QQ colour loupe (contract §10.2) ----------------------------------- */
+
+.capture-loupe {
+  position: fixed;
+  z-index: 35;
+  width: 132px;
+  padding: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  background: rgba(17, 20, 27, 0.94);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  color: #e2e8f0;
+  pointer-events: none;
+}
+
+.loupe-canvas {
+  display: block;
+  width: 120px;
+  height: 120px;
+  border-radius: 6px;
+  background: #000;
+  image-rendering: pixelated;
+}
+
+.loupe-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 2px 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  font-variant-numeric: tabular-nums;
+}
+
+.loupe-line {
+  white-space: nowrap;
+}
+
+.loupe-hint {
+  color: #94a3b8;
+}
+
+.capture-loupe.is-copied .loupe-hint {
+  color: #34d399;
+}
+
+/* Auto-hidden while the pointer is over the toolbar/panels (capture.js). */
+.capture-loupe[hidden] {
+  display: none;
 }
 
 /* ---- Size label / hint -------------------------------------------------- */

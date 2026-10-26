@@ -8,7 +8,9 @@
  * black/white flash - the page background is fully transparent.
  *
  * Coordinate systems:
- *   - CSS pixels: selection state (`state.rect`) relative to the overlay window.
+ *   - Global physical pixels: the selection itself (`state.selection`), so it
+ *     can span and move across monitors; `state.rect` is only the local CSS
+ *     intersection this overlay renders.
  *   - Physical pixels: `captureAPI` rects, mapped through the session's
  *     `width`/`height` (the original screenshot bitmap) so HiDPI monitors with
  *     a scaled webview still map 1:1. `naturalWidth` is only a fallback.
@@ -78,6 +80,15 @@
   /* Pointer travel (CSS px) below which a press counts as a click ("select the
    * snapped window") instead of dragging a free selection. */
   var CLICK_SLOP = 4;
+  /* Minimum side of a confirmed selection, in PHYSICAL pixels (cross-monitor
+   * rects are stored in physical virtual-screen coordinates). */
+  var MIN_SELECTION_PHYSICAL = 8;
+  /* Live selection updates are broadcast to the other overlays while dragging;
+   * 28 ms keeps a cross-monitor rectangle in sync without flooding the IPC. */
+  var SELECT_BROADCAST_MS = 28;
+  /* QQ colour loupe: sampled physical pixels around the pointer + IPC throttle. */
+  var LOUPE_SPAN = 15;
+  var LOUPE_THROTTLE_MS = 40;
   /* Window-snapping IPC throttle: mousemove fires far more often than the
    * snapped window can change. */
   var HOVER_THROTTLE_MS = 40;
@@ -115,14 +126,31 @@
      * CSS points map to the global physical desktop for window snapping. */
     originX: 0,
     originY: 0,
+    /* Physical rects of every monitor of the session + their union bounds
+     * (capture_layout); used to clamp selections that span monitors. */
+    layout: [],
+    layoutBounds: null,
+    /* The selection (or live drag preview) is a GLOBAL physical rect: every
+     * overlay renders its own slice, so it can cover several monitors. The page
+     * under its bottom-right corner owns the toolbar/size label. */
+    selection: null,
+    selectionOwner: -1,
+    crossScreen: false,
     /* Window snapped under the pointer: global physical rect + its local CSS
      * intersection (selection phase only). */
     hoverGlobal: null,
     hoverLocal: null,
     hoverPending: null,
     hoverTimer: 0,
-    /* Live rectangle preview while dragging in the selection phase. */
-    previewRect: null,
+    /* Throttle for the cross-overlay selection broadcast while dragging. */
+    broadcastTimer: 0,
+    broadcastAt: 0,
+    /* QQ colour loupe state (last sampled colour, pending pointer, throttles). */
+    loupeColor: "#000000",
+    loupeVisible: false,
+    loupePending: null,
+    loupeTimer: 0,
+    loupeCopyTimer: 0,
     rect: null,
     viewWidth: 0,
     viewHeight: 0,
@@ -275,50 +303,6 @@
     );
   }
 
-  function rectFromPoints(start, end) {
-    var left = Math.min(start.x, end.x);
-    var top = Math.min(start.y, end.y);
-    var right = Math.max(start.x, end.x);
-    var bottom = Math.max(start.y, end.y);
-    return { x: left, y: top, width: right - left, height: bottom - top };
-  }
-
-  function movedRect(origin, deltaX, deltaY) {
-    var size = viewportSize();
-    return {
-      x: clamp(origin.x + deltaX, 0, Math.max(0, size.width - origin.width)),
-      y: clamp(origin.y + deltaY, 0, Math.max(0, size.height - origin.height)),
-      width: origin.width,
-      height: origin.height
-    };
-  }
-
-  function resizeRectFromDrag(drag, point) {
-    var origin = drag.origin;
-    var deltaX = point.x - drag.start.x;
-    var deltaY = point.y - drag.start.y;
-    var size = viewportSize();
-    var left = origin.x;
-    var top = origin.y;
-    var right = origin.x + origin.width;
-    var bottom = origin.y + origin.height;
-    var dir = drag.dir;
-
-    if (dir.indexOf("w") >= 0) {
-      left = clamp(origin.x + deltaX, 0, right - MIN_SIZE);
-    }
-    if (dir.indexOf("e") >= 0) {
-      right = clamp(origin.x + origin.width + deltaX, left + MIN_SIZE, size.width);
-    }
-    if (dir.indexOf("n") >= 0) {
-      top = clamp(origin.y + deltaY, 0, bottom - MIN_SIZE);
-    }
-    if (dir.indexOf("s") >= 0) {
-      bottom = clamp(origin.y + origin.height + deltaY, top + MIN_SIZE, size.height);
-    }
-    return { x: left, y: top, width: right - left, height: bottom - top };
-  }
-
   function physicalRect(rect) {
     var size = viewportSize();
     var imageWidth = state.imageWidth || size.width;
@@ -363,6 +347,14 @@
     dom.maskRight = byId("mask-right");
     dom.maskBottom = byId("mask-bottom");
     dom.selection = byId("capture-selection");
+    dom.edges = Array.prototype.slice.call(
+      document.querySelectorAll(".selection-edge")
+    );
+    dom.loupe = byId("capture-loupe");
+    dom.loupeCanvas = byId("loupe-canvas");
+    dom.loupeCoords = byId("loupe-coords");
+    dom.loupeColor = byId("loupe-color");
+    dom.loupeHint = byId("loupe-hint");
     dom.size = byId("selection-size");
     dom.hint = byId("capture-hint");
     dom.bar = byId("capture-bar");
@@ -454,7 +446,7 @@
     initAnnotator();
     bindEvents();
     subscribeArmed();
-    subscribeSelectionOwner();
+    subscribeSelectionState();
     subscribeLongshotEvents();
     /* The arm event of the very first capture can fire before this page starts
      * listening (the shell creates the window and captures right away), so the
@@ -474,53 +466,18 @@
     }
   }
 
-  /* Only one monitor may own a selection (QQ behavior): when another overlay
-   * starts a new selection this page drops its own and returns to the selection
-   * phase. The event is a plain broadcast from the page that got the press. */
-  function subscribeSelectionOwner() {
-    if (!API || typeof API.onSelectionOwner !== "function") {
+  /* The selection is shared by every overlay (a global physical rect), so a
+   * rectangle can span and travel across monitors. Each page renders its own
+   * slice; updates arrive as a plain broadcast from the page that is dragging. */
+  function subscribeSelectionState() {
+    if (!API || typeof API.onSelectionState !== "function") {
       return;
     }
     try {
-      API.onSelectionOwner(onOtherOverlaySelection);
+      API.onSelectionState(onSelectionState);
     } catch (error) {
       /* Selection sync is a refinement; the local selection still works. */
     }
-  }
-
-  function onOtherOverlaySelection(payload) {
-    if (!payload || state.closed) {
-      return;
-    }
-    var owner = Number(payload.owner);
-    if (!isFinite(owner) || owner === state.monitor) {
-      return;
-    }
-    state.drag = null;
-    state.previewRect = null;
-    state.rect = null;
-    state.phase = "selecting";
-    state.hoverGlobal = null;
-    state.hoverLocal = null;
-    state.hoverPending = null;
-    window.clearTimeout(state.hoverTimer);
-    state.hoverTimer = 0;
-    resetAnnotations();
-    document.body.classList.add("is-selecting");
-    document.body.classList.remove(
-      "is-dragging",
-      "is-over-selection",
-      "annotating"
-    );
-    setHidden(dom.selection, true);
-    setHidden(dom.size, true);
-    setHidden(dom.bar, true);
-    setHidden(dom.hover, true);
-    setHidden(dom.palette, true);
-    if (dom.canvas) {
-      dom.canvas.hidden = true;
-    }
-    render();
   }
 
   /* The reused overlay window was armed for another capture: restart the whole
@@ -968,12 +925,19 @@
     state.imageHeight = 0;
     state.rect = null;
     state.phase = "selecting";
-    state.previewRect = null;
+    state.selection = null;
+    state.selectionOwner = -1;
+    state.crossScreen = false;
+    state.layout = [];
+    state.layoutBounds = null;
     state.hoverGlobal = null;
     state.hoverLocal = null;
     state.hoverPending = null;
     window.clearTimeout(state.hoverTimer);
     state.hoverTimer = 0;
+    window.clearTimeout(state.broadcastTimer);
+    state.broadcastTimer = 0;
+    hideLoupe();
     state.drag = null;
     state.busy = false;
     state.viewWidth = 0;
@@ -1121,14 +1085,17 @@
      * selection at all. The toolbar only appears after the user clicks a
      * snapped window or finishes dragging a rectangle. */
     state.phase = "selecting";
+    state.selection = null;
+    state.selectionOwner = -1;
+    state.crossScreen = false;
     state.rect = null;
-    state.previewRect = null;
     state.hoverGlobal = null;
     state.hoverLocal = null;
     state.hoverPending = null;
     state.viewWidth = size.width;
     state.viewHeight = size.height;
     state.drag = null;
+    hideLoupe();
     document.body.classList.add("is-selecting");
     document.body.classList.remove("is-dragging", "is-over-selection");
 
@@ -1149,6 +1116,7 @@
      * duplicate entry for it from the configured toolbar. */
     renderCaptureBar();
     render();
+    loadLayout(generation);
     showHint(SELECT_HINT);
     requestInitialHover();
     afterPaint(function () {
@@ -1246,6 +1214,8 @@
       setTool(null);
     }
     state.rect = null;
+    state.selection = null;
+    state.selectionOwner = -1;
     state.shotReady = false;
     state.drag = null;
     state.busy = false;
@@ -1277,6 +1247,7 @@
     setHidden(dom.size, true);
     setHidden(dom.bar, true);
     setHidden(dom.hover, true);
+    hideLoupe();
     setHidden(dom.palette, true);
     if (dom.canvas) {
       dom.canvas.hidden = true;
@@ -1288,42 +1259,366 @@
     setHidden(dom.error, true);
   }
 
+  /* ---- Global selection math (cross-monitor) --------------------------- */
+
+  function rawPointFromEvent(event) {
+    return {
+      x: Number(event.clientX) || 0,
+      y: Number(event.clientY) || 0
+    };
+  }
+
+  function cloneGlobal(rect) {
+    return rect
+      ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+      : null;
+  }
+
+  function sameGlobalRect(a, b) {
+    if (!a || !b) {
+      return !a && !b;
+    }
+    return (
+      a.x === b.x &&
+      a.y === b.y &&
+      a.width === b.width &&
+      a.height === b.height
+    );
+  }
+
+  /* Physical rect of this overlay's monitor (layout entry, or a local fallback). */
+  function currentMonitorRect() {
+    for (var index = 0; index < state.layout.length; index += 1) {
+      if (state.layout[index].index === state.monitor) {
+        return state.layout[index];
+      }
+    }
+    return {
+      index: state.monitor,
+      x: state.originX,
+      y: state.originY,
+      width: state.imageWidth || Math.round(viewportWidth() * currentDpr()),
+      height: state.imageHeight || Math.round(viewportHeight() * currentDpr())
+    };
+  }
+
+  function monitorRectOf(monitor) {
+    return {
+      x: monitor.x,
+      y: monitor.y,
+      width: monitor.width,
+      height: monitor.height
+    };
+  }
+
+  function globalIntersect(a, b) {
+    if (!a || !b) {
+      return null;
+    }
+    var left = Math.max(a.x, b.x);
+    var top = Math.max(a.y, b.y);
+    var right = Math.min(a.x + a.width, b.x + b.width);
+    var bottom = Math.min(a.y + a.height, b.y + b.height);
+    if (right - left <= 0 || bottom - top <= 0) {
+      return null;
+    }
+    return { x: left, y: top, width: right - left, height: bottom - top };
+  }
+
+  function rectArea(rect) {
+    return rect ? Math.max(0, rect.width) * Math.max(0, rect.height) : 0;
+  }
+
+  function normalizeGlobalRect(start, end) {
+    var left = Math.round(Math.min(start.x, end.x));
+    var top = Math.round(Math.min(start.y, end.y));
+    var right = Math.round(Math.max(start.x, end.x));
+    var bottom = Math.round(Math.max(start.y, end.y));
+    return { x: left, y: top, width: right - left, height: bottom - top };
+  }
+
+  /* The monitor that contains the selection's bottom-right corner (falls back to
+   * the largest intersection). Only that overlay hosts the toolbar/size label;
+   * a cross-monitor rectangle still has a corner on one of them. */
+  function ownerForRect(rect) {
+    if (!rect) {
+      return -1;
+    }
+    var monitors = state.layout.length ? state.layout : [currentMonitorRect()];
+    var right = rect.x + rect.width - 1;
+    var bottom = rect.y + rect.height - 1;
+    for (var index = 0; index < monitors.length; index += 1) {
+      var monitor = monitors[index];
+      if (
+        right >= monitor.x &&
+        right < monitor.x + monitor.width &&
+        bottom >= monitor.y &&
+        bottom < monitor.y + monitor.height
+      ) {
+        return monitor.index;
+      }
+    }
+    var best = -1;
+    var bestArea = 0;
+    for (index = 0; index < monitors.length; index += 1) {
+      var area = rectArea(globalIntersect(rect, monitorRectOf(monitors[index])));
+      if (area > bestArea) {
+        bestArea = area;
+        best = monitors[index].index;
+      }
+    }
+    return best;
+  }
+
+  function layoutBoundsFor(monitors) {
+    if (!monitors.length) {
+      return null;
+    }
+    var left = monitors[0].x;
+    var top = monitors[0].y;
+    var right = monitors[0].x + monitors[0].width;
+    var bottom = monitors[0].y + monitors[0].height;
+    for (var index = 1; index < monitors.length; index += 1) {
+      left = Math.min(left, monitors[index].x);
+      top = Math.min(top, monitors[index].y);
+      right = Math.max(right, monitors[index].x + monitors[index].width);
+      bottom = Math.max(bottom, monitors[index].y + monitors[index].height);
+    }
+    return { x: left, y: top, width: right - left, height: bottom - top };
+  }
+
+  function selectionBounds() {
+    return (
+      state.layoutBounds ||
+      layoutBoundsFor([currentMonitorRect()]) ||
+      { x: 0, y: 0, width: 1, height: 1 }
+    );
+  }
+
+  /* Local CSS intersection of the global selection with this overlay. */
+  function localSelectionRect() {
+    return state.selection ? globalToLocalRect(state.selection) : null;
+  }
+
+  function clampMovingSelection(rect) {
+    var bounds = selectionBounds();
+    var x = clamp(
+      rect.x,
+      bounds.x,
+      Math.max(bounds.x, bounds.x + bounds.width - rect.width)
+    );
+    var y = clamp(
+      rect.y,
+      bounds.y,
+      Math.max(bounds.y, bounds.y + bounds.height - rect.height)
+    );
+    return {
+      x: Math.round(x),
+      y: Math.round(y),
+      width: rect.width,
+      height: rect.height
+    };
+  }
+
+  function resizeGlobalSelection(drag, point) {
+    var origin = drag.origin;
+    var deltaX = point.x - drag.start.x;
+    var deltaY = point.y - drag.start.y;
+    var bounds = selectionBounds();
+    var min = MIN_SELECTION_PHYSICAL;
+    var left = origin.x;
+    var top = origin.y;
+    var right = origin.x + origin.width;
+    var bottom = origin.y + origin.height;
+    var dir = drag.dir;
+    if (dir.indexOf("w") >= 0) {
+      left = clamp(origin.x + deltaX, bounds.x, right - min);
+    }
+    if (dir.indexOf("e") >= 0) {
+      right = clamp(
+        origin.x + origin.width + deltaX,
+        left + min,
+        bounds.x + bounds.width
+      );
+    }
+    if (dir.indexOf("n") >= 0) {
+      top = clamp(origin.y + deltaY, bounds.y, bottom - min);
+    }
+    if (dir.indexOf("s") >= 0) {
+      bottom = clamp(
+        origin.y + origin.height + deltaY,
+        top + min,
+        bounds.y + bounds.height
+      );
+    }
+    return {
+      x: Math.round(left),
+      y: Math.round(top),
+      width: Math.round(right - left),
+      height: Math.round(bottom - top)
+    };
+  }
+
+  function isCrossScreenSelection() {
+    var selection = state.selection;
+    if (!selection) {
+      return false;
+    }
+    var monitors = state.layout.length ? state.layout : [currentMonitorRect()];
+    var count = 0;
+    for (var index = 0; index < monitors.length; index += 1) {
+      if (globalIntersect(selection, monitorRectOf(monitors[index]))) {
+        count += 1;
+        if (count > 1) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /* Physical monitor layout of the active session (used to clamp cross-monitor
+   * selections and to pick the toolbar owner). */
+  function loadLayout(generation) {
+    if (!API || typeof API.layout !== "function") {
+      return;
+    }
+    Promise.resolve(API.layout()).then(
+      function (result) {
+        if (generation !== state.captureGeneration || state.closed) {
+          return;
+        }
+        if (
+          !result ||
+          !result.ok ||
+          !Array.isArray(result.monitors) ||
+          !result.monitors.length
+        ) {
+          return;
+        }
+        state.layout = result.monitors.map(function (monitor) {
+          return {
+            index: Number(monitor.index) || 0,
+            x: Number(monitor.x) || 0,
+            y: Number(monitor.y) || 0,
+            width: Number(monitor.width) || 0,
+            height: Number(monitor.height) || 0
+          };
+        });
+        state.layoutBounds = result.bounds
+          ? {
+              x: Number(result.bounds.x) || 0,
+              y: Number(result.bounds.y) || 0,
+              width: Number(result.bounds.width) || 0,
+              height: Number(result.bounds.height) || 0
+            }
+          : layoutBoundsFor(state.layout);
+        render();
+      },
+      function () {
+        /* Keep the single-monitor fallback (currentMonitorRect). */
+      }
+    );
+  }
+
+  /* ---- Cross-overlay selection sync (global physical rect) -------------- */
+
+  function broadcastSelection() {
+    if (!API || typeof API.broadcastSelection !== "function") {
+      return;
+    }
+    try {
+      API.broadcastSelection(
+        state.phase,
+        state.phase === "editing" || state.selection
+          ? cloneGlobal(state.selection)
+          : null,
+        state.phase === "editing" ? state.selectionOwner : state.monitor
+      );
+    } catch (error) {
+      /* The other overlays keep their last rendered slice. */
+    }
+  }
+
+  function broadcastSelectionThrottled() {
+    var now = Date.now();
+    if (now - state.broadcastAt >= SELECT_BROADCAST_MS) {
+      state.broadcastAt = now;
+      broadcastSelection();
+      return;
+    }
+    if (state.broadcastTimer) {
+      return;
+    }
+    state.broadcastTimer = window.setTimeout(function () {
+      state.broadcastTimer = 0;
+      state.broadcastAt = Date.now();
+      broadcastSelection();
+    }, SELECT_BROADCAST_MS);
+  }
+
+  /* Applies a selection broadcast from another overlay. Our own echo is a no-op
+   * (same rect), and another page's live preview never interrupts our drag. */
+  function onSelectionState(payload) {
+    if (!payload || state.closed || !state.shotReady) {
+      return;
+    }
+    var phase = payload.phase === "editing" ? "editing" : "selecting";
+    var rect = payload.rect
+      ? {
+          x: Math.round(Number(payload.rect.x) || 0),
+          y: Math.round(Number(payload.rect.y) || 0),
+          width: Math.max(0, Math.round(Number(payload.rect.width) || 0)),
+          height: Math.max(0, Math.round(Number(payload.rect.height) || 0))
+        }
+      : null;
+    if (rect && (rect.width <= 0 || rect.height <= 0)) {
+      rect = null;
+    }
+    if (phase === state.phase && sameGlobalRect(rect, state.selection)) {
+      return;
+    }
+    if (state.drag && phase !== "editing") {
+      return;
+    }
+    var wasEditing = state.phase === "editing";
+    state.phase = phase;
+    state.selection = rect;
+    state.selectionOwner = phase === "editing" ? ownerForRect(rect) : -1;
+    state.hoverLocal = null;
+    state.hoverGlobal = null;
+    document.body.classList.toggle("is-selecting", phase === "selecting");
+    if (!rect) {
+      if (wasEditing) {
+        resetAnnotations();
+      }
+      hideHint();
+    }
+    render();
+  }
+
   /* ---- Rendering ------------------------------------------------------- */
 
   function render() {
     if (!state.shotReady || state.closed) {
       return;
     }
-    if (state.phase === "editing" && state.rect) {
-      updateMask(state.rect);
-      updateSelection(state.rect);
-      updateSizeLabel(state.rect);
-      layoutBar();
-      layoutPalette();
-      layoutFloatingPanels();
-      return;
-    }
-    renderSelecting();
-  }
-
-  /* Selection phase (QQ behavior): dim the screen, punch the snapped window (or
-   * the live drag preview) out of the mask and highlight it. No toolbar and no
-   * resize handles until the selection is confirmed by a click or a release. */
-  function renderSelecting() {
-    var preview = state.previewRect;
-    var hole = preview || state.hoverLocal;
-    updateMask(hole);
-    if (preview && preview.width > 0 && preview.height > 0) {
-      updateSelection(preview);
-      updateSizeLabel(preview);
-      setHidden(dom.selection, false);
-      setHidden(dom.size, false);
-    } else {
-      setHidden(dom.selection, true);
-      setHidden(dom.size, true);
-    }
+    state.rect = localSelectionRect();
+    updateMask(state.rect);
+    updateOutline();
+    updateSizeLabel();
     layoutHover();
-    setHidden(dom.bar, true);
+    updateCrossScreenUi();
+    var ownerPage =
+      state.phase === "editing" &&
+      state.selectionOwner === state.monitor &&
+      !state.drag;
+    setHidden(dom.bar, !ownerPage);
+    if (ownerPage) {
+      layoutBar();
+    }
+    layoutPalette();
+    layoutFloatingPanels();
   }
 
   function layoutHover() {
@@ -1331,7 +1626,7 @@
       return;
     }
     var local = state.hoverLocal;
-    if (state.phase !== "selecting" || !local || state.previewRect) {
+    if (state.phase !== "selecting" || !local || state.selection) {
       setHidden(dom.hover, true);
       return;
     }
@@ -1378,67 +1673,146 @@
     );
   }
 
-  function updateSelection(rect) {
-    if (!rect) {
+  /* Draws this overlay's slice of the selection: an edge appears only where the
+   * real selection border crosses this monitor, and a handle only on the
+   * monitor that contains it. */
+  function updateOutline() {
+    var selection = state.selection;
+    if (!selection) {
+      setHidden(dom.selection, true);
       return;
     }
-    if (dom.selection) {
-      dom.selection.style.left = Math.round(rect.x) + "px";
-      dom.selection.style.top = Math.round(rect.y) + "px";
-      dom.selection.style.width = Math.round(rect.width) + "px";
-      dom.selection.style.height = Math.round(rect.height) + "px";
-    }
-    var centerX = rect.width / 2;
-    var centerY = rect.height / 2;
-    setHandle("nw", rect, 0, 0);
-    setHandle("n", rect, centerX, 0);
-    setHandle("ne", rect, rect.width, 0);
-    setHandle("e", rect, rect.width, centerY);
-    setHandle("se", rect, rect.width, rect.height);
-    setHandle("s", rect, centerX, rect.height);
-    setHandle("sw", rect, 0, rect.height);
-    setHandle("w", rect, 0, centerY);
-  }
-
-  function setHandle(dir, rect, localLeft, localTop) {
+    setHidden(dom.selection, false);
+    var monitor = currentMonitorRect();
+    var dpr = currentDpr();
+    var inter = state.rect;
     var size = viewportSize();
-    var left = clamp(rect.x + localLeft, 6, Math.max(6, size.width - 6)) - rect.x;
-    var top = clamp(rect.y + localTop, 6, Math.max(6, size.height - 6)) - rect.y;
-    for (var index = 0; index < handles.length; index += 1) {
-      var handle = handles[index];
-      if (handle.getAttribute("data-dir") === dir) {
-        handle.style.left = Math.round(left) + "px";
-        handle.style.top = Math.round(top) + "px";
+    var topY = (selection.y - monitor.y) / dpr;
+    var bottomY = (selection.y + selection.height - monitor.y) / dpr;
+    var leftX = (selection.x - monitor.x) / dpr;
+    var rightX = (selection.x + selection.width - monitor.x) / dpr;
+    var edges = {};
+    for (var index = 0; index < dom.edges.length; index += 1) {
+      edges[dom.edges[index].getAttribute("data-edge")] = dom.edges[index];
+    }
+    function placeEdge(node, visible, left, top, width, height) {
+      if (!node) {
         return;
       }
+      if (!visible) {
+        setHidden(node, true);
+        return;
+      }
+      setHidden(node, false);
+      node.style.left = Math.round(left) + "px";
+      node.style.top = Math.round(top) + "px";
+      node.style.width = Math.max(0, Math.round(width)) + "px";
+      node.style.height = Math.max(0, Math.round(height)) + "px";
+    }
+    placeEdge(
+      edges.top,
+      !!inter && topY >= -0.5 && topY <= size.height + 0.5,
+      inter ? inter.x : 0,
+      topY,
+      inter ? inter.width : 0,
+      1.5
+    );
+    placeEdge(
+      edges.bottom,
+      !!inter && bottomY >= -0.5 && bottomY <= size.height + 0.5,
+      inter ? inter.x : 0,
+      bottomY - 1.5,
+      inter ? inter.width : 0,
+      1.5
+    );
+    placeEdge(
+      edges.left,
+      !!inter && leftX >= -0.5 && leftX <= size.width + 0.5,
+      leftX,
+      inter ? inter.y : 0,
+      1.5,
+      inter ? inter.height : 0
+    );
+    placeEdge(
+      edges.right,
+      !!inter && rightX >= -0.5 && rightX <= size.width + 0.5,
+      rightX - 1.5,
+      inter ? inter.y : 0,
+      1.5,
+      inter ? inter.height : 0
+    );
+
+    var centerX = selection.x + selection.width / 2;
+    var centerY = selection.y + selection.height / 2;
+    var points = {
+      nw: [selection.x, selection.y],
+      n: [centerX, selection.y],
+      ne: [selection.x + selection.width, selection.y],
+      e: [selection.x + selection.width, centerY],
+      se: [selection.x + selection.width, selection.y + selection.height],
+      s: [centerX, selection.y + selection.height],
+      sw: [selection.x, selection.y + selection.height],
+      w: [selection.x, centerY]
+    };
+    for (index = 0; index < handles.length; index += 1) {
+      var handle = handles[index];
+      var dir = handle.getAttribute("data-dir");
+      var point = points[dir];
+      if (!point) {
+        setHidden(handle, true);
+        continue;
+      }
+      var localX = (point[0] - monitor.x) / dpr;
+      var localY = (point[1] - monitor.y) / dpr;
+      var visible =
+        state.phase === "editing" &&
+        localX >= -8 &&
+        localY >= -8 &&
+        localX <= size.width + 8 &&
+        localY <= size.height + 8;
+      if (!visible) {
+        setHidden(handle, true);
+        continue;
+      }
+      setHidden(handle, false);
+      handle.style.left = Math.round(localX) + "px";
+      handle.style.top = Math.round(localY) + "px";
     }
   }
 
-  function updateSizeLabel(rect) {
+  function updateSizeLabel() {
     if (!dom.size) {
       return;
     }
-    rect = rect || state.rect;
-    if (!rect) {
+    var selection = state.selection;
+    if (!selection) {
+      setHidden(dom.size, true);
       return;
     }
-    var physical = physicalRect(rect);
-    dom.size.textContent = physical.width + " × " + physical.height;
+    var owner =
+      state.phase === "editing" ? state.selectionOwner : ownerForRect(selection);
+    var inter = state.rect;
+    if (owner !== state.monitor || !inter) {
+      setHidden(dom.size, true);
+      return;
+    }
+    dom.size.textContent = selection.width + " × " + selection.height;
     var size = viewportSize();
     var labelWidth = dom.size.offsetWidth || 88;
     var labelHeight = dom.size.offsetHeight || 22;
-    var left = clamp(rect.x, 4, Math.max(4, size.width - labelWidth - 4));
-    var top = rect.y - labelHeight - 8;
+    var left = clamp(inter.x, 4, Math.max(4, size.width - labelWidth - 4));
+    var top = inter.y - labelHeight - 8;
     if (top < 4) {
-      top = rect.y + 8;
+      top = inter.y + 8;
     }
     if (top + labelHeight > size.height - 4) {
       top = clamp(
-        rect.y - labelHeight - 8,
+        inter.y - labelHeight - 8,
         4,
         Math.max(4, size.height - labelHeight - 4)
       );
     }
+    setHidden(dom.size, false);
     dom.size.style.left = Math.round(left) + "px";
     dom.size.style.top = Math.round(top) + "px";
   }
@@ -1600,6 +1974,289 @@
     );
   }
 
+  /* ---- QQ colour loupe -------------------------------------------------- */
+
+  /* Follows the pointer, magnifies the pixels around it and shows the physical
+   * coordinates + the hex colour. Hidden over the toolbar/panels so it never
+   * covers a button. */
+  function updateLoupe(point, event) {
+    if (!dom.loupe || !state.shotReady || state.closed) {
+      hideLoupe();
+      return;
+    }
+    if (
+      isUiTarget(event && event.target) ||
+      state.pickingColor ||
+      (state.phase === "editing" && state.tool)
+    ) {
+      hideLoupe();
+      return;
+    }
+    positionLoupe(point);
+    state.loupePending = point;
+    if (state.loupeTimer) {
+      return;
+    }
+    state.loupeTimer = window.setTimeout(function () {
+      state.loupeTimer = 0;
+      flushLoupe();
+    }, LOUPE_THROTTLE_MS);
+  }
+
+  function positionLoupe(point) {
+    if (!dom.loupe) {
+      return;
+    }
+    var size = viewportSize();
+    var width = dom.loupe.offsetWidth || 132;
+    var height = dom.loupe.offsetHeight || 200;
+    var left = point.x + 18;
+    var top = point.y + 18;
+    if (left + width > size.width - 4) {
+      left = point.x - width - 18;
+    }
+    if (top + height > size.height - 4) {
+      top = point.y - height - 18;
+    }
+    left = clamp(left, 4, Math.max(4, size.width - width - 4));
+    top = clamp(top, 4, Math.max(4, size.height - height - 4));
+    dom.loupe.style.left = Math.round(left) + "px";
+    dom.loupe.style.top = Math.round(top) + "px";
+  }
+
+  function flushLoupe() {
+    var point = state.loupePending;
+    state.loupePending = null;
+    if (
+      !point ||
+      !dom.loupe ||
+      !dom.loupeCanvas ||
+      !dom.shot ||
+      !state.shotReady ||
+      state.closed
+    ) {
+      return;
+    }
+    var size = viewportSize();
+    var imageWidth = state.imageWidth || size.width;
+    var imageHeight = state.imageHeight || size.height;
+    if (imageWidth <= 0 || imageHeight <= 0) {
+      return;
+    }
+    var scaleX = imageWidth / size.width;
+    var scaleY = imageHeight / size.height;
+    var centerX = clamp(Math.floor(point.x * scaleX), 0, imageWidth - 1);
+    var centerY = clamp(Math.floor(point.y * scaleY), 0, imageHeight - 1);
+    var half = Math.floor(LOUPE_SPAN / 2);
+    var sourceX = centerX - half;
+    var sourceY = centerY - half;
+    var canvas = dom.loupeCanvas;
+    var context = canvas.getContext("2d");
+    if (!context) {
+      return;
+    }
+    var canvasSize = canvas.width || 120;
+    var cell = canvasSize / LOUPE_SPAN;
+    context.imageSmoothingEnabled = false;
+    context.fillStyle = "#000000";
+    context.fillRect(0, 0, canvasSize, canvasSize);
+    var clampedX = Math.max(0, sourceX);
+    var clampedY = Math.max(0, sourceY);
+    var clampedRight = Math.min(imageWidth, sourceX + LOUPE_SPAN);
+    var clampedBottom = Math.min(imageHeight, sourceY + LOUPE_SPAN);
+    if (clampedRight > clampedX && clampedBottom > clampedY) {
+      context.drawImage(
+        dom.shot,
+        clampedX,
+        clampedY,
+        clampedRight - clampedX,
+        clampedBottom - clampedY,
+        (clampedX - sourceX) * cell,
+        (clampedY - sourceY) * cell,
+        (clampedRight - clampedX) * cell,
+        (clampedBottom - clampedY) * cell
+      );
+    }
+    /* Pixel grid, like the QQ loupe. */
+    context.strokeStyle = "rgba(255,255,255,0.10)";
+    context.lineWidth = 1;
+    for (var step = 1; step < LOUPE_SPAN; step += 1) {
+      var offset = Math.round(step * cell) + 0.5;
+      context.beginPath();
+      context.moveTo(offset, 0);
+      context.lineTo(offset, canvasSize);
+      context.stroke();
+      context.beginPath();
+      context.moveTo(0, offset);
+      context.lineTo(canvasSize, offset);
+      context.stroke();
+    }
+    /* The pixel under the pointer gets a highlight box. */
+    context.strokeStyle = "#4f46e5";
+    context.lineWidth = 2;
+    context.strokeRect(
+      Math.round((centerX - sourceX) * cell) + 1,
+      Math.round((centerY - sourceY) * cell) + 1,
+      Math.max(1, cell - 2),
+      Math.max(1, cell - 2)
+    );
+
+    state.loupeColor = samplePixel(centerX, centerY);
+    var physical = localToPhysicalPoint(point);
+    if (dom.loupeCoords) {
+      dom.loupeCoords.textContent =
+        "坐标: (" + Math.round(physical.x) + ", " + Math.round(physical.y) + ")";
+    }
+    if (dom.loupeColor) {
+      dom.loupeColor.textContent = "色值: " + state.loupeColor;
+    }
+    dom.loupe.hidden = false;
+    state.loupeVisible = true;
+    positionLoupe(point);
+  }
+
+  /* Samples one physical pixel from the frozen screenshot (the annotation canvas
+   * sits above it but the loupe sample must use the raw pixels). */
+  function samplePixel(x, y) {
+    if (!state.loupeSampler) {
+      var canvas = document.createElement("canvas");
+      canvas.width = 1;
+      canvas.height = 1;
+      state.loupeSampler = canvas.getContext("2d", {
+        willReadFrequently: true
+      });
+    }
+    var context = state.loupeSampler;
+    if (!context || !dom.shot) {
+      return "#000000";
+    }
+    try {
+      context.clearRect(0, 0, 1, 1);
+      context.drawImage(dom.shot, x, y, 1, 1, 0, 0, 1, 1);
+      var data = context.getImageData(0, 0, 1, 1).data;
+      return (
+        "#" +
+        [data[0], data[1], data[2]]
+          .map(function (value) {
+            return ("0" + value.toString(16)).slice(-2);
+          })
+          .join("")
+          .toUpperCase()
+      );
+    } catch (error) {
+      return "#000000";
+    }
+  }
+
+  function hideLoupe() {
+    state.loupeVisible = false;
+    state.loupePending = null;
+    if (state.loupeTimer) {
+      window.clearTimeout(state.loupeTimer);
+      state.loupeTimer = 0;
+    }
+    if (dom.loupe) {
+      dom.loupe.hidden = true;
+      dom.loupe.classList.remove("is-copied");
+    }
+  }
+
+  /* "C" copies the colour under the pointer (QQ behavior). */
+  function copyLoupeColor() {
+    if (!state.loupeVisible || !state.loupeColor) {
+      return false;
+    }
+    if (API && typeof API.copyText === "function") {
+      try {
+        API.copyText(state.loupeColor);
+      } catch (error) {
+        /* The hint still shows the colour. */
+      }
+    }
+    if (dom.loupeHint) {
+      dom.loupeHint.textContent = "已复制 " + state.loupeColor;
+    }
+    if (dom.loupe) {
+      dom.loupe.classList.add("is-copied");
+    }
+    window.clearTimeout(state.loupeCopyTimer);
+    state.loupeCopyTimer = window.setTimeout(function () {
+      if (dom.loupeHint) {
+        dom.loupeHint.textContent = "按 C 复制色号";
+      }
+      if (dom.loupe) {
+        dom.loupe.classList.remove("is-copied");
+      }
+    }, 1200);
+    return true;
+  }
+
+  /* ---- Cross-monitor selection limits ----------------------------------- */
+
+  /* Annotations and long screenshots are single-monitor features: they are
+   * disabled while the selection spans monitors (the crop itself is stitched by
+   * the shell, see capture_global). */
+  function updateCrossScreenUi() {
+    var cross = state.phase === "editing" && isCrossScreenSelection();
+    var applied = true;
+    for (var index = 0; index < toolButtons.length; index += 1) {
+      if (toolButtons[index].disabled !== cross) {
+        applied = false;
+        break;
+      }
+    }
+    if (cross === state.crossScreen && applied) {
+      return;
+    }
+    state.crossScreen = cross;
+    if (cross && state.tool) {
+      setTool(null);
+      if (editor) {
+        editor.setTool(null);
+      }
+    }
+    if (
+      cross &&
+      editor &&
+      typeof editor.hasAnnotations === "function" &&
+      editor.hasAnnotations()
+    ) {
+      resetAnnotations();
+      toast("跨屏选区暂不支持标注，已清除标注", "info", TOAST_MS);
+    }
+    var toolTitle = "跨屏选区暂不支持标注";
+    each(toolButtons, function (button) {
+      if (cross) {
+        if (button.dataset.originalTitle === undefined) {
+          button.dataset.originalTitle = button.title || "";
+        }
+        button.disabled = true;
+        button.title = toolTitle;
+      } else {
+        button.disabled = false;
+        if (button.dataset.originalTitle !== undefined) {
+          button.title = button.dataset.originalTitle;
+          delete button.dataset.originalTitle;
+        }
+      }
+    });
+    if (dom.longshot) {
+      if (cross) {
+        if (dom.longshot.dataset.originalTitle === undefined) {
+          dom.longshot.dataset.originalTitle = dom.longshot.title || "";
+        }
+        dom.longshot.disabled = true;
+        dom.longshot.title = "跨屏选区暂不支持长截图";
+      } else {
+        dom.longshot.disabled = false;
+        if (dom.longshot.dataset.originalTitle !== undefined) {
+          dom.longshot.title = dom.longshot.dataset.originalTitle;
+          delete dom.longshot.dataset.originalTitle;
+        }
+      }
+    }
+  }
+
   function layoutBar() {
     if (!dom.bar || dom.bar.hidden || !state.rect) {
       return;
@@ -1734,63 +2391,81 @@
     }
     event.preventDefault();
     hideHint();
-    var point = pointFromEvent(event);
+    var point = rawPointFromEvent(event);
     /* QQ behavior: without a confirmed selection the press starts the selection
      * phase (click a snapped window / drag a rectangle); the toolbar is not
      * shown until the release. */
-    if (state.phase !== "editing" || !state.rect) {
+    if (state.phase !== "editing" || !state.selection) {
       startSelecting(point);
       return;
     }
-    setHidden(dom.bar, true);
-
-    /* Inside the selection = pan, except while it fills the viewport: there is
-     * nothing to pan, so the drag starts a fresh rectangle at the press point
-     * (contract §10.2 全屏选区例外). */
-    var moving = pointInRect(point, state.rect) && !selectionCoversViewport();
-    if (!moving) {
-      /* A fresh rectangle drops any stale selection on the other monitor. */
-      announceSelection();
+    /* Inside the visible slice of the selection = pan, except while the slice
+     * fills this viewport: there is nothing to pan, so a fresh rectangle starts
+     * at the press point (contract §10.2 全屏选区例外). */
+    var moving =
+      !!state.rect && pointInRect(point, state.rect) && !selectionCoversViewport();
+    if (moving) {
+      setHidden(dom.bar, true);
+      setHidden(dom.size, true);
+      state.drag = {
+        mode: "move",
+        start: localToPhysicalPoint(point),
+        origin: cloneGlobal(state.selection)
+      };
+      document.body.classList.add("is-dragging", "is-over-selection");
+      return;
     }
-    state.drag = moving
-      ? { mode: "move", start: point, origin: cloneRect(state.rect) }
-      : { mode: "draw", start: point, previous: cloneRect(state.rect) };
-    document.body.classList.add("is-dragging");
-    document.body.classList.toggle("is-over-selection", moving);
-    if (!moving) {
-      state.rect = { x: point.x, y: point.y, width: 0, height: 0 };
-    }
-    render();
+    startSelecting(point);
   }
 
   /* Selection-phase press: the toolbar stays hidden; a click selects the snapped
-   * window, a drag draws a free rectangle (QQ behavior). */
+   * window, a drag draws a free rectangle (QQ behavior). The rectangle and the
+   * press point are stored in GLOBAL physical coordinates, so the drag can leave
+   * this monitor and the other overlays render their slice of it. */
   function startSelecting(point) {
-    announceSelection();
-    state.drag = { mode: "select", start: point, moved: false };
-    state.previewRect = null;
+    broadcastSelectionReset();
+    state.phase = "selecting";
+    state.selection = null;
+    state.selectionOwner = -1;
+    state.rect = null;
+    state.hoverLocal = null;
+    state.hoverGlobal = null;
     state.hoverPending = null;
+    window.clearTimeout(state.hoverTimer);
+    state.hoverTimer = 0;
+    state.drag = {
+      mode: "select",
+      start: localToPhysicalPoint(point),
+      moved: false
+    };
+    resetAnnotations();
     setHidden(dom.bar, true);
+    setHidden(dom.size, true);
     setHidden(dom.hover, true);
-    document.body.classList.add("is-dragging");
-    document.body.classList.remove("is-over-selection");
+    document.body.classList.add("is-dragging", "is-selecting");
+    document.body.classList.remove("is-over-selection", "is-editing");
     render();
   }
 
-  /* Tells the other overlays that this monitor owns the selection now. */
-  function announceSelection() {
-    if (!API || typeof API.announceSelection !== "function") {
+  /* Clears the selection on every overlay (another monitor starts a new one). */
+  function broadcastSelectionReset() {
+    if (!API || typeof API.broadcastSelection !== "function") {
       return;
     }
     try {
-      API.announceSelection(state.monitor);
+      API.broadcastSelection("selecting", null, state.monitor);
     } catch (error) {
-      /* Only affects the stale selection of the other monitor. */
+      /* The other overlays keep their last rendered slice. */
     }
   }
 
   function onHandleMouseDown(event) {
-    if (event.button !== 0 || !canInteract() || state.drag) {
+    if (
+      event.button !== 0 ||
+      state.drag ||
+      state.phase !== "editing" ||
+      !state.selection
+    ) {
       return;
     }
     if (state.tool || state.longshotActive || state.pickingColor) {
@@ -1800,18 +2475,20 @@
     event.stopPropagation();
     hideHint();
     setHidden(dom.bar, true);
+    setHidden(dom.size, true);
     document.body.classList.remove("is-over-selection");
     document.body.classList.add("is-dragging");
     state.drag = {
       mode: "resize",
       dir: this.getAttribute("data-dir") || "se",
-      start: pointFromEvent(event),
-      origin: cloneRect(state.rect)
+      start: localToPhysicalPoint(rawPointFromEvent(event)),
+      origin: cloneGlobal(state.selection)
     };
   }
 
   function onMouseMove(event) {
-    var point = pointFromEvent(event);
+    var point = rawPointFromEvent(event);
+    updateLoupe(point, event);
     if (
       state.drag &&
       typeof event.buttons === "number" &&
@@ -1823,59 +2500,47 @@
       return;
     }
     if (state.drag) {
+      var current = localToPhysicalPoint(point);
       if (state.drag.mode === "select") {
-        var deltaX = point.x - state.drag.start.x;
-        var deltaY = point.y - state.drag.start.y;
-        if (Math.abs(deltaX) < CLICK_SLOP && Math.abs(deltaY) < CLICK_SLOP) {
+        var slop = CLICK_SLOP * currentDpr();
+        var deltaX = Math.abs(current.x - state.drag.start.x);
+        var deltaY = Math.abs(current.y - state.drag.start.y);
+        if (deltaX < slop && deltaY < slop) {
           state.drag.moved = false;
-          state.previewRect = null;
+          state.selection = null;
         } else {
           state.drag.moved = true;
-          state.previewRect = rectFromPoints(state.drag.start, point);
+          state.selection = normalizeGlobalRect(state.drag.start, current);
         }
+        state.selectionOwner = -1;
         render();
+        broadcastSelectionThrottled();
         return;
       }
       if (state.drag.mode === "move") {
-        state.rect = movedRect(
-          state.drag.origin,
-          point.x - state.drag.start.x,
-          point.y - state.drag.start.y
-        );
-      } else if (state.drag.mode === "draw") {
-        state.rect = rectFromPoints(state.drag.start, point);
+        state.selection = clampMovingSelection({
+          x: state.drag.origin.x + (current.x - state.drag.start.x),
+          y: state.drag.origin.y + (current.y - state.drag.start.y),
+          width: state.drag.origin.width,
+          height: state.drag.origin.height
+        });
       } else {
-        state.rect = resizeRectFromDrag(state.drag, point);
+        state.selection = resizeGlobalSelection(state.drag, current);
       }
+      state.selectionOwner = ownerForRect(state.selection);
       render();
+      broadcastSelectionThrottled();
       return;
     }
-    if (state.phase !== "editing" || !state.rect) {
+    if (state.phase !== "editing" || !state.selection) {
       /* Selection phase: follow the window under the pointer (QQ snapping). */
       requestHover(point);
       document.body.classList.remove("is-over-selection");
       return;
     }
-    if (!canInteract()) {
-      document.body.classList.remove("is-over-selection");
-      return;
-    }
-    if (
-      editor &&
-      typeof editor.isInteracting === "function" &&
-      editor.isInteracting()
-    ) {
-      document.body.classList.remove("is-over-selection");
-      return;
-    }
-    if (state.tool || state.longshotActive || state.pickingColor) {
-      document.body.classList.remove("is-over-selection");
-      return;
-    }
-    document.body.classList.toggle(
-      "is-over-selection",
-      pointInRect(point, state.rect) && !selectionCoversViewport()
-    );
+    var over =
+      !!state.rect && pointInRect(point, state.rect) && !selectionCoversViewport();
+    document.body.classList.toggle("is-over-selection", over);
   }
 
   function onMouseUp(event) {
@@ -1886,52 +2551,59 @@
     if (drag.mode === "select") {
       state.drag = null;
       document.body.classList.remove("is-dragging");
-      var size = viewportSize();
-      var rect = null;
+      var rect = state.selection;
       if (
         drag.moved &&
-        state.previewRect &&
-        state.previewRect.width >= MIN_SIZE &&
-        state.previewRect.height >= MIN_SIZE
+        rect &&
+        rect.width >= MIN_SELECTION_PHYSICAL &&
+        rect.height >= MIN_SELECTION_PHYSICAL
       ) {
-        rect = state.previewRect;
-      } else if (state.hoverLocal) {
-        /* Click on a snapped window: select exactly that window. */
-        rect = cloneRect(state.hoverLocal);
-      } else {
-        /* Click on the empty desktop: full screen (QQ behavior). */
-        rect = { x: 0, y: 0, width: size.width, height: size.height };
+        enterEditing(cloneGlobal(rect));
+        return;
       }
-      enterEditing(rect);
+      /* Click: the snapped window (the whole rect, which may span monitors) or
+       * the full screen under the pointer when nothing is snapped. */
+      enterEditing(
+        cloneGlobal(state.hoverGlobal || monitorRectOf(currentMonitorRect()))
+      );
       return;
     }
     state.drag = null;
     document.body.classList.remove("is-dragging");
-    if (
-      drag.mode === "draw" &&
-      (!state.rect || state.rect.width < MIN_SIZE || state.rect.height < MIN_SIZE)
-    ) {
-      state.rect = drag.previous;
-    }
-    setHidden(dom.bar, false);
+    state.selectionOwner = ownerForRect(state.selection);
+    setHidden(dom.bar, state.selectionOwner !== state.monitor);
     updateBarState();
     render();
+    broadcastSelection();
     if (event && typeof event.clientX === "number") {
+      var point = pointFromEvent(event);
       document.body.classList.toggle(
         "is-over-selection",
-        pointInRect(pointFromEvent(event), state.rect) &&
-          !selectionCoversViewport()
+        !!state.rect && pointInRect(point, state.rect) && !selectionCoversViewport()
       );
     }
   }
 
   /* Confirms a selection: switch to the editing phase so the toolbar, handles
-   * and annotation layer become available (QQ behavior). */
+   * and annotation layer become available (QQ behavior). The rect is a global
+   * physical rect; every overlay renders its own slice. */
   function enterEditing(rect) {
-    state.rect = rect;
+    if (!rect) {
+      return;
+    }
+    var width = Math.max(MIN_SELECTION_PHYSICAL, Math.round(rect.width));
+    var height = Math.max(MIN_SELECTION_PHYSICAL, Math.round(rect.height));
+    var clamped = clampMovingSelection({
+      x: Math.round(rect.x),
+      y: Math.round(rect.y),
+      width: width,
+      height: height
+    });
+    state.selection = clamped;
     state.phase = "editing";
+    state.selectionOwner = ownerForRect(clamped);
+    state.rect = localSelectionRect();
     state.drag = null;
-    state.previewRect = null;
     state.hoverLocal = null;
     state.hoverGlobal = null;
     state.hoverPending = null;
@@ -1942,57 +2614,30 @@
       "is-dragging",
       "is-over-selection"
     );
+    document.body.classList.add("is-editing");
     setHidden(dom.hover, true);
-    setHidden(dom.selection, false);
-    setHidden(dom.size, false);
-    setHidden(dom.bar, false);
+    resetAnnotations();
     updateBarState();
     render();
-    showHint(EDIT_HINT);
+    broadcastSelection();
+    if (state.selectionOwner === state.monitor) {
+      showHint(EDIT_HINT);
+    }
   }
 
   function onWindowResize() {
     var size = viewportSize();
     /* Ignore transient degenerate viewports (window restore, headless
-     * screenshot emulation): scaling the selection from a 1x1 frame would
-     * blow it back up to the whole screen. */
+     * screenshot emulation). */
     if (size.width < 32 || size.height < 32) {
       return;
     }
-    if (state.phase !== "editing" || !state.rect) {
-      /* Selection phase: there is no rect to scale; the snapped window is
-       * derived from the previous viewport, so drop it and let the next
-       * mousemove re-snap it. */
-      state.viewWidth = size.width;
-      state.viewHeight = size.height;
-      state.previewRect = null;
-      state.hoverLocal = null;
-      state.hoverGlobal = null;
-      state.hoverPending = null;
-      render();
-      return;
-    }
-    if (state.viewWidth >= 32 && state.viewHeight >= 32) {
-      var scaleX = size.width / state.viewWidth;
-      var scaleY = size.height / state.viewHeight;
-      state.rect = {
-        x: state.rect.x * scaleX,
-        y: state.rect.y * scaleY,
-        width: state.rect.width * scaleX,
-        height: state.rect.height * scaleY
-      };
-    } else {
-      /* The page booted with a degenerate viewport (the shell may set the
-       * window size after creating it): the selection has to follow the
-       * settled size. */
-      state.rect = { x: 0, y: 0, width: size.width, height: size.height };
-    }
     state.viewWidth = size.width;
     state.viewHeight = size.height;
-    state.rect.x = clamp(state.rect.x, 0, Math.max(0, size.width - MIN_SIZE));
-    state.rect.y = clamp(state.rect.y, 0, Math.max(0, size.height - MIN_SIZE));
-    state.rect.width = clamp(state.rect.width, MIN_SIZE, size.width - state.rect.x);
-    state.rect.height = clamp(state.rect.height, MIN_SIZE, size.height - state.rect.y);
+    state.rect = localSelectionRect();
+    state.hoverLocal = null;
+    state.hoverGlobal = null;
+    state.hoverPending = null;
     render();
   }
 
@@ -2002,12 +2647,14 @@
     if (!event || event.relatedTarget) {
       return;
     }
+    hideLoupe();
     if (state.phase === "selecting" && !state.drag) {
       clearHover();
     }
   }
 
   function onWindowBlur() {
+    hideLoupe();
     if (!state.drag) {
       return;
     }
@@ -2015,12 +2662,17 @@
       /* The snap interaction was interrupted: drop the preview, stay in the
        * selection phase. */
       state.drag = null;
-      state.previewRect = null;
+      state.selection = null;
       document.body.classList.remove("is-dragging");
       render();
+      broadcastSelectionReset();
       return;
     }
-    onMouseUp(null);
+    state.drag = null;
+    document.body.classList.remove("is-dragging");
+    state.selectionOwner = ownerForRect(state.selection);
+    render();
+    broadcastSelection();
   }
 
   function onKeyDown(event) {
@@ -2044,6 +2696,14 @@
       if (lower === "y" || (lower === "z" && event.shiftKey)) {
         event.preventDefault();
         editor.redo();
+        return;
+      }
+    }
+
+    /* QQ colour loupe: "C" copies the colour currently under the pointer. */
+    if (!typing && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      if (key.toLowerCase() === "c" && copyLoupeColor()) {
+        event.preventDefault();
         return;
       }
     }
@@ -2219,7 +2879,7 @@
     var annotations = exportAnnotations();
     var request;
     try {
-      request = API.copy(state.monitor, physicalRect(), annotations);
+      request = API.copy(state.monitor, physicalRect(), annotations, state.selection);
     } catch (error) {
       request = Promise.reject(error);
     }
@@ -2268,7 +2928,8 @@
         action,
         skillId || "",
         state.targetLang || "auto",
-        annotations
+        annotations,
+        state.selection
       );
     } catch (error) {
       request = Promise.reject(error);
@@ -3270,7 +3931,7 @@
     var annotations = exportAnnotations();
     var request;
     try {
-      request = API.pin(state.monitor, physicalRect(), annotations);
+      request = API.pin(state.monitor, physicalRect(), annotations, state.selection);
     } catch (error) {
       request = Promise.reject(error);
     }
@@ -3394,6 +4055,12 @@
       return;
     }
     if (!canInteract() || state.busy || state.longshotActive) {
+      return;
+    }
+    /* Long screenshots scroll a single monitor window: a cross-monitor
+     * selection has no well-defined scroll target. */
+    if (isCrossScreenSelection()) {
+      toast("跨屏选区暂不支持长截图", "info", 1800);
       return;
     }
     var api = getLongshotApi();

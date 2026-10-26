@@ -2099,16 +2099,19 @@
     ready: function (index) {
       return safeInvoke("capture_ready", { index: Number(index) || 0 });
     },
-    copy: function (index, rect, annotations) {
+    /* `globalRect` (physical virtual-screen rect) is the authoritative crop for
+     * cross-monitor selections; the shell falls back to index+rect when absent. */
+    copy: function (index, rect, annotations, globalRect) {
       return safeInvoke("capture_copy", {
         index: Number(index) || 0,
         rect: rect || {},
         annotations: annotations ? String(annotations) : "",
+        globalRect: globalRect || null,
       });
     },
     /* Runs a panel skill on the selected region: the shell copies the image to
      * the clipboard, closes the overlays and shows the result in the picker. */
-    skill: function (requestId, index, rect, action, skillId, targetLang, annotations) {
+    skill: function (requestId, index, rect, action, skillId, targetLang, annotations, globalRect) {
       return safeInvoke("capture_skill", {
         requestId: String(requestId == null ? "" : requestId),
         index: Number(index) || 0,
@@ -2117,14 +2120,16 @@
         skillId: String(skillId == null ? "" : skillId),
         targetLang: String(targetLang == null ? "" : targetLang),
         annotations: annotations ? String(annotations) : "",
+        globalRect: globalRect || null,
       });
     },
     /* Pins the annotated region as a new always-on-top window (contract §11.5). */
-    pin: function (index, rect, annotations) {
+    pin: function (index, rect, annotations, globalRect) {
       return safeInvoke("capture_pin", {
         index: Number(index) || 0,
         rect: rect || {},
         annotations: annotations ? String(annotations) : "",
+        globalRect: globalRect || null,
       });
     },
     /* Captures a scrolling long screenshot of the selected region (§11.6). */
@@ -2165,6 +2170,19 @@
     close: function () {
       return safeInvoke("capture_close", {});
     },
+    /* Physical layout of every monitor in the active capture session
+     * (`{ok, monitors:[{index,x,y,width,height}], bounds}`); the overlay uses it
+     * to clamp cross-monitor selections and to decide which monitor hosts the
+     * toolbar. */
+    layout: function () {
+      return safeInvoke("capture_layout", {});
+    },
+    /* Writes plain text to the system clipboard (QQ loupe: copy the colour). */
+    copyText: function (text) {
+      return safeInvoke("capture_copy_text", {
+        text: String(text == null ? "" : text),
+      });
+    },
     /* Selection phase (QQ-style window snapping): the top-level window under the
      * physical screen point, so the overlay can highlight ("snap") it. Resolves
      * to `{ok, rect: {x, y, width, height} | null}`. */
@@ -2180,25 +2198,30 @@
     cursor: function () {
       return safeInvoke("capture_cursor", {});
     },
-    /* Broadcast to every overlay page that `monitor` starts a new selection, so
-     * the other pages drop their previous selection (only one monitor may own a
-     * selection at a time, QQ behavior). */
-    announceSelection: function (monitor) {
+    /* Broadcasts the current selection to every overlay page: `phase` is
+     * "selecting" (no confirmed selection, or a live drag preview) / "editing",
+     * `rect` is the GLOBAL physical rect (null while nothing is selected) and
+     * `owner` the monitor that hosts the toolbar (the one under the selection's
+     * bottom-right corner). Every overlay renders its own slice of that rect, so
+     * a selection can span several monitors and move across them (QQ behavior). */
+    broadcastSelection: function (phase, rect, owner) {
       if (!LIVE || !eventApi || typeof eventApi.emit !== "function") {
         return Promise.resolve();
       }
       try {
         return Promise.resolve(
-          eventApi.emit("capture-selection-owner", {
-            owner: Number(monitor) || 0,
+          eventApi.emit("capture-selection-state", {
+            phase: phase === "editing" ? "editing" : "selecting",
+            rect: rect || null,
+            owner: Number(owner) || 0,
           })
         );
       } catch (error) {
         return Promise.resolve();
       }
     },
-    onSelectionOwner: function (callback) {
-      return subscribe("capture-selection-owner", function (payload) {
+    onSelectionState: function (callback) {
+      return subscribe("capture-selection-state", function (payload) {
         if (typeof callback === "function") {
           callback(payload);
         }

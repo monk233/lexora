@@ -43,6 +43,12 @@
 //! ([`Stitched`], [`find_overlap`], [`frames_identical`]) while the user scrolls
 //! the target application themselves. The old automatic `capture_longshot` is
 //! deprecated but kept for debugging.
+//!
+//! Round 23 adds cross-monitor selections: the capture page keeps its selection
+//! in global virtual-screen coordinates ([`GlobalRect`]), `capture_layout`
+//! reports the physical monitor layout ([`LayoutSnapshot`]), and
+//! [`CaptureService::crop_global`] stitches the frozen monitor images into one
+//! crop, black where no monitor covers the virtual screen.
 
 use std::collections::HashSet;
 use std::io::Cursor;
@@ -74,6 +80,10 @@ const OVERLAY_FALLBACK_DELAY: Duration = Duration::from_millis(2_500);
 /// JPEG quality of the overlay display image (contract §10.1). Crop/vision
 /// requests keep using the original lossless RGBA pixels.
 const DISPLAY_JPEG_QUALITY: u8 = 85;
+/// Upper bound for a cross-monitor crop in physical pixels: four 4K monitors
+/// are ~33 M pixels, so this only rejects a bogus renderer-provided rect before
+/// it allocates gigabytes.
+const MAX_GLOBAL_CROP_PIXELS: u64 = 64_000_000;
 /// Event carrying one screenshot result panel (`picker-image`, contract §10.5).
 const EVENT_PICKER_IMAGE: &str = "picker-image";
 /// Event carrying the streamed chunks of a screenshot skill (contract §10.3).
@@ -135,6 +145,41 @@ pub struct HitRect {
     pub y: f64,
     pub width: f64,
     pub height: f64,
+}
+
+/// A physical-pixel rectangle in virtual-screen coordinates, spanning any
+/// monitors. The capture page sends this for a cross-monitor selection; the
+/// legacy [`HitRect`] is relative to one captured monitor and keeps working
+/// for single-monitor selections (contract §10.3).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct GlobalRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Physical geometry of one captured monitor; part of [`LayoutSnapshot`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonitorSnapshot {
+    pub index: u32,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Monitor layout of the active capture session: one entry per captured monitor
+/// plus the bounding box of the whole virtual screen. `capture_layout` sends
+/// this to the capture page so a selection can be kept in global physical
+/// coordinates while the per-monitor overlays paint it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LayoutSnapshot {
+    pub monitors: Vec<MonitorSnapshot>,
+    pub bounds: GlobalRect,
 }
 
 /// First frame + physical geometry of a manual-scroll long screenshot
@@ -686,6 +731,27 @@ impl CaptureService {
         }))
     }
 
+    /// Physical monitor layout + virtual-screen bounds of the active capture
+    /// session. `None` when no session is armed: the capture page then reports
+    /// "not ready" and waits for the next screenshot.
+    pub fn layout_snapshot(&self) -> Option<LayoutSnapshot> {
+        let guard = lock(&self.session);
+        let session = guard.as_ref()?;
+        let monitors: Vec<MonitorSnapshot> = session
+            .shots
+            .iter()
+            .map(|shot| MonitorSnapshot {
+                index: shot.index,
+                x: shot.x,
+                y: shot.y,
+                width: shot.width,
+                height: shot.height,
+            })
+            .collect();
+        let bounds = layout_bounds(&monitors)?;
+        Some(LayoutSnapshot { monitors, bounds })
+    }
+
     /// Crops the selected region of the session image. The image is shared with
     /// the retry/follow-up data, so the annotation layer is only composited into
     /// the returned copy (contract §11.4).
@@ -711,17 +777,52 @@ impl CaptureService {
         Ok(image)
     }
 
-    /// Copies the cropped region to the clipboard (with the annotation layer
+    /// Crops a cross-monitor selection: the output is `rect.width`×`rect.height`
+    /// physical pixels, filled black and stitched from every captured monitor
+    /// that intersects the rect (contract §10.3). Virtual-screen gaps without a
+    /// monitor stay black, exactly like the frozen screenshot.
+    pub fn crop_global(&self, rect: &GlobalRect) -> Result<RgbaImage, EngineError> {
+        let guard = lock(&self.session);
+        let Some(session) = guard.as_ref() else {
+            return Err(not_ready_error());
+        };
+        stitch_global(&session.shots, rect)
+    }
+
+    /// Crops the selection for export: a `global_rect` takes the cross-monitor
+    /// stitcher, otherwise the legacy single-monitor `index` + [`HitRect`] path
+    /// is used. The annotation layer is composited over the crop either way
+    /// (contract §11.4).
+    pub fn crop_selection(
+        &self,
+        index: u32,
+        rect: &HitRect,
+        annotations: Option<String>,
+        global_rect: Option<&GlobalRect>,
+    ) -> Result<RgbaImage, EngineError> {
+        match global_rect {
+            Some(global) => {
+                let mut image = self.crop_global(global)?;
+                composite_annotations(&mut image, annotations)?;
+                Ok(image)
+            }
+            None => self.crop_region(index, rect, annotations),
+        }
+    }
+
+    /// Copies the cropped selection to the clipboard (with the annotation layer
     /// composited), then hides the capture UI (the overlay windows stay reusable
-    /// for the next capture).
+    /// for the next capture). A `global_rect` copies a cross-monitor selection
+    /// stitched by [`CaptureService::crop_global`].
     pub fn copy(
         &self,
         app: &AppHandle,
         index: u32,
         rect: &HitRect,
         annotations: Option<String>,
+        global_rect: Option<&GlobalRect>,
     ) -> Result<(), EngineError> {
-        let cropped = self.crop_region(index, rect, annotations)?;
+        let cropped = self.crop_selection(index, rect, annotations, global_rect)?;
         let (width, height) = cropped.dimensions();
         let image = tauri::image::Image::new_owned(cropped.into_raw(), width, height);
         app.clipboard().write_image(&image).map_err(|error| {
@@ -735,8 +836,10 @@ impl CaptureService {
     }
 
     /// Runs a panel skill on the selected region and switches to the picker
-    /// result panel (contract §10.3, steps 1–6). All validation happens before
-    /// any side effect, so an invalid request leaves the overlays untouched.
+    /// result panel (contract §10.3, steps 1–6). A `global_rect` runs the skill
+    /// on a cross-monitor selection; otherwise the legacy single-monitor path is
+    /// kept. All validation happens before any side effect, so an invalid
+    /// request leaves the overlays untouched.
     pub fn skill(
         &self,
         app: &AppHandle,
@@ -747,6 +850,7 @@ impl CaptureService {
         target_lang: Option<String>,
         request_id: Option<String>,
         annotations: Option<String>,
+        global_rect: Option<&GlobalRect>,
     ) -> Result<CaptureJob, EngineError> {
         let settings = settings_of(app)?;
         let action = SkillAction::parse(action).ok_or_else(|| {
@@ -766,8 +870,19 @@ impl CaptureService {
             &requested_target,
         )?;
 
-        // 1. Crop the region from the captured monitor.
-        let (image, data_url, anchor, scale) = {
+        // 1. Crop the selection from the captured monitor(s). A cross-monitor
+        //    selection is stitched in virtual-screen coordinates; the legacy
+        //    index + HitRect path crops one monitor and keeps its anchor there.
+        let (image, data_url, anchor, scale) = if let Some(global) = global_rect {
+            let mut image = self.crop_global(global)?;
+            // The annotation layer is rasterized on the fly; clipboard and the
+            // AI request always use the composited image (contract §11.4).
+            composite_annotations(&mut image, annotations)?;
+            let data_url = png_data_url(&image)?;
+            let anchor = global_anchor(global);
+            let scale = crate::win32::monitor_scale_factor(anchor.0, anchor.1);
+            (image, data_url, anchor, scale)
+        } else {
             let guard = lock(&self.session);
             let Some(session) = guard.as_ref() else {
                 return Err(not_ready_error());
@@ -2398,6 +2513,109 @@ fn crop_image(image: &RgbaImage, rect: &HitRect) -> Result<RgbaImage, EngineErro
     Ok(image::imageops::crop_imm(image, x, y, width, height).to_image())
 }
 
+/// Bounding box of every captured monitor, in virtual-screen physical pixels.
+fn layout_bounds(monitors: &[MonitorSnapshot]) -> Option<GlobalRect> {
+    let mut iter = monitors.iter();
+    let first = iter.next()?;
+    let mut left = i64::from(first.x);
+    let mut top = i64::from(first.y);
+    let mut right = left + i64::from(first.width);
+    let mut bottom = top + i64::from(first.height);
+    for monitor in iter {
+        let monitor_left = i64::from(monitor.x);
+        let monitor_top = i64::from(monitor.y);
+        left = left.min(monitor_left);
+        top = top.min(monitor_top);
+        right = right.max(monitor_left + i64::from(monitor.width));
+        bottom = bottom.max(monitor_top + i64::from(monitor.height));
+    }
+    Some(GlobalRect {
+        x: i32::try_from(left).unwrap_or(i32::MIN),
+        y: i32::try_from(top).unwrap_or(i32::MIN),
+        width: u32::try_from((right - left).max(0)).unwrap_or(u32::MAX),
+        height: u32::try_from((bottom - top).max(0)).unwrap_or(u32::MAX),
+    })
+}
+
+/// Physical screen point used to anchor the picker after a cross-monitor
+/// selection: the last pixel of the selection (bottom-right corner, inclusive).
+fn global_anchor(rect: &GlobalRect) -> (i32, i32) {
+    let last_x = i64::from(rect.x) + i64::from(rect.width) - 1;
+    let last_y = i64::from(rect.y) + i64::from(rect.height) - 1;
+    let clamp = |value: i64| value.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+    (clamp(last_x), clamp(last_y))
+}
+
+/// Stitches a renderer-provided virtual-screen rect out of the captured monitor
+/// images. Pixels not covered by any monitor stay black, so the result looks
+/// like the frozen screenshot (contract §10.3).
+fn stitch_global(shots: &[Shot], rect: &GlobalRect) -> Result<RgbaImage, EngineError> {
+    let pixels = u64::from(rect.width) * u64::from(rect.height);
+    if pixels == 0 {
+        return Err(invalid_global_rect_error());
+    }
+    if pixels > MAX_GLOBAL_CROP_PIXELS {
+        return Err(global_rect_too_large_error());
+    }
+    let selection = (
+        i64::from(rect.x),
+        i64::from(rect.y),
+        rect.width,
+        rect.height,
+    );
+    let mut output = RgbaImage::from_pixel(rect.width, rect.height, image::Rgba([0, 0, 0, 255]));
+    for shot in shots {
+        // The grabbed bitmap owns the pixel area; the image size is authoritative
+        // for the source crop (the monitor geometry only provides the origin).
+        let monitor = (
+            i64::from(shot.x),
+            i64::from(shot.y),
+            shot.image.width(),
+            shot.image.height(),
+        );
+        let Some((left, top, width, height)) = intersect_rects(selection, monitor) else {
+            continue;
+        };
+        let source = image::imageops::crop_imm(
+            &shot.image,
+            (left - i64::from(shot.x)) as u32,
+            (top - i64::from(shot.y)) as u32,
+            width,
+            height,
+        )
+        .to_image();
+        image::imageops::replace(
+            &mut output,
+            &source,
+            left - i64::from(rect.x),
+            top - i64::from(rect.y),
+        );
+    }
+    Ok(output)
+}
+
+/// Intersection of two physical-pixel rectangles in virtual-screen coordinates,
+/// `None` when they do not overlap. Coordinates are `i64` so renderer-provided
+/// extremes cannot overflow.
+fn intersect_rects(
+    a: (i64, i64, u32, u32),
+    b: (i64, i64, u32, u32),
+) -> Option<(i64, i64, u32, u32)> {
+    let left = a.0.max(b.0);
+    let top = a.1.max(b.1);
+    let right = (a.0 + i64::from(a.2)).min(b.0 + i64::from(b.2));
+    let bottom = (a.1 + i64::from(a.3)).min(b.1 + i64::from(b.3));
+    if right <= left || bottom <= top {
+        return None;
+    }
+    Some((
+        left,
+        top,
+        u32::try_from(right - left).ok()?,
+        u32::try_from(bottom - top).ok()?,
+    ))
+}
+
 /// Physical screen position of the bottom-right corner of a clamped selection.
 /// Kept one pixel inside the captured monitor: a selection ending exactly on a
 /// monitor edge must not resolve to the neighbouring monitor's work area.
@@ -2548,6 +2766,16 @@ fn not_ready_error() -> EngineError {
         "截图尚未准备好。",
         "请稍候片刻再试，或重新发起截图（快捷键）。",
     )
+}
+
+/// Error for a renderer-provided global rect that covers no pixel.
+fn invalid_global_rect_error() -> EngineError {
+    EngineError::new("选区无效。", "请重新框选一个有效的区域后再试。")
+}
+
+/// Error for a renderer-provided global rect that would exhaust memory.
+fn global_rect_too_large_error() -> EngineError {
+    EngineError::new("选区过大。", "请缩小选区后再试。")
 }
 
 /// Error returned when a screenshot is triggered while another one is still
@@ -3020,6 +3248,28 @@ mod tests {
         }
     }
 
+    /// Shot with a solid colour, used to tell monitors apart when stitching.
+    fn solid_shot(index: u32, x: i32, y: i32, width: u32, height: u32, color: [u8; 4]) -> Shot {
+        Shot {
+            index,
+            x,
+            y,
+            width,
+            height,
+            image: RgbaImage::from_pixel(width, height, Rgba(color)),
+            display_url: "data:image/jpeg;base64,AA==".to_string(),
+        }
+    }
+
+    fn service_with_shots(shots: Vec<Shot>) -> CaptureService {
+        let service = CaptureService::new();
+        *lock(&service.session) = Some(Session {
+            shots,
+            preset: None,
+        });
+        service
+    }
+
     #[test]
     fn capture_session_marks_the_service_as_active() {
         // Contract §11.11.2: a session means the overlays are armed/shown, so a
@@ -3273,6 +3523,201 @@ mod tests {
             }
         )
         .is_err());
+    }
+
+    #[test]
+    fn crop_global_stitches_a_selection_across_two_monitors() {
+        // Two 10x10 monitors side by side: a 10 px selection starting in the
+        // middle takes 5 px from each one (half-open rects).
+        let service = service_with_shots(vec![
+            solid_shot(0, 0, 0, 10, 10, [255, 0, 0, 255]),
+            solid_shot(1, 10, 0, 10, 10, [0, 255, 0, 255]),
+        ]);
+        let image = service
+            .crop_global(&GlobalRect {
+                x: 5,
+                y: 0,
+                width: 10,
+                height: 3,
+            })
+            .unwrap();
+        assert_eq!(image.dimensions(), (10, 3));
+        for x in 0..5 {
+            assert_eq!(*image.get_pixel(x, 1), Rgba([255, 0, 0, 255]), "x={x}");
+        }
+        for x in 5..10 {
+            assert_eq!(*image.get_pixel(x, 1), Rgba([0, 255, 0, 255]), "x={x}");
+        }
+        assert_eq!(*image.get_pixel(4, 0), Rgba([255, 0, 0, 255]));
+        assert_eq!(*image.get_pixel(5, 0), Rgba([0, 255, 0, 255]));
+    }
+
+    #[test]
+    fn crop_global_clamps_to_monitor_bounds_and_fills_gaps_black() {
+        // An L-shaped desk layout: the 10 px virtual gap between the monitors
+        // has no captured pixels and must stay black like a real screenshot.
+        let service = service_with_shots(vec![
+            solid_shot(0, 0, 0, 10, 10, [10, 20, 30, 255]),
+            solid_shot(1, 20, 0, 10, 10, [40, 50, 60, 255]),
+        ]);
+        let image = service
+            .crop_global(&GlobalRect {
+                x: -5,
+                y: 2,
+                width: 40,
+                height: 4,
+            })
+            .unwrap();
+        assert_eq!(image.dimensions(), (40, 4));
+        // Before the virtual screen (global x < 0).
+        assert_eq!(*image.get_pixel(4, 0), Rgba([0, 0, 0, 255]));
+        // First monitor: global x 0..10 → output x 5..15.
+        assert_eq!(*image.get_pixel(5, 0), Rgba([10, 20, 30, 255]));
+        assert_eq!(*image.get_pixel(14, 3), Rgba([10, 20, 30, 255]));
+        // Uncovered gap: global x 10..20 → output x 15..25.
+        assert_eq!(*image.get_pixel(15, 0), Rgba([0, 0, 0, 255]));
+        assert_eq!(*image.get_pixel(24, 3), Rgba([0, 0, 0, 255]));
+        // Second monitor: global x 20..30 → output x 25..35.
+        assert_eq!(*image.get_pixel(25, 0), Rgba([40, 50, 60, 255]));
+        assert_eq!(*image.get_pixel(34, 3), Rgba([40, 50, 60, 255]));
+        // Selection extends past the last monitor: black again.
+        assert_eq!(*image.get_pixel(35, 0), Rgba([0, 0, 0, 255]));
+        assert_eq!(*image.get_pixel(39, 3), Rgba([0, 0, 0, 255]));
+    }
+
+    #[test]
+    fn crop_global_requires_a_session_and_rejects_invalid_rects() {
+        let rect = GlobalRect {
+            x: 0,
+            y: 0,
+            width: 4,
+            height: 4,
+        };
+        // No session → the usual "not ready" wording.
+        let error = CaptureService::new().crop_global(&rect).unwrap_err();
+        assert_eq!(error.message, "截图尚未准备好。");
+
+        let service = service_with_shots(vec![test_shot()]);
+        let empty = GlobalRect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        };
+        assert_eq!(
+            service.crop_global(&empty).unwrap_err().message,
+            "选区无效。"
+        );
+        let zero_height = GlobalRect {
+            x: 0,
+            y: 0,
+            width: 4,
+            height: 0,
+        };
+        assert!(service.crop_global(&zero_height).is_err());
+        // A bogus renderer rect is rejected before it allocates gigabytes.
+        let huge = GlobalRect {
+            x: 0,
+            y: 0,
+            width: 20_000,
+            height: 20_000,
+        };
+        assert_eq!(
+            service.crop_global(&huge).unwrap_err().message,
+            "选区过大。"
+        );
+    }
+
+    #[test]
+    fn monitor_rects_only_intersect_when_they_overlap() {
+        assert_eq!(
+            intersect_rects((0, 0, 10, 10), (5, 5, 10, 10)),
+            Some((5, 5, 5, 5))
+        );
+        // Touching edges do not overlap (half-open rects).
+        assert_eq!(intersect_rects((0, 0, 10, 10), (10, 0, 10, 10)), None);
+        assert_eq!(intersect_rects((-20, -10, 20, 10), (0, 0, 10, 10)), None);
+    }
+
+    #[test]
+    fn layout_snapshot_reports_monitor_geometry_and_bounds() {
+        let service = service_with_shots(vec![
+            solid_shot(0, 0, 0, 10, 10, [0, 0, 0, 255]),
+            solid_shot(1, 10, 0, 10, 10, [0, 0, 0, 255]),
+        ]);
+        let snapshot = service.layout_snapshot().unwrap();
+        assert_eq!(snapshot.monitors.len(), 2);
+        assert_eq!(snapshot.monitors[0].index, 0);
+        assert_eq!(snapshot.monitors[1].x, 10);
+        assert_eq!(
+            snapshot.bounds,
+            GlobalRect {
+                x: 0,
+                y: 0,
+                width: 20,
+                height: 10,
+            }
+        );
+
+        // A monitor above/left of the primary one produces a negative origin.
+        let service = service_with_shots(vec![
+            solid_shot(0, -20, -10, 20, 10, [0, 0, 0, 255]),
+            solid_shot(1, 0, 0, 10, 10, [0, 0, 0, 255]),
+        ]);
+        let snapshot = service.layout_snapshot().unwrap();
+        assert_eq!(
+            snapshot.bounds,
+            GlobalRect {
+                x: -20,
+                y: -10,
+                width: 30,
+                height: 20,
+            }
+        );
+
+        // No session → the capture page must wait for the next screenshot.
+        assert!(CaptureService::new().layout_snapshot().is_none());
+    }
+
+    #[test]
+    fn crop_selection_keeps_both_paths_and_composites_annotations() {
+        let service = service_with_shots(vec![test_shot()]);
+        // Legacy single-monitor path is unchanged.
+        let legacy = service
+            .crop_selection(
+                0,
+                &HitRect {
+                    x: 2.0,
+                    y: 3.0,
+                    width: 4.0,
+                    height: 5.0,
+                },
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(legacy.dimensions(), (4, 5));
+        assert_eq!(*legacy.get_pixel(0, 0), *pixel_image().get_pixel(2, 3));
+
+        // Global path: the annotation layer is the selection-sized layer.
+        let mut layer = RgbaImage::new(6, 4);
+        *layer.get_pixel_mut(0, 0) = Rgba([255, 0, 0, 255]);
+        let global = service
+            .crop_selection(
+                0,
+                &HitRect::default(),
+                Some(annotation_data_url(&layer)),
+                Some(&GlobalRect {
+                    x: 0,
+                    y: 0,
+                    width: 6,
+                    height: 4,
+                }),
+            )
+            .unwrap();
+        assert_eq!(global.dimensions(), (6, 4));
+        assert_eq!(*global.get_pixel(0, 0), Rgba([255, 0, 0, 255]));
+        assert_eq!(*global.get_pixel(5, 3), *pixel_image().get_pixel(5, 3));
     }
 
     #[test]

@@ -30,7 +30,15 @@
          rectangle. The toolbar stays hidden until the selection is confirmed. -->
     <div class="capture-hover" id="capture-hover" hidden aria-hidden="true"></div>
 
+    <!-- Selection outline. The selection is a GLOBAL physical rectangle, so it
+         can span several monitors: each overlay renders only its own slice of
+         the four edges and the resize handles (capture.js positions every node
+         in viewport coordinates). -->
     <div class="capture-selection" id="capture-selection" hidden aria-hidden="true">
+      <span class="selection-edge" data-edge="top"></span>
+      <span class="selection-edge" data-edge="right"></span>
+      <span class="selection-edge" data-edge="bottom"></span>
+      <span class="selection-edge" data-edge="left"></span>
       <span class="selection-handle" data-dir="nw"></span>
       <span class="selection-handle" data-dir="n"></span>
       <span class="selection-handle" data-dir="ne"></span>
@@ -42,6 +50,17 @@
     </div>
 
     <div class="selection-size" id="selection-size" hidden>0 × 0</div>
+
+    <!-- QQ colour loupe: follows the pointer, magnifies the pixels around it
+         and shows the physical coordinates + hex colour ("C" copies it). -->
+    <div class="capture-loupe" id="capture-loupe" hidden aria-hidden="true">
+      <canvas class="loupe-canvas" id="loupe-canvas" width="120" height="120"></canvas>
+      <div class="loupe-meta">
+        <span class="loupe-line" id="loupe-coords">坐标: (0, 0)</span>
+        <span class="loupe-line" id="loupe-color">色值: #000000</span>
+        <span class="loupe-hint" id="loupe-hint">按 C 复制色号</span>
+      </div>
+    </div>
 
     <div class="capture-hint" id="capture-hint" hidden>拖动选区移动 · 拖动边角调整 · Esc 取消</div>
 

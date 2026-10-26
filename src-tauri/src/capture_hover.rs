@@ -10,6 +10,10 @@
 //! `EnumWindows` walks top-level windows from front to back, so the first
 //! candidate that contains the point is also the window a real click would hit
 //! (QQ screenshot behavior).
+//!
+//! It also exposes [`capture_layout`]: the physical monitor layout of the active
+//! capture session, so the capture page can keep a cross-monitor selection in
+//! global virtual-screen coordinates.
 
 use std::sync::Arc;
 
@@ -131,6 +135,29 @@ pub fn capture_hover_at(state: State<'_, Arc<AppState>>, x: i32, y: i32) -> Valu
 pub fn capture_cursor(state: State<'_, Arc<AppState>>) -> Value {
     let (x, y) = crate::win32::cursor_physical();
     json!({ "ok": true, "x": x, "y": y, "active": state.capture.is_active() })
+}
+
+/// Physical monitor layout + virtual-screen bounds of the active capture
+/// session:
+/// `{"ok":true,"monitors":[{"index","x","y","width","height"},...],"bounds":{"x","y","width","height"}}`.
+///
+/// The capture page keeps its selection in these global virtual-screen pixels,
+/// so one drag can cross monitor borders and be cropped by `globalRect`.
+/// `{"ok":false,...}` means no session is armed (the page is stale).
+#[tauri::command]
+pub fn capture_layout(state: State<'_, Arc<AppState>>) -> Value {
+    match state.capture.layout_snapshot() {
+        Some(snapshot) => json!({
+            "ok": true,
+            "monitors": snapshot.monitors,
+            "bounds": snapshot.bounds,
+        }),
+        None => json!({
+            "ok": false,
+            "error": "截图尚未准备好。",
+            "hint": "请稍候片刻再试，或重新发起截图（快捷键）。",
+        }),
+    }
 }
 
 // ---------------------------------------------------------------------------

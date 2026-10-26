@@ -606,7 +606,9 @@ pub fn capture_ready(app: AppHandle, state: State<'_, Arc<AppState>>, index: u32
 }
 
 /// Copies the selected screenshot region (with the annotation layer composited,
-/// contract §11.4) to the clipboard and closes the overlays.
+/// contract §11.4) to the clipboard and closes the overlays. `globalRect`
+/// selects a cross-monitor region; without it the legacy single-monitor
+/// `index` + `rect` path is used.
 #[tauri::command]
 pub fn capture_copy(
     app: AppHandle,
@@ -614,16 +616,37 @@ pub fn capture_copy(
     index: u32,
     rect: crate::capture::HitRect,
     annotations: Option<String>,
+    global_rect: Option<crate::capture::GlobalRect>,
 ) -> Value {
-    match state.capture.copy(&app, index, &rect, annotations) {
+    match state
+        .capture
+        .copy(&app, index, &rect, annotations, global_rect.as_ref())
+    {
         Ok(()) => json!({ "ok": true }),
         Err(error) => json!({ "ok": false, "error": error.message, "hint": error.hint }),
     }
 }
 
+/// Writes plain text (e.g. the colour loupe's hex value from the screenshot
+/// overlay) to the system clipboard. Returns `{"ok": true}` or a Chinese error
+/// payload the page can show as a toast.
+#[tauri::command]
+pub fn capture_copy_text(app: AppHandle, text: String) -> Value {
+    match app.clipboard().write_text(text) {
+        Ok(()) => json!({ "ok": true }),
+        Err(error) => json!({
+            "ok": false,
+            "error": "复制到剪贴板失败。",
+            "hint": format!("请重试（{error}）。"),
+        }),
+    }
+}
+
 /// Pins the selected region as a new always-on-top desktop window
-/// (`capture_pin`, contract §11.4/§11.5). The annotation layer is composited
-/// into the pinned image; the capture overlay is closed on success.
+/// (`capture_pin`, contract §11.4/§11.5). `globalRect` pins a cross-monitor
+/// selection; otherwise the legacy single-monitor path is used. The annotation
+/// layer is composited into the pinned image; the capture overlay is closed on
+/// success.
 ///
 /// Async on purpose: creating a webview window from a sync command would block
 /// the event loop that has to build it (deadlock).
@@ -634,8 +657,12 @@ pub async fn capture_pin(
     index: u32,
     rect: crate::capture::HitRect,
     annotations: Option<String>,
+    global_rect: Option<crate::capture::GlobalRect>,
 ) -> Result<Value, String> {
-    let image = match state.capture.crop_region(index, &rect, annotations) {
+    let image = match state
+        .capture
+        .crop_selection(index, &rect, annotations, global_rect.as_ref())
+    {
         Ok(image) => image,
         Err(error) => {
             return Ok(json!({ "ok": false, "error": error.message, "hint": error.hint }));
@@ -669,7 +696,8 @@ pub async fn capture_longshot(
 /// Runs a panel skill on the selected region (contract §10.3/§11.4): crop →
 /// annotations → image clipboard → remember the last capture → close the
 /// overlays → show the picker result panel (`picker-image`) → stream the result
-/// through `translate-event`.
+/// through `translate-event`. `globalRect` runs the skill on a cross-monitor
+/// selection; otherwise the legacy single-monitor path is used.
 #[tauri::command]
 pub fn capture_skill(
     app: AppHandle,
@@ -681,6 +709,7 @@ pub fn capture_skill(
     skill_id: Option<String>,
     target_lang: Option<String>,
     annotations: Option<String>,
+    global_rect: Option<crate::capture::GlobalRect>,
 ) -> Value {
     match state.capture.skill(
         &app,
@@ -691,6 +720,7 @@ pub fn capture_skill(
         target_lang,
         Some(request_id),
         annotations,
+        global_rect.as_ref(),
     ) {
         Ok(job) => {
             let clipboard = job.clipboard();
