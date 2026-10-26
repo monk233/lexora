@@ -43,7 +43,12 @@
     zoom: 1,
     minZoom: 0.15,
     maxZoom: 1,
-    zoomCalls: 0
+    zoomCalls: 0,
+    /* Edit mode: annotation canvas + image-skill toolbar (Esc leaves it). */
+    editing: false,
+    editBusy: false,
+    editSkillCalls: 0,
+    editExportCalls: 0
   };
 
   /* Test/debug hook used by the CDP checks in tests/ and manual QA. */
@@ -56,6 +61,7 @@
   var zoomFrame = 0;
   var zoomSeq = 0;
   var zoomHintTimer = 0;
+  var editor = null;
 
   /* ---- Small helpers --------------------------------------------------- */
 
@@ -97,7 +103,7 @@
       return false;
     }
     return !!target.closest(
-      ".pin-toolbar, .pin-menu, .pin-error, .pin-toast"
+      ".pin-toolbar, .pin-menu, .pin-error, .pin-toast, .pin-edit-bar"
     );
   }
 
@@ -115,6 +121,21 @@
     dom.errorText = byId("pin-error-text");
     dom.errorClose = byId("pin-error-close");
     dom.menu = byId("pin-context-menu");
+    /* ---- Edit mode ---- */
+    dom.editBtn = byId("pin-edit");
+    dom.editBar = byId("pin-edit-bar");
+    dom.editCanvas = byId("pin-edit-canvas");
+    dom.editUndo = byId("pin-edit-undo");
+    dom.editRedo = byId("pin-edit-redo");
+    dom.editToolButtons = Array.prototype.slice.call(
+      document.querySelectorAll("[data-edit-tool]")
+    );
+    dom.editSkillButtons = Array.prototype.slice.call(
+      document.querySelectorAll("[data-edit-skill]")
+    );
+    dom.editActionButtons = Array.prototype.slice.call(
+      document.querySelectorAll("[data-edit-action]")
+    );
   }
 
   function boot() {
@@ -156,6 +177,30 @@
     }
     if (dom.root) {
       dom.root.addEventListener("dblclick", onDoubleClick);
+    }
+    /* Edit mode entry + toolbar. */
+    if (dom.editBtn) {
+      dom.editBtn.addEventListener("click", function (event) {
+        event.stopPropagation();
+        enterEdit();
+      });
+    }
+    if (dom.editBar) {
+      dom.editBar.addEventListener("click", onEditBarClick);
+    }
+    if (dom.editUndo) {
+      dom.editUndo.addEventListener("click", function () {
+        if (editor) {
+          editor.undo();
+        }
+      });
+    }
+    if (dom.editRedo) {
+      dom.editRedo.addEventListener("click", function () {
+        if (editor) {
+          editor.redo();
+        }
+      });
     }
   }
 
@@ -359,7 +404,7 @@
    * snippet can always grow back. Long screenshots keep scrolling via their
    * scrollbar because the wheel is reserved for zooming. */
   function onWheel(event) {
-    if (state.closed || state.error || !state.loaded || state.dragging) {
+    if (state.closed || state.error || !state.loaded || state.dragging || state.editing) {
       return;
     }
     if (isUiTarget(event.target)) {
@@ -437,6 +482,286 @@
     }, ZOOM_HINT_MS);
   }
 
+  /* ---- Edit mode (annotations + image skills) --------------------------- */
+
+  /* The edit button opens the annotation surface + image-skill toolbar on top
+   * of the pinned image (contract §11.5). Window dragging, wheel zoom and the
+   * right-click menu are disabled while editing; Esc leaves the mode and
+   * discards the annotations, "完成" applies them to the pin and copies it. */
+  function enterEdit() {
+    if (state.editing || state.closed || !state.loaded) {
+      return;
+    }
+    hideMenu();
+    state.editing = true;
+    state.editBusy = false;
+    if (dom.toolbar) {
+      dom.toolbar.hidden = true;
+    }
+    if (dom.editBar) {
+      dom.editBar.hidden = false;
+    }
+    if (dom.editCanvas) {
+      dom.editCanvas.hidden = false;
+    }
+    document.body.classList.add("is-editing");
+    initEditor();
+    layoutEditCanvas();
+    if (editor) {
+      editor.reset();
+      editor.setSourceSize(state.imageWidth, state.imageHeight);
+      editor.setTool(null);
+    }
+    selectEditTool(null, null);
+    updateEditBar();
+  }
+
+  function exitEdit() {
+    if (!state.editing) {
+      return;
+    }
+    state.editing = false;
+    state.editBusy = false;
+    if (editor) {
+      editor.setTool(null);
+      editor.reset();
+    }
+    if (dom.editBar) {
+      dom.editBar.hidden = true;
+    }
+    if (dom.editCanvas) {
+      dom.editCanvas.hidden = true;
+    }
+    if (dom.toolbar) {
+      dom.toolbar.hidden = false;
+    }
+    document.body.classList.remove("is-editing");
+    updateEditBar();
+  }
+
+  function initEditor() {
+    if (editor) {
+      return editor;
+    }
+    if (!dom.editCanvas || !dom.image) {
+      return null;
+    }
+    if (!window.CaptureAnnotate || typeof window.CaptureAnnotate.create !== "function") {
+      return null;
+    }
+    try {
+      editor = window.CaptureAnnotate.create({
+        canvas: dom.editCanvas,
+        image: dom.image,
+        getSelection: editSelection,
+        onHistoryChange: onEditHistoryChange
+      });
+    } catch (error) {
+      editor = null;
+    }
+    window.__pinEditor = editor;
+    return editor;
+  }
+
+  /* The pin renders the image at the window width, so the annotation surface is
+   * exactly the rendered image box. */
+  function editSelection() {
+    if (!dom.image) {
+      return null;
+    }
+    var width = dom.image.clientWidth || 0;
+    var height = dom.image.clientHeight || 0;
+    if (width <= 0 || height <= 0) {
+      return null;
+    }
+    return { x: 0, y: 0, width: width, height: height };
+  }
+
+  function layoutEditCanvas() {
+    if (!dom.editCanvas || !dom.image) {
+      return;
+    }
+    var width = dom.image.clientWidth || 0;
+    var height = dom.image.clientHeight || 0;
+    if (width <= 0 || height <= 0) {
+      return;
+    }
+    dom.editCanvas.style.width = width + "px";
+    dom.editCanvas.style.height = height + "px";
+  }
+
+  function onEditHistoryChange() {
+    updateEditBar();
+  }
+
+  function onEditBarClick(event) {
+    var button =
+      event.target && event.target.closest ? event.target.closest("button") : null;
+    if (!button || button.disabled) {
+      return;
+    }
+    event.stopPropagation();
+    var tool = button.getAttribute("data-edit-tool");
+    if (tool) {
+      selectEditTool(button, tool);
+      return;
+    }
+    var skill = button.getAttribute("data-edit-skill");
+    if (skill) {
+      runEditSkill(skill);
+      return;
+    }
+    var action = button.getAttribute("data-edit-action");
+    if (action === "copy") {
+      exportEditAnnotations(false);
+    } else if (action === "exit") {
+      exportEditAnnotations(true);
+    }
+  }
+
+  function selectEditTool(button, tool) {
+    if (!editor) {
+      return;
+    }
+    if (tool) {
+      var shape = button ? button.getAttribute("data-edit-shape") || "" : "";
+      editor.setTool(tool);
+      if (tool === "shape" && shape) {
+        editor.setOption("shapeMode", shape);
+      }
+    } else {
+      editor.setTool(null);
+    }
+    dom.editToolButtons.forEach(function (item) {
+      item.classList.toggle("is-active", item === button);
+    });
+  }
+
+  function updateEditBar() {
+    var busy = state.editBusy === true;
+    if (dom.editUndo) {
+      dom.editUndo.disabled = busy || !editor || !editor.canUndo();
+    }
+    if (dom.editRedo) {
+      dom.editRedo.disabled = busy || !editor || !editor.canRedo();
+    }
+    dom.editSkillButtons.forEach(function (button) {
+      button.disabled = busy;
+    });
+    dom.editActionButtons.forEach(function (button) {
+      button.disabled = busy;
+    });
+  }
+
+  function editAnnotationsPng() {
+    if (!editor) {
+      return "";
+    }
+    try {
+      return editor.renderToPng(editSelection()) || "";
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function makePinRequestId() {
+    return (
+      "pin-" +
+      Date.now().toString(36) +
+      "-" +
+      Math.floor(Math.random() * 1e6).toString(36)
+    );
+  }
+
+  function runEditSkill(action) {
+    if (!state.editing || state.editBusy) {
+      return;
+    }
+    if (!API || typeof API.skill !== "function") {
+      toast("图片技能不可用，请重启 Lexora 后再试", "error");
+      return;
+    }
+    state.editBusy = true;
+    state.editSkillCalls += 1;
+    updateEditBar();
+    var request;
+    try {
+      request = API.skill(
+        state.id,
+        makePinRequestId(),
+        action,
+        "",
+        "auto",
+        editAnnotationsPng()
+      );
+    } catch (error) {
+      request = Promise.reject(error);
+    }
+    Promise.resolve(request).then(
+      function (result) {
+        state.editBusy = false;
+        updateEditBar();
+        if (result && result.ok === false) {
+          toast("操作失败：" + failureText(result, "未知错误"), "error");
+          return;
+        }
+        toast("结果已发送到面板", "info");
+      },
+      function (error) {
+        state.editBusy = false;
+        updateEditBar();
+        toast("操作失败：" + errorText(error), "error");
+      }
+    );
+  }
+
+  /* `apply` = the "完成" button: replace the pinned image with the annotated
+   * one (and copy it); otherwise only copy. */
+  function exportEditAnnotations(apply) {
+    if (!state.editing || state.editBusy) {
+      return;
+    }
+    if (!API || typeof API.exportAnnotations !== "function") {
+      toast("图片编辑服务不可用，请重启 Lexora 后再试", "error");
+      return;
+    }
+    state.editBusy = true;
+    state.editExportCalls += 1;
+    updateEditBar();
+    var request;
+    try {
+      request = API.exportAnnotations(state.id, editAnnotationsPng(), apply === true);
+    } catch (error) {
+      request = Promise.reject(error);
+    }
+    Promise.resolve(request).then(
+      function (result) {
+        state.editBusy = false;
+        updateEditBar();
+        if (result && result.ok === false) {
+          toast("操作失败：" + failureText(result, "未知错误"), "error");
+          return;
+        }
+        var copied = !result || result.clipboard !== false;
+        if (apply) {
+          if (result && result.dataUrl && dom.image) {
+            dom.image.removeAttribute("src");
+            dom.image.src = String(result.dataUrl);
+          }
+          exitEdit();
+          toast(copied ? "已保存并复制" : "已保存（复制失败）", copied ? "success" : "error");
+          return;
+        }
+        toast(copied ? "已复制到剪贴板" : "复制失败", copied ? "success" : "error");
+      },
+      function (error) {
+        state.editBusy = false;
+        updateEditBar();
+        toast("操作失败：" + errorText(error), "error");
+      }
+    );
+  }
+
   /* ---- Actions --------------------------------------------------------- */
 
   function copyImage() {
@@ -509,7 +834,8 @@
 
   function onContextMenu(event) {
     event.preventDefault();
-    if (state.closed || !dom.menu) {
+    if (state.closed || state.editing || !dom.menu) {
+      hideMenu();
       return;
     }
     showMenu(event.clientX, event.clientY);
@@ -567,7 +893,7 @@
   }
 
   function onMouseDown(event) {
-    if (event.button !== 0 || state.closed || state.dragging) {
+    if (event.button !== 0 || state.closed || state.dragging || state.editing) {
       return;
     }
     if (isUiTarget(event.target)) {
@@ -655,7 +981,7 @@
   }
 
   function onDoubleClick(event) {
-    if (isUiTarget(event.target)) {
+    if (state.editing || isUiTarget(event.target)) {
       return;
     }
     event.preventDefault();
@@ -667,6 +993,12 @@
       return;
     }
     event.preventDefault();
+    /* Esc leaves the edit mode (annotations are discarded) before it closes
+     * the pin (contract §11.5). */
+    if (state.editing) {
+      exitEdit();
+      return;
+    }
     if (dom.menu && !dom.menu.hidden) {
       hideMenu();
       return;

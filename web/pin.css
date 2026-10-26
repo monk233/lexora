@@ -152,16 +152,14 @@ body.is-dragging .pin-image {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  width: 26px;
   height: 26px;
-  padding: 0 9px;
+  padding: 0;
   border: 0;
   border-radius: 999px;
   background: transparent;
   color: var(--text-muted);
-  font-size: 12px;
   line-height: 1;
-  white-space: nowrap;
   cursor: pointer;
   transition: background 120ms ease, color 120ms ease;
 }
@@ -178,8 +176,8 @@ body.is-dragging .pin-image {
 
 .pin-btn .icon {
   flex: 0 0 auto;
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
 }
 
 .pin-btn-close:hover {
@@ -187,8 +185,97 @@ body.is-dragging .pin-image {
   color: var(--danger);
 }
 
-.pin-btn-close .pin-btn-label {
-  color: inherit;
+.pin-btn.is-active {
+  background: var(--primary);
+  color: #ffffff;
+}
+
+/* ---- Edit mode (annotation canvas + toolbar) ---------------------------- */
+
+.pin-edit-canvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 10;
+  display: block;
+  background: transparent;
+  touch-action: none;
+}
+
+body.is-editing .pin-image {
+  cursor: default;
+}
+
+/* The hover toolbar is replaced by the edit toolbar while editing. */
+body.is-editing .pin-toolbar {
+  display: none !important;
+}
+
+.pin-edit-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 8px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 2px;
+  max-width: calc(100vw - 8px);
+  padding: 4px;
+  transform: translateX(-50%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: var(--shadow-float);
+}
+
+.pin-edit-tool,
+.pin-edit-btn {
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.pin-edit-tool:hover,
+.pin-edit-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.pin-edit-tool.is-active {
+  background: var(--primary);
+  color: #ffffff;
+}
+
+.pin-edit-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.pin-edit-btn-done {
+  background: var(--primary);
+  color: #ffffff;
+}
+
+.pin-edit-btn-done:hover {
+  background: #4338ca;
+  color: #ffffff;
+}
+
+.pin-edit-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 3px;
+  background: var(--border);
 }
 
 /* ---- Toast / error ------------------------------------------------------ */

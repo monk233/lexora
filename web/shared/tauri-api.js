@@ -1382,6 +1382,10 @@
           height: 0,
           scrollable: false,
         };
+      case "pin_skill":
+        return { ok: true, clipboard: false };
+      case "pin_export_annotations":
+        return { ok: true, clipboard: false, width: 0, height: 0, dataUrl: "" };
       case "pin_drag":
       case "pin_copy":
       case "pin_close":
@@ -2335,6 +2339,29 @@
         id: Number(id) || 0,
         dx: Number(dx) || 0,
         dy: Number(dy) || 0,
+      });
+    },
+    /* Runs an image skill on the pinned image (optionally with the pin editor's
+     * annotation layer); the shell opens the picker result panel and streams the
+     * result into it. */
+    skill: function (id, requestId, action, skillId, targetLang, annotations) {
+      return safeInvoke("pin_skill", {
+        id: Number(id) || 0,
+        requestId: String(requestId == null ? "" : requestId),
+        action: String(action == null ? "" : action),
+        skillId: String(skillId == null ? "" : skillId),
+        targetLang: String(targetLang == null ? "" : targetLang),
+        annotations: annotations ? String(annotations) : "",
+      });
+    },
+    /* Composites the editor annotations into the pinned image and copies it to
+     * the clipboard; `apply` also replaces the pinned image (resolves with the
+     * new PNG data URL). */
+    exportAnnotations: function (id, annotations, apply) {
+      return safeInvoke("pin_export_annotations", {
+        id: Number(id) || 0,
+        annotations: annotations ? String(annotations) : "",
+        apply: apply === true,
       });
     },
     /* Mouse-wheel zoom (1 = one image pixel per physical pixel; the shell

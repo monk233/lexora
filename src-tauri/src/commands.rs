@@ -870,6 +870,61 @@ pub fn pin_zoom(app: AppHandle, id: u64, zoom: f64) -> Value {
     }
 }
 
+/// Runs a panel skill (OCR / translate / explain / custom image skill) on the
+/// pinned image, optionally with the pin editor's annotation layer
+/// (`pin_skill`, contract §11.5). The result streams into the picker panel.
+#[tauri::command]
+pub fn pin_skill(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    id: u64,
+    request_id: String,
+    action: String,
+    skill_id: Option<String>,
+    target_lang: Option<String>,
+    annotations: Option<String>,
+) -> Value {
+    match crate::pin::skill(
+        &app,
+        state.inner().as_ref(),
+        id,
+        &action,
+        skill_id,
+        target_lang,
+        Some(request_id),
+        annotations,
+    ) {
+        Ok(job) => {
+            let clipboard = job.clipboard();
+            let app_state = (*state).clone();
+            crate::capture::spawn_capture_job(app, app_state, job);
+            json!({ "ok": true, "clipboard": clipboard })
+        }
+        Err(error) => json!({
+            "ok": false,
+            "clipboard": false,
+            "error": error.message,
+            "hint": error.hint,
+        }),
+    }
+}
+
+/// Composites the pin editor's annotations into the pinned image; `apply`
+/// replaces the pinned image (returning the new PNG), otherwise the result is
+/// only copied to the clipboard (`pin_export_annotations`, contract §11.5).
+#[tauri::command]
+pub fn pin_export_annotations(
+    app: AppHandle,
+    id: u64,
+    annotations: Option<String>,
+    apply: bool,
+) -> Value {
+    match crate::pin::export_annotations(&app, id, annotations, apply) {
+        Ok(payload) => payload,
+        Err(error) => json!({ "ok": false, "error": error.message, "hint": error.hint }),
+    }
+}
+
 /// Writes the pinned image to the system clipboard.
 #[tauri::command]
 pub fn pin_copy(app: AppHandle, id: u64) -> Value {

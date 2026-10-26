@@ -18,6 +18,7 @@ use tauri::{
 };
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
+use crate::capture::CaptureJob;
 use crate::engine::EngineError;
 use crate::state::AppState;
 use crate::win32;
@@ -31,6 +32,9 @@ const MAX_WORK_AREA_RATIO: f64 = 0.70;
 /// Lowest zoom a pinned image can be scaled to with the mouse wheel (15%, user
 /// requirement). 100% means one image pixel per physical pixel.
 const PIN_ZOOM_MIN: f64 = 0.15;
+/// There is no product limit on zooming a pin in (user requirement); this is
+/// only the Windows/toolkit window-size ceiling so the window stays valid.
+const PIN_MAX_WINDOW_PX: f64 = 30_000.0;
 /// Very small snippets are enlarged for readability, but never more than this.
 const MAX_READABLE_UPSCALE: f64 = 4.0;
 /// A pinned window is never displayed smaller than this (logical pixels).
@@ -45,10 +49,6 @@ struct PinEntry {
     scrollable: bool,
     /// Mouse-wheel zoom of the window relative to the image's 1:1 physical size.
     zoom: f64,
-    /// Zoom the window started with (large screenshots below 1.0, tiny snippets
-    /// above it); it is the upper wheel limit, so a pin can always grow back to
-    /// its initial size.
-    initial_zoom: f64,
 }
 
 /// In-memory pin images plus the forward-only id counter.
@@ -69,7 +69,6 @@ impl PinRegistry {
                 data_url: None,
                 scrollable,
                 zoom: initial_zoom,
-                initial_zoom,
             },
         );
         id
@@ -213,17 +212,23 @@ fn pin_zoom_size(
     (physical_w as f64 / scale, physical_h as f64 / scale)
 }
 
-/// Clamps a renderer-provided zoom into `[15%, max(initial zoom, 100%)]`.
-/// Non-finite values fall back to the initial zoom so a broken wheel event can
-/// never collapse or blow up a pin.
-fn clamp_pin_zoom(value: f64, initial_zoom: f64) -> f64 {
-    let initial = if initial_zoom.is_finite() && initial_zoom > PIN_ZOOM_MIN {
-        initial_zoom
+/// Highest allowed zoom: there is **no product limit** (the user asked for
+/// unbounded zoom-in), only the window-size ceiling keeps the window valid.
+fn max_pin_zoom(width: u32, height: u32) -> f64 {
+    let largest = width.max(height).max(1) as f64;
+    (PIN_MAX_WINDOW_PX / largest).max(1.0)
+}
+
+/// Clamps a renderer-provided zoom into `[15%, window-size ceiling]`.
+/// Non-finite values fall back to 100% so a broken wheel event can never
+/// collapse or blow up a pin.
+fn clamp_pin_zoom(value: f64, max_zoom: f64) -> f64 {
+    let max_zoom = if max_zoom.is_finite() && max_zoom >= PIN_ZOOM_MIN {
+        max_zoom
     } else {
         1.0
     };
-    let max_zoom = initial.max(1.0);
-    let value = if value.is_finite() { value } else { initial };
+    let value = if value.is_finite() { value } else { 1.0 };
     value.clamp(PIN_ZOOM_MIN, max_zoom)
 }
 
@@ -338,7 +343,7 @@ pub fn ready(id: u64) -> Result<Value, EngineError> {
     let scrollable = entry.scrollable;
     let zoom = entry.zoom;
     let min_zoom = PIN_ZOOM_MIN;
-    let max_zoom = entry.initial_zoom.max(1.0);
+    let max_zoom = max_pin_zoom(width, height);
     Ok(json!({
         "dataUrl": data_url,
         "width": width,
@@ -377,27 +382,28 @@ pub fn drag(app: &AppHandle, id: u64, dx: f64, dy: f64) -> Result<(), EngineErro
 }
 
 /// Mouse-wheel zoom of one pin window (`pin_zoom`, contract §11.5): the window
-/// keeps its centre, the zoom is clamped to `[15%, max(initial, 100%)]` and a
-/// long screenshot keeps the work-area height cap (it scrolls instead of growing
-/// past the screen).
+/// grows/shrinks from its **top-left corner** (user requirement, not centred),
+/// there is **no product maximum** (only the OS window-size ceiling), the floor
+/// is 15%, and a long screenshot keeps the work-area height cap (it scrolls
+/// instead of growing past the screen).
 pub fn zoom(app: &AppHandle, id: u64, zoom: f64) -> Result<Value, EngineError> {
     let Some(window) = app.get_webview_window(&label_for(id)) else {
         return Err(pin_missing_error());
     };
-    let (width, height, initial_zoom) = {
+    let (width, height) = {
         let registry = lock_registry();
         let Some(entry) = registry.entries.get(&id) else {
             return Err(pin_missing_error());
         };
-        let (width, height) = entry.image.dimensions();
-        (width, height, entry.initial_zoom)
+        entry.image.dimensions()
     };
+    let max_zoom = max_pin_zoom(width, height);
     let scale = window
         .scale_factor()
         .ok()
         .filter(|scale| scale.is_finite() && *scale > 0.1)
         .unwrap_or(1.0);
-    let next = clamp_pin_zoom(zoom, initial_zoom);
+    let next = clamp_pin_zoom(zoom, max_zoom);
     let current = window
         .outer_position()
         .map_err(|error| EngineError::new("无法缩放钉图。", format!("请重试（{error}）。")))?;
@@ -408,11 +414,11 @@ pub fn zoom(app: &AppHandle, id: u64, zoom: f64) -> Result<Value, EngineError> {
     let center_y = current.y + old_size.height as i32 / 2;
     let work = win32::work_area_physical(center_x, center_y);
     let (logical_w, logical_h) = pin_zoom_size(width, height, scale, next, work.height());
-    let physical_w = ((logical_w * scale).round() as i32).max(1);
-    let physical_h = ((logical_h * scale).round() as i32).max(1);
-    let x = center_x - physical_w / 2;
-    let y = center_y - physical_h / 2;
-    let (x, y) = win32::clamp_to_virtual_screen(x, y, physical_w, physical_h);
+    // The top-left corner is the zoom anchor: it stays exactly where it is, so
+    // zooming in grows the pin to the right/bottom (and a zoomed-in pin may
+    // extend past the desktop; it can still be dragged).
+    let x = current.x;
+    let y = current.y;
     let scrollable = pin_is_scrollable(logical_w, logical_h, width, height);
     window
         .set_size(LogicalSize::new(logical_w, logical_h))
@@ -432,10 +438,113 @@ pub fn zoom(app: &AppHandle, id: u64, zoom: f64) -> Result<Value, EngineError> {
         "ok": true,
         "zoom": next,
         "minZoom": PIN_ZOOM_MIN,
-        "maxZoom": initial_zoom.max(1.0),
+        "maxZoom": max_zoom,
         "width": logical_w,
         "height": logical_h,
         "scrollable": scrollable,
+    }))
+}
+
+/// Runs a panel skill (OCR / translate / explain / custom image skill) on a
+/// pinned image, optionally with the pin editor's annotation layer
+/// (`pin_skill`, contract §11.5). The result streams into the picker panel,
+/// which opens below the pin like the screenshot flow opens below its selection.
+#[allow(clippy::too_many_arguments)]
+pub fn skill(
+    app: &AppHandle,
+    state: &AppState,
+    id: u64,
+    action: &str,
+    skill_id: Option<String>,
+    target_lang: Option<String>,
+    request_id: Option<String>,
+    annotations: Option<String>,
+) -> Result<CaptureJob, EngineError> {
+    let Some(window) = app.get_webview_window(&label_for(id)) else {
+        return Err(pin_missing_error());
+    };
+    let image = {
+        let registry = lock_registry();
+        let Some(entry) = registry.entries.get(&id) else {
+            return Err(pin_missing_error());
+        };
+        entry.image.clone()
+    };
+    let position = window
+        .outer_position()
+        .unwrap_or(PhysicalPosition::new(0, 0));
+    let size = window.outer_size().unwrap_or(PhysicalSize::new(1, 1));
+    let anchor = (
+        position.x + size.width as i32 / 2,
+        position.y + size.height as i32 - 1,
+    );
+    let scale = win32::monitor_scale_factor(anchor.0, anchor.1);
+    state.capture.skill_image(
+        app,
+        image,
+        annotations,
+        action,
+        skill_id,
+        target_lang,
+        request_id,
+        anchor,
+        scale,
+    )
+}
+
+/// Composites the pin editor's annotation layer into a pinned image and writes
+/// it to the clipboard (`pin_export_annotations`, contract §11.5). With `apply`
+/// the pinned image itself is replaced by the annotated one and the renderer
+/// gets the new PNG back; without it the original pin stays untouched (plain
+/// "copy with annotations").
+pub fn export_annotations(
+    app: &AppHandle,
+    id: u64,
+    annotations: Option<String>,
+    apply: bool,
+) -> Result<Value, EngineError> {
+    let mut image = {
+        let registry = lock_registry();
+        let Some(entry) = registry.entries.get(&id) else {
+            return Err(pin_missing_error());
+        };
+        entry.image.clone()
+    };
+    crate::capture::compose_annotations(&mut image, annotations)?;
+    let (width, height) = image.dimensions();
+    let clipboard = app
+        .clipboard()
+        .write_image(&tauri::image::Image::new(image.as_raw(), width, height))
+        .is_ok();
+    if !apply {
+        log_info(
+            app,
+            &format!("pin annotations copied: id={id} {width}x{height} clipboard={clipboard}"),
+        );
+        return Ok(json!({
+            "ok": true,
+            "clipboard": clipboard,
+            "width": width,
+            "height": height,
+        }));
+    }
+    let data_url = crate::capture::png_data_url(&image)?;
+    // Annotations never change the image size, so the window/scroll state stays
+    // exactly as it was; only the pixels and the cached PNG are replaced.
+    if let Some(entry) = lock_registry().get_mut(id) {
+        entry.image = image;
+        entry.data_url = Some(data_url.clone());
+    }
+    log_info(
+        app,
+        &format!("pin annotations applied: id={id} {width}x{height} clipboard={clipboard}"),
+    );
+    Ok(json!({
+        "ok": true,
+        "clipboard": clipboard,
+        "width": width,
+        "height": height,
+        "dataUrl": data_url,
     }))
 }
 
@@ -484,8 +593,9 @@ pub fn pin_count() -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        clamp_pin_zoom, pin_display_size, pin_id_from_label, pin_is_scrollable, pin_window_position,
-        pin_zoom_size, PinRegistry, MAX_WORK_AREA_RATIO, PIN_ZOOM_MIN,
+        clamp_pin_zoom, max_pin_zoom, pin_display_size, pin_id_from_label, pin_is_scrollable,
+        pin_window_position, pin_zoom_size, PinRegistry, MAX_WORK_AREA_RATIO, PIN_MAX_WINDOW_PX,
+        PIN_ZOOM_MIN,
     };
     use crate::win32::WorkArea;
     use image::{Rgba, RgbaImage};
@@ -524,17 +634,28 @@ mod tests {
     }
 
     #[test]
-    fn pin_zoom_clamps_to_fifteen_percent_and_the_initial_upper_bound() {
+    fn pin_zoom_clamps_to_fifteen_percent_without_a_product_maximum() {
         // Never smaller than 15% (user requirement).
-        assert_eq!(clamp_pin_zoom(0.05, 1.0), PIN_ZOOM_MIN);
-        assert_eq!(clamp_pin_zoom(0.5, 1.0), 0.5);
-        // A 100% pin cannot be blown up past its original size.
-        assert_eq!(clamp_pin_zoom(2.0, 1.0), 1.0);
-        // Tiny snippets start above 100% and may grow back to that size.
-        assert_eq!(clamp_pin_zoom(2.5, 2.0), 2.0);
-        assert_eq!(clamp_pin_zoom(f64::NAN, 1.0), 1.0);
-        // A broken initial zoom falls back to a sane 100% maximum.
+        assert_eq!(clamp_pin_zoom(0.05, 30.0), PIN_ZOOM_MIN);
+        assert_eq!(clamp_pin_zoom(0.5, 30.0), 0.5);
+        // Zooming in has no product limit: only the window-size ceiling applies.
+        assert_eq!(clamp_pin_zoom(2.0, 30.0), 2.0);
+        assert_eq!(clamp_pin_zoom(12.5, 30.0), 12.5);
+        assert_eq!(clamp_pin_zoom(40.0, 30.0), 30.0);
+        assert_eq!(clamp_pin_zoom(f64::NAN, 30.0), 1.0);
+        // A broken ceiling falls back to a sane 100% maximum.
         assert_eq!(clamp_pin_zoom(5.0, 0.0), 1.0);
+    }
+
+    #[test]
+    fn pin_max_zoom_only_guards_the_window_size_ceiling() {
+        // A 1000x500 image can be magnified up to the 30k px window ceiling.
+        assert_eq!(max_pin_zoom(1000, 500), PIN_MAX_WINDOW_PX / 1000.0);
+        // A 4K screenshot still supports roughly 7.8x before the window ceiling.
+        let max_zoom = max_pin_zoom(3840, 2160);
+        assert!((max_zoom - 7.8125).abs() < 0.001, "max_zoom={max_zoom}");
+        // Degenerate dimensions never disable zooming.
+        assert_eq!(max_pin_zoom(0, 0), PIN_MAX_WINDOW_PX);
     }
 
     #[test]

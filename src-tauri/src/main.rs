@@ -235,6 +235,8 @@ fn main() {
             commands::pin_ready,
             commands::pin_drag,
             commands::pin_zoom,
+            commands::pin_skill,
+            commands::pin_export_annotations,
             commands::pin_copy,
             commands::pin_close,
             commands::picker_ready,

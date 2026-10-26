@@ -12,24 +12,32 @@
 <body>
   <div class="pin-root" id="pin-root">
     <img class="pin-image" id="pin-image" alt="" draggable="false" hidden>
+    <!-- Edit mode: transparent annotation layer above the image. -->
+    <canvas class="pin-edit-canvas" id="pin-edit-canvas" hidden aria-hidden="true"></canvas>
 
-    <!-- Hover toolbar: copy / close (contract §11.5). -->
+    <!-- Hover toolbar (icon buttons): edit / copy / close (contract §11.5). -->
     <div class="pin-toolbar" id="pin-toolbar" hidden>
-      <button type="button" class="pin-btn" id="pin-copy" title="复制图片">
+      <button type="button" class="pin-btn" id="pin-edit" title="编辑（标注 / 图片技能，Esc 退出）"
+              aria-label="编辑">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 20h9"></path>
+          <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
+        </svg>
+      </button>
+      <button type="button" class="pin-btn" id="pin-copy" title="复制图片" aria-label="复制图片">
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <rect x="9" y="9" width="11" height="11" rx="2"></rect>
           <path d="M5 15V5a2 2 0 0 1 2-2h10"></path>
         </svg>
-        <span class="pin-btn-label">复制</span>
       </button>
-      <button type="button" class="pin-btn pin-btn-close" id="pin-close" title="关闭（Esc）">
+      <button type="button" class="pin-btn pin-btn-close" id="pin-close" title="关闭（Esc）" aria-label="关闭">
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M18 6 6 18"></path>
           <path d="m6 6 12 12"></path>
         </svg>
-        <span class="pin-btn-label">关闭</span>
       </button>
     </div>
 
@@ -43,6 +51,29 @@
       <button type="button" class="pin-error-btn" id="pin-error-close">关闭</button>
     </div>
 
+    <!-- Edit-mode toolbar (contract §11.5): annotation tools + image skills.
+         Esc leaves the edit mode. -->
+    <div class="pin-edit-bar" id="pin-edit-bar" role="toolbar" aria-label="图片编辑" hidden>
+      <button type="button" class="pin-edit-tool" data-edit-tool="shape" data-edit-shape="rect" title="矩形">矩形</button>
+      <button type="button" class="pin-edit-tool" data-edit-tool="shape" data-edit-shape="circle" title="圆形">圆形</button>
+      <button type="button" class="pin-edit-tool" data-edit-tool="shape" data-edit-shape="line" title="直线">直线</button>
+      <button type="button" class="pin-edit-tool" data-edit-tool="arrow" title="箭头">箭头</button>
+      <button type="button" class="pin-edit-tool" data-edit-tool="pen" title="画笔">画笔</button>
+      <button type="button" class="pin-edit-tool" data-edit-tool="text" title="文字">文字</button>
+      <button type="button" class="pin-edit-tool" data-edit-tool="number" title="序号">序号</button>
+      <button type="button" class="pin-edit-tool" data-edit-tool="mosaic" title="马赛克">马赛克</button>
+      <span class="pin-edit-sep" aria-hidden="true"></span>
+      <button type="button" class="pin-edit-btn" id="pin-edit-undo" title="撤回" disabled>撤回</button>
+      <button type="button" class="pin-edit-btn" id="pin-edit-redo" title="重做" disabled>重做</button>
+      <span class="pin-edit-sep" aria-hidden="true"></span>
+      <button type="button" class="pin-edit-btn" data-edit-skill="ocr" title="提取图片中的文字">提取文字</button>
+      <button type="button" class="pin-edit-btn" data-edit-skill="translate" title="翻译图片中的文字">翻译</button>
+      <button type="button" class="pin-edit-btn" data-edit-skill="explain" title="用 AI 解释图片内容">解释图片</button>
+      <span class="pin-edit-sep" aria-hidden="true"></span>
+      <button type="button" class="pin-edit-btn" data-edit-action="copy" title="复制带标注的图片">复制</button>
+      <button type="button" class="pin-edit-btn pin-edit-btn-done" data-edit-action="exit" title="保存标注并退出编辑（Esc 取消编辑）">完成</button>
+    </div>
+
     <!-- Right-click menu (copy / close). -->
     <div class="pin-menu" id="pin-context-menu" role="menu" hidden>
       <button type="button" class="pin-menu-item" data-pin-action="copy" role="menuitem">复制</button>
@@ -51,6 +82,7 @@
   </div>
 
   <script src="shared/tauri-api.js"></script>
+  <script src="capture-annotate.js"></script>
   <script src="pin.js"></script>
 </body>
 </html>

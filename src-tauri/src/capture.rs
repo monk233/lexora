@@ -853,12 +853,7 @@ impl CaptureService {
         global_rect: Option<&GlobalRect>,
     ) -> Result<CaptureJob, EngineError> {
         let settings = settings_of(app)?;
-        let action = SkillAction::parse(action).ok_or_else(|| {
-            EngineError::new(
-                "不支持的截图操作。",
-                "支持提取文字（ocr）、翻译（translate）、解释图片（explain）或图片技能（custom）。",
-            )
-        })?;
+        let action = parse_skill_action(action)?;
         let requested_skill = trimmed(skill_id);
         let requested_target =
             trimmed(target_lang).unwrap_or_else(|| settings.picker.default_target_lang.clone());
@@ -921,30 +916,115 @@ impl CaptureService {
             (image, data_url, anchor, scale)
         };
 
-        // 2. Image clipboard; a failure only flips the flag, the flow continues.
+        // 2-5. Clipboard, retry state, picker panel and streaming job.
+        self.finish_skill_job(
+            app,
+            &settings,
+            image,
+            data_url,
+            action,
+            meta,
+            requested_target,
+            request_id,
+            anchor,
+            scale,
+            true,
+            "screenshot skill",
+        )
+    }
+
+    /// Runs a panel skill on an external image (a pinned screenshot opened in
+    /// the pin editor): there is no capture session, so the caller passes the
+    /// image, the annotation layer and the picker anchor. Everything else
+    /// (clipboard copy, retry state, picker panel, streaming job) is shared with
+    /// the screenshot flow.
+    #[allow(clippy::too_many_arguments)]
+    pub fn skill_image(
+        &self,
+        app: &AppHandle,
+        image: RgbaImage,
+        annotations: Option<String>,
+        action: &str,
+        skill_id: Option<String>,
+        target_lang: Option<String>,
+        request_id: Option<String>,
+        anchor: (i32, i32),
+        scale: f64,
+    ) -> Result<CaptureJob, EngineError> {
+        let settings = settings_of(app)?;
+        let action = parse_skill_action(action)?;
+        let requested_skill = trimmed(skill_id);
+        let requested_target = trimmed(target_lang)
+            .unwrap_or_else(|| settings.picker.default_target_lang.clone());
+        let meta = resolve_skill_meta(
+            &settings,
+            action,
+            requested_skill.as_deref(),
+            &requested_target,
+        )?;
+        let mut image = image;
+        composite_annotations(&mut image, annotations)?;
+        let data_url = png_data_url(&image)?;
+        self.finish_skill_job(
+            app,
+            &settings,
+            image,
+            data_url,
+            action,
+            meta,
+            requested_target,
+            request_id,
+            anchor,
+            scale,
+            false,
+            "pin skill",
+        )
+    }
+
+    /// Shared tail of `skill` / `skill_image`: image clipboard, retry state,
+    /// overlay closing (screenshot flow only), picker panel + streaming event.
+    #[allow(clippy::too_many_arguments)]
+    fn finish_skill_job(
+        &self,
+        app: &AppHandle,
+        settings: &Settings,
+        image: RgbaImage,
+        data_url: String,
+        action: SkillAction,
+        meta: SkillMeta,
+        target_lang: String,
+        request_id: Option<String>,
+        anchor: (i32, i32),
+        scale: f64,
+        hide_overlays: bool,
+        log_label: &str,
+    ) -> Result<CaptureJob, EngineError> {
+        // Image clipboard; a failure only flips the flag, the flow continues.
         let clipboard = write_clipboard_image(app, &image);
 
-        // 3. Remember the capture for retry / follow-up.
+        // Remember the capture for retry / follow-up.
         *lock(&self.last) = Some(LastCapture {
             image: image.clone(),
             data_url: data_url.clone(),
             action,
             skill_id: meta.skill_id.clone(),
-            target_lang: requested_target.clone(),
+            target_lang: target_lang.clone(),
             label: meta.label.clone(),
             ocr_text: None,
         });
 
-        // 4. Hide the overlays (kept reusable) and show the picker at the
-        //    selection anchor.
-        self.close(app);
+        // Screenshots hide the (reusable) overlays; the pin editor keeps its
+        // window on screen.
+        if hide_overlays {
+            self.close(app);
+        }
         let payload = PickerPayload {
             text: String::new(),
             program_name: "截图".to_string(),
             anchor_x: anchor.0,
             anchor_y: anchor.1,
             scale_factor: scale,
-            config: picker_config(&settings),
+            config: picker_config(settings),
         };
         if !crate::windows::show_picker(app, &payload) {
             return Err(EngineError::new(
@@ -953,10 +1033,10 @@ impl CaptureService {
             ));
         }
 
-        // 5. Tell the picker which panel to open and what is streaming into it.
+        // Tell the picker which panel to open and what is streaming into it.
         let request_id = normalize_request_id(request_id);
         let hint = if clipboard {
-            "截图已复制到剪贴板"
+            "图片已复制到剪贴板"
         } else {
             "图片复制到剪贴板失败，但不影响识别与翻译"
         };
@@ -968,7 +1048,7 @@ impl CaptureService {
                 "action": action.as_str(),
                 "skillId": meta.skill_id,
                 "label": meta.label,
-                "targetLang": requested_target,
+                "targetLang": target_lang,
                 "clipboard": clipboard,
                 "hint": hint,
             }),
@@ -976,7 +1056,7 @@ impl CaptureService {
 
         log_of(app).map(|log| {
             log.info(&format!(
-                "screenshot skill: action={} label={} clipboard={} chars={}x{} request={request_id}",
+                "{log_label}: action={} label={} clipboard={} chars={}x{} request={request_id}",
                 action.as_str(),
                 meta.label,
                 clipboard,
@@ -990,7 +1070,7 @@ impl CaptureService {
             action,
             image,
             data_url,
-            target_lang: requested_target,
+            target_lang,
             system_prompt: meta.system_prompt,
             ocr_text: None,
             clipboard,
@@ -2338,6 +2418,16 @@ fn emit_error(app: &AppHandle, request_id: &str, error: &EngineError) {
 
 /// Resolves the label, custom skill id and vision system prompt for an action.
 /// Custom skills must exist, be `kind=image` and be enabled (contract §10.3).
+/// Parses the renderer action string into a known skill action.
+fn parse_skill_action(action: &str) -> Result<SkillAction, EngineError> {
+    SkillAction::parse(action).ok_or_else(|| {
+        EngineError::new(
+            "不支持的截图操作。",
+            "支持提取文字（ocr）、翻译（translate）、解释图片（explain）或图片技能（custom）。",
+        )
+    })
+}
+
 fn resolve_skill_meta(
     settings: &Settings,
     action: SkillAction,
@@ -2680,6 +2770,15 @@ fn decode_annotations(annotations: &str) -> Result<RgbaImage, EngineError> {
 /// `CaptureAnnotate.renderToPng` over `image`; a layer of a different size is
 /// scaled to the crop first (contract §11.4). Empty/absent annotations are a
 /// no-op.
+/// Public wrapper of the annotation compositor for the pin editor
+/// (`pin_export_annotations`): composites a renderer PNG layer into the image.
+pub fn compose_annotations(
+    image: &mut RgbaImage,
+    annotations: Option<String>,
+) -> Result<(), EngineError> {
+    composite_annotations(image, annotations)
+}
+
 fn composite_annotations(
     image: &mut RgbaImage,
     annotations: Option<String>,

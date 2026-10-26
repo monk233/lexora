@@ -637,13 +637,14 @@ editor.renderToPng(rectCss) -> string|null
 - `capture_skill {requestId, index, rect, action, skillId?, targetLang?, annotations?}`：同上合成后的图片用于剪贴板与 AI（OCR/转写/视觉均使用合成图）。
 - `capture_pin {index, rect, annotations?} -> {ok, id, width, height, error?, hint?}`：合成 → 存入内存 registry（可多个）→ 创建 pin 窗口（见 11.5）。
 - `capture_longshot {index, rect} -> {ok, width, height, pinId?, frames?, error?, hint?}`：见 11.6。长截图忽略标注（v1 文档注明）。
-- pin 命令：`pin_ready {id} -> {ok, dataUrl, width, height, scrollable, zoom, minZoom, maxZoom, error?}`（`scrollable` = 图片高于窗口、需窗口内滚动，用于 pin.js 精确控制滚动条，普通图片为 false；`zoom` 为当前滚轮缩放，1.0 = 原图 1:1 物理像素）、`pin_drag {id, dx, dy} -> {ok}`、`pin_zoom {id, zoom} -> {ok, zoom, minZoom, maxZoom, width, height, scrollable, error?, hint?}`（滚轮缩放，窗口居中缩放并 clamp 到 15%..初始比例）、`pin_copy {id} -> {ok, error?, hint?}`、`pin_close {id} -> {ok}`。
+- pin 命令：`pin_ready {id} -> {ok, dataUrl, width, height, scrollable, zoom, minZoom, maxZoom, error?}`（`scrollable` = 图片高于窗口、需窗口内滚动，用于 pin.js 精确控制滚动条，普通图片为 false；`zoom` 为当前滚轮缩放，1.0 = 原图 1:1 物理像素）、`pin_drag {id, dx, dy} -> {ok}`、`pin_zoom {id, zoom} -> {ok, zoom, minZoom, maxZoom, width, height, scrollable, error?, hint?}`（滚轮缩放：**左上角为锚点**，最小 15%，**放大无产品上限**，仅受系统窗口尺寸上限约束）、`pin_skill {id, requestId, action, skillId?, targetLang?, annotations?} -> {ok, clipboard, error?, hint?}`（对钉图运行图片技能，结果流入 picker 面板）、`pin_export_annotations {id, annotations?, apply} -> {ok, clipboard, width, height, dataUrl?, error?, hint?}`（合成标注写剪贴板；`apply=true` 同时替换钉图并返回新 PNG）、`pin_copy {id} -> {ok, error?, hint?}`、`pin_close {id} -> {ok}`。
 - 事件（Rust → capture-*）：`capture-longshot-progress {frame, height}`、`capture-longshot-done {ok, width, height, pinId?, error?}`；Rust → pin-*：`pin-close {id}`。
 
 ### 11.5 钉在桌面
 - 每个 pin 一个窗口 label `pin-<id>`：无边框、透明、always on top、skip_taskbar、resizable=false、visible=false（先建后显示）。宽度 = 图片物理宽度 / DPI，最大不超过工作区宽 70%；高度 = min(图片逻辑高度, 工作区高 70%)——超长图（长截图）保持可读宽度、窗口内容可滚动，不整体缩成细条；位置在鼠标附近并 clamp 到工作区。
 - 普通图片（高度未超出窗口）**不显示滚动条**：`body` 默认 `overflow: hidden`，仅当图片实际高度大于窗口时由 `pin.js` 加 `is-scrollable` 类启用滚动；滚动条复用项目现有样式（8px、透明轨道、圆角 999 的 `--border-strong` 滑块，hover `--text-faint`）。
-- `pin.html`（新文件）：加载后调用 `pinAPI.ready(id)` 取图并显示；鼠标按住任意位置拖动窗口（`pin_drag` 增量，位置 clamp 到虚拟桌面，可拖到任意显示器）；**鼠标滚轮缩放**（`pin_zoom`，每格约 10%，范围 15%～初始比例；窗口以中心缩放，底部短暂显示百分比；长图高度仍受工作区 70% 上限并用滚动条浏览，滚轮留给缩放）；双击关闭；Esc 关闭；悬停右上角显示两个小按钮「复制」「关闭」；右键菜单含「复制」「关闭」。
+- `pin.html`（新文件）：加载后调用 `pinAPI.ready(id)` 取图并显示；鼠标按住任意位置拖动窗口（`pin_drag` 增量，位置 clamp 到虚拟桌面，可拖到任意显示器）；**鼠标滚轮缩放**（`pin_zoom`，每格约 10%，最小 15%、放大无产品上限——以**图片左上角**为锚点，底部短暂显示百分比；长图高度仍受工作区 70% 上限并用滚动条浏览，滚轮留给缩放）；双击关闭；Esc 关闭；悬停右上角显示三个**图标按钮**「编辑」「复制」「关闭」；右键菜单含「复制」「关闭」。
+- **钉图编辑模式**：点击「编辑」图标进入——图片上方叠加标注画布（复用 `capture-annotate.js`），底部出现图片技能工具栏：矩形/圆形/直线/箭头/画笔/文字/序号/马赛克、撤回/重做、提取文字/翻译/解释图片（`pin_skill`，结果流入 picker 面板）、复制（带标注写剪贴板，`pin_export_annotations apply=false`）、完成（合成标注替换钉图并复制，`apply=true`）。编辑期间禁止窗口拖动、滚轮缩放、右键菜单与双击关闭；**Esc 退出编辑并丢弃标注**。
 - `window.pinAPI = { ready(id), drag(id,dx,dy), copy(id), close(id) }`（tauri-api.js 提供 + mock）。
 - 关闭 pin 不退出截图流程（截图 overlay 已关闭）。
 
