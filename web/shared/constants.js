@@ -192,6 +192,14 @@
       hint: "智谱 AI 开放平台，OpenAI 兼容接口",
     },
     {
+      id: "opencode-go",
+      label: "OpenCode Go",
+      baseUrl: "https://opencode.ai/inference/go/openai/v1",
+      modelsBaseUrl: "https://opencode.ai/inference/go/v1",
+      needsKey: true,
+      hint: "OpenCode Go 订阅 Key；自动附带 x-opencode-session 请求头",
+    },
+    {
       id: "ollama",
       label: "Ollama（本机）",
       baseUrl: "http://127.0.0.1:11434/v1",

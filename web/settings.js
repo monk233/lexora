@@ -3610,6 +3610,7 @@
         online: {
           preset: isCustom ? "custom" : preset.id,
           baseUrl: isCustom ? "" : preset.baseUrl,
+          modelsBaseUrl: isCustom || !preset.modelsBaseUrl ? "" : preset.modelsBaseUrl,
           apiKey: "",
           model: "",
         },

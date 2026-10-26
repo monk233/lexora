@@ -24,13 +24,61 @@ use crate::logger::redact_secrets;
 #[derive(Debug, Clone)]
 pub struct OnlineConfig {
     pub base_url: String,
+    /// Optional separate base for `GET /models`; empty means `base_url`.
+    pub models_base_url: String,
     pub api_key: String,
     pub model: String,
     pub timeout_ms: u64,
     pub temperature: f64,
     pub max_tokens: u32,
+    /// Provider preset id (e.g. `opencode-go`). Some providers need provider
+    /// specific request headers, which are derived from it.
+    pub preset: String,
     /// `true` when talking to the bundled llama.cpp server (changes wording).
     pub local: bool,
+}
+
+/// Header carrying a stable per-process conversation/session id. OpenCode Go
+/// asks clients to send it for routing and prompt caching; a stable value per
+/// app run is enough for that purpose.
+const OPENCODE_SESSION_HEADER: &str = "x-opencode-session";
+
+fn opencode_session() -> &'static str {
+    use std::sync::LazyLock;
+    static SESSION: LazyLock<String> = LazyLock::new(|| {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos() as u64)
+            .unwrap_or(0);
+        let mixed = nanos
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            .rotate_left(17)
+            ^ (std::process::id() as u64).wrapping_mul(0x85EB_CA77);
+        format!("lexora-{mixed:016x}")
+    });
+    SESSION.as_str()
+}
+
+/// Provider-specific extra headers (beyond `Authorization`). Returned separately
+/// from the request builder so the rules stay unit-testable.
+fn extra_headers(config: &OnlineConfig) -> Vec<(&'static str, String)> {
+    let mut headers = Vec::new();
+    if config.preset.eq_ignore_ascii_case("opencode-go") {
+        headers.push((OPENCODE_SESSION_HEADER, opencode_session().to_string()));
+    }
+    headers
+}
+
+/// Endpoint used by `GET /models`: the explicit `models_base_url` when set
+/// (OpenCode Go serves models under a different path), `base_url` otherwise.
+fn models_endpoint(config: &OnlineConfig) -> String {
+    let base = if config.models_base_url.trim().is_empty() {
+        &config.base_url
+    } else {
+        &config.models_base_url
+    };
+    models_url(base)
 }
 
 impl OnlineConfig {
@@ -391,13 +439,20 @@ pub fn map_reqwest_error(error: reqwest::Error, local: bool) -> EngineError {
 // Requests
 // --------------------------------------------------------------------------- //
 
-fn build_headers(request: reqwest::RequestBuilder, api_key: &str) -> reqwest::RequestBuilder {
-    let key = api_key.trim();
-    if key.is_empty() {
+fn build_headers(
+    request: reqwest::RequestBuilder,
+    config: &OnlineConfig,
+) -> reqwest::RequestBuilder {
+    let key = config.api_key.trim();
+    let mut request = if key.is_empty() {
         request
     } else {
         request.bearer_auth(key)
+    };
+    for (name, value) in extra_headers(config) {
+        request = request.header(name, value);
     }
+    request
 }
 
 fn chat_payload(
@@ -433,7 +488,7 @@ pub async fn chat_completion(
         .post(chat_url(&config.base_url))
         .timeout(timeout)
         .json(&chat_payload(config, messages, false, max_tokens));
-    let response = build_headers(request, &config.api_key)
+    let response = build_headers(request, config)
         .send()
         .await
         .map_err(|error| map_reqwest_error(error, config.local))?;
@@ -467,22 +522,21 @@ pub async fn chat_completion(
     Ok(content.trim().to_string())
 }
 
-/// Fetches the model id list from `<base>/models`.
+/// Fetches the model id list from the provider's models endpoint.
 pub async fn list_models(
     http: &reqwest::Client,
-    base_url: &str,
-    api_key: &str,
+    config: &OnlineConfig,
     timeout: Duration,
 ) -> Result<Vec<String>, EngineError> {
-    let base = normalize_base_url(base_url);
-    if base.is_empty() {
+    let base = models_endpoint(config);
+    if base.trim_matches('/').is_empty() || base == "/models" {
         return Err(EngineError::new(
             "服务地址不能为空。",
             "请填写完整的 http(s) 地址，例如 https://api.deepseek.com/v1。",
         ));
     }
-    let request = http.get(models_url(&base)).timeout(timeout);
-    let response = build_headers(request, api_key)
+    let request = http.get(base).timeout(timeout);
+    let response = build_headers(request, config)
         .send()
         .await
         .map_err(|error| map_reqwest_error(error, false))?;
@@ -551,7 +605,7 @@ pub async fn stream_chat(
     ));
     let response = match tokio::time::timeout(
         header_timeout,
-        build_headers(request, &config.api_key).send(),
+        build_headers(request, config).send(),
     )
     .await
     {
@@ -922,11 +976,13 @@ mod tests {
     fn config_reports_configured_state() {
         let config = OnlineConfig {
             base_url: " https://api.deepseek.com ".to_string(),
+            models_base_url: String::new(),
             api_key: String::new(),
             model: "deepseek-chat".to_string(),
             timeout_ms: 60_000,
             temperature: 0.2,
             max_tokens: 1024,
+            preset: String::new(),
             local: false,
         };
         assert!(config.is_configured());
@@ -936,5 +992,43 @@ mod tests {
             ..config
         };
         assert!(!empty.is_configured());
+    }
+
+    #[test]
+    fn opencode_go_requests_carry_the_session_header() {
+        let config = OnlineConfig {
+            base_url: "https://opencode.ai/inference/go/openai/v1".to_string(),
+            models_base_url: "https://opencode.ai/inference/go/v1".to_string(),
+            api_key: "sk-test".to_string(),
+            model: "kimi-k3".to_string(),
+            timeout_ms: 60_000,
+            temperature: 0.2,
+            max_tokens: 1024,
+            preset: "opencode-go".to_string(),
+            local: false,
+        };
+        let headers = extra_headers(&config);
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0].0, OPENCODE_SESSION_HEADER);
+        assert!(headers[0].1.starts_with("lexora-"));
+        // Stable within the process (routing/caching) and never empty.
+        assert_eq!(opencode_session(), opencode_session());
+        assert!(!opencode_session().is_empty());
+
+        // Other providers send no extra header.
+        let mut other = config.clone();
+        other.preset = "deepseek".to_string();
+        assert!(extra_headers(&other).is_empty());
+
+        // Models are fetched from the dedicated path, falling back to the base.
+        assert_eq!(
+            models_endpoint(&config),
+            "https://opencode.ai/inference/go/v1/models"
+        );
+        other.models_base_url = String::new();
+        assert_eq!(
+            models_endpoint(&other),
+            "https://opencode.ai/inference/go/openai/v1/models"
+        );
     }
 }

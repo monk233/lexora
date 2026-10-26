@@ -1082,11 +1082,13 @@ impl EngineService {
             .filter(|value| !value.is_empty());
         openai::OnlineConfig {
             base_url: openai::normalize_base_url(&online.base_url),
+            models_base_url: online.models_base_url.trim().to_string(),
             api_key: env_key.unwrap_or_else(|| online.api_key.clone()),
             model: online.model.trim().to_string(),
             timeout_ms: online.timeout_ms,
             temperature: online.temperature,
             max_tokens: online.max_tokens,
+            preset: online.preset.trim().to_string(),
             local: false,
         }
     }
@@ -1104,11 +1106,13 @@ impl EngineService {
         })?;
         Ok(openai::OnlineConfig {
             base_url,
+            models_base_url: String::new(),
             api_key: String::new(),
             model: models::model_display_name(model_file),
             timeout_ms: LOCAL_HEADER_TIMEOUT_MS,
             temperature: settings.provider.online.temperature,
             max_tokens: settings.provider.online.max_tokens,
+            preset: String::new(),
             local: true,
         })
     }
@@ -1145,8 +1149,20 @@ impl EngineService {
             hint: String::new(),
         };
 
+        let online_settings = self.settings.get().provider.online.clone();
+        let list_config = openai::OnlineConfig {
+            base_url: base.clone(),
+            models_base_url: online_settings.models_base_url.trim().to_string(),
+            api_key: api_key.trim().to_string(),
+            model: requested_model.clone(),
+            timeout_ms,
+            temperature: 0.0,
+            max_tokens: 1,
+            preset: online_settings.preset.trim().to_string(),
+            local: false,
+        };
         let mut list_error: Option<EngineError> = None;
-        match openai::list_models(&self.http, &base, api_key, timeout).await {
+        match openai::list_models(&self.http, &list_config, timeout).await {
             Ok(models) => result.models = models,
             Err(error) => {
                 self.logger.warn(&format!(
@@ -1174,11 +1190,13 @@ impl EngineService {
 
         let config = openai::OnlineConfig {
             base_url: base,
+            models_base_url: list_config.models_base_url.clone(),
             api_key: api_key.trim().to_string(),
             model: requested_model.clone(),
             timeout_ms,
             temperature: 0.0,
             max_tokens: 1,
+            preset: list_config.preset.clone(),
             local: false,
         };
         let ping_started = Instant::now();
@@ -1232,7 +1250,23 @@ impl EngineService {
         let settings = self.settings.get();
         let timeout =
             Duration::from_millis(settings.provider.online.timeout_ms.clamp(2_000, 120_000));
-        openai::list_models(&self.http, base_url, api_key, timeout).await
+        let config = openai::OnlineConfig {
+            base_url: openai::normalize_base_url(base_url),
+            models_base_url: settings
+                .provider
+                .online
+                .models_base_url
+                .trim()
+                .to_string(),
+            api_key: api_key.trim().to_string(),
+            model: String::new(),
+            timeout_ms: settings.provider.online.timeout_ms,
+            temperature: 0.0,
+            max_tokens: 1,
+            preset: settings.provider.online.preset.trim().to_string(),
+            local: false,
+        };
+        openai::list_models(&self.http, &config, timeout).await
     }
 
     // -- models ------------------------------------------------------------- //

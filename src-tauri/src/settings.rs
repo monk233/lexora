@@ -282,6 +282,9 @@ pub struct ProviderSettings {
 pub struct OnlineSettings {
     pub preset: String,
     pub base_url: String,
+    /// Optional separate base for `GET /models` (e.g. OpenCode Go serves models
+    /// at a different path than `/chat/completions`); empty means `base_url`.
+    pub models_base_url: String,
     pub api_key: String,
     pub model: String,
     pub timeout_ms: u64,
@@ -370,6 +373,7 @@ impl Default for OnlineSettings {
         Self {
             preset: "deepseek".to_string(),
             base_url: "https://api.deepseek.com/v1".to_string(),
+            models_base_url: String::new(),
             api_key: String::new(),
             model: "deepseek-chat".to_string(),
             timeout_ms: 60_000,

@@ -17,7 +17,7 @@ Lexora 是免安装应用：
 ### 在线 API
 
 1. 设置 → 翻译服务 → 选择「在线 API」。
-2. 选择预设（DeepSeek / OpenAI / Moonshot / 智谱 / Ollama / LM Studio / 自定义）。切换预设会清空上一个服务商的 API Key 与模型名，只填入新预设的服务地址。
+2. 选择预设（DeepSeek / OpenAI / Moonshot / 智谱 / OpenCode Go / Ollama / LM Studio / 自定义）。切换预设会清空上一个服务商的 API Key 与模型名，只填入新预设的服务地址（OpenCode Go 额外使用独立的模型列表地址，请求自动附带 `x-opencode-session` 头）。
 3. 填入 API Key，点「拉取模型」从服务端 `/models` 读取可用模型并选择；不会自动填写模型名。服务端不支持 `/models` 时选「自定义模型…」手动填写。
 4. 点「测试连接」，成功后即可使用。
 

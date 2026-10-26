@@ -6,6 +6,7 @@
 
 ### Added
 
+- **OpenCode Go 服务商预设**：设置 → 翻译服务新增 OpenCode Go。服务地址 `https://opencode.ai/inference/go/openai/v1`，模型列表从独立的 `https://opencode.ai/inference/go/v1/models` 拉取；请求自动附带 `x-opencode-session` 会话请求头与 `Lexora/<版本>` User-Agent。新增设置字段 `provider.online.modelsBaseUrl`（旧设置文件自动兼容，为空时回退服务地址）与 `tests/e2e-opencode-headers.ps1` 回归脚本。
 - **截图选择阶段**：进入截图后不再默认全屏选区；鼠标所在窗口自动吸附高亮，高亮可跨显示器移动；点击窗口或拖动框选后才显示截图工具栏，点击空白桌面/任务栏即全屏选区；同一时刻仅一个显示器有选区（在另一屏开始新选择会清空旧选区）。新增 `capture_hover_at`（物理坐标 → 顶层窗口吸附矩形）、`capture_cursor` 命令，`capture_monitor_info` 返回显示器物理原点 `x`/`y`。
 - **取色放大镜**：选择/编辑阶段鼠标旁显示放大镜，放大指针周围 15×15 像素（最近邻 + 网格 + 中心高亮），显示物理坐标与 `#RRGGBB` 色值；`C` 键复制色号（`capture_copy_text`），靠边自动翻转。
 - **跨显示器框选与跨屏移动**：选区为全局物理矩形，可拖过显示器边界框选，也可在编辑阶段跨显示器移动/缩放；各 overlay 只渲染自己的一段（边/手柄按全局位置显示），工具栏跟随选区右下角所在显示器。`crop_global` 逐显示器拼接（间隙填黑），`capture_copy`/`capture_skill`/`capture_pin` 增加可选 `globalRect` 参数，跨屏时禁用标注与长截图；新增 `capture_layout` 返回物理显示器布局。
