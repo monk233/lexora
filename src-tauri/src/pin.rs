@@ -562,18 +562,32 @@ pub fn export_annotations(
     }))
 }
 
+/// Converts a logical length reported by the renderer to physical pixels.
+fn logical_px(value: f64, scale: f64) -> i32 {
+    if value.is_finite() {
+        (value.clamp(0.0, 30_000.0) * scale).round() as i32
+    } else {
+        0
+    }
+}
+
 /// Grows (or restores) the pin window for the edit-mode toolbar
 /// (`pin_edit_window`, contract §11.5). The window gets an extra transparent
 /// strip below the image — or above it when there is no room below — so the
 /// toolbar floats **outside** the image like the screenshot toolbar floats
-/// outside the selection. `toolbar_height` is logical pixels; `topPadding` in
-/// the reply tells the renderer how far the image must move down inside the
-/// window when the strip was added above it.
+/// outside the selection. The window is also widened to the single-row toolbar
+/// width: the extra transparent area is added on the right, or the window
+/// shifts left (clamped to the work area) and reports `leftPadding` so the
+/// renderer can push the image back to its original on-screen position.
+/// `toolbar_height`/`toolbar_width` are logical pixels; `topPadding` and
+/// `leftPadding` in the reply tell the renderer how far the image must move
+/// inside the window.
 pub fn edit_window(
     app: &AppHandle,
     id: u64,
     editing: bool,
     toolbar_height: f64,
+    toolbar_width: f64,
 ) -> Result<Value, EngineError> {
     let Some(window) = app.get_webview_window(&label_for(id)) else {
         return Err(pin_missing_error());
@@ -583,11 +597,8 @@ pub fn edit_window(
         .ok()
         .filter(|scale| scale.is_finite() && *scale > 0.1)
         .unwrap_or(1.0);
-    let toolbar = if toolbar_height.is_finite() {
-        (toolbar_height.clamp(0.0, 4000.0) * scale).round() as i32
-    } else {
-        0
-    };
+    let toolbar = logical_px(toolbar_height.min(4_000.0), scale);
+    let bar_width = logical_px(toolbar_width, scale);
 
     if !editing {
         let restore = {
@@ -598,7 +609,12 @@ pub fn edit_window(
             entry.edit_restore.take()
         };
         let Some(restore) = restore else {
-            return Ok(json!({ "ok": true, "editing": false, "topPadding": 0.0 }));
+            return Ok(json!({
+                "ok": true,
+                "editing": false,
+                "topPadding": 0.0,
+                "leftPadding": 0.0,
+            }));
         };
         window
             .set_size(PhysicalSize::new(
@@ -616,7 +632,12 @@ pub fn edit_window(
                 restore.width, restore.height, restore.x, restore.y
             ),
         );
-        return Ok(json!({ "ok": true, "editing": false, "topPadding": 0.0 }));
+        return Ok(json!({
+            "ok": true,
+            "editing": false,
+            "topPadding": 0.0,
+            "leftPadding": 0.0,
+        }));
     }
 
     // First call records the original geometry; repeated layout passes (compact
@@ -658,6 +679,22 @@ pub fn edit_window(
     ));
     let _ = window.set_position(PhysicalPosition::new(base.x, base.y));
     let work = win32::work_area_physical(base.x + base.width / 2, base.y + base.height / 2);
+    // Width: the toolbar is a single row, so the window must be at least as wide
+    // as the bar. The image keeps its on-screen position: the extra area grows to
+    // the right, and when the work area's right edge is in the way the window
+    // shifts left instead (`leftPadding` below tells the renderer how far to push
+    // the image back).
+    let max_width = work.width().max(1) as i32;
+    let desired_width = bar_width.max(base.width).max(1);
+    let new_width = desired_width.min(max_width);
+    let mut new_x = base.x;
+    if new_x + new_width > work.right {
+        new_x = work.right - new_width;
+    }
+    if new_x < work.left {
+        new_x = work.left;
+    }
+    let left_padding = (base.x - new_x).max(0);
     let can_down = base.y + base.height + toolbar <= work.bottom;
     let can_up = base.y - toolbar >= work.top;
     let (new_y, top_padding, new_height) = if can_down || !can_up {
@@ -667,10 +704,10 @@ pub fn edit_window(
     };
     window
         .set_size(PhysicalSize::new(
-            base.width.max(1) as u32,
+            new_width.max(1) as u32,
             new_height.max(1) as u32,
         ))
-        .and_then(|_| window.set_position(PhysicalPosition::new(base.x, new_y)))
+        .and_then(|_| window.set_position(PhysicalPosition::new(new_x, new_y)))
         .map_err(|error| EngineError::new("无法展开编辑工具栏。", format!("请重试（{error}）。")))?;
     if let Some(entry) = lock_registry().get_mut(id) {
         entry.edit_restore = Some(base);
@@ -678,15 +715,21 @@ pub fn edit_window(
     log_info(
         app,
         &format!(
-            "pin edit window: id={id} base={}x{} toolbar={toolbar} top_padding={top_padding} at ({},{})",
-            base.width, base.height, base.x, new_y
+            "pin edit window: id={id} base={}x{} toolbar={toolbar} bar_width={bar_width} \
+             top_padding={top_padding} left_padding={left_padding} at ({new_x},{new_y})",
+            base.width, base.height
         ),
     );
     Ok(json!({
         "ok": true,
         "editing": true,
         "topPadding": top_padding as f64 / scale,
+        "leftPadding": left_padding as f64 / scale,
         "toolbarHeight": toolbar as f64 / scale,
+        "toolbarWidth": bar_width as f64 / scale,
+        "width": new_width as f64 / scale,
+        "height": new_height as f64 / scale,
+        "clamped": new_width < desired_width,
     }))
 }
 

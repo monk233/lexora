@@ -1383,7 +1383,17 @@
           scrollable: false,
         };
       case "pin_edit_window":
-        return { ok: true, editing: args.editing === true, topPadding: 0 };
+        return {
+          ok: true,
+          editing: args.editing === true,
+          topPadding: 0,
+          leftPadding: 0,
+          toolbarHeight: Number(args.toolbarHeight) || 0,
+          toolbarWidth: Number(args.toolbarWidth) || 0,
+          width: 0,
+          height: 0,
+          clamped: false,
+        };
       case "pin_skill":
         return { ok: true, clipboard: false };
       case "pin_export_annotations":
@@ -2367,12 +2377,15 @@
       });
     },
     /* Grows/restores the pin window for the edit-mode toolbar so it floats
-     * outside the image; replies with {editing, topPadding, toolbarHeight}. */
-    editWindow: function (id, editing, toolbarHeight) {
+     * outside the image and fits a single-row bar; replies with
+     * {editing, topPadding, leftPadding, toolbarHeight, toolbarWidth, width,
+     * height, clamped}. */
+    editWindow: function (id, editing, toolbarHeight, toolbarWidth) {
       return safeInvoke("pin_edit_window", {
         id: Number(id) || 0,
         editing: editing === true,
         toolbarHeight: Number(toolbarHeight) || 0,
+        toolbarWidth: Number(toolbarWidth) || 0,
       });
     },
     /* Mouse-wheel zoom (1 = one image pixel per physical pixel; the shell

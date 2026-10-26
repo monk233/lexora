@@ -926,16 +926,19 @@ pub fn pin_export_annotations(
 }
 
 /// Grows (or restores) a pinned window so the edit-mode toolbar floats outside
-/// the image (contract §11.5). `toolbar_height` is logical pixels; the reply
-/// carries `topPadding` for the renderer when the strip was added above.
+/// the image (contract §11.5). `toolbar_height`/`toolbar_width` are logical
+/// pixels: the window grows by the strip height and is widened to the
+/// single-row toolbar width. The reply carries `topPadding`/`leftPadding` for
+/// the renderer (and `clamped` when the work area limited the width).
 #[tauri::command]
 pub fn pin_edit_window(
     app: AppHandle,
     id: u64,
     editing: bool,
     toolbar_height: f64,
+    toolbar_width: f64,
 ) -> Value {
-    match crate::pin::edit_window(&app, id, editing, toolbar_height) {
+    match crate::pin::edit_window(&app, id, editing, toolbar_height, toolbar_width) {
         Ok(payload) => payload,
         Err(error) => json!({ "ok": false, "error": error.message, "hint": error.hint }),
     }

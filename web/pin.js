@@ -60,6 +60,13 @@
     /* The shell grew the window so the toolbar floats outside the image. */
     editOutside: false,
     editTopPad: 0,
+    editLeftPad: 0,
+    /* Image CSS size captured before the edit window is widened: the image keeps
+     * it while editing (the shell only adds transparent space around it). */
+    editImageWidth: 0,
+    /* Structural fallback: icons-only bar when the work area is too narrow for
+     * the labelled bar (the picture toolbar never wraps either). */
+    editForceCompact: false,
     editSkillCalls: 0,
     editExportCalls: 0
   };
@@ -218,20 +225,8 @@
         }
       }
     });
-    if (dom.editUndo) {
-      dom.editUndo.addEventListener("click", function () {
-        if (editor) {
-          editor.undo();
-        }
-      });
-    }
-    if (dom.editRedo) {
-      dom.editRedo.addEventListener("click", function () {
-        if (editor) {
-          editor.redo();
-        }
-      });
-    }
+    /* Undo/redo are handled by the delegated click listener on the edit bar
+     * (onEditBarClick); binding them here too would run them twice. */
   }
 
   function subscribeClose() {
@@ -526,6 +521,16 @@
     closeShapeMenu();
     state.editing = true;
     state.editBusy = false;
+    state.editForceCompact = false;
+    /* The shell widens the window for the single-row toolbar; pin the image to
+     * the size it had before that so only transparent space is added around. */
+    state.editImageWidth = dom.image ? dom.image.clientWidth || 0 : 0;
+    if (state.editImageWidth > 0) {
+      document.body.style.setProperty(
+        "--pin-image-width",
+        state.editImageWidth + "px"
+      );
+    }
     if (dom.toolbar) {
       dom.toolbar.hidden = true;
     }
@@ -559,7 +564,6 @@
     state.editing = false;
     state.editBusy = false;
     closeShapeMenu();
-    requestEditWindow(false);
     if (editor) {
       editor.setTool(null);
       editor.reset();
@@ -570,70 +574,125 @@
     if (dom.editCanvas) {
       dom.editCanvas.hidden = true;
     }
-    if (dom.toolbar) {
-      dom.toolbar.hidden = false;
-    }
-    document.body.classList.remove("is-editing");
     updateEditBar();
+    /* Restore the window geometry first, then drop the fixed image width and the
+     * paddings: the image never stretches while the window shrinks back. */
+    var finish = function () {
+      resetEditWindowLayout();
+      document.body.classList.remove("is-editing");
+      if (dom.toolbar) {
+        dom.toolbar.hidden = false;
+      }
+    };
+    var restore = requestEditWindow(false);
+    if (restore && typeof restore.then === "function") {
+      restore.then(finish, finish);
+    } else {
+      finish();
+    }
   }
 
   /* ---- Edit toolbar placement (outside the image) ----------------------- */
 
   function applyCompactToEditBar() {
     if (dom.editBar) {
-      dom.editBar.classList.toggle("compact", state.compact === true);
+      var compact = state.compact === true || state.editForceCompact === true;
+      dom.editBar.classList.toggle("compact", compact);
     }
   }
 
-  /* Asks the shell to grow the window by the toolbar height so the bar sits
-   * outside the image. The strip is added below the image, or above it when the
-   * screen has no room below (the shell reports `topPadding` then and the image
-   * is pushed down inside the window so it stays where it was). */
-  function requestEditWindow(editing) {
+  /* Work-area width available to the shell (the bar must fit in one row). */
+  function screenWidth() {
+    var screen = window.screen || {};
+    var width = Number(screen.availWidth);
+    if (!isFinite(width) || width <= 0) {
+      width = window.innerWidth || 0;
+    }
+    return width;
+  }
+
+  function measureEditBar() {
+    if (!dom.editBar || dom.editBar.hidden) {
+      return null;
+    }
+    var width = Math.ceil(dom.editBar.offsetWidth || 0);
+    var height = Math.ceil(dom.editBar.offsetHeight || 0);
+    if (width <= 0 || height <= 0) {
+      return null;
+    }
+    return { width: width, height: height };
+  }
+
+  /* Asks the shell to grow the window so the bar floats outside the image and
+   * fits in ONE row, anchored to the left edge (exactly like the screenshot
+   * toolbar). The strip is added below the image, or above it when the screen
+   * has no room below (the shell reports `topPadding`/`leftPadding` then and the
+   * image is pushed inside the window so it stays where it was). */
+  function requestEditWindow(editing, retried) {
     if (!API || typeof API.editWindow !== "function" || !dom.editBar) {
-      return;
+      resetEditWindowLayout();
+      return null;
     }
     if (!editing) {
+      var restore;
       try {
-        Promise.resolve(API.editWindow(state.id, false, 0)).catch(function () {
-          /* the window keeps its current size */
-        });
+        restore = API.editWindow(state.id, false, 0, 0);
       } catch (error) {
-        /* the window keeps its current size */
+        restore = Promise.reject(error);
       }
-      resetEditWindowLayout();
-      return;
+      return Promise.resolve(restore).then(
+        function () {
+          /* the caller resets the layout once the geometry is back */
+        },
+        function () {
+          /* the window keeps its current size */
+        }
+      );
     }
-    if (state.scrollable || dom.editBar.hidden) {
+    var size = measureEditBar();
+    if (!size) {
       resetEditWindowLayout();
-      return;
+      return null;
     }
-    var height = dom.editBar.offsetHeight || 0;
-    var imageHeight = dom.image ? dom.image.clientHeight : 0;
-    if (height <= 0 || imageHeight <= 0) {
-      resetEditWindowLayout();
-      return;
+    /* A narrow work area cannot fit the labelled bar: fall back to the
+     * icons-only layout (the screenshot toolbar's compact mode) so the bar can
+     * never wrap. */
+    if (
+      !state.compact &&
+      !state.editForceCompact &&
+      size.width + 16 > screenWidth() - 16
+    ) {
+      state.editForceCompact = true;
+      applyCompactToEditBar();
+      size = measureEditBar();
+      if (!size) {
+        resetEditWindowLayout();
+        return null;
+      }
     }
-    var toolbarHeight = Math.ceil(height + 12);
+    var toolbarWidth = size.width + 16;
+    /* Long screenshots fill the window vertically, so there is no outside strip:
+     * the bar stays overlaid on the image, but it is still widened to one row. */
+    var toolbarHeight = state.scrollable ? 0 : size.height + 12;
     var request;
     try {
-      request = API.editWindow(state.id, true, toolbarHeight);
+      request = API.editWindow(state.id, true, toolbarHeight, toolbarWidth);
     } catch (error) {
       request = Promise.reject(error);
     }
-    Promise.resolve(request).then(
+    return Promise.resolve(request).then(
       function (result) {
         if (!state.editing || !result || result.ok === false) {
           resetEditWindowLayout();
           return;
         }
-        var topPadding = positiveNumber(result.topPadding);
-        state.editOutside = true;
-        state.editTopPad = topPadding;
-        document.body.style.paddingTop = topPadding > 0 ? topPadding + "px" : "";
-        dom.editBar.classList.toggle("is-above", topPadding > 0);
-        /* The window grew: keep the annotation surface matched to the image. */
-        layoutEditCanvas();
+        applyEditWindowLayout(result);
+        if (result.clamped && !retried && !state.editForceCompact) {
+          /* The work area limited the width: shrink to icons and retry once. */
+          state.editForceCompact = true;
+          applyCompactToEditBar();
+          requestEditWindow(true, true);
+        }
       },
       function () {
         resetEditWindowLayout();
@@ -641,12 +700,34 @@
     );
   }
 
+  function applyEditWindowLayout(result) {
+    var topPadding = positiveNumber(result.topPadding);
+    var leftPadding = positiveNumber(result.leftPadding);
+    state.editOutside = true;
+    state.editTopPad = topPadding;
+    state.editLeftPad = leftPadding;
+    document.body.style.paddingTop = topPadding > 0 ? topPadding + "px" : "";
+    document.body.style.paddingLeft = leftPadding > 0 ? leftPadding + "px" : "";
+    if (dom.editBar) {
+      dom.editBar.classList.toggle("is-above", topPadding > 0);
+      /* Anchored to the image's left edge, like the screenshot toolbar hugs the
+       * selection; `leftPadding` is the transparent part added on the left. */
+      dom.editBar.style.left = Math.round(leftPadding + 8) + "px";
+    }
+    /* The window grew: keep the annotation surface matched to the image. */
+    layoutEditCanvas();
+  }
+
   function resetEditWindowLayout() {
     state.editOutside = false;
     state.editTopPad = 0;
+    state.editLeftPad = 0;
     document.body.style.paddingTop = "";
+    document.body.style.paddingLeft = "";
+    document.body.style.removeProperty("--pin-image-width");
     if (dom.editBar) {
       dom.editBar.classList.remove("is-above");
+      dom.editBar.style.left = "";
     }
   }
 
@@ -714,7 +795,18 @@
     event.stopPropagation();
     var tool = button.getAttribute("data-edit-tool");
     if (tool) {
+      /* Same interaction as the screenshot toolbar: clicking a tool activates it,
+       * clicking the active tool again leaves annotation mode. The shape button
+       * also opens the sub-mode picker (the screenshot bar has a palette for
+       * this; the pin has no palette, so its floating menu takes that role). */
+      var activeTool = button.classList.contains("is-active");
+      if (activeTool) {
+        closeShapeMenu();
+        selectEditTool(null, null);
+        return;
+      }
       if (tool === "shape") {
+        selectEditTool(dom.editShapeButton, "shape", state.editShape || "rect");
         toggleShapeMenu(button);
         return;
       }
@@ -1292,6 +1384,24 @@
   }
 
   function onKeyDown(event) {
+    /* Same shortcuts as the screenshot overlay while editing. */
+    if (state.editing && (event.ctrlKey || event.metaKey) && !event.altKey) {
+      var key = String(event.key || "").toLowerCase();
+      if (key === "z" && !event.shiftKey) {
+        event.preventDefault();
+        if (editor) {
+          editor.undo();
+        }
+        return;
+      }
+      if (key === "y" || (key === "z" && event.shiftKey)) {
+        event.preventDefault();
+        if (editor) {
+          editor.redo();
+        }
+        return;
+      }
+    }
     if (event.key !== "Escape") {
       return;
     }

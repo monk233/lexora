@@ -220,28 +220,38 @@ body.is-editing .pin-toolbar {
 }
 
 /* Same component design as the screenshot toolbar (white card, icon + label,
- * 32px buttons). It floats at the bottom of the pin window and wraps when the
- * window is narrow. */
+ * 32px buttons). It is a single row anchored to the left edge of the image —
+ * exactly like the screenshot toolbar: it never wraps because the shell widens
+ * the pin window to the bar width (pin.js measures it and calls
+ * `pin_edit_window`). `--pin-image-width` is set by pin.js while editing so the
+ * image keeps its pre-expansion size. */
 .pin-edit-bar {
   position: fixed;
-  left: 50%;
+  left: 8px;
   bottom: 8px;
   /* The shell grows the pin window so this bar sits OUTSIDE the image (below
    * it, or above when there is no room below) like the screenshot toolbar. */
   z-index: 30;
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  justify-content: center;
+  flex-wrap: nowrap;
+  justify-content: flex-start;
   gap: 2px;
-  max-width: calc(100vw - 8px);
+  width: max-content;
+  max-width: none;
   padding: 4px;
-  transform: translateX(-50%);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface);
   box-shadow: var(--shadow-float);
   cursor: default;
+}
+
+/* While editing the window is widened for the single-row toolbar, so the image
+ * must keep the size it had before the window grew (set by pin.js). */
+body.is-editing .pin-image {
+  width: var(--pin-image-width, 100%);
+  height: auto;
 }
 
 .pin-edit-custom-skills {
@@ -359,6 +369,20 @@ body.is-editing .pin-toolbar {
 
 .pin-edit-bar.compact .tool-btn .label {
   display: none;
+}
+
+/* Active annotation tool: same highlight as the screenshot toolbar's
+ * `.capture-tool.is-active` (primary soft background, semibold label). */
+.pin-edit-bar .tool-btn.is-active,
+.pin-edit-bar .tool-btn[aria-pressed="true"] {
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.pin-edit-bar .tool-btn.is-active .icon,
+.pin-edit-bar .tool-btn[aria-pressed="true"] .icon {
+  color: var(--primary);
 }
 
 .bar-sep {
