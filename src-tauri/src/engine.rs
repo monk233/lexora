@@ -1200,14 +1200,7 @@ impl EngineService {
             local: false,
         };
         let ping_started = Instant::now();
-        let ping = openai::chat_completion(
-            &self.http,
-            &config,
-            vec![json!({"role": "user", "content": "ping"})],
-            1,
-            timeout,
-        )
-        .await;
+        let ping = openai::ping(&self.http, &config, timeout).await;
         result.latency_ms = ping_started.elapsed().as_millis() as u64;
         match ping {
             Ok(_) => {

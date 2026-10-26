@@ -44,8 +44,10 @@ $presetObj = $null
 try { $presetObj = $presets | ConvertFrom-Json } catch { }
 $results.PresetPresent = ($presetObj -and $presetObj.id -eq "opencode-go" -and $presetObj.modelsBaseUrl -eq "https://opencode.ai/inference/go/v1")
 
-$test = Cdp "tauri\.localhost/$" "window.__TAURI__.core.invoke('test_online', {baseUrl: 'http://127.0.0.1:$MockPort/v1', apiKey: 'mock-key', model: 'kimi-k3', timeoutMs: 8000}).then(r => JSON.stringify(r))"
+$test = Cdp "tauri\.localhost/$" "window.__TAURI__.core.invoke('test_online', {baseUrl: 'http://127.0.0.1:$MockPort/v1', apiKey: 'mock-key', model: 'kimi-k3', timeoutMs: 8000}).then(r => r)"
 "TEST_ONLINE=$test"
+$testObj = $null
+try { $testObj = $test | ConvertFrom-Json } catch { }
 Start-Sleep -Milliseconds 800
 
 $requests = @()
@@ -63,7 +65,8 @@ $results.SessionHeader = [bool]$sessionOk
 $results.UserAgent = [bool]$uaOk
 $results.Authorization = [bool]$authOk
 $results.ModelsBaseUrl = [bool]$modelsPathOk
-$results.Ok = ($results.PresetPresent -and $sessionOk -and $uaOk -and $authOk -and $modelsPathOk)
+$results.TestOnlineOk = [bool]($testObj -and $testObj.ok -eq $true)
+$results.Ok = ($results.PresetPresent -and $sessionOk -and $uaOk -and $authOk -and $modelsPathOk -and $results.TestOnlineOk)
 "OPENCODE_GO_HEADERS_OK=$($results.Ok)"
 $results | ConvertTo-Json -Depth 4
 

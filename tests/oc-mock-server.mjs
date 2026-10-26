@@ -29,10 +29,23 @@ const server = http.createServer((req, res) => {
       return;
     }
     if (req.url && req.url.includes("/chat/completions")) {
+      // Mirrors the real OpenCode Go probe: a tiny max_tokens can come back with
+      // finish_reason "length" and empty content. The connection test must still
+      // treat this as success.
       res.writeHead(200, { "content-type": "application/json" });
       res.end(
         JSON.stringify({
-          choices: [{ message: { role: "assistant", content: "pong" } }],
+          id: "chatcmpl-mock",
+          object: "chat.completion",
+          model: "kimi-k3",
+          choices: [
+            {
+              index: 0,
+              finish_reason: "length",
+              logprobs: null,
+              message: { role: "assistant", content: "" },
+            },
+          ],
         })
       );
       return;

@@ -522,6 +522,78 @@ pub async fn chat_completion(
     Ok(content.trim().to_string())
 }
 
+/// `true` when the response looks like a chat completion (non-empty `choices`).
+/// A probe can legitimately return empty text (`finish_reason: "length"` with a
+/// tiny `max_tokens`), so the connection test must not require content.
+pub fn completion_shape_ok(value: &Value) -> bool {
+    value
+        .get("choices")
+        .and_then(Value::as_array)
+        .map(|choices| !choices.is_empty())
+        .unwrap_or(false)
+}
+
+/// Connection probe: sends a tiny chat request and accepts any successful
+/// response with a completion shape, even when the sampled text is empty. Used
+/// by "test connection" so providers whose probe returns no text (e.g. reasoning
+/// models truncating a 1-token answer) still count as reachable.
+pub async fn ping(
+    http: &reqwest::Client,
+    config: &OnlineConfig,
+    timeout: Duration,
+) -> Result<(), EngineError> {
+    if !config.is_configured() {
+        return Err(EngineError::new(
+            "服务尚未配置完整。",
+            "请填写服务地址和模型名后重试。",
+        ));
+    }
+    let payload = json!({
+        "model": if config.model.trim().is_empty() { "local" } else { config.model.trim() },
+        "messages": [{"role": "user", "content": "ping"}],
+        "stream": false,
+        "temperature": 0.0,
+        "max_tokens": 16,
+    });
+    let request = http
+        .post(chat_url(&config.base_url))
+        .timeout(timeout)
+        .json(&payload);
+    let response = build_headers(request, config)
+        .send()
+        .await
+        .map_err(|error| map_reqwest_error(error, config.local))?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(map_http_status(status.as_u16(), &body, config.local));
+    }
+    let body = response
+        .text()
+        .await
+        .map_err(|error| map_reqwest_error(error, config.local))?;
+    let value: Value = serde_json::from_str(&body).map_err(|_| {
+        EngineError::new(
+            "服务返回了无法解析的内容。",
+            format!(
+                "请确认服务地址指向 OpenAI 兼容接口（…/v1/chat/completions）。返回片段：{}",
+                snippet(&body, 200)
+            ),
+        )
+    })?;
+    if completion_shape_ok(&value) {
+        Ok(())
+    } else {
+        Err(with_snippet(
+            EngineError::new(
+                "服务返回的结果结构异常。",
+                "响应中没有 choices 数组，可能不是 OpenAI 兼容接口。",
+            ),
+            &body,
+        ))
+    }
+}
+
 /// Fetches the model id list from the provider's models endpoint.
 pub async fn list_models(
     http: &reqwest::Client,
@@ -992,6 +1064,20 @@ mod tests {
             ..config
         };
         assert!(!empty.is_configured());
+    }
+
+    #[test]
+    fn completion_shape_accepts_empty_text_probes() {
+        // A truncated probe (finish_reason "length", empty content) is still a
+        // valid completion: the connection test must succeed.
+        assert!(completion_shape_ok(&json!({
+            "choices": [{"index": 0, "finish_reason": "length", "message": {"role": "assistant", "content": ""}}]
+        })));
+        assert!(completion_shape_ok(&json!({
+            "choices": [{"message": {"role": "assistant", "content": "pong"}}]
+        })));
+        assert!(!completion_shape_ok(&json!({"error": {"message": "bad"}})));
+        assert!(!completion_shape_ok(&json!({"choices": []})));
     }
 
     #[test]
