@@ -136,6 +136,9 @@ const WHOLE_VIEW_WORK_RATIO: f64 = 0.92;
 /// scrolls inside its window. 120px keeps even a 9:1 page visible end to end
 /// while still avoiding unrecognisably thin strips.
 const WHOLE_VIEW_MIN_LOGICAL_WIDTH: f64 = 120.0;
+/// Whole-view mode also requires at least this fraction of the original width:
+/// a very wide page would otherwise be scaled down to a hair-thin strip.
+const WHOLE_VIEW_MIN_WIDTH_RATIO: f64 = 0.05;
 
 /// Logical display size of a pinned image: physical pixels divided by the DPI
 /// scale, scaled down to at most 70% of the work area, tiny snippets enlarged
@@ -173,7 +176,13 @@ fn pin_display_size(
     let mut factor = if tall { fit_w } else { uniform };
     if tall {
         let whole = (whole_h / logical_h).min(fit_w).min(1.0);
-        if logical_w * whole >= WHOLE_VIEW_MIN_LOGICAL_WIDTH {
+        // Whole-image mode must not turn a wide page into a hair-thin strip:
+        // require the whole-view width to stay above both the absolute minimum
+        // and a small fraction of the original width (a 4000px-wide page is not
+        // useful at 132px, while a 714px-wide long screenshot is fine at 142px).
+        let readable_width =
+            WHOLE_VIEW_MIN_LOGICAL_WIDTH.max(logical_w * WHOLE_VIEW_MIN_WIDTH_RATIO);
+        if logical_w * whole >= readable_width {
             factor = whole;
         }
     }
