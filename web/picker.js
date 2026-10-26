@@ -1360,7 +1360,7 @@
       return "打开设置 → 翻译服务，下载并启动本地引擎与模型，或切换到在线 API。";
     }
     if (kind === "custom") {
-      return "自定义技能与翻译使用相同的服务，请检查在线 API 或本地模型状态后重试。";
+      return "自定义技能与翻译使用同一服务，请检查 API/本地模型状态后重试。";
     }
     if (kind === "polish") {
       return "润色与翻译使用相同的服务，请检查在线 API 或本地模型状态后重试。";
@@ -2578,8 +2578,10 @@
 
   /* Image skills (built-in screenshot / custom kind=image) hand off to the
    * screenshot overlay: no text result panel is opened, the shell creates the
-   * capture window and the picker hides itself. */
-  function startImageCapture(presetSkillId) {
+   * capture window and the picker hides itself. The built-in screenshot skill
+   * also closes the picker window right away (like the copy skill); custom image
+   * skills keep it so their result panel can open when the capture finishes. */
+  function startImageCapture(presetSkillId, hidePicker) {
     var captureAPI = window.captureAPI;
     if (!captureAPI || typeof captureAPI.start !== "function") {
       showToast("当前版本不支持截图");
@@ -2601,6 +2603,9 @@
       abortActiveRequest();
       stopSpeech();
       scheduleToolbarResize();
+      if (hidePicker && API && typeof API.close === "function") {
+        API.close();
+      }
     }
     if (!result || typeof result.then !== "function") {
       stopPickerWorkForCapture();
@@ -2634,8 +2639,8 @@
     } else if (skill === "search") {
       searchSkill();
     } else if (skill === "screenshot") {
-      // Built-in screenshot skill: plain capture, no preset image skill.
-      startImageCapture("");
+      // Built-in screenshot skill: capture and hide the picker toolbar.
+      startImageCapture("", true);
     } else if (skill) {
       var meta = skillMeta(skill);
       if (meta.kind === "image") {

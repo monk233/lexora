@@ -297,7 +297,7 @@ impl LocalServer {
             self.fail(
                 "无法启动本地引擎（llama-server.exe）。",
                 format!(
-                    "请确认引擎文件完整且未被杀毒软件拦截；可停止后重试或重新下载引擎。系统错误：{error}"
+                    "请确认引擎文件完整且未被拦截；可停止后重试或重新下载引擎。系统错误：{error}"
                 ),
             )
         })?;
@@ -319,7 +319,7 @@ impl LocalServer {
             if Instant::now() >= deadline {
                 let error = self.fail(
                     "本地引擎启动超时（90 秒）。",
-                    "首次加载模型可能需要较长时间：请确认内存充足后重试，或查看 logs/llama.log 获取详情。",
+                    "首次加载模型可能较慢：请确认内存充足后重试，或查看 logs/llama.log。",
                 );
                 logger.error(&format!("llama-server start timeout: {health_url}"));
                 return Err(error);

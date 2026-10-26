@@ -21,3 +21,4 @@ test-text.txt
 .DS_Store
 Thumbs.db
 .vscode/
+.idea/

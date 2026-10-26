@@ -359,7 +359,7 @@ pub fn map_reqwest_error(error: reqwest::Error, local: bool) -> EngineError {
     if error.is_connect() {
         return EngineError::new(
             format!("无法连接到{who}。"),
-            "请检查网络、代理和防火墙设置，以及服务地址是否正确；本地模式请先启动本地引擎。",
+            "请检查网络、代理、防火墙与服务地址；本地模式请先启动本地引擎。",
         );
     }
     if error.is_builder() {

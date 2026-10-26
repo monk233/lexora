@@ -136,14 +136,14 @@
   var CUSTOM_KIND_HINTS = {
     text: "文本技能处理选中文字：点击后直接执行提示词。",
     image:
-      "图片技能在截图中使用：选中文字后点击会先进入截图，再对框选图片执行该提示词（需要在线视觉模型或本地 Qwen2.5-VL 3B）。",
+      "选中文字后进入截图，对框选区域执行提示词（需视觉模型）。",
   };
 
   var CUSTOM_VARS_HINTS = {
     text:
-      '支持变量：<code>{text}</code> 选中文本、<code>{target}</code> / <code>{language}</code> 目标语言、<code>{program}</code> / <code>{app}</code> 当前应用',
+      '变量：<code>{text}</code> 选中文本、<code>{target}</code>/<code>{language}</code> 目标语言、<code>{program}</code>/<code>{app}</code> 当前应用',
     image:
-      '支持变量：<code>{target}</code> / <code>{language}</code> 目标语言、<code>{program}</code> / <code>{app}</code> 当前应用（图片内容由截图提供，不使用 {text}）',
+      '变量：<code>{target}</code>/<code>{language}</code> 目标语言、<code>{program}</code>/<code>{app}</code> 当前应用（图片内容由截图提供）',
   };
 
   /* Screenshot toolbar skills (contract §7.2/§11.2, tenth review round). Stored
@@ -737,7 +737,7 @@
         if (models.length) {
           onlineModelHint = "已加载 " + models.length + " 个模型";
         } else {
-          onlineModelHint = "服务端没有返回模型，请选择「自定义模型…」手动填写";
+          onlineModelHint = "服务端未返回模型，可选「自定义模型…」";
         }
       } else {
         onlineModelError = (result && result.error) || "拉取模型失败";
@@ -913,7 +913,7 @@
       if (!models.length) {
         modelHint.hidden = false;
         modelHint.textContent =
-          "还没有本地模型：展开「模型目录」下载（翻译推荐 Hy-MT2，通用推荐 Qwen2.5 3B，截图理解推荐 Qwen2.5-VL 3B），或点击「导入 GGUF」选择本机文件。";
+          "还没有本地模型：展开「模型目录」下载，或点击「导入 GGUF」。";
       } else {
         modelHint.hidden = true;
       }
@@ -3190,11 +3190,11 @@
       if (note) {
         note.hidden = false;
         note.textContent =
-          "便携版不写入开机启动项，避免在系统里留下注册表记录。如需开机自启，可创建 Lexora.exe 的快捷方式并放入 shell:startup 目录。";
+          "便携版不写入开机启动项。如需自启，把 Lexora.exe 快捷方式放入 shell:startup。";
       }
     } else {
       if (hint) {
-        hint.textContent = "登录 Windows 后在托盘中静默启动";
+        hint.textContent = "登录后启动到托盘";
       }
       if (note) {
         note.hidden = true;

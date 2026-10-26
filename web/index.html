@@ -31,7 +31,7 @@
         </span>
         <div class="brand-text">
           <span class="brand-title">Lexora</span>
-          <span class="brand-sub">划词翻译与阅读助手 · 设置</span>
+          <span class="brand-sub">划词翻译 · 设置</span>
         </div>
       </div>
       <div class="save-status" id="save-status" data-state="idle" role="status" aria-live="polite">
@@ -47,7 +47,7 @@
       <div class="card-head">
         <div class="card-head-text">
           <h2 id="card-provider-title">翻译服务</h2>
-          <p>选择在线 OpenAI 兼容 API 或内置本地模型，修改后立即生效。</p>
+          <p>在线 API 或本地模型。</p>
         </div>
         <span class="badge" id="provider-badge" data-tone="muted">读取中…</span>
       </div>
@@ -62,7 +62,7 @@
           <div class="field">
             <div class="field-label">
               <label for="online-preset">服务商预设</label>
-              <p class="field-hint" id="online-preset-hint">切换预设会填入服务地址，并清空 API Key 与模型名</p>
+              <p class="field-hint" id="online-preset-hint">切换后填入服务地址，清空 Key 与模型名</p>
             </div>
             <div class="field-control">
               <select class="select" id="online-preset"></select>
@@ -72,7 +72,7 @@
           <div class="field">
             <div class="field-label">
               <label for="online-base-url">服务地址</label>
-              <p class="field-hint">OpenAI 兼容接口根地址，例如 https://api.deepseek.com/v1</p>
+              <p class="field-hint">OpenAI 兼容接口根地址</p>
             </div>
             <div class="field-control">
               <input class="input" id="online-base-url" type="url" spellcheck="false"
@@ -83,7 +83,7 @@
           <div class="field">
             <div class="field-label">
               <label for="online-api-key">API Key</label>
-              <p class="field-hint">仅保存在本机设置文件中，不会上传</p>
+              <p class="field-hint">仅保存在本机</p>
             </div>
             <div class="field-control">
               <div class="input-group">
@@ -111,7 +111,7 @@
           <div class="field">
             <div class="field-label">
               <label for="online-model">模型名</label>
-              <p class="field-hint">从服务端 /models 拉取；也可选「自定义模型…」手动填写</p>
+              <p class="field-hint">从服务端拉取，或手动填写</p>
             </div>
             <div class="field-control">
               <div class="inline-actions inline-actions-grow">
@@ -129,7 +129,7 @@
           <div class="field">
             <div class="field-label">
               <span class="field-name">连接状态</span>
-              <p class="field-hint">向服务地址发送一次最小请求，验证地址、Key 与模型名</p>
+              <p class="field-hint">验证地址、Key 与模型名</p>
             </div>
             <div class="field-control">
               <div class="inline-actions">
@@ -164,7 +164,7 @@
           <div class="field">
             <div class="field-label">
               <span class="field-name">本地模型</span>
-              <p class="field-hint">启动后按功能自动选择：翻译用 Hy-MT2 1.8B，总结/解释用 Qwen2.5 3B；Qwen2.5-VL 3B 支持截图图片理解</p>
+              <p class="field-hint">按功能自动选择；Qwen2.5-VL 3B 支持截图理解</p>
             </div>
             <div class="field-control">
               <div class="local-models" id="local-models"></div>
@@ -179,7 +179,7 @@
           <div class="catalog" id="catalog" hidden>
             <div class="catalog-head">
               <span class="catalog-title">模型目录</span>
-              <span class="catalog-sub">来自内置目录，下载后即可在本地模式使用</span>
+              <span class="catalog-sub">下载后可在本地模式使用</span>
             </div>
             <ul class="catalog-list" id="catalog-list"></ul>
           </div>
@@ -187,7 +187,7 @@
           <div class="field field-switch local-state-field">
             <div class="field-label">
               <span class="field-name">运行状态</span>
-              <p class="field-hint">本地模式需要先启动 llama.cpp 引擎服务，运行时按功能自动选择模型</p>
+              <p class="field-hint">需先启动本地引擎；按功能自动选择模型</p>
             </div>
             <div class="field-control">
               <div class="inline-actions">
@@ -208,14 +208,14 @@
       <div class="card-head">
         <div class="card-head-text">
           <h2 id="card-picker-title">划词行为</h2>
-          <p>设置划词触发方式、工具栏技能与默认目标语言。</p>
+          <p>触发方式、工具栏技能与目标语言。</p>
         </div>
       </div>
       <div class="card-body">
         <div class="field field-switch">
           <div class="field-label">
             <span class="field-name">启用划词工具</span>
-            <p class="field-hint">关闭后拖选文本不再弹出工具栏</p>
+            <p class="field-hint">关闭后不弹出工具栏</p>
           </div>
           <div class="field-control">
             <label class="switch">
@@ -228,7 +228,7 @@
         <div class="field field-switch">
           <div class="field-label">
             <span class="field-name">紧凑模式</span>
-            <p class="field-hint">工具栏只显示图标，不显示文字</p>
+            <p class="field-hint">工具栏只显示图标</p>
           </div>
           <div class="field-control">
             <label class="switch">
@@ -241,18 +241,18 @@
         <div class="field field-switch panel-mode-field">
           <div class="field-label">
             <span class="field-name">面板模式</span>
-            <p class="field-hint">滚动：面板高度固定，内容在面板内滚动，窗口不随内容变大；自适应：面板无滚动条，窗口随内容自动变高</p>
+            <p class="field-hint">滚动：固定高度、内容内滚；自适应：窗口随内容变高</p>
           </div>
           <div class="field-control">
             <div class="segmented panel-mode-segmented" role="group" aria-label="面板模式">
               <button type="button" class="segment" id="panel-mode-scroll"
                       data-panel-mode="scroll" aria-pressed="false"
                       aria-label="滚动模式：面板高度固定，内容在面板内滚动"
-                      title="面板高度固定，内容在面板内滚动，窗口不随内容变大">滚动</button>
+                      title="高度固定，内容内滚">滚动</button>
               <button type="button" class="segment" id="panel-mode-auto"
                       data-panel-mode="auto" aria-pressed="true"
-                      aria-label="自适应模式：面板无滚动条，窗口随内容自动变高"
-                      title="面板无滚动条，窗口随内容自动变高">自适应</button>
+                      aria-label="自适应模式：无滚动条，窗口随内容变高"
+                      title="无滚动条，窗口随内容变高">自适应</button>
             </div>
           </div>
         </div>
@@ -260,7 +260,7 @@
         <div class="field field-stack">
           <div class="field-label">
             <span class="field-name">工具栏技能</span>
-            <p class="field-hint">勾选要显示在工具栏的技能，拖动调整顺序；两个分类分别保存开关与顺序</p>
+            <p class="field-hint">勾选显示内容，拖动排序</p>
           </div>
           <div class="field-control">
             <div class="segmented skill-kind-tabs" role="tablist" aria-label="技能分类">
@@ -276,7 +276,7 @@
               </button>
             </div>
             <ul class="skill-list" id="capture-action-list" hidden></ul>
-            <p class="skill-kind-note" id="capture-actions-empty" hidden>所有动作已关闭，截图时仅显示确认/取消</p>
+            <p class="skill-kind-note" id="capture-actions-empty" hidden>无动作时截图只显示确认/取消</p>
             <ul class="skill-list" id="skill-list"></ul>
             <div class="skill-actions">
               <button type="button" class="btn" id="add-custom-skill">
@@ -292,7 +292,7 @@
             <div class="custom-skill-editor" id="custom-skill-editor" hidden>
               <div class="custom-skill-editor-head">
                 <span class="custom-skill-editor-title" id="custom-skill-editor-title">新增技能</span>
-                <span class="custom-skill-editor-sub">自定义技能会显示在工具栏中</span>
+                <span class="custom-skill-editor-sub">显示在工具栏中</span>
               </div>
 
               <div class="custom-skill-field">
@@ -306,11 +306,11 @@
                 </div>
                 <div class="custom-skill-icon-panel" id="custom-skill-icon-panel" hidden>
                   <input class="input" id="custom-skill-icon-search" type="search"
-                         placeholder="搜索图标（英文 key，如 pen、book）"
+                         placeholder="搜索图标（英文，如 pen）"
                          aria-label="搜索图标" autocomplete="off" spellcheck="false">
                   <div class="icon-grid" id="custom-skill-icons" role="radiogroup"
                        aria-label="技能图标"></div>
-                  <p class="inline-hint" id="custom-skill-icon-empty" hidden>没有匹配的图标，换个关键词试试</p>
+                  <p class="inline-hint" id="custom-skill-icon-empty" hidden>没有匹配的图标</p>
                 </div>
               </div>
 
@@ -324,7 +324,7 @@
                           data-skill-kind="image" aria-pressed="false"
                           aria-label="图片技能">图片</button>
                 </div>
-                <p class="custom-skill-hint" id="custom-skill-kind-hint">文本技能处理选中文字：点击后直接执行提示词。</p>
+                <p class="custom-skill-hint" id="custom-skill-kind-hint">文本技能处理选中文字</p>
               </div>
 
               <div class="custom-skill-field">
@@ -337,9 +337,9 @@
                 <label class="custom-skill-label" for="custom-skill-prompt">提示词</label>
                 <textarea class="textarea" id="custom-skill-prompt" rows="6" maxlength="4000"
                           spellcheck="false"
-                          placeholder="例如：请从用户选中的文本中提取 5 个关键词，用逗号分隔输出：&#10;{text}"></textarea>
+                          placeholder="例如：提取 5 个关键词，逗号分隔输出：&#10;{text}"></textarea>
                 <p class="custom-skill-hint" id="custom-skill-vars-hint">
-                  支持变量：<code>{text}</code> 选中文本、<code>{target}</code> / <code>{language}</code> 目标语言、<code>{program}</code> / <code>{app}</code> 当前应用
+                  变量：<code>{text}</code> 选中文本、<code>{target}</code>/<code>{language}</code> 目标语言、<code>{program}</code>/<code>{app}</code> 当前应用
                 </p>
               </div>
 
@@ -357,7 +357,7 @@
         <div class="field">
           <div class="field-label">
             <label for="default-target-lang">默认目标语言</label>
-            <p class="field-hint">「自动识别」按原文判断：中文译为英文，其他语言译为中文</p>
+            <p class="field-hint">自动识别：中文译英文，其他译中文</p>
           </div>
           <div class="field-control">
             <select class="select" id="default-target-lang"></select>
@@ -367,12 +367,12 @@
         <div class="field field-stack">
           <div class="field-label">
             <label for="blacklist-input">应用黑名单</label>
-            <p class="field-hint">这些应用中不触发划词；输入进程名后回车添加，可含 .exe</p>
+            <p class="field-hint">这些应用不触发划词；输入进程名回车添加</p>
           </div>
           <div class="field-control">
             <div class="chips" id="blacklist-chips"></div>
             <input class="input" id="blacklist-input" type="text" spellcheck="false"
-                   placeholder="例如 WeChat.exe，回车添加" autocomplete="off">
+                   placeholder="例如 WeChat.exe" autocomplete="off">
           </div>
         </div>
       </div>
@@ -383,14 +383,14 @@
       <div class="card-head">
         <div class="card-head-text">
           <h2 id="card-shortcuts-title">快捷键</h2>
-          <p>配置 Lexora 的全局快捷键。</p>
+          <p>全局快捷键。</p>
         </div>
       </div>
       <div class="card-body">
         <div class="field hotkey-field">
           <div class="field-label">
             <span class="field-name">截图快捷键</span>
-            <p class="field-hint">点击后按下新的组合键即可修改；需包含至少一个修饰键（Ctrl / Alt / Shift / Win）</p>
+            <p class="field-hint">点击后按新组合键；需含修饰键</p>
           </div>
           <div class="field-control">
             <div class="inline-actions">
@@ -409,14 +409,14 @@
       <div class="card-head">
         <div class="card-head-text">
           <h2 id="card-app-title">应用与启动</h2>
-          <p>控制开机自启、托盘驻留与本地数据目录。</p>
+          <p>开机自启、托盘与数据目录。</p>
         </div>
       </div>
       <div class="card-body">
         <div class="field field-switch">
           <div class="field-label">
             <span class="field-name">开机自启</span>
-            <p class="field-hint" id="start-at-login-hint">登录 Windows 后在托盘中静默启动</p>
+            <p class="field-hint" id="start-at-login-hint">登录后在托盘启动</p>
           </div>
           <div class="field-control">
             <label class="switch">
@@ -430,7 +430,7 @@
         <div class="field field-switch">
           <div class="field-label">
             <span class="field-name">关闭窗口后驻留托盘</span>
-            <p class="field-hint">关闭设置窗口时继续在托盘后台运行，划词保持可用</p>
+            <p class="field-hint">关闭窗口后继续在托盘运行</p>
           </div>
           <div class="field-control">
             <label class="switch">
@@ -443,7 +443,7 @@
         <div class="field field-stack">
           <div class="field-label">
             <span class="field-name">数据与目录</span>
-            <p class="field-hint">设置、模型、引擎与日志都保存在本机</p>
+            <p class="field-hint">设置、模型、引擎与日志</p>
           </div>
           <div class="field-control">
             <div class="dir-grid">
@@ -459,14 +459,14 @@
           <div class="danger-row">
             <div class="danger-text">
               <span class="danger-title">恢复默认设置</span>
-              <p class="danger-desc">重置所有选项（不删除自定义技能、已下载的模型与引擎）</p>
+              <p class="danger-desc">重置选项，保留技能、模型与引擎</p>
             </div>
             <button type="button" class="btn btn-danger" id="reset-settings">恢复默认</button>
           </div>
           <div class="danger-row">
             <div class="danger-text">
               <span class="danger-title">退出 Lexora</span>
-              <p class="danger-desc">退出后划词与托盘后台全部停止</p>
+              <p class="danger-desc">退出后划词与托盘停止</p>
             </div>
             <button type="button" class="btn btn-danger" id="quit-app">退出程序</button>
           </div>
@@ -479,7 +479,7 @@
       <div class="card-head">
         <div class="card-head-text">
           <h2 id="card-about-title">关于</h2>
-          <p>版本信息、数据位置与开源许可。</p>
+          <p>版本、数据位置与许可。</p>
         </div>
       </div>
       <div class="card-body">
@@ -517,7 +517,7 @@
           <div class="update-head">
             <div class="update-head-text">
               <span class="update-title">检查更新</span>
-              <p class="update-hint" id="update-current-hint">当前版本 — · 自动下载并替换当前 exe，更新后自动重启</p>
+              <p class="update-hint" id="update-current-hint">当前版本 — · 自动下载替换并重启</p>
             </div>
             <button type="button" class="btn" id="check-update">检查更新</button>
           </div>

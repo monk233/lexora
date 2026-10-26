@@ -50,7 +50,7 @@ pub const CATALOG: [ModelSpec; 3] = [
     ModelSpec {
         id: "hy-mt2-1.8b",
         name: "腾讯混元 Hy-MT2 1.8B（翻译模型）",
-        description: "翻译专用：混元 Hy-MT2 1.8B Q4_K_M，速度快，适合中英及多语互译",
+        description: "翻译专用，速度快，中英及多语互译",
         filename: "Hy-MT2-1.8B-Q4_K_M.gguf",
         size_bytes: 1_133_080_448,
         license: "Apache-2.0",
@@ -64,7 +64,7 @@ pub const CATALOG: [ModelSpec; 3] = [
     ModelSpec {
         id: "qwen2.5-3b",
         name: "Qwen2.5 3B（通用模型）",
-        description: "通用模型：翻译、总结、解释都能用；适合内存 16GB 以上的电脑",
+        description: "通用模型：翻译、总结、解释，建议 16GB+ 内存",
         filename: "qwen2.5-3b-instruct-q4_k_m.gguf",
         size_bytes: 2_104_932_768,
         license: "Apache-2.0",
@@ -78,7 +78,7 @@ pub const CATALOG: [ModelSpec; 3] = [
     ModelSpec {
         id: "qwen2.5-vl-3b",
         name: "Qwen2.5-VL 3B（视觉模型）",
-        description: "视觉模型：能理解截图中的画面与文字，可用于「解释图片」/图片技能；含视觉投影器，需下载两个文件，适合内存 16GB 以上的电脑",
+        description: "可理解图片与文字，含视觉投影器（两个文件），建议 16GB+ 内存",
         filename: "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf",
         size_bytes: 1_929_901_056,
         license: "Apache-2.0",

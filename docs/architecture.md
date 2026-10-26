@@ -1,6 +1,6 @@
 # 架构说明
 
-Lexora 是一个 Windows 桌面划词翻译工具，使用 Tauri v2 构建：Rust 负责系统集成与翻译，WebView2 渲染 UI，发布为免安装单 exe。
+Lexora 是 Windows 桌面划词翻译工具，使用 Tauri v2 构建：Rust 负责系统集成与翻译，WebView2 渲染 UI，发布为免安装单 exe。
 
 ## 进程与线程
 
@@ -69,7 +69,7 @@ lexora.exe
 - **overlay 可见性**：overlay 与其他 Lexora 窗口不做捕获排除，系统截图/录屏可拍到截图界面；截图窗口禁用 DWM 过渡，退出时单帧隐藏不闪烁。
 - **长截图（手动滚动，contract §11.14）**：
   1. 点击「长截图」→ `longshot_start`：overlay 保持可见并设鼠标穿透；页面进入 live 模式（隐藏冻结图/手柄，保留选框与遮罩，选区内显示目标应用实时画面）。
-  2. 后台线程约 8fps 抓选区（四周内缩 2 CSS px 避免选框入镜），与已拼接图同时尝试向后追加 / 向前插入（竖向行采样，横向旋转 90° 复用），选择更可靠的重叠方向；无重叠标记 stalled。
+  2. 后台线程约 8fps 抓选区（四周内缩 2 CSS px 避免选框入镜），与已拼接图同时尝试向后追加 / 向前插入（竖向行采样，横向旋转 90° 复用）；无重叠标记 stalled。
   3. 每次拼接 emit `longshot-progress {width,height,frames,revision,stalled}`；预览窗口按 revision 节流拉 `longshot_preview`（PNG 约 720 宽，缓存），双缓冲淡入显示。
   4. 完成 → 全分辨率图写剪贴板 + `pin::create_pin`；取消 → 恢复 overlay 交互/UI。全程不自动滚动。
 - **钉在桌面**：`pin-<id>` 置顶无边框窗口，图片内存 registry；尺寸按 DPI 适配工作区（普通图等比缩放无滚动条，长图保持可读宽度窗口内滚动）。
@@ -81,7 +81,7 @@ lexora.exe
 3. 过滤：功能开关、自身进程、黑名单、同文本 400ms 去重。
 4. 独立线程创建 UIA COM 客户端（连接/事务超时 1.5s/1s），读取焦点元素的 TextPattern 选区；失败重试 2 次；主线程 `recv_timeout(1.5s)` 看门狗，超时放弃。
 5. 得到文本 + 鼠标物理坐标 + 显示器 scale，调用 `windows::show_picker`：用 `PhysicalPosition` 定位并 clamp 到工作区，展示 picker 窗口，推送 `picker-data` 事件。
-6. 点击「更多」可临时禁用当前应用/工具、打开设置或关闭；点击外部自动隐藏（面板固定时除外）。鼠标滚轮/触摸板滚动不会隐藏工具栏，长结果可在面板内滚动阅读；结果按 Markdown 渲染（`web/shared/markdown.js`，HTML 先转义，链接经 `open_external` 打开）。
+6. 点击「更多」可临时禁用当前应用/工具、打开设置或关闭；点击外部自动隐藏（面板固定时除外）。鼠标滚轮/触摸板滚动不会隐藏工具栏，长结果可在面板内滚动；结果按 Markdown 渲染（`web/shared/markdown.js`，HTML 先转义，链接经 `open_external` 打开）。
 
 ## 翻译数据流
 
@@ -104,7 +104,7 @@ picker.js → invoke("picker_translate", {requestId,text,targetLang})
 
 ## 设置与便携
 
-`settings.json` 与模型/引擎都放在数据目录（默认 exe 同级 `data/`），因此解压到 U 盘或任意目录都能独立使用。数据目录不可写时回退 `%APPDATA%\Lexora`。
+`settings.json` 与模型/引擎都放在数据目录（默认 exe 同级 `data/`），解压到 U 盘或任意目录都能独立使用。数据目录不可写时回退 `%APPDATA%\Lexora`。
 
 ## 安全与隐私
 

@@ -410,7 +410,7 @@
         mockCatalogEntry(
           "hy-mt2-1.8b",
           "腾讯混元 Hy-MT2 1.8B（翻译模型）",
-          "翻译专用：混元 Hy-MT2 1.8B Q4_K_M，速度快，适合中英及多语互译",
+          "翻译专用，速度快，中英及多语互译",
           "Hy-MT2-1.8B-Q4_K_M.gguf",
           1133080448,
           true,
@@ -419,7 +419,7 @@
         mockCatalogEntry(
           "qwen2.5-3b",
           "Qwen2.5 3B（通用模型）",
-          "通用模型：翻译、总结、解释都能用；适合内存 16GB 以上的电脑",
+          "通用模型：翻译、总结、解释，建议 16GB+ 内存",
           "qwen2.5-3b-instruct-q4_k_m.gguf",
           2104932768,
           false,
@@ -428,7 +428,7 @@
         mockCatalogEntry(
           "qwen2.5-vl-3b",
           "Qwen2.5-VL 3B（视觉模型）",
-          "视觉模型：可理解截图内容，包含 mmproj 视觉投影器；适合内存 16GB 以上的电脑",
+          "可理解图片与文字，含视觉投影器（两个文件），建议 16GB+ 内存",
           "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf",
           1929901056,
           false,

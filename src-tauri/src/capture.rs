@@ -2694,7 +2694,7 @@ async fn recognize_text(image: &RgbaImage) -> Result<String, EngineError> {
     if text.is_empty() {
         return Err(EngineError::new(
             "没有识别到文字。",
-            "请重新框选包含文字的区域；若系统缺少语言包，请在 Windows 设置 → 时间和语言 → 语言中安装对应语言的 OCR 组件。",
+            "请重新框选含文字的区域；缺语言包可在 Windows 设置中安装 OCR 组件。",
         ));
     }
     Ok(text)

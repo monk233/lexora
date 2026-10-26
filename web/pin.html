@@ -17,7 +17,7 @@
 
     <!-- Hover toolbar (icon buttons): edit / copy / close (contract §11.5). -->
     <div class="pin-toolbar" id="pin-toolbar" hidden>
-      <button type="button" class="pin-btn" id="pin-edit" title="编辑（标注 / 图片技能，Esc 退出）"
+      <button type="button" class="pin-btn" id="pin-edit" title="编辑"
               aria-label="编辑">
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -56,7 +56,7 @@
          image skills), undo/redo and cancel/confirm. Esc leaves the edit mode. -->
     <div class="pin-edit-bar" id="pin-edit-bar" role="toolbar" aria-label="图片编辑" hidden>
       <button type="button" class="tool-btn pin-edit-shape" data-edit-tool="shape"
-              title="形状（矩形 / 圆形 / 直线）" aria-pressed="false">
+              title="形状" aria-pressed="false">
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <rect x="3" y="3" width="18" height="18" rx="2"></rect>
@@ -112,7 +112,7 @@
 
       <span class="bar-sep" aria-hidden="true"></span>
 
-      <button type="button" class="tool-btn" data-edit-skill="ocr" title="提取图片中的文字">
+      <button type="button" class="tool-btn" data-edit-skill="ocr" title="提取文字">
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M3 7V5a2 2 0 0 1 2-2h2"></path>
@@ -125,7 +125,7 @@
         </svg>
         <span class="label">提取文字</span>
       </button>
-      <button type="button" class="tool-btn" data-edit-skill="translate" title="翻译图片中的文字">
+      <button type="button" class="tool-btn" data-edit-skill="translate" title="翻译">
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="m5 8 6 6"></path>
@@ -137,7 +137,7 @@
         </svg>
         <span class="label">翻译</span>
       </button>
-      <button type="button" class="tool-btn" data-edit-skill="explain" title="用 AI 解释图片内容">
+      <button type="button" class="tool-btn" data-edit-skill="explain" title="解释图片">
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"></path>
@@ -170,7 +170,7 @@
       <span class="bar-sep" aria-hidden="true"></span>
 
       <button type="button" class="tool-btn tool-btn-danger" data-edit-action="cancel"
-              title="取消编辑（Esc，丢弃标注）">
+              title="取消编辑">
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M18 6 6 18"></path>
@@ -179,7 +179,7 @@
         <span class="label">取消</span>
       </button>
       <button type="button" class="tool-btn tool-btn-confirm" data-edit-action="exit"
-              title="确认并退出编辑（保存标注并复制到剪贴板）">
+              title="确认">
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M20 6 9 17l-5-5"></path>
@@ -251,8 +251,6 @@
       <div class="palette-group palette-bg-group" id="palette-text-bg" data-tools="text"
            role="group" aria-label="文字背景">
         <span class="palette-label">背景</span>
-        <button type="button" class="palette-bg palette-bg-none is-active" data-bg-color=""
-                aria-pressed="true" title="无背景">无</button>
         <button type="button" class="palette-bg" data-bg-color="#ffffff"
                 aria-pressed="false" title="白色背景"></button>
         <button type="button" class="palette-bg" data-bg-color="#fef3c7"
@@ -342,7 +340,7 @@
         <span class="palette-custom-preview" id="palette-custom-preview"
               title="当前颜色" aria-label="当前颜色"></span>
         <button type="button" class="palette-eyedropper" id="palette-eyedropper"
-                title="吸色器（点击图片取色）" aria-label="吸色器">
+                title="吸色器" aria-label="吸色器">
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="m2 22 1-1h3l9-9"></path>

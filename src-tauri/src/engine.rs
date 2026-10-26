@@ -478,7 +478,7 @@ impl EngineService {
                     } else {
                         (
                             false,
-                            "本地模型未启动。点击「启动」后即可使用，翻译/总结不会自动启动本地模型。"
+                            "本地模型未启动。点击「启动」后使用。"
                                 .to_string(),
                         )
                     }
@@ -489,7 +489,7 @@ impl EngineService {
         } else {
             (
                 false,
-                "在线服务尚未配置。请在「设置 → 翻译服务」中填写服务地址与模型名，或切换到本地模型。"
+                "在线服务未配置。请在「设置 → 翻译服务」填写服务地址与模型名，或切换到本地模型。"
                     .to_string(),
             )
         };
@@ -1343,7 +1343,7 @@ impl EngineService {
                     mmproj.filename,
                     mmproj.size_bytes,
                     models::mmproj_download_urls(&mmproj),
-                    "请重试：已下载完成的主模型会自动跳过，只重新下载投影器；也可手动把该文件放入「设置 → 数据目录」的 models 目录。",
+                    "请重试：已下载的主模型会跳过，只重新下载投影器。",
                 )
                 .await
                 .map_err(|error| {

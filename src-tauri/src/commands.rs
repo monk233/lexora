@@ -466,7 +466,7 @@ pub fn set_start_at_login(app: AppHandle, state: State<'_, Arc<AppState>>, enabl
     if portable_mode() {
         return json!({
             "ok": false,
-            "error": "便携版不支持开机自启。请把 Lexora 放到固定目录，或在启动文件夹中手动创建快捷方式。",
+            "error": "便携版不支持开机自启，可手动创建快捷方式。",
         });
     }
     let result = crate::autostart::set_enabled(enabled);
