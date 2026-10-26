@@ -137,12 +137,31 @@ button {
   background: rgba(2, 6, 16, 0.48);
 }
 
+/* Selection phase (QQ-style window snapping): the window under the pointer is
+ * highlighted while the rest of the screen stays dimmed. Dragging/clicking in
+ * this phase is handled by capture.js; the toolbar only appears once a
+ * selection is confirmed. */
+.capture-hover {
+  position: fixed;
+  z-index: 11;
+  border: 2px solid var(--primary);
+  background: rgba(79, 70, 229, 0.08);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.6), 0 0 0 4px rgba(79, 70, 229, 0.16);
+  pointer-events: none;
+}
+
 .capture-selection {
   position: fixed;
   z-index: 12;
   border: 1.5px solid var(--primary);
   box-shadow: 0 0 0 1px rgba(79, 70, 229, 0.18);
   pointer-events: none;
+}
+
+/* Resize handles belong to a confirmed selection only; the selection phase
+ * shows a plain rectangle while dragging. */
+body.is-selecting .selection-handle {
+  display: none;
 }
 
 .selection-handle {

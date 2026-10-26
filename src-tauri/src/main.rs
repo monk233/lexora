@@ -12,6 +12,7 @@
 
 mod autostart;
 mod capture;
+mod capture_hover;
 mod commands;
 mod engine;
 mod logger;
@@ -212,6 +213,8 @@ fn main() {
             commands::install_update,
             commands::start_capture,
             commands::capture_monitor_info,
+            capture_hover::capture_hover_at,
+            capture_hover::capture_cursor,
             commands::capture_ready,
             commands::capture_copy,
             commands::capture_skill,

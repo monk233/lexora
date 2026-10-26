@@ -436,12 +436,15 @@ pub struct SelectionService {
 - overlay 页面**不显示**任何全屏 loading；仅当图片加载失败时显示白色错误条（重试/关闭）。抓屏期间窗口保持隐藏，因此没有黑屏过程。
 - 隐藏的 overlay 窗口不参与合成，因此抓屏不会把上一张截图/工具条拍进去；被 `WDA_EXCLUDEFROMCAPTURE` 排除的自身窗口也不会被拍进去。
 
-### 10.2 overlay 交互
-- 默认全屏选区 + 暗遮罩；选区 1.5px 主色 `#4f46e5`，8 个白色手柄，尺寸标签为白色 pill。
+### 10.2 overlay 交互（QQ 式选择阶段 + 编辑阶段）
+- **选择阶段（进入截图后的默认状态）**：无选区、无工具栏；整屏暗遮罩，鼠标所在窗口自动吸附高亮（`capture_hover_at` 按 z-order 取顶层窗口，优先 DWM 扩展边框；排除本进程/桌面/任务栏/工具窗/最小化/cloaked/空标题/过小窗口）。鼠标可自由跨显示器移动：每个 overlay 只高亮与本屏相交的部分，物理坐标用 `capture_monitor_info` 的显示器原点换算到本屏 CSS；鼠标离开本屏（`mouseout`）时清除本屏吸附。
+- **确认选区**：单击 = 选中吸附窗口（本屏交集），单击空白桌面/任务栏 = 全屏选区；两者都会显示工具栏并进入编辑阶段。拖动超过 4 CSS px = 自由框选（预览框 + 尺寸标签），松开后显示工具栏。
+- **编辑阶段**：选区 1.5px 主色 `#4f46e5`，8 个白色手柄，尺寸标签为白色 pill；以下交互在编辑阶段生效。
 - **选区内拖动平移**：`mousedown` 落在选区内（工具条/手柄除外）→ move 模式；`mousemove` 平移矩形、尺寸不变、clamp 到屏幕内；鼠标在选区内时 `cursor: move`；松开后工具条重新布局。
 - **全屏选区例外**：当选区已经铺满整个视口（没有平移空间）时，选区内 `mousedown` 直接进入「重画」模式（按下即开始新的框选），避免「拖了但什么都不动」的错觉。
 - 选区外 `mousedown` 拖动 = 重画；8 手柄 resize；最小 8×8；Esc/取消关闭；右键菜单阻止默认。
-- hint：「拖动选区移动 · 拖动边角调整 · Esc 取消」，3.2s 后淡出。
+- **跨屏互斥**：同一时刻只有一个显示器拥有选区；任一 overlay 开始新选择时广播 `capture-selection-owner`，其他 overlay 丢弃自己的选区与标注、回到选择阶段。
+- hint：选择阶段「点击窗口选择 · 拖动框选 · Esc 取消」；编辑阶段「拖动选区移动 · 拖动边角调整 · Esc 取消」，3.2s 后淡出。
 - 紧凑模式（`picker.compact`）同样作用于截图工具条：只显示图标、隐藏文字标签。
 - 工具条样式与 `picker.css` 的 `.toolbar` 完全一致（白色卡片）：白底 `#fff`、1px `#e2e8f0`、圆角 12px、按钮高 32、字号 12.5、文字 `#475569`、hover `#f1f5f9`、主色 `#4f46e5`、取消按钮红色 `#dc2626`；阴影收敛（参考 picker `--shadow-float`）。尺寸标签/hint/toast 同样白色主题。
 - 工具条条目：**可配置按钮全部按设置 `picker.captureSkills` 顺序渲染**——本地工具（钉在桌面/形状/箭头/画笔/文字/序号/马赛克/长截图）、AI 动作（提取文字/翻译/解释图片）与**已启用的自定义图片技能**（custom-*，图标/名称来自技能定义，点击=以 `action:"custom"` 执行该技能）；preset 图片技能（若有）显示在最前且不重复。撤销/重做/取消/确认固定显示（确认在最右，绿色）：确认 = 裁切图写入剪贴板并退出截图（`capture_copy`），取消 = 直接退出。所有可配置条目都可关闭，此时只显示撤销/重做/取消/确认。
@@ -452,7 +455,9 @@ pub struct SelectionService {
 | command | args | 返回 |
 | --- | --- | --- |
 | `start_capture` | `{presetSkillId?}` | `{ok, monitors, error?, hint?}` |
-| `capture_monitor_info` | `{index}` | `{ok, dataUrl, width, height, index, preset?, error?, hint?}`（dataUrl 为 JPEG；width/height 为物理像素原始尺寸） |
+| `capture_monitor_info` | `{index}` | `{ok, dataUrl, width, height, x, y, index, preset?, error?, hint?}`（dataUrl 为 JPEG；width/height 为物理像素原始尺寸；x/y 为显示器物理原点，供窗口吸附坐标换算） |
+| `capture_hover_at` | `{x, y}` | `{ok, rect: {x, y, width, height} \| null}` — 物理坐标下最顶层可吸附窗口（QQ 选择阶段）；无截图会话时 rect 恒为 null |
+| `capture_cursor` | — | `{ok, x, y, active}` — 物理光标位置 + 当前是否有截图会话 |
 | `capture_ready` | `{index}` | `{ok}` — overlay 图片已绘制，显示窗口 |
 | `capture_copy` | `{index, rect}` | `{ok, error?, hint?}` — 裁切图入剪贴板并隐藏 overlay |
 | `capture_skill` | `{requestId, index, rect, action, skillId?, targetLang?}` | `{ok, clipboard, error?, hint?}` |

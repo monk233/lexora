@@ -25,6 +25,11 @@
       <div class="mask-piece" id="mask-bottom"></div>
     </div>
 
+    <!-- Selection phase (QQ-style): the top-level window under the pointer is
+         snapped and highlighted; clicking it selects it, dragging draws a free
+         rectangle. The toolbar stays hidden until the selection is confirmed. -->
+    <div class="capture-hover" id="capture-hover" hidden aria-hidden="true"></div>
+
     <div class="capture-selection" id="capture-selection" hidden aria-hidden="true">
       <span class="selection-handle" data-dir="nw"></span>
       <span class="selection-handle" data-dir="n"></span>

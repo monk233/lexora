@@ -2165,6 +2165,45 @@
     close: function () {
       return safeInvoke("capture_close", {});
     },
+    /* Selection phase (QQ-style window snapping): the top-level window under the
+     * physical screen point, so the overlay can highlight ("snap") it. Resolves
+     * to `{ok, rect: {x, y, width, height} | null}`. */
+    hover: function (x, y) {
+      return safeInvoke("capture_hover_at", {
+        x: Math.round(Number(x) || 0),
+        y: Math.round(Number(y) || 0),
+      });
+    },
+    /* Physical cursor position plus whether a capture session is active; used
+     * once when an overlay is armed to snap the window already under the
+     * cursor (the pointer may not move after the hotkey). */
+    cursor: function () {
+      return safeInvoke("capture_cursor", {});
+    },
+    /* Broadcast to every overlay page that `monitor` starts a new selection, so
+     * the other pages drop their previous selection (only one monitor may own a
+     * selection at a time, QQ behavior). */
+    announceSelection: function (monitor) {
+      if (!LIVE || !eventApi || typeof eventApi.emit !== "function") {
+        return Promise.resolve();
+      }
+      try {
+        return Promise.resolve(
+          eventApi.emit("capture-selection-owner", {
+            owner: Number(monitor) || 0,
+          })
+        );
+      } catch (error) {
+        return Promise.resolve();
+      }
+    },
+    onSelectionOwner: function (callback) {
+      return subscribe("capture-selection-owner", function (payload) {
+        if (typeof callback === "function") {
+          callback(payload);
+        }
+      });
+    },
     /* Re-uses the hidden overlay windows: the shell arms them for a new capture
      * (they fetch the fresh screenshot themselves and report `ready`). The
      * listener is pinned to this overlay window so the arm payload of another

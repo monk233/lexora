@@ -655,10 +655,11 @@ impl CaptureService {
         Ok((created, reused))
     }
 
-    /// JPEG data URL + original physical monitor size (+ preset) for the
-    /// capture page of `index`. The data URL is the one pre-encoded by
-    /// [`CaptureService::start`]; `width`/`height` stay the physical pixels of
-    /// the original screenshot, the JPEG is display-only (contract §10.3).
+    /// JPEG data URL + original physical monitor geometry (+ preset) for the
+    /// capture page of `index`: `x`/`y` are the monitor origin in virtual-screen
+    /// physical pixels, `width`/`height` its physical size. The data URL is the
+    /// one pre-encoded by [`CaptureService::start`]; the JPEG is display-only
+    /// (contract §10.3).
     pub fn monitor_info(&self, index: u32) -> Result<Value, EngineError> {
         let guard = lock(&self.session);
         let Some(session) = guard.as_ref() else {
@@ -676,6 +677,8 @@ impl CaptureService {
             .unwrap_or(Value::Null);
         Ok(json!({
             "index": index,
+            "x": shot.x,
+            "y": shot.y,
             "width": shot.width,
             "height": shot.height,
             "dataUrl": shot.display_url,
