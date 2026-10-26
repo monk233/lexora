@@ -107,7 +107,11 @@ const LONGSHOT_SCROLL_SETTLE: Duration = Duration::from_millis(80);
 const LONGSHOT_FRAME_DELAY: Duration = Duration::from_millis(400);
 /// Extra wait before retaking a frame that looked identical (smooth scrolling).
 const LONGSHOT_SAME_FRAME_RETRY_DELAY: Duration = Duration::from_millis(450);
-const LONGSHOT_MIN_OVERLAP_RATIO: f64 = 0.10;
+/// Smallest row overlap considered by the stitcher, as a share of the frame
+/// height. Small values let fast scrolling (a large step per frame) still match
+/// — the manual long screenshot grabs ~35 frames/s, so a fast flick only moves
+/// a few dozen rows between frames (contract §11.14.1).
+const LONGSHOT_MIN_OVERLAP_RATIO: f64 = 0.03;
 const LONGSHOT_MAX_OVERLAP_RATIO: f64 = 0.90;
 const LONGSHOT_ROW_DIFF_THRESHOLD: f64 = 8.0;
 const LONGSHOT_SAME_FRAME_THRESHOLD: f64 = 3.0;
@@ -1597,11 +1601,14 @@ fn stitched_pixel(stitched: &Stitched, x: u32, y: u32) -> [u8; 4] {
 }
 
 /// Finds the best row overlap between the bottom of `stitched` and the top of
-/// `next` (candidate range 10%–90% of the new frame height). Candidates are
-/// scored by a dense sampled mismatch ratio, so repeated-looking content (e.g.
-/// lines of text) cannot produce a false large overlap; `expected` (the previous
-/// frame's overlap) breaks ties and narrows the search on the first pass.
-/// Returns `None` when no candidate matches closely enough (contract §11.6).
+/// `next` (candidate range 3%–90% of the frame height). A two-stage scan keeps
+/// the per-frame cost low at ~25 frames/s: a sparse score is computed for EVERY
+/// candidate (so the real overlap can never fall between grid points), the
+/// plausible ones are refined at full precision, and repeated-looking content
+/// (lines of text can match several offsets almost equally well) is disambiguated
+/// by the previous frame's overlap — scrolling is continuous, so the candidate
+/// closest to the last step wins. Returns `None` when no candidate matches
+/// closely enough (contract §11.6/§11.14.1).
 pub(crate) fn find_overlap(
     stitched: &Stitched,
     next: &RgbaImage,
@@ -1619,58 +1626,160 @@ pub(crate) fn find_overlap(
     if max_overlap < min_overlap {
         return None;
     }
-    // A scroll step is stable between frames: search near the previous overlap
-    // first and only fall back to the full range when that fails.
-    if let Some(expected) = expected.filter(|value| (min_overlap..=max_overlap).contains(value)) {
-        let slack = (expected / 2).clamp(4, 64);
-        let low = expected.saturating_sub(slack).max(min_overlap);
-        let high = (expected + slack).min(max_overlap);
-        if let Some(overlap) =
-            best_overlap_in(stitched, next, width, min_overlap, max_overlap, low, high)
-        {
-            return Some(overlap);
-        }
-    }
-    best_overlap_in(
-        stitched,
-        next,
-        width,
-        min_overlap,
-        max_overlap,
-        min_overlap,
-        max_overlap,
-    )
+    let coarse = |overlap: u32| coarse_overlap_difference(stitched, next, overlap, width);
+    let exact = |overlap: u32| overlap_mean_difference(stitched, next, overlap, width);
+    scan_overlap(min_overlap, max_overlap, expected, coarse, exact)
 }
 
-/// Best-scoring candidate in `[low, high]`; ties prefer the candidate closest to
-/// the middle of the range (i.e. a plausible scroll step).
-fn best_overlap_in(
+/// Prepending candidate search (bottom of `next` against the top of `stitched`).
+pub(crate) fn find_overlap_prepend(
     stitched: &Stitched,
     next: &RgbaImage,
-    width: u32,
-    _min_overlap: u32,
-    _max_overlap: u32,
+    expected: Option<u32>,
+) -> Option<u32> {
+    let width = stitched.width.min(next.width());
+    let next_height = next.height();
+    if width == 0 || next_height < 2 || stitched.height() < 2 {
+        return None;
+    }
+    let min_overlap = ((next_height as f64 * LONGSHOT_MIN_OVERLAP_RATIO).ceil() as u32).max(1);
+    let max_overlap = ((next_height as f64 * LONGSHOT_MAX_OVERLAP_RATIO).floor() as u32)
+        .min(stitched.height())
+        .min(next_height.saturating_sub(1));
+    if max_overlap < min_overlap {
+        return None;
+    }
+    let coarse = |overlap: u32| coarse_prepend_difference(stitched, next, overlap, width);
+    let exact = |overlap: u32| prepend_mean_difference(stitched, next, overlap, width);
+    scan_overlap(min_overlap, max_overlap, expected, coarse, exact)
+}
+
+/// Two-stage overlap scan shared by both directions.
+///
+/// 1. A sparse score is evaluated for **every** candidate in `[low, high]`, so
+///    no grid can miss the true overlap.
+/// 2. The best candidates are refined with the dense score.
+/// 3. Among the nearly-equal best candidates the one closest to `expected` (the
+///    previous frame's step) wins — this is what keeps repeated text lines from
+///    stitching at the wrong offset while the user scrolls fast.
+fn scan_overlap<C, E>(
     low: u32,
     high: u32,
-) -> Option<u32> {
-    let mut best: Option<(f64, u32)> = None;
-    for overlap in low..=high {
-        let difference = overlap_mean_difference(stitched, next, overlap, width);
-        if difference > LONGSHOT_OVERLAP_MAX_MEAN_DIFF {
-            continue;
-        }
-        best = match best {
-            None => Some((difference, overlap)),
-            Some((best_difference, best_overlap)) => {
-                if difference + 1e-6 < best_difference {
-                    Some((difference, overlap))
-                } else {
-                    Some((best_difference, best_overlap))
-                }
-            }
-        };
+    expected: Option<u32>,
+    coarse_score: C,
+    exact_score: E,
+) -> Option<u32>
+where
+    C: Fn(u32) -> f64,
+    E: Fn(u32) -> f64,
+{
+    if high < low {
+        return None;
     }
-    best.map(|(_, overlap)| overlap)
+    // The sparse score samples far fewer pixels; a real overlap still scores
+    // near zero on clean content, so a loose bar keeps it in the shortlist.
+    let coarse_limit = LONGSHOT_OVERLAP_MAX_MEAN_DIFF * 2.0;
+    let mut shortlist: Vec<(f64, u32)> = Vec::new();
+    for overlap in low..=high {
+        let difference = coarse_score(overlap);
+        if difference <= coarse_limit {
+            shortlist.push((difference, overlap));
+        }
+    }
+    if shortlist.is_empty() {
+        return None;
+    }
+    shortlist.sort_by(|left, right| {
+        left.0
+            .partial_cmp(&right.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    shortlist.truncate(24);
+    let mut refined: Vec<(f64, u32)> = Vec::new();
+    for (_, center) in shortlist {
+        let refine_low = center.saturating_sub(1).max(low);
+        let refine_high = center.saturating_add(1).min(high);
+        for overlap in refine_low..=refine_high {
+            let difference = exact_score(overlap);
+            if difference <= LONGSHOT_OVERLAP_MAX_MEAN_DIFF {
+                refined.push((difference, overlap));
+            }
+        }
+    }
+    if refined.is_empty() {
+        return None;
+    }
+    refined.sort_by(|left, right| {
+        left.0
+            .partial_cmp(&right.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let best_difference = refined[0].0;
+    /* Ambiguous (self-similar) content: several offsets fit almost equally. */
+    let mut candidates: Vec<(f64, u32)> = refined
+        .into_iter()
+        .filter(|(difference, _)| *difference <= best_difference + 0.75)
+        .collect();
+    if candidates.is_empty() {
+        return None;
+    }
+    if let Some(expected) = expected.filter(|value| (low..=high).contains(value)) {
+        if candidates.len() > 1 {
+            candidates.sort_by(|left, right| {
+                left.1
+                    .abs_diff(expected)
+                    .cmp(&right.1.abs_diff(expected))
+                    .then_with(|| {
+                        left.0
+                            .partial_cmp(&right.0)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+            });
+            return Some(candidates[0].1);
+        }
+    }
+    candidates.sort_by(|left, right| {
+        left.0
+            .partial_cmp(&right.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| right.1.cmp(&left.1))
+    });
+    Some(candidates[0].1)
+}
+
+/// Sparse version of [`overlap_mean_difference`] used for the coarse pass.
+fn coarse_overlap_difference(
+    stitched: &Stitched,
+    next: &RgbaImage,
+    overlap: u32,
+    width: u32,
+) -> f64 {
+    let step_x = (width / 16).max(1);
+    let sample_rows = overlap.clamp(1, 16);
+    let row_step = (overlap / sample_rows).max(1);
+    let start_y = stitched.height() - overlap;
+    let mut total_difference = 0u64;
+    let mut samples = 0u64;
+    let mut row = 0;
+    while row < overlap {
+        let stitched_y = start_y + row;
+        let mut x = 0;
+        while x < width {
+            let above = stitched_pixel(stitched, x, stitched_y);
+            let below = next.get_pixel(x, row);
+            for channel in 0..3 {
+                total_difference +=
+                    (above[channel] as i16 - below[channel] as i16).unsigned_abs() as u64;
+            }
+            samples += 3;
+            x += step_x;
+        }
+        row += row_step;
+    }
+    if samples == 0 {
+        return f64::MAX;
+    }
+    total_difference as f64 / samples as f64
 }
 
 /// Mean absolute RGB difference between the bottom `overlap` rows of `stitched`
@@ -1707,64 +1816,40 @@ fn overlap_mean_difference(stitched: &Stitched, next: &RgbaImage, overlap: u32, 
     total_difference as f64 / samples as f64
 }
 
-/// Finds the best row overlap between the **bottom of `next`** and the **top of
-/// `stitched`** (the user scrolled the content upwards, contract §11.14.1).
-/// Mirrors [`find_overlap`]: candidate range 10%–90% of the frame height, dense
-/// sampled mismatch scoring, `expected` fast path.
-pub(crate) fn find_overlap_prepend(
+/// Sparse version of [`prepend_mean_difference`] used for the coarse pass.
+fn coarse_prepend_difference(
     stitched: &Stitched,
     next: &RgbaImage,
-    expected: Option<u32>,
-) -> Option<u32> {
-    let width = stitched.width.min(next.width());
-    let next_height = next.height();
-    if width == 0 || next_height < 2 || stitched.height() < 2 {
-        return None;
-    }
-    let min_overlap = ((next_height as f64 * LONGSHOT_MIN_OVERLAP_RATIO).ceil() as u32).max(1);
-    let max_overlap = ((next_height as f64 * LONGSHOT_MAX_OVERLAP_RATIO).floor() as u32)
-        .min(stitched.height())
-        .min(next_height.saturating_sub(1));
-    if max_overlap < min_overlap {
-        return None;
-    }
-    if let Some(expected) = expected.filter(|value| (min_overlap..=max_overlap).contains(value)) {
-        let slack = (expected / 2).clamp(4, 64);
-        let low = expected.saturating_sub(slack).max(min_overlap);
-        let high = (expected + slack).min(max_overlap);
-        if let Some(overlap) = best_overlap_in_prepend(stitched, next, width, low, high) {
-            return Some(overlap);
-        }
-    }
-    best_overlap_in_prepend(stitched, next, width, min_overlap, max_overlap)
-}
-
-/// Best-scoring prepend candidate in `[low, high]`.
-fn best_overlap_in_prepend(
-    stitched: &Stitched,
-    next: &RgbaImage,
+    overlap: u32,
     width: u32,
-    low: u32,
-    high: u32,
-) -> Option<u32> {
-    let mut best: Option<(f64, u32)> = None;
-    for overlap in low..=high {
-        let difference = prepend_mean_difference(stitched, next, overlap, width);
-        if difference > LONGSHOT_OVERLAP_MAX_MEAN_DIFF {
-            continue;
-        }
-        best = match best {
-            None => Some((difference, overlap)),
-            Some((best_difference, best_overlap)) => {
-                if difference + 1e-6 < best_difference {
-                    Some((difference, overlap))
-                } else {
-                    Some((best_difference, best_overlap))
-                }
+) -> f64 {
+    let step_x = (width / 16).max(1);
+    let sample_rows = overlap.clamp(1, 16);
+    let row_step = (overlap / sample_rows).max(1);
+    let start_y = next.height().saturating_sub(overlap);
+    let mut total_difference = 0u64;
+    let mut samples = 0u64;
+    let mut row = 0;
+    while row < overlap {
+        let stitched_y = row;
+        let next_y = start_y + row;
+        let mut x = 0;
+        while x < width {
+            let above = stitched_pixel(stitched, x, stitched_y);
+            let below = next.get_pixel(x, next_y);
+            for channel in 0..3 {
+                total_difference +=
+                    (above[channel] as i16 - below[channel] as i16).unsigned_abs() as u64;
             }
-        };
+            samples += 3;
+            x += step_x;
+        }
+        row += row_step;
     }
-    best.map(|(_, overlap)| overlap)
+    if samples == 0 {
+        return f64::MAX;
+    }
+    total_difference as f64 / samples as f64
 }
 
 /// Mean absolute RGB difference between the top `overlap` rows of `stitched` and

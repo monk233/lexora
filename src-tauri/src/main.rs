@@ -150,11 +150,14 @@ fn main() {
                         crate::pin::close(window.app_handle(), id);
                     }
                 }
-                label if label == crate::longshot::LONG_SHOT_LABEL => {
-                    // Closing the preview (Alt+F4 / OS close) behaves like the
-                    // cancel button: stop stitching and restore the overlay.
+                label if label == crate::longshot::LONG_SHOT_LABEL
+                    || label == crate::longshot::LONG_SHOT_BAR_LABEL =>
+                {
+                    // Closing the preview or its control bar (Alt+F4 / OS close)
+                    // behaves like the cancel button: stop stitching and restore
+                    // the overlay.
                     api.prevent_close();
-                    // Defer destroying the window until after this close event
+                    // Defer destroying the windows until after this close event
                     // has been processed.
                     let app = window.app_handle().clone();
                     tauri::async_runtime::spawn(async move {
@@ -179,8 +182,10 @@ fn main() {
                 if let Some(id) = crate::pin::pin_id_from_label(window.label()) {
                     crate::pin::forget(id);
                 }
-                if window.label() == crate::longshot::LONG_SHOT_LABEL {
-                    // The preview window is gone: never leave the grab thread or
+                if window.label() == crate::longshot::LONG_SHOT_LABEL
+                    || window.label() == crate::longshot::LONG_SHOT_BAR_LABEL
+                {
+                    // A longshot window is gone: never leave the grab thread or
                     // its buffered image running behind the shell's back.
                     crate::longshot::forget_session(window.app_handle());
                 }

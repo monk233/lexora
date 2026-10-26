@@ -126,9 +126,23 @@ fn label_for(id: u64) -> String {
 /// extreme is scaled uniformly to fit the work area (no scrollbar).
 const TALL_IMAGE_ASPECT: f64 = 3.0;
 
+/// Share of the work-area height a long screenshot may use when it is shown
+/// whole (and the fallback height cap when it stays width-first + scrollable).
+/// 0.92 means the finished long screenshot is visible end to end on screen.
+const WHOLE_VIEW_WORK_RATIO: f64 = 0.92;
+
+/// A long screenshot is shown whole only when that leaves at least this many
+/// logical pixels of width; otherwise the readable width wins and the pin
+/// scrolls inside its window.
+const WHOLE_VIEW_MIN_LOGICAL_WIDTH: f64 = 160.0;
+
 /// Logical display size of a pinned image: physical pixels divided by the DPI
 /// scale, scaled down to at most 70% of the work area, tiny snippets enlarged
 /// so they stay readable (capped, and never above the work-area cap).
+///
+/// Long screenshots (aspect ≥ [`TALL_IMAGE_ASPECT`]) are shown **whole** — the
+/// entire stitched image fits the work-area height — when the resulting width
+/// stays readable; extreme strips keep the readable width and scroll instead.
 fn pin_display_size(
     width: u32,
     height: u32,
@@ -145,21 +159,30 @@ fn pin_display_size(
     let logical_h = (height.max(1) as f64 / scale).max(1.0);
     let max_w = ((work_width.max(1) as f64) * MAX_WORK_AREA_RATIO / scale).max(1.0);
     let max_h = ((work_height.max(1) as f64) * MAX_WORK_AREA_RATIO / scale).max(1.0);
+    let whole_h = ((work_height.max(1) as f64) * WHOLE_VIEW_WORK_RATIO / scale).max(1.0);
     let fit_w = (max_w / logical_w).min(1.0);
     let fit_h = (max_h / logical_h).min(1.0);
     let uniform = fit_w.min(fit_h);
     let tall = logical_h / logical_w >= TALL_IMAGE_ASPECT;
     // Ordinary images (including big screenshots) scale uniformly so the whole
-    // image is visible without a scrollbar. Long screenshots keep the readable
-    // width and are windowed to the work-area height (pin.js enables scrolling).
+    // image is visible without a scrollbar. Long screenshots are shown whole
+    // when that keeps them readable (user requirement: the finished long
+    // screenshot must be visible end to end); extreme strips keep the readable
+    // width and are windowed to the work-area height (pin.js scrolls them).
     let mut factor = if tall { fit_w } else { uniform };
+    if tall {
+        let whole = (whole_h / logical_h).min(fit_w).min(1.0);
+        if logical_w * whole >= WHOLE_VIEW_MIN_LOGICAL_WIDTH {
+            factor = whole;
+        }
+    }
     let smallest = logical_w.min(logical_h);
     if !tall && uniform >= 1.0 && smallest < MIN_READABLE_LOGICAL {
         factor = (MIN_READABLE_LOGICAL / smallest).min(MAX_READABLE_UPSCALE);
     }
     let display_h = (logical_h * factor).round();
     let display_h = if tall {
-        display_h.min(max_h)
+        display_h.min(whole_h)
     } else {
         display_h
     };
@@ -190,13 +213,15 @@ fn pin_missing_error() -> EngineError {
 
 /// Whether the pinned image is taller than its window (the window keeps the
 /// width, so the image is rendered at `display_w`; a long screenshot overflows
-/// and scrolls). Ordinary images are scaled to fit and never scroll.
+/// and scrolls). Ordinary images are scaled to fit and never scroll; the 2.5px
+/// tolerance absorbs the fractional layout/rounding of a whole-image fit so it
+/// never shows a scrollbar for a sub-pixel overflow.
 fn pin_is_scrollable(display_w: f64, display_h: f64, width: u32, height: u32) -> bool {
     if width == 0 || height == 0 {
         return false;
     }
     let rendered = display_w * (height as f64 / width as f64);
-    rendered > display_h + 1.0
+    rendered > display_h + 2.5
 }
 
 /// Logical window size of a pin at `zoom` (1.0 = image pixel per physical
@@ -928,14 +953,19 @@ mod tests {
         // Very small snippets are enlarged (capped at 4x).
         assert_eq!(pin_display_size(10, 10, 1.0, 1920, 1080), (40.0, 40.0));
         assert_eq!(pin_display_size(40, 40, 1.0, 1920, 1080), (48.0, 48.0));
-        // A tall long-screenshot keeps its readable width and is windowed to the
-        // work-area height (the pin window scrolls its content).
+        // A finished long screenshot is shown whole: the entire stitched image
+        // fits the work-area height (user requirement) when that stays readable.
+        let (width, height) = pin_display_size(1000, 3000, 1.0, 1920, 1080);
+        assert!((width - 331.0).abs() < 0.01, "width={width}");
+        assert!((height - 993.6).abs() < 0.01, "height={height}");
+        // Extreme strips would become unreadably narrow when shown whole: they
+        // keep the readable width and scroll inside the window (92% tall).
         let (width, height) = pin_display_size(1000, 30000, 1.0, 1920, 1080);
-        assert_eq!((width, height), (1000.0, 756.0));
+        assert_eq!((width, height), (1000.0, 993.6));
         // Too-wide long screenshots still scale to the work area width.
         let (width, height) = pin_display_size(4000, 30000, 1.0, 1920, 1080);
         assert!((width - 1344.0).abs() < 0.01, "width={width}");
-        assert!((height - 756.0).abs() < 0.01, "height={height}");
+        assert!((height - 993.6).abs() < 0.01, "height={height}");
         // Big non-long images (aspect < 3) scale uniformly: the pin shows the
         // whole image and never needs a scrollbar.
         let (width, height) = pin_display_size(4000, 4000, 1.0, 1920, 1080);

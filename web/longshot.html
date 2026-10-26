@@ -10,52 +10,22 @@
   <link rel="stylesheet" href="longshot.css">
 </head>
 <body>
-  <div class="longshot-root" id="longshot-root">
-    <header class="longshot-header">
-      <div class="longshot-direction" id="longshot-directions" role="group"
-           aria-label="滚动方向">
-        <button type="button" class="ls-seg is-active" data-direction="vertical"
-                aria-pressed="true" title="竖向滚动拼接" disabled>竖向</button>
-        <button type="button" class="ls-seg" data-direction="horizontal"
-                aria-pressed="false" title="横向滚动拼接" disabled>横向</button>
-      </div>
-      <div class="longshot-actions">
-        <button type="button" class="ls-btn ls-btn-ghost" id="longshot-cancel"
-                title="取消长截图并恢复截图界面" disabled>取消</button>
-        <button type="button" class="ls-btn ls-btn-primary" id="longshot-finish"
-                title="完成（复制到剪贴板并钉在桌面）" disabled>完成</button>
-      </div>
-    </header>
-
-    <main class="longshot-preview" id="longshot-preview">
-      <div class="longshot-canvas" id="longshot-canvas">
-        <img class="longshot-image" id="longshot-image" alt="" draggable="false"
-             hidden>
-        <img class="longshot-image" id="longshot-image-buffer" alt="" draggable="false"
-             aria-hidden="true" hidden>
-      </div>
-      <div class="longshot-empty" id="longshot-empty">正在等待拼接…</div>
-      <div class="longshot-error" id="longshot-error" role="alert" hidden>
-        <span class="longshot-error-text" id="longshot-error-text"></span>
-        <button type="button" class="longshot-error-close" id="longshot-error-close">关闭</button>
-      </div>
-    </main>
-
-    <footer class="longshot-footer">
-      <div class="longshot-status">
-        <span class="longshot-size" id="longshot-size">0 × 0</span>
-        <span class="longshot-frames" id="longshot-frames">第 0 帧</span>
-        <span class="longshot-hint" id="longshot-hint">请缓慢滚动页面以拼接长截图</span>
-      </div>
-      <div class="longshot-warning" id="longshot-warning" role="status" hidden>
-        滚动过快或方向不符，请缓慢滚动
-      </div>
-    </footer>
-
-    <div class="longshot-done" id="longshot-done" hidden>
-      <span id="longshot-done-text">已完成</span>
+  <!-- Minimal growing preview of the manual long screenshot (contract
+       §11.14.1). The shell sizes this window to the stitched aspect ratio, so
+       the image simply fills the card; direction/cancel/finish live in the
+       separate control bar below the selection. -->
+  <div class="longshot-card" id="longshot-root">
+    <div class="longshot-canvas">
+      <img class="longshot-image" id="longshot-image" alt="" draggable="false" hidden>
+      <img class="longshot-image" id="longshot-image-buffer" alt="" draggable="false"
+           aria-hidden="true" hidden>
+      <div class="longshot-empty" id="longshot-empty">正在拼接…</div>
     </div>
-
+    <div class="longshot-meta" id="longshot-meta" hidden>0 × 0</div>
+    <div class="longshot-error" id="longshot-error" role="alert" hidden>
+      <span class="longshot-error-text" id="longshot-error-text"></span>
+      <button type="button" class="longshot-error-close" id="longshot-error-close">关闭</button>
+    </div>
     <div class="longshot-toast" id="longshot-toast" role="status" aria-live="polite" hidden></div>
   </div>
 

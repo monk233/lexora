@@ -37,6 +37,10 @@ use crate::win32;
 
 /// Window label of the long-screenshot preview (fixed: one session at a time).
 pub const LONG_SHOT_LABEL: &str = "longshot";
+/// Window label of the floating control bar (direction / cancel / finish). It is
+/// a separate clickable window because the capture overlays are click-through
+/// during a manual long screenshot (the wheel must reach the target app).
+pub const LONG_SHOT_BAR_LABEL: &str = "longshot-bar";
 /// Rust → `longshot` window: stitched size/frame counter changed.
 const EVENT_PROGRESS: &str = "longshot-progress";
 /// Rust → capture overlay windows: enter the live long-screenshot mode.
@@ -44,24 +48,36 @@ pub const EVENT_STARTED: &str = "longshot-started";
 /// Rust → capture overlay windows: the manual session was cancelled.
 pub const EVENT_CANCELLED: &str = "longshot-cancelled";
 
-/// Preview window logical width (contract §11.14: 340–420 logical px).
-const PREVIEW_LOGICAL_WIDTH: f64 = 360.0;
+/// Preview window logical width. QQ-style narrow strip: the height follows the
+/// stitched image so the preview grows while the user scrolls.
+const PREVIEW_LOGICAL_WIDTH: f64 = 236.0;
+/// Preview window inner padding (logical pixels) around the image card.
+const PREVIEW_PADDING_CSS: f64 = 6.0;
 /// Preview window may cover at most this share of the work area.
-const PREVIEW_MAX_WORK_RATIO: f64 = 0.70;
+const PREVIEW_MAX_WORK_RATIO: f64 = 0.86;
 /// Upper/lower bounds for the preview window height in logical pixels.
-const PREVIEW_MAX_LOGICAL_HEIGHT: f64 = 640.0;
-const PREVIEW_MIN_LOGICAL_HEIGHT: f64 = 260.0;
-/// Gap between the selection and the preview window (physical pixels).
+const PREVIEW_MAX_LOGICAL_HEIGHT: f64 = 900.0;
+const PREVIEW_MIN_LOGICAL_HEIGHT: f64 = 160.0;
+/// Resize the preview window only when its logical height changed by more than
+/// this, so the ~35 fps stitcher does not call `set_size` every frame.
+const PREVIEW_MIN_RESIZE_CSS: f64 = 3.0;
+/// Gap between the selection and the preview / control bar (physical pixels).
 const PREVIEW_GAP: i32 = 8;
-/// Screen grabbing cadence of the background stitcher (~8 fps).
-const FRAME_INTERVAL: Duration = Duration::from_millis(120);
+/// Control bar logical size (white floating card, capture-toolbar style).
+const BAR_LOGICAL_WIDTH: f64 = 540.0;
+const BAR_LOGICAL_HEIGHT: f64 = 56.0;
+/// Screen grabbing cadence of the background stitcher (~25 fps). QQ's long
+/// screenshot does not throttle the user's scrolling; grabbing often enough is
+/// what keeps the overlaps detectable while flicking, and ~40ms also avoids
+/// capturing half-scrolled frames.
+const FRAME_INTERVAL: Duration = Duration::from_millis(40);
 /// Size limits (contract §11.14).
 const MAX_VERTICAL_HEIGHT: u32 = 30_000;
 const MAX_HORIZONTAL_WIDTH: u32 = 40_000;
 const MAX_PIXELS: u64 = 64_000_000;
 /// The preview PNG is downscaled to about this display width before encoding
 /// (contract §11.14.1); the full-resolution image is used for clipboard/pin.
-const PREVIEW_TARGET_WIDTH: u32 = 720;
+const PREVIEW_TARGET_WIDTH: u32 = 480;
 /// Grab inset on each side of the selection in CSS pixels, converted to physical
 /// pixels with the monitor DPI scale so the selection border never lands in the
 /// stitched image (contract §11.14.1).
@@ -153,6 +169,13 @@ struct Shared {
     /// Overlap hint of the most recent prepend (backwards scrolling).
     last_prepend_overlap: Option<u32>,
     frames: u32,
+    /// Consecutive frames that could not be matched; the stalled flag only
+    /// surfaces after a few misses so a single torn/blurred frame does not flash
+    /// the "scroll slower" warning (fast scrolling is supported).
+    misses: u32,
+    /// After a direction switch the next grabbed frame becomes the new base:
+    /// the user has already scrolled away from the original first frame.
+    resync: bool,
     stalled: bool,
     limit_reached: bool,
     revision: u64,
@@ -167,6 +190,10 @@ struct Runtime {
     /// `longshot_finish` so the exported image cannot miss a late frame).
     finished: Arc<AtomicBool>,
     geometry: Geometry,
+    /// Work area of the selection monitor (preview window resizing).
+    work: win32::WorkArea,
+    /// DPI scale of the selection monitor.
+    scale: f64,
 }
 
 fn session_cell() -> &'static Mutex<Option<Arc<Runtime>>> {
@@ -240,19 +267,61 @@ fn set_overlay_click_through(app: &AppHandle, ignore: bool) -> usize {
 // Pure layout / direction helpers (unit-tested below)
 // ---------------------------------------------------------------------------
 
-/// Logical preview window size: fixed width, height capped by the work area and
-/// a comfortable maximum (contract §11.14).
-fn preview_window_size(scale: f64, work: &win32::WorkArea) -> (f64, f64) {
+/// Logical preview window size for one stitched image: fixed narrow width, the
+/// height follows the content aspect ratio (the preview grows while the user
+/// scrolls, like QQ's long-screenshot preview), capped by the work area and by
+/// the room between the selection top and the work-area bottom.
+fn preview_window_size_for(
+    display_width: u32,
+    display_height: u32,
+    scale: f64,
+    work: &win32::WorkArea,
+    selection_top: i32,
+) -> (f64, f64) {
     let scale = if scale.is_finite() && scale > 0.1 {
         scale
     } else {
         1.0
     };
-    let available = (work.height().max(1) as f64 * PREVIEW_MAX_WORK_RATIO / scale).max(1.0);
-    let height = available
-        .min(PREVIEW_MAX_LOGICAL_HEIGHT)
-        .max(PREVIEW_MIN_LOGICAL_HEIGHT.min(available));
+    let content_width = (PREVIEW_LOGICAL_WIDTH - PREVIEW_PADDING_CSS * 2.0).max(1.0);
+    let ratio = content_width / display_width.max(1) as f64;
+    let content_height = (display_height.max(1) as f64 * ratio).max(1.0);
+    let max_by_work = (work.height().max(1) as f64 * PREVIEW_MAX_WORK_RATIO / scale)
+        .min(PREVIEW_MAX_LOGICAL_HEIGHT);
+    let available_below_selection =
+        ((work.bottom - selection_top).max(1) as f64 / scale - PREVIEW_GAP as f64)
+            .max(PREVIEW_MIN_LOGICAL_HEIGHT);
+    let max_height = max_by_work
+        .min(available_below_selection)
+        .max(PREVIEW_MIN_LOGICAL_HEIGHT);
+    let desired = content_height + PREVIEW_PADDING_CSS * 2.0;
+    // Small stitched images get a small window; the minimum only applies when the
+    // content itself is taller than it.
+    let lower = PREVIEW_MIN_LOGICAL_HEIGHT.min(desired);
+    let upper = max_height.max(lower);
+    let height = desired.clamp(lower, upper);
     (PREVIEW_LOGICAL_WIDTH, height)
+}
+
+/// Physical top-left position of the floating control bar: below the selection
+/// (like the screenshot toolbar), above it when there is no room below, clamped
+/// into the work area.
+fn control_bar_position(
+    selection: (i32, i32, i32, i32),
+    window: (i32, i32),
+    work: &win32::WorkArea,
+) -> (i32, i32) {
+    let (left, top, _width, height) = selection;
+    let (window_width, window_height) = (window.0.max(1), window.1.max(1));
+    let bottom = top.saturating_add(height);
+    let y = if bottom + PREVIEW_GAP + window_height <= work.bottom {
+        bottom + PREVIEW_GAP
+    } else if top - PREVIEW_GAP - window_height >= work.top {
+        top - PREVIEW_GAP - window_height
+    } else {
+        bottom + PREVIEW_GAP
+    };
+    win32::clamp_to_work_area(left, y, window_width, window_height, work)
 }
 
 /// Physical top-left position of the preview window: left of the selection when
@@ -389,7 +458,10 @@ fn display_preview_image(shared: &Shared) -> RgbaImage {
     }
 }
 
-/// Resets the stitcher to the first frame in `direction` (direction switch).
+/// Resets the stitcher for a direction switch. The preview immediately shows the
+/// original first frame, and the grab thread re-seeds itself with the **current**
+/// screen on its next frame (`resync`), because the user has usually scrolled
+/// away from where the long screenshot was started.
 fn reset_stitch(shared: &mut Shared, direction: Direction) {
     let first = orient_frame(shared.first_frame.clone(), direction);
     *shared = Shared {
@@ -400,6 +472,8 @@ fn reset_stitch(shared: &mut Shared, direction: Direction) {
         last_append_overlap: None,
         last_prepend_overlap: None,
         frames: 1,
+        misses: 0,
+        resync: true,
         stalled: false,
         limit_reached: false,
         revision: shared.revision.wrapping_add(1),
@@ -433,23 +507,40 @@ fn stitch_frame(runtime: &Runtime, frame: RgbaImage) -> Option<Value> {
     }
     let direction = shared.direction;
     let oriented = orient_frame(frame, direction);
+    if shared.resync {
+        /* Direction switched: restart from what is on screen right now. */
+        let revision = shared.revision.wrapping_add(1);
+        let first_frame = oriented.clone();
+        *shared = Shared {
+            direction,
+            first_frame: first_frame.clone(),
+            stitched: Stitched::from_image(&oriented),
+            last_frame: oriented,
+            last_append_overlap: None,
+            last_prepend_overlap: None,
+            frames: 1,
+            misses: 0,
+            resync: false,
+            stalled: false,
+            limit_reached: false,
+            revision,
+            preview: None,
+        };
+        return Some(progress_payload(&shared));
+    }
     if frames_identical(&shared.last_frame, &oriented) {
         return None;
     }
     let append = find_overlap(&shared.stitched, &oriented, shared.last_append_overlap);
     let prepend = find_overlap_prepend(&shared.stitched, &oriented, shared.last_prepend_overlap);
     let Some((side, overlap)) = choose_merge(append, prepend) else {
-        shared.last_frame = oriented;
-        shared.stalled = true;
-        return Some(progress_payload(&shared));
+        return miss(&mut shared, oriented);
     };
     let added_rows = oriented.height().saturating_sub(overlap);
-    let projected = shared.stitched.height().saturating_add(added_rows);
     if added_rows == 0 {
-        shared.last_frame = oriented;
-        shared.stalled = true;
-        return Some(progress_payload(&shared));
+        return miss(&mut shared, oriented);
     }
+    let projected = shared.stitched.height().saturating_add(added_rows);
     if exceeds_limits(direction, shared.stitched.width(), projected) {
         shared.last_frame = oriented;
         shared.limit_reached = true;
@@ -468,9 +559,20 @@ fn stitch_frame(runtime: &Runtime, frame: RgbaImage) -> Option<Value> {
     }
     shared.last_frame = oriented;
     shared.frames = shared.frames.saturating_add(1);
+    shared.misses = 0;
     shared.stalled = false;
     shared.revision = shared.revision.wrapping_add(1);
     Some(progress_payload(&shared))
+}
+
+/// A frame that could not be matched (torn grab / very fast flick). One miss is
+/// tolerated silently so fast scrolling does not flash the warning; only three
+/// consecutive misses surface `stalled`.
+fn miss(shared: &mut Shared, frame: RgbaImage) -> Option<Value> {
+    shared.last_frame = frame;
+    shared.misses = shared.misses.saturating_add(1);
+    shared.stalled = shared.misses >= 3;
+    Some(progress_payload(shared))
 }
 
 /// Background grab loop: `xcap::Monitor` is not `Send`, which is why it lives
@@ -512,14 +614,13 @@ fn capture_loop(app: AppHandle, runtime: Arc<Runtime>) {
         return;
     };
     let capture_rect = geometry.capture_rect();
+    let preview_window = app.get_webview_window(LONG_SHOT_LABEL);
+    let mut preview_physical: Option<(u32, u32)> = None;
     let mut failures = 0u32;
     let mut logged_stalled = false;
     let mut logged_limit = false;
     while !runtime.stop.load(Ordering::SeqCst) {
-        std::thread::sleep(FRAME_INTERVAL);
-        if runtime.stop.load(Ordering::SeqCst) {
-            break;
-        }
+        let started = std::time::Instant::now();
         let captured = match monitor.capture_image() {
             Ok(captured) => {
                 failures = 0;
@@ -534,37 +635,104 @@ fn capture_loop(app: AppHandle, runtime: Arc<Runtime>) {
                     log_warn(&app, "longshot: too many failed grabs, stopping");
                     runtime.stop.store(true, Ordering::SeqCst);
                 }
+                std::thread::sleep(FRAME_INTERVAL);
                 continue;
             }
         };
         let Some((left, top, width, height)) = clamp_rect(&captured, &capture_rect) else {
+            std::thread::sleep(FRAME_INTERVAL);
             continue;
         };
         let frame = image::imageops::crop_imm(&captured, left, top, width, height).to_image();
-        let Some(progress) = stitch_frame(&runtime, frame) else {
-            continue;
-        };
-        // Log stall/limit transitions once instead of per frame.
-        let (stalled, limit) = {
-            let shared = lock(&runtime.shared);
-            (shared.stalled, shared.limit_reached)
-        };
-        if stalled && !logged_stalled {
-            logged_stalled = true;
-            log_info(
-                &app,
-                "longshot: stalled (scroll slower or check the direction)",
-            );
+        if let Some(progress) = stitch_frame(&runtime, frame) {
+            // Log stall/limit transitions once instead of per frame.
+            let (stalled, limit) = {
+                let shared = lock(&runtime.shared);
+                (shared.stalled, shared.limit_reached)
+            };
+            if stalled && !logged_stalled {
+                logged_stalled = true;
+                log_info(
+                    &app,
+                    "longshot: stalled (scroll slower or check the direction)",
+                );
+            }
+            if limit && !logged_limit {
+                logged_limit = true;
+                log_info(
+                    &app,
+                    "longshot: size limit reached, further frames are ignored",
+                );
+            }
+            // The preview window follows the stitched image height (QQ-style
+            // growing strip), throttled to meaningful height changes only.
+            if let Some(window) = &preview_window {
+                resize_preview_window(
+                    window,
+                    &runtime,
+                    &progress,
+                    &mut preview_physical,
+                );
+            }
+            emit_progress(&app, progress);
         }
-        if limit && !logged_limit {
-            logged_limit = true;
-            log_info(
-                &app,
-                "longshot: size limit reached, further frames are ignored",
-            );
+        // Grabbing cadence: aim for ~35 fps; the grab itself may already take
+        // longer than the interval on high-DPI screens, in which case the loop
+        // simply runs as fast as it can.
+        if let Some(rest) = FRAME_INTERVAL.checked_sub(started.elapsed()) {
+            std::thread::sleep(rest);
         }
-        let _ = app.emit_to(LONG_SHOT_LABEL, EVENT_PROGRESS, progress);
     }
+}
+
+/// Resizes the preview window so its height matches the stitched image aspect
+/// ratio. Called from the grab thread with the progress payload.
+fn resize_preview_window(
+    window: &tauri::WebviewWindow,
+    runtime: &Runtime,
+    progress: &Value,
+    last: &mut Option<(u32, u32)>,
+) {
+    let display_width = progress.get("width").and_then(Value::as_u64).unwrap_or(0) as u32;
+    let display_height = progress.get("height").and_then(Value::as_u64).unwrap_or(0) as u32;
+    if display_width == 0 || display_height == 0 {
+        return;
+    }
+    let scale = runtime.scale;
+    let (logical_w, logical_h) = preview_window_size_for(
+        display_width,
+        display_height,
+        scale,
+        &runtime.work,
+        runtime.geometry.selection_screen.1,
+    );
+    let physical = (
+        ((logical_w * scale).round() as u32).max(1),
+        ((logical_h * scale).round() as u32).max(1),
+    );
+    let changed = match last {
+        None => true,
+        Some((width, height)) => {
+            *width != physical.0
+                || (*height as i64 - physical.1 as i64).unsigned_abs() as f64
+                    > PREVIEW_MIN_RESIZE_CSS * scale
+        }
+    };
+    if !changed {
+        return;
+    }
+    if window
+        .set_size(PhysicalSize::new(physical.0.max(1), physical.1.max(1)))
+        .is_ok()
+    {
+        *last = Some(physical);
+    }
+}
+
+/// Sends one progress payload to every long-screenshot surface (preview + bar).
+fn emit_progress(app: &AppHandle, progress: Value) {
+    let _ = app.emit_to(LONG_SHOT_LABEL, EVENT_PROGRESS, progress.clone());
+    let _ = app.emit_to(LONG_SHOT_BAR_LABEL, EVENT_PROGRESS, progress);
 }
 
 // ---------------------------------------------------------------------------
@@ -577,36 +745,48 @@ fn destroy_preview_window(app: &AppHandle) {
     }
 }
 
-/// Creates the non-activating preview window beside the selection. The window
-/// stays hidden until the session state exists, so `longshot.html` can already
-/// call `longshot_state`/`longshot_preview` while it loads.
-fn create_preview_window(
+fn destroy_control_bar(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(LONG_SHOT_BAR_LABEL) {
+        let _ = window.destroy();
+    }
+}
+
+fn destroy_longshot_windows(app: &AppHandle) {
+    destroy_preview_window(app);
+    destroy_control_bar(app);
+}
+
+/// Creates one non-activating long-screenshot window (transparent so the white
+/// card keeps rounded corners). The window stays hidden until the session state
+/// exists, so the page can already call `longshot_state` while it loads.
+fn create_longshot_window(
     app: &AppHandle,
+    label: &str,
+    page: &str,
+    title: &str,
     logical_size: (f64, f64),
     physical_size: (u32, u32),
     position: (i32, i32),
 ) -> Result<tauri::WebviewWindow, EngineError> {
-    let window = WebviewWindowBuilder::new(
-        app,
-        LONG_SHOT_LABEL,
-        WebviewUrl::App("longshot.html".into()),
-    )
-    .title("Lexora 长截图")
-    .decorations(false)
-    .resizable(false)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .shadow(false)
-    .visible(false)
-    .focused(false)
-    .inner_size(logical_size.0, logical_size.1)
-    .build()
-    .map_err(|error| {
-        EngineError::new(
-            "无法创建长截图预览窗口。",
-            format!("请重试或重启程序（{error}）。"),
-        )
-    })?;
+    let window = WebviewWindowBuilder::new(app, label, WebviewUrl::App(page.into()))
+        .title(title)
+        .decorations(false)
+        .resizable(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .transparent(true)
+        .shadow(false)
+        .visible(false)
+        .focused(false)
+        .background_color(tauri::window::Color(0, 0, 0, 0))
+        .inner_size(logical_size.0, logical_size.1)
+        .build()
+        .map_err(|error| {
+            EngineError::new(
+                "无法创建长截图窗口。",
+                format!("请重试或重启程序（{error}）。"),
+            )
+        })?;
 
     let place = window
         .set_position(PhysicalPosition::new(position.0, position.1))
@@ -619,7 +799,7 @@ fn create_preview_window(
     if let Err(error) = place {
         let _ = window.destroy();
         return Err(EngineError::new(
-            "无法定位长截图预览窗口。",
+            "无法定位长截图窗口。",
             format!("请重试或重启程序（{error}）。"),
         ));
     }
@@ -628,7 +808,7 @@ fn create_preview_window(
     if !win32::set_no_activate(&window) {
         log_warn(
             app,
-            "longshot: could not set WS_EX_NOACTIVATE on the preview",
+            "longshot: could not set WS_EX_NOACTIVATE on a longshot window",
         );
     }
     if !win32::disable_transitions(&window) {
@@ -710,7 +890,14 @@ fn start_impl(app: &AppHandle, index: u32, rect: &HitRect) -> Result<Value, Engi
         crop,
         selection_screen,
     };
-    let logical_size = preview_window_size(scale, &work);
+    let (initial_width, initial_height) = first_frame.dimensions();
+    let logical_size = preview_window_size_for(
+        initial_width,
+        initial_height,
+        scale,
+        &work,
+        selection_screen.1,
+    );
     let physical_size = (
         ((logical_size.0 * scale).round() as u32).max(1),
         ((logical_size.1 * scale).round() as u32).max(1),
@@ -720,21 +907,56 @@ fn start_impl(app: &AppHandle, index: u32, rect: &HitRect) -> Result<Value, Engi
         (physical_size.0 as i32, physical_size.1 as i32),
         &work,
     );
+    let bar_logical = (BAR_LOGICAL_WIDTH, BAR_LOGICAL_HEIGHT);
+    let bar_physical = (
+        ((bar_logical.0 * scale).round() as u32).max(1),
+        ((bar_logical.1 * scale).round() as u32).max(1),
+    );
+    let bar_position = control_bar_position(
+        geometry.screen_rect(),
+        (bar_physical.0 as i32, bar_physical.1 as i32),
+        &work,
+    );
 
     // The overlay stays visible (live selection frame + dimmed outside) but must
     // not swallow the wheel/mouse input the user needs to scroll the target
     // application: make every capture window click-through (contract §11.14.1).
+    // The control bar is a separate, clickable window below the selection.
     set_overlay_click_through(app, true);
-    let window = match create_preview_window(app, logical_size, physical_size, position) {
+    let preview = match create_longshot_window(
+        app,
+        LONG_SHOT_LABEL,
+        "longshot.html",
+        "Lexora 长截图",
+        logical_size,
+        physical_size,
+        position,
+    ) {
         Ok(window) => window,
         Err(error) => {
             set_overlay_click_through(app, false);
             return Err(error);
         }
     };
+    let bar = match create_longshot_window(
+        app,
+        LONG_SHOT_BAR_LABEL,
+        "longshot-bar.html",
+        "Lexora 长截图控制",
+        bar_logical,
+        bar_physical,
+        bar_position,
+    ) {
+        Ok(window) => window,
+        Err(error) => {
+            let _ = preview.destroy();
+            set_overlay_click_through(app, false);
+            return Err(error);
+        }
+    };
     // The overlay keeps keyboard focus after its buttons were used; hand it to
-    // the application under the selection (the preview window is NOACTIVATE, so
-    // it will not take it back).
+    // the application under the selection (both longshot windows are NOACTIVATE,
+    // so they will not take it back).
     if !win32::focus_window_at(center.0, center.1) {
         log_warn(
             app,
@@ -742,7 +964,6 @@ fn start_impl(app: &AppHandle, index: u32, rect: &HitRect) -> Result<Value, Engi
         );
     }
 
-    let (initial_width, initial_height) = first_frame.dimensions();
     let shared = Shared {
         direction: Direction::Vertical,
         stitched: Stitched::from_image(&first_frame),
@@ -751,6 +972,8 @@ fn start_impl(app: &AppHandle, index: u32, rect: &HitRect) -> Result<Value, Engi
         last_append_overlap: None,
         last_prepend_overlap: None,
         frames: 1,
+        misses: 0,
+        resync: false,
         stalled: false,
         limit_reached: false,
         revision: 0,
@@ -761,6 +984,8 @@ fn start_impl(app: &AppHandle, index: u32, rect: &HitRect) -> Result<Value, Engi
         stop: Arc::new(AtomicBool::new(false)),
         finished: Arc::new(AtomicBool::new(false)),
         geometry,
+        work,
+        scale,
     });
     *lock(session_cell()) = Some(runtime.clone());
 
@@ -770,24 +995,32 @@ fn start_impl(app: &AppHandle, index: u32, rect: &HitRect) -> Result<Value, Engi
         .spawn(move || capture_loop(thread_app, runtime));
     if let Err(error) = spawned {
         forget_session(app);
-        let _ = window.destroy();
+        destroy_longshot_windows(app);
         return Err(EngineError::new(
             "无法启动长截图线程。",
             format!("请重试或重启程序（{error}）。"),
         ));
     }
 
-    // Session state is ready before the page becomes visible, so its first
+    // Session state is ready before the pages become visible, so their first
     // `longshot_state`/`longshot_preview` calls already succeed.
-    if let Err(error) = window.show() {
+    if let Err(error) = preview.show() {
         forget_session(app);
-        let _ = window.destroy();
+        destroy_longshot_windows(app);
         return Err(EngineError::new(
             "无法显示长截图预览窗口。",
             format!("请重试或重启程序（{error}）。"),
         ));
     }
-    // Showing the preview can still activate it on some systems (Tauri calls
+    if let Err(error) = bar.show() {
+        forget_session(app);
+        destroy_longshot_windows(app);
+        return Err(EngineError::new(
+            "无法显示长截图控制栏。",
+            format!("请重试或重启程序（{error}）。"),
+        ));
+    }
+    // Showing the windows can still activate them on some systems (Tauri calls
     // SetForegroundWindow), which would swallow the user's wheel input. Hand the
     // focus back to the application under the selection.
     let _ = win32::focus_window_at(center.0, center.1);
@@ -940,7 +1173,7 @@ pub fn longshot_direction(app: AppHandle, direction: String) -> Value {
     };
     // Notify the preview right away: a reset changes the stitched image even
     // though no new frame was merged (contract §11.14.1).
-    let _ = app.emit_to(LONG_SHOT_LABEL, EVENT_PROGRESS, progress);
+    let _ = emit_progress(&app, progress);
     json!({ "ok": true, "direction": parsed.as_str() })
 }
 
@@ -992,7 +1225,7 @@ fn finish_impl(app: &AppHandle) -> Result<Value, EngineError> {
             // The overlay is visible again from the cancel path; finish closes
             // the whole capture UI, so restore its normal mouse handling first.
             set_overlay_click_through(app, false);
-            destroy_preview_window(app);
+            destroy_longshot_windows(app);
             if let Some(state) = app.try_state::<Arc<AppState>>() {
                 // The screenshot session is finished: hide the overlays and release
                 // the capture input gate so the next screenshot can start.
@@ -1043,7 +1276,7 @@ pub fn cancel(app: &AppHandle) {
     // re-show them as a safety net; the page switches back from the live mode on
     // the `longshot-cancelled` event (contract §11.14.1).
     set_overlay_click_through(app, false);
-    destroy_preview_window(app);
+    destroy_longshot_windows(app);
     crate::windows::show_all_capture_windows(app);
     let _ = app.emit(EVENT_CANCELLED, json!({}));
     if runtime.is_some() {
@@ -1054,11 +1287,12 @@ pub fn cancel(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::{
-        choose_merge, display_dimensions, exceeds_limits, inset_crop, orient_frame,
-        preview_scale_factor, preview_window_position, preview_window_size, progress_payload,
-        reset_stitch, Direction, Geometry, MergeSide, Shared, EVENT_CANCELLED, EVENT_STARTED,
-        LONG_SHOT_LABEL, MAX_PIXELS, PREVIEW_LOGICAL_WIDTH, PREVIEW_MAX_LOGICAL_HEIGHT,
-        PREVIEW_TARGET_WIDTH,
+        choose_merge, control_bar_position, display_dimensions, exceeds_limits, inset_crop,
+        orient_frame, preview_scale_factor, preview_window_position, preview_window_size_for,
+        progress_payload, reset_stitch, Direction, Geometry, MergeSide, Shared, BAR_LOGICAL_HEIGHT,
+        BAR_LOGICAL_WIDTH, EVENT_CANCELLED, EVENT_STARTED, LONG_SHOT_BAR_LABEL, LONG_SHOT_LABEL,
+        MAX_PIXELS, PREVIEW_LOGICAL_WIDTH, PREVIEW_MAX_LOGICAL_HEIGHT, PREVIEW_MIN_LOGICAL_HEIGHT,
+        PREVIEW_PADDING_CSS, PREVIEW_TARGET_WIDTH,
     };
     use crate::capture::{find_overlap, find_overlap_prepend, Stitched};
     use crate::win32::WorkArea;
@@ -1089,11 +1323,12 @@ mod tests {
     }
 
     #[test]
-    fn longshot_window_label_is_fixed() {
+    fn longshot_window_labels_are_fixed() {
         assert_eq!(LONG_SHOT_LABEL, "longshot");
+        assert_eq!(LONG_SHOT_BAR_LABEL, "longshot-bar");
         assert_eq!(EVENT_STARTED, "longshot-started");
         assert_eq!(EVENT_CANCELLED, "longshot-cancelled");
-        assert_eq!(PREVIEW_TARGET_WIDTH, 720);
+        assert_eq!(PREVIEW_TARGET_WIDTH, 480);
     }
 
     #[test]
@@ -1123,37 +1358,57 @@ mod tests {
     }
 
     #[test]
-    fn preview_window_fits_the_work_area() {
-        let (width, height) = preview_window_size(1.0, &work());
+    fn preview_window_height_follows_the_stitched_image() {
+        // Narrow strip: fixed width, height from the content aspect ratio.
+        let (width, height) = preview_window_size_for(600, 300, 1.0, &work(), 100);
         assert_eq!(width, PREVIEW_LOGICAL_WIDTH);
-        assert!((height - PREVIEW_MAX_LOGICAL_HEIGHT).abs() < 0.01);
-        // 150% display: the same 70% cap in logical pixels.
+        let content_width = PREVIEW_LOGICAL_WIDTH - PREVIEW_PADDING_CSS * 2.0;
+        let expected = 300.0 * (content_width / 600.0) + PREVIEW_PADDING_CSS * 2.0;
+        assert!(
+            (height - expected).abs() < 0.01,
+            "height={height} expected={expected}"
+        );
+        // A long image grows the preview until the work-area cap.
+        let (_, tall) = preview_window_size_for(600, 10_000, 1.0, &work(), 100);
+        assert!(
+            (tall - PREVIEW_MAX_LOGICAL_HEIGHT).abs() < 0.01,
+            "tall={tall}"
+        );
+        // 150% display: the same cap in logical pixels.
         let hidpi_work = WorkArea {
             left: 0,
             top: 0,
             right: 3840,
             bottom: 2160,
         };
-        let (_, height) = preview_window_size(1.5, &hidpi_work);
-        assert!((height - PREVIEW_MAX_LOGICAL_HEIGHT).abs() < 0.01);
-        // Small work area: never exceed its 70%.
+        let (_, hidpi) = preview_window_size_for(600, 10_000, 1.5, &hidpi_work, 100);
+        assert!((hidpi - PREVIEW_MAX_LOGICAL_HEIGHT).abs() < 0.01, "hidpi={hidpi}");
+        // Small work area still yields a usable window.
         let small = WorkArea {
             left: 0,
             top: 0,
             right: 800,
             bottom: 600,
         };
-        let (_, height) = preview_window_size(1.0, &small);
-        assert!((height - 420.0).abs() < 0.01, "height={height}");
-        // Even smaller: clamp to the available space, never negative.
-        let tiny = WorkArea {
-            left: 0,
-            top: 0,
-            right: 300,
-            bottom: 200,
-        };
-        let (_, height) = preview_window_size(1.0, &tiny);
-        assert!((height - 140.0).abs() < 0.01, "height={height}");
+        let (_, height) = preview_window_size_for(600, 10_000, 1.0, &small, 40);
+        assert!(height >= PREVIEW_MIN_LOGICAL_HEIGHT - 0.01);
+        assert!(height <= 600.0 * 0.86 + 0.01, "height={height}");
+    }
+
+    #[test]
+    fn control_bar_sits_below_the_selection_when_there_is_room() {
+        let bar = (BAR_LOGICAL_WIDTH as i32, BAR_LOGICAL_HEIGHT as i32);
+        // 300 + 300 + 8 = 608; 608 + 56 fits above the work-area bottom.
+        assert_eq!(
+            control_bar_position((500, 300, 400, 300), bar, &work()),
+            (500, 608)
+        );
+        // No room below: place it above the selection.
+        let placed = control_bar_position((500, 900, 400, 150), bar, &work());
+        assert_eq!(placed.1, 900 - 8 - BAR_LOGICAL_HEIGHT as i32);
+        // Horizontal clamp keeps it on screen.
+        let placed = control_bar_position((1700, 200, 300, 200), bar, &work());
+        assert_eq!(placed.0, 1920 - BAR_LOGICAL_WIDTH as i32);
     }
 
     #[test]
@@ -1211,6 +1466,8 @@ mod tests {
             last_append_overlap: Some(12),
             last_prepend_overlap: Some(8),
             frames: 4,
+            misses: 0,
+            resync: false,
             stalled: true,
             limit_reached: true,
             revision: 9,
@@ -1268,14 +1525,15 @@ mod tests {
     }
 
     #[test]
-    fn preview_scales_to_about_720_display_width() {
-        assert_eq!(preview_scale_factor(1440), 0.5);
-        assert_eq!(preview_scale_factor(720), 1.0);
+    fn preview_scales_to_the_preview_target_width() {
+        // 480 display px keeps the narrow preview sharp but cheap to encode.
+        assert!((preview_scale_factor(960) - 0.5).abs() < 1e-9);
+        assert_eq!(preview_scale_factor(480), 1.0);
         assert_eq!(preview_scale_factor(360), 1.0);
         assert_eq!(preview_scale_factor(0), 1.0);
-        let stitched = Stitched::from_image(&noise_image(1440, 1600, 3));
-        let scaled = stitched.scaled_by(preview_scale_factor(1440));
-        assert_eq!(scaled.dimensions(), (720, 800));
+        let stitched = Stitched::from_image(&noise_image(960, 1600, 3));
+        let scaled = stitched.scaled_by(preview_scale_factor(960));
+        assert_eq!(scaled.dimensions(), (480, 800));
     }
 
     #[test]
@@ -1356,6 +1614,8 @@ mod tests {
             last_append_overlap: None,
             last_prepend_overlap: None,
             frames: 2,
+            misses: 0,
+            resync: false,
             stalled: true,
             limit_reached: false,
             revision: 7,

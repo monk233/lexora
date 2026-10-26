@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src ipc: http://ipc.localhost">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lexora 长截图控制</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="longshot-bar.css">
+</head>
+<body>
+  <!-- Floating control bar of the manual long screenshot (contract §11.14.1).
+       It sits directly below the selection, exactly where the screenshot
+       toolbar sits, so direction / cancel / finish stay where the user expects
+       them instead of on top of the preview. The capture overlays themselves are
+       click-through (the wheel must reach the target app), which is why this is
+       a separate clickable window. -->
+  <div class="ls-bar" id="ls-bar" role="toolbar" aria-label="长截图操作">
+    <span class="ls-label">选择方向</span>
+    <div class="ls-segmented" id="ls-directions" role="group" aria-label="滚动方向">
+      <button type="button" class="ls-seg is-active" data-direction="vertical"
+              aria-pressed="true" title="竖向滚动拼接">竖向</button>
+      <button type="button" class="ls-seg" data-direction="horizontal"
+              aria-pressed="false" title="横向滚动拼接">横向</button>
+    </div>
+
+    <span class="ls-sep" aria-hidden="true"></span>
+    <span class="ls-status" id="ls-status">第 1 帧 · 0 × 0</span>
+    <span class="ls-spacer" aria-hidden="true"></span>
+
+    <button type="button" class="ls-btn ls-btn-danger" id="ls-cancel"
+            title="取消长截图（恢复截图界面）">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M18 6 6 18"></path>
+        <path d="m6 6 12 12"></path>
+      </svg>
+      <span class="label">取消</span>
+    </button>
+    <button type="button" class="ls-btn ls-btn-confirm" id="ls-finish"
+            title="完成（复制到剪贴板并钉在桌面）">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M20 6 9 17l-5-5"></path>
+      </svg>
+      <span class="label">完成</span>
+    </button>
+  </div>
+
+  <script src="shared/tauri-api.js"></script>
+  <script src="longshot-bar.js"></script>
+</body>
+</html>
