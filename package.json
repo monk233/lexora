@@ -1,6 +1,6 @@
 {
   "name": "lexora",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "description": "Lexora — 轻量划词翻译工具：选中任意文本即可翻译、总结、解释、朗读；支持在线 OpenAI 兼容 API 与本地 GGUF 离线模型。",
   "license": "MIT",

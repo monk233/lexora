@@ -16,7 +16,7 @@
 
 ## 简介
 
-当前版本：**0.4.0**（2026-10-28），见 [发布说明](docs/release-notes-0.4.0.md)。
+当前版本：**0.4.1**（2026-10-28），见 [发布说明](docs/release-notes-0.4.1.md)。
 
 Lexora 是 Windows 划词翻译工具。在浏览器、Word、PDF、IDE 等任意应用中选中文字后，光标旁出现浮动工具栏，提供翻译、总结、解释、润色、朗读、复制、搜索。工具栏为非激活浮层，不抢键盘焦点。
 
@@ -109,7 +109,7 @@ npx tauri build --debug --no-bundle
 .\src-tauri\target\debug\lexora.exe --show
 ```
 
-更多细节见 [构建文档](docs/building.md)、[架构说明](docs/architecture.md)、[v0.4.0 发布说明](docs/release-notes-0.4.0.md)。
+更多细节见 [构建文档](docs/building.md)、[架构说明](docs/architecture.md)、[v0.4.1 发布说明](docs/release-notes-0.4.1.md)。
 
 ## 技术栈
 

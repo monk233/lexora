@@ -2,6 +2,13 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/) 与 [Keep a Changelog](https://keepachangelog.com/) 风格。
 
+## [0.4.1] - 2026-10-28
+
+### Fixed
+
+- 修复全新目录首次启动时，设置窗口在 `AppState` 调用 `manage()` 注册前调用 `get_state`，导致 `state not managed`、无法读取设置的问题。状态现在在窗口创建前注册；首次设置读取遇到该错误时进行短暂重试。
+- 初始化设置持久化延后到单实例确认之后，避免并发实例写入 `settings.json`；持久化失败时记录警告日志，便于排查。
+
 ## [0.4.0] - 2026-10-28
 
 ### Added
