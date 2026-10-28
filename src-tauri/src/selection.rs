@@ -20,7 +20,7 @@ mod hook;
 mod uia;
 mod win;
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread;
@@ -40,10 +40,6 @@ const DUPLICATE_WINDOW: Duration = Duration::from_millis(400);
 const STALE_TRIGGER: Duration = Duration::from_secs(3);
 /// Minimum interval between two capture failure log lines.
 const ERROR_LOG_INTERVAL: Duration = Duration::from_secs(3);
-/// Delay that lets a first click become the start of a double-click selection
-/// before an unpinned panel treats it as a normal outside click.
-const PANEL_OUTSIDE_CLICK_DELAY: Duration = Duration::from_millis(500);
-
 /// Payload pushed to the picker webview when a selection is captured.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -87,6 +83,8 @@ struct CaptureRequest {
 enum ActionRequest {
     /// Left button pressed outside of the picker: hide it unless pinned.
     OutsideClick { x: i32, y: i32 },
+    /// Forward captures after earlier outside presses have been handled.
+    Capture(CaptureRequest),
     /// The user pressed a key / scrolled / clicked another button while the
     /// toolbar was visible: the toolbar is an auxiliary overlay and must not
     /// get in the way of normal work, so it disappears.
@@ -125,8 +123,8 @@ struct Inner {
     worker_config: Mutex<WorkerConfig>,
     picker_visible: AtomicBool,
     panel_pinned: AtomicBool,
-    /// A result panel is open: the global input hook must not dismiss the
-    /// picker (sticky panel), even when it is not pinned.
+    /// A result panel is open: keyboard, wheel and secondary buttons keep it
+    /// open; an outside left press dismisses it unless pinned.
     panel_open: AtomicBool,
     /// A screenshot overlay is active: the picker/settings stay open and the
     /// global input hook must not dismiss the picker while the user frames the
@@ -134,9 +132,6 @@ struct Inner {
     /// capture flow ends.
     capture_active: AtomicBool,
     capturing: AtomicBool,
-    /// Incremented when a real selection capture is queued. A delayed outside
-    /// click compares this value and cancels itself when a selection started.
-    capture_serial: AtomicU64,
     started: AtomicBool,
     last_selection: Mutex<Option<PickerPayload>>,
     dedup: Mutex<TextDedup>,
@@ -154,16 +149,11 @@ impl Inner {
         if self.capturing.load(Ordering::Acquire) {
             return;
         }
-        let sender = lock(&self.capture_tx).as_ref().cloned();
-        if let Some(sender) = sender {
-            self.capture_serial.fetch_add(1, Ordering::AcqRel);
-            let request = CaptureRequest {
-                source,
-                anchor,
-                at: Instant::now(),
-            };
-            let _ = sender.send(request);
-        }
+        self.send_action(ActionRequest::Capture(CaptureRequest {
+            source,
+            anchor,
+            at: Instant::now(),
+        }));
     }
 
     fn send_action(&self, action: ActionRequest) {
@@ -227,7 +217,6 @@ impl SelectionService {
             panel_open: AtomicBool::new(false),
             capture_active: AtomicBool::new(false),
             capturing: AtomicBool::new(false),
-            capture_serial: AtomicU64::new(0),
             started: AtomicBool::new(false),
             last_selection: Mutex::new(None),
             dedup: Mutex::new(TextDedup::default()),
@@ -466,6 +455,11 @@ fn action_worker(inner: Arc<Inner>, receiver: Receiver<ActionRequest>) {
             continue;
         }
         match request {
+            ActionRequest::Capture(request) => {
+                if let Some(sender) = lock(&inner.capture_tx).as_ref() {
+                    let _ = sender.send(request);
+                }
+            }
             ActionRequest::OutsideClick { x, y } => {
                 let Some(app) = inner.app.get() else {
                     continue;
@@ -475,21 +469,12 @@ fn action_worker(inner: Arc<Inner>, receiver: Receiver<ActionRequest>) {
                 {
                     crate::windows::hide_toolbar(app);
                 }
-                if crate::windows::is_any_picker_visible(app)
-                    && (window_contains_point(app, crate::windows::PICKER_LABEL, x, y)
-                        || window_contains_point(app, crate::windows::PICKER_TOOLBAR_LABEL, x, y))
-                {
+                if !outside_click_dismisses_panel(
+                    inner.panel_pinned.load(Ordering::Acquire),
+                    window_contains_point(app, crate::windows::PICKER_LABEL, x, y),
+                    window_contains_point(app, crate::windows::PICKER_TOOLBAR_LABEL, x, y),
+                ) {
                     continue;
-                }
-                if inner.panel_pinned.load(Ordering::Acquire) {
-                    continue;
-                }
-                if inner.panel_open.load(Ordering::Acquire) {
-                    let before = inner.capture_serial.load(Ordering::Acquire);
-                    thread::sleep(PANEL_OUTSIDE_CLICK_DELAY);
-                    if inner.capture_serial.load(Ordering::Acquire) != before {
-                        continue;
-                    }
                 }
                 if !crate::windows::is_any_picker_visible(app) {
                     inner.picker_visible.store(false, Ordering::Release);
@@ -536,6 +521,10 @@ fn action_worker(inner: Arc<Inner>, receiver: Receiver<ActionRequest>) {
             }
         }
     }
+}
+
+fn outside_click_dismisses_panel(pinned: bool, inside_panel: bool, inside_toolbar: bool) -> bool {
+    !pinned && !inside_panel && !inside_toolbar
 }
 
 /// True when the physical point lies inside one picker surface rectangle.
@@ -680,6 +669,45 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outside_press_respects_panel_and_toolbar_boundaries_and_pin() {
+        assert!(outside_click_dismisses_panel(false, false, false));
+        assert!(!outside_click_dismisses_panel(false, true, false));
+        assert!(!outside_click_dismisses_panel(false, false, true));
+        assert!(!outside_click_dismisses_panel(true, false, false));
+    }
+
+    #[test]
+    fn screenshot_worker_drops_outside_clicks_and_capture_requests() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(SettingsStore::load(dir.path().join("settings.json")));
+        let service = SelectionService::new(
+            store,
+            Logger::new(&dir.path().join("logs"), "selection-test"),
+        );
+        service.set_capture_active(true);
+        service.set_picker_visible(true);
+        service.set_panel_open(true);
+        let (capture_tx, capture_rx) = mpsc::channel();
+        *lock(&service.inner.capture_tx) = Some(capture_tx);
+        let (action_tx, action_rx) = mpsc::channel();
+        action_tx
+            .send(ActionRequest::OutsideClick { x: 10, y: 20 })
+            .unwrap();
+        action_tx
+            .send(ActionRequest::Capture(CaptureRequest {
+                source: TriggerSource::Mouse,
+                anchor: Some((40, 20)),
+                at: Instant::now(),
+            }))
+            .unwrap();
+        drop(action_tx);
+        action_worker(service.inner.clone(), action_rx);
+        assert!(service.is_panel_open());
+        assert!(service.inner.picker_visible.load(Ordering::Acquire));
+        assert!(capture_rx.try_recv().is_err());
+    }
 
     #[test]
     fn normalizes_program_names() {

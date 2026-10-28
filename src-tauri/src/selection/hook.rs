@@ -30,10 +30,6 @@ struct HookState {
     shift: bool,
     /// `true` once the shortcut fired, so auto-repeat only starts one capture.
     capture_fired: bool,
-    /// While an unpinned result panel is open, an outside press is resolved on
-    /// release. A drag or multi-click starts a capture and preserves the panel;
-    /// a plain click is sent to the delayed outside-click handler.
-    defer_panel_outside: bool,
 }
 
 /// Tracks consecutive non-drag clicks so double/triple click selections can
@@ -177,15 +173,11 @@ fn handle_left_press(inner: &Arc<Inner>, state: &mut HookState) {
     // `ButtonRelease` carries no coordinates, so the latest `MouseMove` is the
     // drag origin. Mouse events are always delivered before the button event.
     state.press_origin = state.mouse;
-    state.defer_panel_outside = false;
 
-    if !inner.picker_visible.load(Ordering::Acquire) || inner.panel_pinned.load(Ordering::Acquire) {
-        return;
-    }
-    if inner.panel_open.load(Ordering::Acquire) {
-        // Resolve on release so dragging or double/triple-clicking a new word
-        // never hides the current panel merely because the press was outside.
-        state.defer_panel_outside = true;
+    if !inner.picker_visible.load(Ordering::Acquire)
+        || inner.panel_pinned.load(Ordering::Acquire)
+        || inner.capture_active.load(Ordering::Acquire)
+    {
         return;
     }
     if let Some((x, y)) = state.mouse {
@@ -203,8 +195,6 @@ fn handle_left_release(inner: &Arc<Inner>, state: &mut HookState) {
     let Some(end) = state.mouse else {
         return;
     };
-    let defer_panel_outside = state.defer_panel_outside;
-    state.defer_panel_outside = false;
 
     if is_drag_gesture(origin, end, DRAG_THRESHOLD_PX) {
         state.clicks.reset();
@@ -226,13 +216,6 @@ fn handle_left_release(inner: &Arc<Inner>, state: &mut HookState) {
         inner.send_capture(TriggerSource::Click, Some(anchor));
         return;
     }
-
-    if defer_panel_outside {
-        inner.send_action(ActionRequest::OutsideClick {
-            x: end.0.round() as i32,
-            y: end.1.round() as i32,
-        });
-    }
 }
 
 /// A selection gesture needs a real drag, otherwise every click would fire UIA.
@@ -252,6 +235,80 @@ fn points_within(a: (f64, f64), b: (f64, f64), threshold: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_inner() -> (
+        tempfile::TempDir,
+        Arc<Inner>,
+        std::sync::mpsc::Receiver<ActionRequest>,
+    ) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(crate::settings::SettingsStore::load(
+            dir.path().join("settings.json"),
+        ));
+        let logger = crate::logger::Logger::new(&dir.path().join("logs"), "hook-test");
+        let service = super::super::SelectionService::new(store, logger);
+        service.set_picker_visible(true);
+        service.set_panel_open(true);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        *super::super::lock(&service.inner.action_tx) = Some(sender);
+        (dir, service.inner, receiver)
+    }
+
+    #[test]
+    fn unpinned_panel_dismisses_on_press_without_repeating_on_release() {
+        let (_dir, inner, receiver) = test_inner();
+        let mut state = HookState {
+            mouse: Some((100.0, 200.0)),
+            ..Default::default()
+        };
+        handle_left_press(&inner, &mut state);
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(ActionRequest::OutsideClick { x: 100, y: 200 })
+        ));
+        handle_left_release(&inner, &mut state);
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn pinned_panel_and_screenshot_do_not_queue_outside_clicks() {
+        let (_dir, inner, receiver) = test_inner();
+        let mut state = HookState {
+            mouse: Some((100.0, 200.0)),
+            ..Default::default()
+        };
+        inner.panel_pinned.store(true, Ordering::Release);
+        handle_left_press(&inner, &mut state);
+        assert!(receiver.try_recv().is_err());
+        inner.panel_pinned.store(false, Ordering::Release);
+        inner.capture_active.store(true, Ordering::Release);
+        handle_left_press(&inner, &mut state);
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn outside_drag_queues_dismissal_before_release_capture() {
+        let (_dir, inner, receiver) = test_inner();
+        let mut state = HookState {
+            mouse: Some((100.0, 200.0)),
+            ..Default::default()
+        };
+        handle_left_press(&inner, &mut state);
+        state.mouse = Some((160.0, 200.0));
+        handle_left_release(&inner, &mut state);
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(ActionRequest::OutsideClick { x: 100, y: 200 })
+        ));
+        match receiver.try_recv().unwrap() {
+            ActionRequest::Capture(request) => {
+                assert_eq!(request.source, TriggerSource::Mouse);
+                assert_eq!(request.anchor, Some((160, 200)));
+            }
+            _ => panic!("drag release must queue a capture"),
+        }
+        assert!(receiver.try_recv().is_err());
+    }
 
     /// System default double-click time, used by the pure-function tests.
     const TEST_DOUBLE_CLICK: Duration = Duration::from_millis(500);
