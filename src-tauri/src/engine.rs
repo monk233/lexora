@@ -1053,6 +1053,7 @@ impl EngineService {
             &truncated,
             &target,
             &settings.picker.prompts.translate,
+            &settings.picker.prompts.word_lookup,
         )?;
         let (system, user) = (&resolved.system, &resolved.user);
         let messages = vec![
@@ -1381,7 +1382,13 @@ impl EngineService {
             "explain" | "解释" => settings.picker.prompts.explain.as_str(),
             _ => "",
         };
-        let resolved = prompts::resolve_text_prompt(action, &truncated, "zh", custom_prompt)?;
+        let resolved = prompts::resolve_text_prompt(
+            action,
+            &truncated,
+            "zh",
+            custom_prompt,
+            &settings.picker.prompts.word_lookup,
+        )?;
         let (system, user) = (&resolved.system, &resolved.user);
         let messages = vec![
             json!({"role": "system", "content": system}),
@@ -1471,7 +1478,13 @@ impl EngineService {
             "explain" | "解释" => settings.picker.prompts.explain.as_str(),
             _ => "",
         };
-        let resolved = prompts::resolve_text_prompt(action, &truncated, "zh", custom_prompt)?;
+        let resolved = prompts::resolve_text_prompt(
+            action,
+            &truncated,
+            "zh",
+            custom_prompt,
+            &settings.picker.prompts.word_lookup,
+        )?;
         let messages = vec![
             json!({"role": "system", "content": resolved.system}),
             json!({"role": "user", "content": resolved.user}),
@@ -2624,12 +2637,19 @@ mod tests {
             ("explain", "a full sentence", "Custom explanation", 8192),
             ("summary", "a full sentence", "", 768),
         ] {
-            let prompt = prompts::resolve_text_prompt(action, text, "zh", custom).unwrap();
+            let prompt = prompts::resolve_text_prompt(action, text, "zh", custom, "").unwrap();
             assert_eq!(
                 effective_max_tokens(8192, prompt.mode, prompt.prompt_source),
                 expected
             );
         }
+        // A word routed to the dictionary prompt still honours the user limit.
+        let word = prompts::resolve_text_prompt("translate", "crazy", "zh", "", "").unwrap();
+        assert_eq!(word.mode, "word_lookup");
+        assert_eq!(
+            effective_max_tokens(8192, word.mode, word.prompt_source),
+            8192
+        );
     }
 
     #[test]
@@ -2743,7 +2763,10 @@ mod tests {
                 if streaming {
                     let mut stream = env
                         .service
-                        .assist_stream("explain", "私密原文")
+                        .assist_stream(
+                            "explain",
+                            "这是一段用于测试的普通文本内容，应该按普通任务处理。",
+                        )
                         .await
                         .unwrap();
                     while let Some(chunk) = stream.next().await {
@@ -2751,7 +2774,13 @@ mod tests {
                     }
                 } else {
                     assert_eq!(
-                        env.service.assist("explain", "私密原文").await.unwrap(),
+                        env.service
+                            .assist(
+                                "explain",
+                                "这是一段用于测试的普通文本内容，应该按普通任务处理。"
+                            )
+                            .await
+                            .unwrap(),
                         "私密回答"
                     );
                 }
@@ -2762,8 +2791,8 @@ mod tests {
             assert_eq!(env.store.get().provider.online.max_tokens, user_limit);
             let log = std::fs::read_to_string(env.service.model_logger.path()).unwrap();
             assert!(log.contains(&format!("effective_max_tokens={expected}")));
-            assert!(log.contains("mode=explain prompt_source=default prompt_version=10"));
-            assert!(!log.contains("私密原文"));
+            assert!(log.contains("mode=explain prompt_source=default prompt_version=11"));
+            assert!(!log.contains("这是一段用于测试的普通文本内容"));
             assert!(!log.contains("私密回答"));
         }
     }

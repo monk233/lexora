@@ -352,7 +352,7 @@
         license: "MIT",
       },
       settings: {
-        version: 7,
+        version: 8,
         picker: {
           enabled: true,
           skills: ["translate", "summarize", "explain", "polish", "read", "copy", "screenshot", "search"],
@@ -360,7 +360,7 @@
           defaultTargetLang: "auto",
           blacklist: ["vscode.exe"],
           maxChars: 5000,
-          prompts: { translate: "", summarize: "", explain: "", polish: "" },
+          prompts: { translate: "", summarize: "", explain: "", polish: "", wordLookup: "" },
           customSkills: [],
           searchEngine: "google",
           panelMode: "auto",
@@ -425,7 +425,9 @@
       loginItem: { supported: !portable, enabled: false },
       promptDefaults: {
         translate:
-          "You are a professional translator. Follow these rules exactly.\n1. Translate the user's text into {target}. Write your entire answer in {target}, except the headword, its pronunciation and code.\n2. If the input is exactly one word or a short fixed term (at most 3 words, without sentence punctuation), answer with a compact Markdown dictionary entry, never with a bare translation. A sentence, clause or paragraph must always be translated and never explained as a word.\n3. A dictionary entry contains the headword, its pronunciation (IPA only for English words, Hanyu Pinyin with tone marks only for Chinese words), the part of speech and at most 3 common meanings in {target}, plus optionally one short example in {target}.\n4. Never invent a meaning or a pronunciation. If a word looks misspelled, say it may be misspelled instead of guessing.\n5. Output only the translation or the dictionary entry. Do not add explanations, labels or the source text.\n6. Preserve paragraphs, lists, Markdown structure, code and placeholders; leave code and placeholders unchanged.\n7. Examples: for the single word \"serendipity\" answer with a dictionary entry (headword, IPA /ˌserənˈdɪpɪti/, meanings in {target}); for \"The meeting was postponed.\" answer with only its translation in {target}.",
+          "You are a professional translator. Translate the user's text into {target}. Write the entire translation in {target}. Output only the translation: no explanations, labels, notes or source text. Preserve paragraphs, lists, Markdown structure, code and placeholders; leave code and placeholders unchanged.",
+        wordLookup:
+          "You are a careful dictionary assistant. The input is a single word or a short fixed term. Answer in compact Markdown with: the headword, its pronunciation (IPA only for English words, Hanyu Pinyin with tone marks only for Chinese words), its part of speech and at most 3 common meanings written in {target}, plus optionally one short example in {target}. Never invent a meaning or a pronunciation. If the word looks misspelled, first say it may be misspelled and ask whether the user meant a correct spelling. Do not translate the whole input as a sentence and do not add background or usage essays.",
         summarize:
           "You are a concise Chinese writing assistant. Summarize the user's text in Simplified Chinese in 3-5 key points. Preserve the central meaning without adding unsupported facts or repeating points.",
         explain:
@@ -434,7 +436,7 @@
           "You are a professional editor. Polish the user's text naturally while preserving its meaning, paragraphs, code and placeholders. Output only the polished result, without explanations, added labels or the source text.",
         // Screenshot toolbar actions (contract §4 `picker.capturePrompts`).
         captureTranslate:
-          "You are a professional translator. Follow these rules exactly.\n1. Translate the user's text into {target}. Write your entire answer in {target}, except the headword, its pronunciation and code.\n2. If the input is exactly one word or a short fixed term (at most 3 words, without sentence punctuation), answer with a compact Markdown dictionary entry, never with a bare translation. A sentence, clause or paragraph must always be translated and never explained as a word.\n3. A dictionary entry contains the headword, its pronunciation (IPA only for English words, Hanyu Pinyin with tone marks only for Chinese words), the part of speech and at most 3 common meanings in {target}, plus optionally one short example in {target}.\n4. Never invent a meaning or a pronunciation. If a word looks misspelled, say it may be misspelled instead of guessing.\n5. Output only the translation or the dictionary entry. Do not add explanations, labels or the source text.\n6. Preserve paragraphs, lists, Markdown structure, code and placeholders; leave code and placeholders unchanged.\n7. Examples: for the single word \"serendipity\" answer with a dictionary entry (headword, IPA /ˌserənˈdɪpɪti/, meanings in {target}); for \"The meeting was postponed.\" answer with only its translation in {target}.",
+          "You are a professional translator. Translate the user's text into {target}. Write the entire translation in {target}. Output only the translation: no explanations, labels, notes or source text. Preserve paragraphs, lists, Markdown structure, code and placeholders; leave code and placeholders unchanged.",
         captureExplain:
           "You are a vision assistant. Explain the image in Simplified Chinese using Markdown: one sentence for the main subject, at most 3 key points and optionally one short example. Usually use 150-250 Chinese characters; simple images need less. Distinguish visible facts from inference. Do not invent unreadable text or unseen details.",
       },
@@ -589,11 +591,11 @@
       searchEngines.indexOf(String(picker.searchEngine || "")) >= 0
         ? String(picker.searchEngine)
         : "google";
-    settings.version = 7;
+    settings.version = 8;
     var promptStore =
       picker.prompts && typeof picker.prompts === "object" ? picker.prompts : {};
     picker.prompts = {};
-    ["translate", "summarize", "explain", "polish"].forEach(function (id) {
+    ["translate", "summarize", "explain", "polish", "wordLookup"].forEach(function (id) {
       picker.prompts[id] = String(promptStore[id] || "").trim().slice(0, 4000);
     });
     if (settings.provider.mode !== "local") {

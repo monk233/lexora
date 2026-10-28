@@ -1230,6 +1230,24 @@ textarea {
   background: var(--surface-muted);
 }
 
+.skill-prompt-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0 10px 10px 40px;
+}
+
+.skill-prompt-group .skill-prompt {
+  margin: 0;
+}
+
+.skill-prompt-label {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
 .skill-prompt-foot {
   display: flex;
   align-items: center;
@@ -2036,8 +2054,3 @@ textarea {
 
 /* Keep model actions readable when deletion requires confirmation. */
 .model-card > .btn-danger { min-width: 72px; }
-
-/* Standalone dictionary editor aligns with the settings field column. */
-#word-lookup-prompt .skill-prompt {
-  margin: 0;
-}

@@ -12,7 +12,7 @@ use std::sync::{Arc, RwLock};
 
 /// Version of the on-disk settings schema. Bumped whenever defaults or fields
 /// change so [`Settings::normalize`] can migrate an older file in place.
-pub const SETTINGS_VERSION: u32 = 7;
+pub const SETTINGS_VERSION: u32 = 8;
 /// Default global shortcut that starts a region screenshot.
 pub const DEFAULT_REGION_SHORTCUT: &str = "Win+Shift+X";
 /// Built-in picker skills, in their canonical toolbar order.
@@ -287,6 +287,7 @@ impl Default for CustomSkill {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct PromptSettings {
+    pub word_lookup: String,
     pub translate: String,
     pub summarize: String,
     pub explain: String,
@@ -377,6 +378,7 @@ impl Default for PickerSettings {
 impl Default for PromptSettings {
     fn default() -> Self {
         Self {
+            word_lookup: String::new(),
             translate: String::new(),
             summarize: String::new(),
             explain: String::new(),
@@ -635,6 +637,8 @@ impl Settings {
             truncate(&self.picker.capture_prompts.translate, PROMPT_MAX_CHARS);
         self.picker.capture_prompts.explain =
             truncate(&self.picker.capture_prompts.explain, PROMPT_MAX_CHARS);
+        self.picker.prompts.word_lookup =
+            truncate(&self.picker.prompts.word_lookup, PROMPT_MAX_CHARS);
         self.picker.prompts.translate = truncate(&self.picker.prompts.translate, PROMPT_MAX_CHARS);
         self.picker.prompts.summarize = truncate(&self.picker.prompts.summarize, PROMPT_MAX_CHARS);
         self.picker.prompts.explain = truncate(&self.picker.prompts.explain, PROMPT_MAX_CHARS);
@@ -1130,7 +1134,7 @@ mod tests {
     fn defaults_are_normalized() {
         let settings = Settings::default().normalize();
         assert_eq!(settings.version, SETTINGS_VERSION);
-        assert_eq!(SETTINGS_VERSION, 7);
+        assert_eq!(SETTINGS_VERSION, 8);
         let expected = vec![
             "translate",
             "summarize",
@@ -1333,13 +1337,60 @@ mod tests {
     }
 
     #[test]
+    fn schema_eight_adds_the_dictionary_prompt_and_preserves_history() {
+        let legacy: Settings = serde_json::from_value(json!({
+            "version": 7,
+            "picker": {
+                "prompts": { "translate": "Translate into {target}.", "explain": "Explain simply." },
+                "capturePrompts": { "translate": "Screenshot instruction" },
+                "customSkills": [{ "id": "custom-example", "label": "Example", "prompt": "Historical prompt" }]
+            }
+        }))
+        .unwrap();
+        let migrated = legacy.normalize();
+        assert_eq!(migrated.version, 8);
+        assert_eq!(migrated.picker.prompts.word_lookup, "");
+        assert_eq!(
+            migrated.picker.prompts.translate,
+            "Translate into {target}."
+        );
+        assert_eq!(migrated.picker.prompts.explain, "Explain simply.");
+        assert_eq!(
+            migrated.picker.capture_prompts.translate,
+            "Screenshot instruction"
+        );
+        assert_eq!(migrated.picker.custom_skills[0].prompt, "Historical prompt");
+        assert_eq!(migrated.clone().normalize(), migrated);
+        assert_eq!(
+            serde_json::from_value::<Settings>(serde_json::to_value(&migrated).unwrap()).unwrap(),
+            migrated
+        );
+    }
+
+    #[test]
+    fn dictionary_prompt_is_trimmed_truncated_and_serialized() {
+        let mut settings = Settings::default();
+        settings.picker.prompts.word_lookup = format!("  {}  ", "词".repeat(4001));
+        settings.picker.prompts.translate = "  Translate into {target}.  ".into();
+        let normalized = settings.normalize();
+        assert_eq!(normalized.picker.prompts.word_lookup.chars().count(), 4000);
+        assert_eq!(
+            normalized.picker.prompts.translate,
+            "Translate into {target}."
+        );
+        let value = serde_json::to_value(&normalized).unwrap();
+        assert_eq!(value["picker"]["prompts"]["wordLookup"], "词".repeat(4000));
+        assert_eq!(normalized.clone().normalize(), normalized);
+    }
+
+    #[test]
     fn prompt_overrides_default_to_empty() {
         let settings = Settings::default().normalize();
         assert_eq!(settings.picker.prompts, PromptSettings::default());
         let value = serde_json::to_value(settings).unwrap();
         assert_eq!(
             value["picker"]["prompts"],
-            json!({ "translate": "", "summarize": "", "explain": "", "polish": "" })
+            json!({ "translate": "", "summarize": "", "explain": "", "polish": "", "wordLookup": "" })
         );
         assert_eq!(value["picker"]["searchEngine"], "google");
         assert_eq!(value["version"], SETTINGS_VERSION);

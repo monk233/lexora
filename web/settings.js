@@ -2575,14 +2575,15 @@
     return promptCustomValue(id) || promptDefault(id);
   }
 
-  function skillPromptPanel(id, meta) {
+  function promptBlock(id, label, hint) {
     var panel = el("div", "skill-prompt");
+    panel.appendChild(el("p", "skill-prompt-label", label));
     var textarea = document.createElement("textarea");
     textarea.className = "textarea";
     textarea.rows = 5;
     textarea.spellcheck = false;
     textarea.setAttribute("data-prompt-input", id);
-    textarea.setAttribute("aria-label", meta.label + "提示词");
+    textarea.setAttribute("aria-label", label);
     textarea.value = promptEditorValue(id);
     textarea.addEventListener("input", function () {
       promptDrafts[id] = textarea.value;
@@ -2606,19 +2607,42 @@
     panel.appendChild(textarea);
 
     var foot = el("div", "skill-prompt-foot");
-    foot.appendChild(
-      el(
-        "p",
-        "skill-prompt-hint",
-        "留空或重置后使用系统默认提示词；translate 支持 {target} 占位符"
-      )
-    );
+    foot.appendChild(el("p", "skill-prompt-hint", hint));
     var reset = el("button", "btn btn-ghost skill-prompt-reset", "重置为默认");
     reset.type = "button";
     reset.setAttribute("data-prompt-reset", id);
     foot.appendChild(reset);
     panel.appendChild(foot);
     return panel;
+  }
+
+  /* The translate skill owns two prompts: ordinary translation and the
+   * dictionary prompt used when the input is automatically classified as a
+   * single word or short term. Every other skill has one prompt. */
+  function skillPromptPanel(id, meta) {
+    if (id === "translate") {
+      var group = el("div", "skill-prompt-group");
+      group.appendChild(
+        promptBlock(
+          "translate",
+          "翻译提示词",
+          "整句、段落等普通翻译使用；支持 {target} 占位符"
+        )
+      );
+      group.appendChild(
+        promptBlock(
+          "wordLookup",
+          "单词查询提示词",
+          "自动识别到单个单词或短语时使用；支持 {target}，可要求模型输出音标或拼音"
+        )
+      );
+      return group;
+    }
+    return promptBlock(
+      id,
+      meta.label + "提示词",
+      "留空或重置后使用系统默认提示词；支持 {target} 占位符"
+    );
   }
 
   function savePromptDraft(id) {
@@ -2663,9 +2687,7 @@
   function resetPromptValue(id) {
     flushPromptDraft(id);
     savePromptValue(id, "");
-    var list = byId("skill-list");
-    var row = list && list.querySelector('[data-skill="' + id + '"]');
-    var textarea = row && row.querySelector(".skill-prompt .textarea");
+    var textarea = document.querySelector('[data-prompt-input="' + id + '"]');
     if (textarea) {
       textarea.value = promptDefault(id);
     }

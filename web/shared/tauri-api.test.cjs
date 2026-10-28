@@ -18,12 +18,16 @@ async function checkSettingsMerge(withSharedHelpers) {
   const api = window.settingsAPI;
   let result = await api.getState();
   assert.equal(result.ok, true);
-  assert.equal(result.state.settings.version, 7);
-  assert.ok(result.state.promptDefaults.translate.includes("Follow these rules exactly"));
-  assert.equal(Object.hasOwn(result.state.promptDefaults, "wordLookup"), false);
+  assert.equal(result.state.settings.version, 8);
+  assert.ok(result.state.promptDefaults.translate.includes("entire translation"));
+  assert.ok(result.state.promptDefaults.wordLookup.includes("dictionary assistant"));
   assert.equal(Object.hasOwn(result.state.settings.picker, "wordLookupMode"), false);
-  result = await api.updateSettings({ picker: { prompts: { translate: "  custom override  " } } });
+  assert.equal(result.state.settings.picker.prompts.wordLookup, "");
+  result = await api.updateSettings({
+    picker: { prompts: { translate: "  custom override  ", wordLookup: "  word override  " } },
+  });
   assert.equal(result.state.settings.picker.prompts.translate, "custom override");
+  assert.equal(result.state.settings.picker.prompts.wordLookup, "word override");
   assert.equal(result.state.settings.picker.prompts.summarize, "");
   assert.equal(result.state.settings.provider.local.selectedModel, "");
   assert.equal(Object.hasOwn(result.state.settings, "local"), false);

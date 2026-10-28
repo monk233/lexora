@@ -16,11 +16,17 @@ pub const ASSIST_MAX_CHARS: usize = 8_000;
 /// Built-in English default prompts. `{target}` and `{language}` are replaced
 /// by the target language name; the same rule applies to custom prompts.
 ///
-/// One prompt covers both ordinary translation and single-word lookups: the
-/// model decides from the input whether to translate or to answer as a short
-/// dictionary entry. Pronunciations (English IPA / Chinese pinyin) come from
-/// the model itself; there is no separate offline dictionary service.
-pub const DEFAULT_TRANSLATE_PROMPT: &str = "You are a professional translator. Follow these rules exactly.\n1. Translate the user's text into {target}. Write your entire answer in {target}, except the headword, its pronunciation and code.\n2. If the input is exactly one word or a short fixed term (at most 3 words, without sentence punctuation), answer with a compact Markdown dictionary entry, never with a bare translation. A sentence, clause or paragraph must always be translated and never explained as a word.\n3. A dictionary entry contains the headword, its pronunciation (IPA only for English words, Hanyu Pinyin with tone marks only for Chinese words), the part of speech and at most 3 common meanings in {target}, plus optionally one short example in {target}.\n4. Never invent a meaning or a pronunciation. If a word looks misspelled, say it may be misspelled instead of guessing.\n5. Output only the translation or the dictionary entry. Do not add explanations, labels or the source text.\n6. Preserve paragraphs, lists, Markdown structure, code and placeholders; leave code and placeholders unchanged.\n7. Examples: for the single word \"serendipity\" answer with a dictionary entry (headword, IPA /ˌserənˈdɪpɪti/, meanings in {target}); for \"The meeting was postponed.\" answer with only its translation in {target}.";
+/// Translation and single-word lookups use two separate prompts. The algorithm
+/// picks one from the input shape (see [`single_word_kind`]), so each prompt can
+/// stay focused; the settings UI shows both under the translate skill.
+/// Pronunciations (English IPA / Chinese pinyin) come from the model itself;
+/// there is no separate offline dictionary service.
+pub const DEFAULT_TRANSLATE_PROMPT: &str = "You are a professional translator. Translate the user's text into {target}. Write the entire translation in {target}. Output only the translation: no explanations, labels, notes or source text. Preserve paragraphs, lists, Markdown structure, code and placeholders; leave code and placeholders unchanged.";
+
+/// System prompt for a single word or short term routed to dictionary lookup.
+/// The input is already classified by the application; this prompt only has to
+/// produce a compact entry in the target language.
+pub const DEFAULT_WORD_LOOKUP_PROMPT: &str = "You are a careful dictionary assistant. The input is a single word or a short fixed term. Answer in compact Markdown with: the headword, its pronunciation (IPA only for English words, Hanyu Pinyin with tone marks only for Chinese words), its part of speech and at most 3 common meanings written in {target}, plus optionally one short example in {target}. Never invent a meaning or a pronunciation. If the word looks misspelled, first say it may be misspelled and ask whether the user meant a correct spelling. Do not translate the whole input as a sentence and do not add background or usage essays.";
 
 pub const DEFAULT_SUMMARIZE_PROMPT: &str = "You are a concise Chinese writing assistant. Summarize the user's text in Simplified Chinese in 3-5 key points. Preserve the central meaning without adding unsupported facts or repeating points.";
 
@@ -137,6 +143,81 @@ pub fn truncate_chars(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect()
 }
 
+/// What kind of single-word lookup a selection deserves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SingleWordKind {
+    /// ASCII word-shaped candidate, not a verified dictionary word.
+    English,
+    /// Short Chinese word-shaped candidate without sentence markers.
+    Chinese,
+    /// Any other language: a plain translation, no dictionary extras.
+    Other,
+}
+
+/// Classifies candidates conservatively; this never validates spelling.
+pub fn single_word_kind(text: &str) -> Option<SingleWordKind> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if is_single_word(trimmed) {
+        return Some(SingleWordKind::English);
+    }
+    let chars: Vec<char> = trimmed.chars().collect();
+    // Chinese segmentation is heuristic: longer selections and sentence markers
+    // stay in the ordinary task rather than being treated as dictionary words.
+    if (1..=4).contains(&chars.len())
+        && chars.iter().all(|character| is_cjk(*character))
+        && !trimmed.contains([
+            '的', '了', '吗', '呢', '吧', '我', '你', '他', '她', '它', '是', '在', '把', '被',
+        ])
+    {
+        return Some(SingleWordKind::Chinese);
+    }
+    if chars.len() > 40 || chars.iter().any(|character| character.is_whitespace()) {
+        return None;
+    }
+    let mut letters = 0usize;
+    for character in chars {
+        if character.is_alphabetic() {
+            letters += 1;
+        } else if character.is_ascii_punctuation() {
+            return None;
+        }
+    }
+    if letters > 0 {
+        Some(SingleWordKind::Other)
+    } else {
+        None
+    }
+}
+
+/// `true` when `text` is a single Latin word: 1–40 characters, letters plus
+/// optional `'` / `-`, at least one letter. Chinese text, multiple words,
+/// numbers and punctuation return `false`.
+pub fn is_single_word(text: &str) -> bool {
+    let trimmed = text.trim();
+    if !(1..=40).contains(&trimmed.chars().count()) {
+        return false;
+    }
+    if trimmed
+        .as_bytes()
+        .windows(2)
+        .any(|pair| pair[0].is_ascii_lowercase() && pair[1].is_ascii_uppercase())
+    {
+        return false;
+    }
+    let mut letters = 0usize;
+    for character in trimmed.chars() {
+        if character.is_ascii_alphabetic() {
+            letters += 1;
+        } else if character != '\'' && character != '-' {
+            return false;
+        }
+    }
+    letters > 0
+}
+
 /// Resolves the `auto` target the same way the picker UI does: Chinese source
 /// text goes to English, everything else goes to Simplified Chinese.
 ///
@@ -211,22 +292,54 @@ pub struct ResolvedPrompt {
     pub prompt_version: &'static str,
 }
 
-pub const PROMPT_VERSION: &str = "10";
+pub const PROMPT_VERSION: &str = "11";
 
 /// Resolve the system prompt and metadata for a text translation, explanation
 /// or summary request. Image and custom skills must use their existing prompt
 /// paths and never call this function.
 ///
-/// Translation and single-word lookups share one prompt: the model decides from
-/// the input whether it was given a word to explain or text to translate, so
-/// there is no word-lookup mode or separate dictionary prompt.
+/// Translation and explanation switch automatically between two prompts: a
+/// single word or short term (classified by [`single_word_kind`]) uses the
+/// dictionary prompt, everything else uses the ordinary skill prompt. The
+/// classification only reads the input shape and never validates spelling.
 pub fn resolve_text_prompt(
     action: &str,
     text: &str,
     target_lang: &str,
     custom_prompt: &str,
+    word_lookup_prompt: &str,
 ) -> Result<ResolvedPrompt, EngineError> {
     let action = action.trim().to_ascii_lowercase();
+    let eligible = matches!(action.as_str(), "translate" | "explain" | "解释");
+    let candidate = matches!(
+        single_word_kind(text),
+        Some(SingleWordKind::English | SingleWordKind::Chinese)
+    );
+    if eligible && candidate {
+        let selected = word_lookup_prompt.trim();
+        let prompt = if selected.is_empty() {
+            DEFAULT_WORD_LOOKUP_PROMPT
+        } else {
+            selected
+        };
+        let target = if action == "translate" {
+            target_lang
+        } else {
+            "zh"
+        };
+        let (system, user) = translate_messages(text.trim(), target, prompt);
+        return Ok(ResolvedPrompt {
+            system,
+            user,
+            mode: "word_lookup",
+            prompt_source: if selected.is_empty() {
+                "default"
+            } else {
+                "custom"
+            },
+            prompt_version: PROMPT_VERSION,
+        });
+    }
     let (system, user, mode) = if action == "translate" {
         let (system, user) = translate_messages(text, target_lang, custom_prompt);
         (system, user, "translate")
@@ -519,6 +632,7 @@ pub fn render_custom_prompt(
 pub fn default_prompts() -> serde_json::Value {
     serde_json::json!({
         "translate": DEFAULT_TRANSLATE_PROMPT,
+        "wordLookup": DEFAULT_WORD_LOOKUP_PROMPT,
         "summarize": DEFAULT_SUMMARIZE_PROMPT,
         "explain": DEFAULT_EXPLAIN_PROMPT,
         "polish": DEFAULT_POLISH_PROMPT,
@@ -628,13 +742,14 @@ mod tests {
     fn default_prompts_json_exposes_the_constants() {
         let defaults = default_prompts();
         assert_eq!(defaults["translate"], DEFAULT_TRANSLATE_PROMPT);
+        assert_eq!(defaults["wordLookup"], DEFAULT_WORD_LOOKUP_PROMPT);
         assert_eq!(defaults["summarize"], DEFAULT_SUMMARIZE_PROMPT);
         assert_eq!(defaults["explain"], DEFAULT_EXPLAIN_PROMPT);
         assert_eq!(defaults["polish"], DEFAULT_POLISH_PROMPT);
         // Screenshot toolbar actions (contract §4 `picker.capturePrompts`).
         assert_eq!(defaults["captureTranslate"], DEFAULT_TRANSLATE_PROMPT);
         assert_eq!(defaults["captureExplain"], DEFAULT_EXPLAIN_IMAGE_PROMPT);
-        assert_eq!(defaults.as_object().unwrap().len(), 6);
+        assert_eq!(defaults.as_object().unwrap().len(), 7);
     }
 
     #[test]
@@ -803,51 +918,124 @@ mod tests {
         }
         assert!(DEFAULT_SUMMARIZE_PROMPT.contains("3-5"));
         assert!(DEFAULT_TRANSLATE_PROMPT.contains("placeholders"));
-        // The shared translate prompt handles single-word lookups too: the
-        // model decides, but sentences must always be translated and the whole
-        // answer has to be written in the target language.
-        assert!(DEFAULT_TRANSLATE_PROMPT.contains("Write your entire answer in"));
-        assert!(DEFAULT_TRANSLATE_PROMPT.contains("exactly one word"));
-        assert!(DEFAULT_TRANSLATE_PROMPT.contains("never with a bare translation"));
-        assert!(DEFAULT_TRANSLATE_PROMPT.contains("must always be translated"));
-        assert!(DEFAULT_TRANSLATE_PROMPT.contains("IPA only for English"));
-        assert!(DEFAULT_TRANSLATE_PROMPT.contains("Hanyu Pinyin"));
-        assert!(DEFAULT_TRANSLATE_PROMPT.contains("looks misspelled"));
+        // Ordinary translation prompt: language, output-only and structure.
+        assert!(DEFAULT_TRANSLATE_PROMPT.contains("into {target}"));
+        assert!(DEFAULT_TRANSLATE_PROMPT.contains("entire translation"));
+        assert!(DEFAULT_TRANSLATE_PROMPT.contains("Output only the translation"));
+        // Dictionary prompt: pronunciation comes from the model, no inventions.
+        assert!(DEFAULT_WORD_LOOKUP_PROMPT.contains("single word"));
+        assert!(DEFAULT_WORD_LOOKUP_PROMPT.contains("IPA only for English"));
+        assert!(DEFAULT_WORD_LOOKUP_PROMPT.contains("Hanyu Pinyin"));
+        assert!(DEFAULT_WORD_LOOKUP_PROMPT.contains("looks misspelled"));
+        assert!(DEFAULT_WORD_LOOKUP_PROMPT.contains("at most 3 common meanings"));
         assert!(DEFAULT_OCR_PROMPT.contains("every visible character"));
         assert!(!DEFAULT_OCR_PROMPT.contains("150-250"));
     }
 
     #[test]
-    fn translation_uses_one_prompt_for_words_and_sentences() {
-        assert_eq!(PROMPT_VERSION, "10");
-        for text in [
-            "crazy",
-            "carzy",
-            "银行",
-            "重庆",
-            "hello world",
-            "这是一个普通中文短句",
-        ] {
-            let resolved = resolve_text_prompt("translate", text, "ja", "").unwrap();
-            assert_eq!(resolved.mode, "translate");
+    fn translation_and_dictionary_prompts_switch_on_input_shape() {
+        assert_eq!(PROMPT_VERSION, "11");
+        for text in ["crazy", "carzy", "银行", "重庆"] {
+            let resolved = resolve_text_prompt("translate", text, "ja", "", "").unwrap();
+            assert_eq!(resolved.mode, "word_lookup", "{text}");
             assert_eq!(resolved.prompt_source, "default");
             assert_eq!(resolved.prompt_version, PROMPT_VERSION);
-            // One prompt covers both paths: the model decides what the input is.
-            assert!(resolved.system.contains("dictionary entry"));
             assert!(resolved.system.contains("Japanese"));
+            assert!(resolved.system.contains("dictionary assistant"));
             assert_eq!(resolved.user, text);
         }
-        let custom = resolve_text_prompt("translate", "crazy", "ja", "Custom {target}").unwrap();
+        for text in [
+            "hello world",
+            "这是一个普通中文短句",
+            "The project was delayed by a week.",
+        ] {
+            let resolved = resolve_text_prompt("translate", text, "ja", "", "").unwrap();
+            assert_eq!(resolved.mode, "translate", "{text}");
+            assert!(resolved.system.contains("professional translator"));
+            assert_eq!(resolved.user, text);
+        }
+        // A custom translation prompt applies to ordinary translation only.
+        let custom =
+            resolve_text_prompt("translate", "hello world", "ja", "Custom {target}", "").unwrap();
         assert_eq!(custom.mode, "translate");
         assert_eq!(custom.prompt_source, "custom");
         assert_eq!(custom.system, "Custom Japanese");
-        let explain = resolve_text_prompt("explain", "银行", "zh", "").unwrap();
-        assert_eq!(explain.mode, "explain");
-        assert_eq!(explain.system, DEFAULT_EXPLAIN_PROMPT);
-        let summarized = resolve_text_prompt("summarize", "crazy", "zh", "").unwrap();
+        // A custom dictionary prompt applies to the word path.
+        let custom_word = resolve_text_prompt(
+            "translate",
+            "crazy",
+            "ja",
+            "Custom {target}",
+            "Word {language}",
+        )
+        .unwrap();
+        assert_eq!(custom_word.mode, "word_lookup");
+        assert_eq!(custom_word.prompt_source, "custom");
+        assert_eq!(custom_word.system, "Word Japanese");
+        // Explanation words are localized to the answer language, never to the target dropdown.
+        let explain = resolve_text_prompt("explain", "银行", "ja", "", "").unwrap();
+        assert_eq!(explain.mode, "word_lookup");
+        assert_eq!(explain.system.contains("Simplified Chinese"), true);
+        assert!(!explain.system.contains("Japanese"));
+        let explained =
+            resolve_text_prompt("explain", "这是一个普通中文短句", "zh", "", "").unwrap();
+        assert_eq!(explained.mode, "explain");
+        assert_eq!(explained.system, DEFAULT_EXPLAIN_PROMPT);
+        let summarized = resolve_text_prompt("summarize", "crazy", "zh", "", "").unwrap();
         assert_eq!(summarized.mode, "summarize");
         assert_eq!(summarized.system, DEFAULT_SUMMARIZE_PROMPT);
-        assert!(resolve_text_prompt("unsupported", "crazy", "zh", "").is_err());
+        assert!(resolve_text_prompt("unsupported", "crazy", "zh", "", "").is_err());
+    }
+
+    #[test]
+    fn single_word_detection_covers_boundaries() {
+        for word in [
+            "hello",
+            "a",
+            "don't",
+            "well-known",
+            "rock'n'roll",
+            "  hello  ",
+        ] {
+            assert!(is_single_word(word), "should accept {word:?}");
+        }
+        for not_word in [
+            "",
+            "   ",
+            "hello world",
+            "hello,world",
+            "hello!",
+            "中文",
+            "hello中文",
+            "123",
+            "hello123",
+            "hello_world",
+        ] {
+            assert!(!is_single_word(not_word), "should reject {not_word:?}");
+        }
+        for text in ["crazy", "银行", "重庆", "行"] {
+            assert!(matches!(
+                single_word_kind(text),
+                Some(SingleWordKind::English | SingleWordKind::Chinese)
+            ));
+        }
+        for text in [
+            "hello world",
+            "这是一个普通中文短句",
+            "你好吗",
+            "get_user_id",
+            "fooBar()",
+            "https://example.com",
+            "こんにちは",
+        ] {
+            assert!(
+                !matches!(
+                    single_word_kind(text),
+                    Some(SingleWordKind::English | SingleWordKind::Chinese)
+                ),
+                "{text}"
+            );
+        }
     }
 
     #[test]
