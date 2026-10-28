@@ -2159,6 +2159,9 @@
     if (id === "translate") {
       return "captureTranslate";
     }
+    if (id === "wordLookup") {
+      return "captureWordLookup";
+    }
     if (id === "explain") {
       return "captureExplain";
     }
@@ -2187,14 +2190,15 @@
     return capturePromptCustomValue(id) || capturePromptDefault(id);
   }
 
-  function capturePromptPanel(id, meta) {
+  function capturePromptBlock(id, label, hint) {
     var panel = el("div", "skill-prompt");
+    panel.appendChild(el("p", "skill-prompt-label", label));
     var textarea = document.createElement("textarea");
     textarea.className = "textarea";
     textarea.rows = 5;
     textarea.spellcheck = false;
     textarea.setAttribute("data-capture-prompt-input", id);
-    textarea.setAttribute("aria-label", meta.label + "提示词");
+    textarea.setAttribute("aria-label", label);
     textarea.value = capturePromptEditorValue(id);
     textarea.addEventListener("input", function () {
       capturePromptDrafts[id] = textarea.value;
@@ -2218,21 +2222,42 @@
     panel.appendChild(textarea);
 
     var foot = el("div", "skill-prompt-foot");
-    foot.appendChild(
-      el(
-        "p",
-        "skill-prompt-hint",
-        id === "translate"
-          ? "留空或重置后使用系统默认提示词；支持 {target} 占位符"
-          : "留空或重置后使用系统默认提示词"
-      )
-    );
+    foot.appendChild(el("p", "skill-prompt-hint", hint));
     var reset = el("button", "btn btn-ghost skill-prompt-reset", "重置为默认");
     reset.type = "button";
     reset.setAttribute("data-capture-prompt-reset", id);
     foot.appendChild(reset);
     panel.appendChild(foot);
     return panel;
+  }
+
+  /* The screenshot translate action owns two prompts, mirroring text
+   * translation: ordinary translation plus the dictionary prompt used when
+   * the OCR text is classified as a single word or short term. */
+  function capturePromptPanel(id, meta) {
+    if (id === "translate") {
+      var group = el("div", "skill-prompt-group");
+      group.appendChild(
+        capturePromptBlock(
+          "translate",
+          "翻译提示词",
+          "整句、段落等普通翻译使用；支持 {target} 占位符"
+        )
+      );
+      group.appendChild(
+        capturePromptBlock(
+          "wordLookup",
+          "单词查询提示词",
+          "识别结果为单个单词或短语时使用；支持 {target}，可要求模型输出音标或拼音"
+        )
+      );
+      return group;
+    }
+    return capturePromptBlock(
+      id,
+      meta.label + "提示词",
+      "留空或重置后使用系统默认提示词"
+    );
   }
 
   function saveCapturePromptDraft(id) {
@@ -2277,9 +2302,9 @@
   function resetCapturePromptValue(id) {
     flushCapturePromptDraft(id);
     saveCapturePromptValue(id, "");
-    var list = byId("capture-action-list");
-    var row = list && list.querySelector('[data-capture-skill="' + id + '"]');
-    var textarea = row && row.querySelector(".skill-prompt .textarea");
+    var textarea = document.querySelector(
+      '[data-capture-prompt-input="' + id + '"]'
+    );
     if (textarea) {
       textarea.value = capturePromptDefault(id);
     }

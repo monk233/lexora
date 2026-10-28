@@ -638,6 +638,7 @@ pub fn default_prompts() -> serde_json::Value {
         "polish": DEFAULT_POLISH_PROMPT,
         // Screenshot toolbar actions (contract §4 `picker.capturePrompts`).
         "captureTranslate": DEFAULT_TRANSLATE_PROMPT,
+        "captureWordLookup": DEFAULT_WORD_LOOKUP_PROMPT,
         "captureExplain": DEFAULT_EXPLAIN_IMAGE_PROMPT,
     })
 }
@@ -748,8 +749,9 @@ mod tests {
         assert_eq!(defaults["polish"], DEFAULT_POLISH_PROMPT);
         // Screenshot toolbar actions (contract §4 `picker.capturePrompts`).
         assert_eq!(defaults["captureTranslate"], DEFAULT_TRANSLATE_PROMPT);
+        assert_eq!(defaults["captureWordLookup"], DEFAULT_WORD_LOOKUP_PROMPT);
         assert_eq!(defaults["captureExplain"], DEFAULT_EXPLAIN_IMAGE_PROMPT);
-        assert_eq!(defaults.as_object().unwrap().len(), 7);
+        assert_eq!(defaults.as_object().unwrap().len(), 8);
     }
 
     #[test]

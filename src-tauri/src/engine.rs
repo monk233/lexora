@@ -1087,15 +1087,17 @@ impl EngineService {
     }
 
     /// Streams the translation of a screenshot region's text with the
-    /// screenshot-specific system prompt (`picker.capturePrompts.translate`).
-    /// An empty screenshot override uses the ordinary translation prompt.
+    /// screenshot-specific prompts (`picker.capturePrompts.translate` and
+    /// `picker.capturePrompts.wordLookup`). An empty override uses the ordinary
+    /// default prompt; candidate words switch to the dictionary prompt exactly
+    /// like text translation does.
     pub async fn translate_stream_with_prompt(
         &self,
         text: &str,
         target_lang: &str,
         custom_prompt: &str,
+        word_lookup_prompt: &str,
     ) -> Result<BoxStream<'static, Result<String, EngineError>>, EngineError> {
-        let custom = custom_prompt.trim();
         let settings = self.settings.get();
         let cleaned = text.trim();
         if cleaned.is_empty() {
@@ -1106,28 +1108,35 @@ impl EngineService {
         }
         let truncated = prompts::truncate_chars(cleaned, settings.picker.max_chars as usize);
         let target = prompts::resolve_target_lang(target_lang, &truncated);
-        let (system, user) = prompts::translate_messages(&truncated, &target, custom);
+        let resolved = prompts::resolve_text_prompt(
+            "translate",
+            &truncated,
+            &target,
+            custom_prompt,
+            word_lookup_prompt,
+        )?;
         let messages = vec![
-            json!({"role": "system", "content": system}),
-            json!({"role": "user", "content": user}),
+            json!({"role": "system", "content": &resolved.system}),
+            json!({"role": "user", "content": &resolved.user}),
         ];
         let config = self.chat_config(&settings, LocalRole::Translate).await?;
+        let config = request_config(&config, resolved.mode, resolved.prompt_source);
         self.logger.info(&format!(
-            "screenshot translate stream start: provider={} model={} chars={} target={} custom_prompt={}",
+            "screenshot translate stream start: provider={} model={} chars={} target={} mode={} prompt_source={}",
             if config.local { "local" } else { "online" },
             config.model,
             truncated.chars().count(),
-            target, !custom.is_empty()
+            target, resolved.mode, resolved.prompt_source
         ));
         self.logged_stream(
             "screenshot_translate",
             &config,
             format!(
-                "input_chars={} target={} custom_prompt={} {}",
+                "input_chars={} target={} mode={} prompt_source={}",
                 truncated.chars().count(),
                 target,
-                !custom.is_empty(),
-                prompt_log_detail("translate", prompt_source(custom))
+                resolved.mode,
+                resolved.prompt_source
             ),
             messages,
         )

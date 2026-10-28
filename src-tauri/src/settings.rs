@@ -235,6 +235,10 @@ pub struct PickerSettings {
 pub struct CapturePrompts {
     /// System prompt for "翻译" on a screenshot region.
     pub translate: String,
+    /// System prompt for a single word/term inside the screenshot region; the
+    /// translate action switches to it automatically when the OCR text is a
+    /// candidate word.
+    pub word_lookup: String,
     /// System prompt for "解释图片" on a screenshot region.
     pub explain: String,
 }
@@ -243,6 +247,7 @@ impl Default for CapturePrompts {
     fn default() -> Self {
         Self {
             translate: String::new(),
+            word_lookup: String::new(),
             explain: String::new(),
         }
     }
@@ -635,6 +640,8 @@ impl Settings {
         // document cannot bloat settings.json or every request.
         self.picker.capture_prompts.translate =
             truncate(&self.picker.capture_prompts.translate, PROMPT_MAX_CHARS);
+        self.picker.capture_prompts.word_lookup =
+            truncate(&self.picker.capture_prompts.word_lookup, PROMPT_MAX_CHARS);
         self.picker.capture_prompts.explain =
             truncate(&self.picker.capture_prompts.explain, PROMPT_MAX_CHARS);
         self.picker.prompts.word_lookup =
@@ -2225,6 +2232,7 @@ mod tests {
     fn capture_prompts_are_trimmed_and_roundtrip() {
         let settings = Settings::default().normalize();
         assert_eq!(settings.picker.capture_prompts.translate, "");
+        assert_eq!(settings.picker.capture_prompts.word_lookup, "");
         assert_eq!(settings.picker.capture_prompts.explain, "");
 
         let (store, dir) = store();
@@ -2233,6 +2241,7 @@ mod tests {
                 "picker": {
                     "capturePrompts": {
                         "translate": "  Translate the screenshot text into {target}.  ",
+                        "wordLookup": "  Dictionary entry in {target}.  ",
                         "explain": "Describe the UI in the screenshot."
                     }
                 }
@@ -2241,6 +2250,10 @@ mod tests {
         assert_eq!(
             updated.picker.capture_prompts.translate,
             "Translate the screenshot text into {target}."
+        );
+        assert_eq!(
+            updated.picker.capture_prompts.word_lookup,
+            "Dictionary entry in {target}."
         );
         assert_eq!(
             updated.picker.capture_prompts.explain,
@@ -2252,9 +2265,10 @@ mod tests {
             updated.picker.capture_prompts
         );
 
-        // Resetting clears both overrides.
+        // Resetting clears all overrides.
         let reset = store.reset();
         assert_eq!(reset.picker.capture_prompts.translate, "");
+        assert_eq!(reset.picker.capture_prompts.word_lookup, "");
         assert_eq!(reset.picker.capture_prompts.explain, "");
     }
 

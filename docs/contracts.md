@@ -75,8 +75,9 @@ lexora/
     "searchEngine": "google",             // google | baidu | bing（搜索技能）
     "panelMode": "auto",                  // auto = 无滚动条、窗口随内容变高；scroll = 固定窗口、面板内滚动
     "captureSkills": ["pin","shape","arrow","pen","text","mosaic","ocr","translate","explain"], // 截图工具条有序条目（放在工具条上的全部按钮，可任意开关/排序）：本地工具 pin/shape/arrow/pen/text/number/mosaic/longshot + AI/动作 ocr/translate/explain + 已启用自定义图片技能 id（custom-*）；copy 不再是工具条条目（确认=复制并退出）；显式 [] = 只保留撤销/重做/取消/确认
-    "capturePrompts": {                    // 截图「翻译」「解释图片」的系统提示词覆写；空=系统默认
+    "capturePrompts": {                    // 截图「翻译」「单词查询」「解释图片」的系统提示词覆写；空=系统默认
       "translate": "",                     // 支持 {target} / {language}
+      "wordLookup": "",                    // OCR 结果为单个词/短语时自动使用；支持 {target}
       "explain": ""
     }
     "panelPinned": false,                 // 记住「钉住到桌面」偏好：后续结果面板默认钉住
@@ -829,7 +830,7 @@ editor.renderToPng(rectCss) -> string|null
 
 ### schema 8：两套翻译提示词与生成保护补充契约
 
-- 翻译按输入形态自动切换两套提示词：普通任务用 `picker.prompts.translate`，候选单词/短语用 `picker.prompts.wordLookup`（均空值回退默认）；解释技能的候选词也使用单词提示词。没有独立读音服务、读音数据或读音命令，读音完全来自模型输出。
+- 翻译按输入形态自动切换两套提示词：普通任务用 `picker.prompts.translate`，候选单词/短语用 `picker.prompts.wordLookup`（均空值回退默认）；解释技能的候选词也使用单词提示词。截图「翻译」复用同一分类逻辑，使用 `picker.capturePrompts.translate` / `picker.capturePrompts.wordLookup`。没有独立读音服务、读音数据或读音命令，读音完全来自模型输出。
 - 本地/在线默认任务有效输出预算为 `min(用户上限, 任务预算)`：`explain/vision_explain=512`、`summarize=768` tokens。翻译（含单词/短语）、润色、自定义提示词、自由追问和 OCR 沿用用户上限；不改写配置。日志记录 `effective_max_tokens` 及实际模式、来源、版本，不记录正文。
 - 前端累计流式正文检测跨 chunk 重复，覆盖翻译（含单词/短语）及其他 AI 技能；连续重复段落/列表项至少 3 次、周期重复至少 4 次触发，翻译/润色参考原文合法重复。行内/围栏/缩进代码、表格和引用受保护，OCR 豁免。中止时保留首份内容、取消后端请求，前端标记 `finishReason=repetition`、`partial=true`，提示“检测到重复输出，已停止”；迟到事件不得覆盖终态。此标记不代表后端事件协议新增结束原因。
 - 上述长度目标和保守循环检测不构成模型质量保证。自动化测试不能证明任意真实模型不会编造释义、读音或循环；需另做本地、在线真实模型冒烟。

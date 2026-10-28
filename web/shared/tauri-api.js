@@ -365,7 +365,7 @@
           searchEngine: "google",
           panelMode: "auto",
           captureSkills: mockCaptureSkills(query),
-          capturePrompts: { translate: "", explain: "" },
+          capturePrompts: { translate: "", wordLookup: "", explain: "" },
         },
         provider: {
           mode: "online",
@@ -437,6 +437,8 @@
         // Screenshot toolbar actions (contract §4 `picker.capturePrompts`).
         captureTranslate:
           "You are a professional translator. Translate the user's text into {target}. Write the entire translation in {target}. Output only the translation: no explanations, labels, notes or source text. Preserve paragraphs, lists, Markdown structure, code and placeholders; leave code and placeholders unchanged.",
+        captureWordLookup:
+          "You are a careful dictionary assistant. The input is a single word or a short fixed term. Answer in compact Markdown with: the headword, its pronunciation (IPA only for English words, Hanyu Pinyin with tone marks only for Chinese words), its part of speech and at most 3 common meanings written in {target}, plus optionally one short example in {target}. Never invent a meaning or a pronunciation. If the word looks misspelled, first say it may be misspelled and ask whether the user meant a correct spelling. Do not translate the whole input as a sentence and do not add background or usage essays.",
         captureExplain:
           "You are a vision assistant. Explain the image in Simplified Chinese using Markdown: one sentence for the main subject, at most 3 key points and optionally one short example. Usually use 150-250 Chinese characters; simple images need less. Distinguish visible facts from inference. Do not invent unreadable text or unseen details.",
       },
@@ -657,13 +659,14 @@
       }
     });
     picker.captureSkills = captureSkills;
-    settings.version = 6;
+    settings.version = 8;
     var capturePrompts =
       picker.capturePrompts && typeof picker.capturePrompts === "object"
         ? picker.capturePrompts
         : {};
     picker.capturePrompts = {
       translate: String(capturePrompts.translate || "").trim().slice(0, 4000),
+      wordLookup: String(capturePrompts.wordLookup || "").trim().slice(0, 4000),
       explain: String(capturePrompts.explain || "").trim().slice(0, 4000),
     };
     mockStore.picker.pinned = false;

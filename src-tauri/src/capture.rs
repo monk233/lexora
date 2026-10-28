@@ -269,6 +269,9 @@ struct SkillMeta {
     label: String,
     skill_id: String,
     system_prompt: String,
+    /// Screenshot dictionary prompt; only the translate action routes candidate
+    /// words to it (`picker.capturePrompts.wordLookup`).
+    word_lookup_prompt: String,
 }
 
 /// Last screenshot kept for retry / follow-up (contract §10.3).
@@ -293,6 +296,8 @@ pub struct CaptureJob {
     target_lang: String,
     /// Rendered vision prompt (explain/custom); empty for OCR/translate.
     system_prompt: String,
+    /// Candidate-word dictionary prompt for the translate action.
+    word_lookup_prompt: String,
     /// Cached OCR text reused by `translate` (and its follow-up questions).
     ocr_text: Option<String>,
     /// Whether the cropped image reached the system clipboard.
@@ -1106,6 +1111,7 @@ impl CaptureService {
             data_url,
             target_lang,
             system_prompt: meta.system_prompt,
+            word_lookup_prompt: meta.word_lookup_prompt,
             ocr_text: None,
             clipboard,
         })
@@ -1158,6 +1164,7 @@ impl CaptureService {
             data_url: last.data_url,
             target_lang: last.target_lang,
             system_prompt: meta.system_prompt,
+            word_lookup_prompt: meta.word_lookup_prompt,
             ocr_text: None,
             clipboard: false,
         })
@@ -2294,7 +2301,12 @@ async fn run_capture_job(
             }
             let engine = engine_of(&app)?;
             let mut stream = engine
-                .translate_stream_with_prompt(&text, &target, &job.system_prompt)
+                .translate_stream_with_prompt(
+                    &text,
+                    &target,
+                    &job.system_prompt,
+                    &job.word_lookup_prompt,
+                )
                 .await?;
             stream_chunks(&app, &request_id, &mut stream).await?;
             emit_done(&app, &request_id);
@@ -2595,12 +2607,14 @@ fn resolve_skill_meta(
             label: "提取文字".to_string(),
             skill_id: String::new(),
             system_prompt: String::new(),
+            word_lookup_prompt: String::new(),
         }),
         SkillAction::Translate => Ok(SkillMeta {
             label: "翻译".to_string(),
             skill_id: String::new(),
             // Screenshot-specific translate prompt (`picker.capturePrompts`).
             system_prompt: settings.picker.capture_prompts.translate.clone(),
+            word_lookup_prompt: settings.picker.capture_prompts.word_lookup.clone(),
         }),
         SkillAction::Explain => {
             let custom = settings.picker.capture_prompts.explain.trim();
@@ -2612,6 +2626,7 @@ fn resolve_skill_meta(
                 } else {
                     custom.to_string()
                 },
+                word_lookup_prompt: String::new(),
             })
         }
         SkillAction::Custom => {
@@ -2643,6 +2658,7 @@ fn resolve_skill_meta(
                 label: skill.label.clone(),
                 skill_id: skill.id.clone(),
                 system_prompt: crate::engine::render_image_prompt(&skill.prompt, &target),
+                word_lookup_prompt: String::new(),
             })
         }
     }
@@ -4105,12 +4121,15 @@ mod tests {
     fn capture_prompts_override_the_builtin_action_prompts() {
         let mut settings = Settings::default();
         settings.picker.capture_prompts.translate = "Translate into {target}.".to_string();
+        settings.picker.capture_prompts.word_lookup = "Word {target}.".to_string();
         settings.picker.capture_prompts.explain = "Describe the UI text.".to_string();
         let translate =
             resolve_skill_meta(&settings, SkillAction::Translate, None, "auto").unwrap();
         assert_eq!(translate.system_prompt, "Translate into {target}.");
+        assert_eq!(translate.word_lookup_prompt, "Word {target}.");
         let explain = resolve_skill_meta(&settings, SkillAction::Explain, None, "auto").unwrap();
         assert_eq!(explain.system_prompt, "Describe the UI text.");
+        assert!(explain.word_lookup_prompt.is_empty());
 
         // Empty overrides fall back to the built-in defaults.
         let defaults = Settings::default();
@@ -4122,6 +4141,9 @@ mod tests {
         let translate =
             resolve_skill_meta(&defaults, SkillAction::Translate, None, "auto").unwrap();
         assert!(translate.system_prompt.is_empty());
+        assert!(translate.word_lookup_prompt.is_empty());
+        let ocr = resolve_skill_meta(&defaults, SkillAction::Ocr, None, "auto").unwrap();
+        assert!(ocr.word_lookup_prompt.is_empty());
     }
 
     #[test]
