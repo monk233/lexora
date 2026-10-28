@@ -51,9 +51,7 @@ fn opencode_session() -> &'static str {
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_nanos() as u64)
             .unwrap_or(0);
-        let mixed = nanos
-            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-            .rotate_left(17)
+        let mixed = nanos.wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(17)
             ^ (std::process::id() as u64).wrapping_mul(0x85EB_CA77);
         format!("lexora-{mixed:016x}")
     });
@@ -185,6 +183,7 @@ pub struct SseDecoder {
     raw: Vec<u8>,
     raw_capped: bool,
     seen_text: bool,
+    saw_reasoning: bool,
     done: bool,
 }
 
@@ -240,6 +239,10 @@ impl SseDecoder {
         self.done
     }
 
+    pub fn saw_reasoning(&self) -> bool {
+        self.saw_reasoning
+    }
+
     fn process_line(&mut self, line: &[u8], items: &mut Vec<SseItem>) {
         let decoded = String::from_utf8_lossy(line);
         let mut text = decoded.trim_end_matches('\r').trim();
@@ -264,12 +267,17 @@ impl SseDecoder {
             return;
         }
         if let Ok(value) = serde_json::from_str::<Value>(text) {
-            if let Some(content) = extract_content(&value) {
-                if !content.is_empty() {
+            if extract_content(&value)
+                .map(|content| !content.is_empty())
+                .unwrap_or(false)
+            {
+                if let Some(content) = extract_content(&value) {
                     self.seen_text = true;
                     self.raw.clear();
                     items.push(SseItem::Text(content));
                 }
+            } else if has_reasoning_content(&value) {
+                self.saw_reasoning = true;
             }
         }
     }
@@ -292,6 +300,49 @@ pub fn extract_content(value: &Value) -> Option<String> {
     None
 }
 
+fn has_reasoning_content(value: &Value) -> bool {
+    value
+        .get("choices")
+        .and_then(Value::as_array)
+        .map(|choices| {
+            choices.iter().any(|choice| {
+                [
+                    "/delta/reasoning_content",
+                    "/delta/reasoning",
+                    "/message/reasoning_content",
+                    "/message/reasoning",
+                ]
+                .iter()
+                .any(|path| {
+                    choice
+                        .pointer(path)
+                        .and_then(Value::as_str)
+                        .map(|text| !text.is_empty())
+                        .unwrap_or(false)
+                })
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn empty_stream_error(local: bool, saw_reasoning: bool) -> EngineError {
+    if local {
+        EngineError::new(
+            "本地模型返回了空结果。",
+            "本地模型没有生成可见正文，请重试或检查模型状态。",
+        )
+    } else if saw_reasoning {
+        EngineError::new(
+            "在线模型只返回了推理内容，没有生成正文。",
+            "推理模型可能耗尽了最大输出 token。请在设置中提高最大输出 token，或改用普通对话模型后重试。",
+        )
+    } else {
+        EngineError::new(
+            "在线服务返回了空结果。",
+            "请求成功但模型没有返回正文，请重试；若持续出现，请提高最大输出 token 或更换模型。",
+        )
+    }
+}
 /// Extracts the final assistant text from a non-streaming completion payload.
 pub fn extract_completion_text(value: &Value) -> Option<String> {
     if let Some(choices) = value.get("choices").and_then(Value::as_array) {
@@ -461,13 +512,25 @@ fn chat_payload(
     stream: bool,
     max_tokens: u32,
 ) -> Value {
-    json!({
+    let mut payload = json!({
         "model": if config.model.trim().is_empty() { "local" } else { config.model.trim() },
         "messages": messages,
         "stream": stream,
         "temperature": config.temperature.clamp(0.0, 2.0),
         "max_tokens": max_tokens.clamp(1, 32_768),
-    })
+    });
+    // Local config uses the loaded GGUF file stem as its model name. Keep
+    // thinking from consuming the output budget before visible text appears.
+    if config.local
+        && config
+            .model
+            .trim()
+            .to_ascii_lowercase()
+            .starts_with("qwen3.5-")
+    {
+        payload["chat_template_kwargs"] = json!({"enable_thinking": false});
+    }
+    payload
 }
 
 /// Non-streaming chat request used by `assist` and the connection test.
@@ -675,24 +738,20 @@ pub async fn stream_chat(
         true,
         config.max_tokens,
     ));
-    let response = match tokio::time::timeout(
-        header_timeout,
-        build_headers(request, config).send(),
-    )
-    .await
-    {
-        Err(_) => {
-            return Err(EngineError::new(
-                format!("{}响应超时。", label(config.local)),
-                format!(
-                    "超过 {} 秒没有收到响应：请检查网络，或在设置中增大超时时间。",
-                    header_timeout.as_secs()
-                ),
-            ))
-        }
-        Ok(Err(error)) => return Err(map_reqwest_error(error, config.local)),
-        Ok(Ok(response)) => response,
-    };
+    let response =
+        match tokio::time::timeout(header_timeout, build_headers(request, config).send()).await {
+            Err(_) => {
+                return Err(EngineError::new(
+                    format!("{}响应超时。", label(config.local)),
+                    format!(
+                        "超过 {} 秒没有收到响应：请检查网络，或在设置中增大超时时间。",
+                        header_timeout.as_secs()
+                    ),
+                ))
+            }
+            Ok(Err(error)) => return Err(map_reqwest_error(error, config.local)),
+            Ok(Ok(response)) => response,
+        };
 
     let status = response.status();
     if !status.is_success() {
@@ -779,6 +838,13 @@ where
         }
         loop {
             if state.decoder.is_done() {
+                state.finished = true;
+                if !state.emitted {
+                    return Some((
+                        Err(empty_stream_error(local, state.decoder.saw_reasoning())),
+                        state,
+                    ));
+                }
                 return None;
             }
             match state.body.next().await {
@@ -794,6 +860,13 @@ where
                         return Some((Ok(text), state));
                     }
                     if state.decoder.is_done() {
+                        if !state.emitted {
+                            state.finished = true;
+                            return Some((
+                                Err(empty_stream_error(local, state.decoder.saw_reasoning())),
+                                state,
+                            ));
+                        }
                         return None;
                     }
                 }
@@ -835,6 +908,74 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn payload_config(model_file: &str, local: bool) -> OnlineConfig {
+        OnlineConfig {
+            base_url: "http://127.0.0.1:8080/v1".into(),
+            models_base_url: String::new(),
+            api_key: String::new(),
+            // Production local_config derives this from the loaded model file.
+            model: crate::engine::models::model_display_name(model_file),
+            timeout_ms: 60_000,
+            temperature: 0.2,
+            max_tokens: 1024,
+            preset: String::new(),
+            local,
+        }
+    }
+
+    #[test]
+    fn chat_payload_disables_thinking_for_local_qwen35_text_and_vision() {
+        for spec in crate::engine::models::CATALOG.iter().skip(1) {
+            let config = payload_config(spec.filename, true);
+            let text = json!([{"role": "user", "content": "解释这段文字"}]);
+            let vision = json!([{"role": "user", "content": [
+                {"type": "text", "text": "解释图片"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,test"}}
+            ]}]);
+            for messages in [text, vision] {
+                for stream in [true, false] {
+                    let messages: Vec<Value> = serde_json::from_value(messages.clone()).unwrap();
+                    let payload =
+                        chat_payload(&config, messages.clone(), stream, config.max_tokens);
+                    assert_eq!(
+                        payload["chat_template_kwargs"]["enable_thinking"],
+                        json!(false),
+                        "{}",
+                        spec.filename
+                    );
+                    assert_eq!(payload["messages"], json!(messages));
+                    assert_eq!(payload["max_tokens"], json!(1024));
+                    assert_eq!(payload["temperature"], json!(0.2));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn chat_payload_keeps_hymt_and_online_requests_unchanged() {
+        for (model, local) in [
+            ("Hy-MT2-1.8B-Q4_K_M.gguf", true),
+            ("Qwen2.5-3B-Instruct-Q4_K_M.gguf", true),
+            ("Qwen3.5-2B-Q4_K_M.gguf", false),
+            ("deepseek-chat", false),
+        ] {
+            let config = payload_config(model, local);
+            for stream in [true, false] {
+                let messages = vec![json!({"role": "user", "content": "hello"})];
+                assert_eq!(
+                    chat_payload(&config, messages.clone(), stream, config.max_tokens),
+                    json!({
+                        "model": config.model,
+                        "messages": messages,
+                        "stream": stream,
+                        "temperature": 0.2,
+                        "max_tokens": 1024
+                    })
+                );
+            }
+        }
+    }
 
     fn collect(decoder: &mut SseDecoder, chunks: &[&[u8]]) -> String {
         let mut text = String::new();
@@ -929,6 +1070,24 @@ mod tests {
         assert!(decoder.is_done());
     }
 
+    #[test]
+    fn reasoning_only_done_event_is_an_error() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking\"}}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let chunks: Vec<reqwest::Result<Vec<u8>>> = vec![Ok(body.as_bytes().to_vec())];
+        let mut stream = sse_stream(futures_util::stream::iter(chunks), false);
+        let output = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(stream.next())
+            .expect("stream should yield an error")
+            .expect_err("reasoning-only response must not succeed");
+        assert!(output.message.contains("只返回了推理内容"));
+        assert!(output.hint.contains("提高最大输出 token"));
+    }
     #[test]
     fn decodes_utf8_split_across_chunks() {
         let body = "data: {\"choices\":[{\"delta\":{\"content\":\"你好世界\"}}]}\n\n"

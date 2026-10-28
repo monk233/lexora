@@ -164,9 +164,13 @@
           <div class="field">
             <div class="field-label">
               <span class="field-name">本地模型</span>
-              <p class="field-hint">按功能自动选择；Qwen2.5-VL 3B 支持截图理解</p>
+              <p class="field-hint">手动选择 Qwen3.5 用于通用文本与截图理解；Hy-MT2 自动负责文本翻译</p>
             </div>
             <div class="field-control">
+              <div class="local-hardware" aria-live="polite">
+                <p id="local-hardware-summary"></p>
+                <p id="local-hardware-reason"></p>
+              </div>
               <div class="local-models" id="local-models"></div>
               <p class="inline-hint" id="local-models-hint" hidden></p>
               <div class="inline-actions">
@@ -179,7 +183,7 @@
           <div class="catalog" id="catalog" hidden>
             <div class="catalog-head">
               <span class="catalog-title">模型目录</span>
-              <span class="catalog-sub">下载后可在本地模式使用</span>
+              <span class="catalog-sub">Qwen3.5 含视觉投影器，完整下载后可手动选择</span>
             </div>
             <ul class="catalog-list" id="catalog-list"></ul>
           </div>
@@ -187,7 +191,7 @@
           <div class="field field-switch local-state-field">
             <div class="field-label">
               <span class="field-name">运行状态</span>
-              <p class="field-hint">需先启动本地引擎；按功能自动选择模型</p>
+              <p class="field-hint">需先启动本地引擎；通用 / 视觉模型由你手动选择</p>
             </div>
             <div class="field-control">
               <div class="inline-actions">
@@ -241,7 +245,7 @@
         <div class="field field-switch panel-mode-field">
           <div class="field-label">
             <span class="field-name">面板模式</span>
-            <p class="field-hint">滚动：固定高度、内容内滚；自适应：窗口随内容变高</p>
+            <p class="field-hint">滚动：固定高度、显示滚动条；自适应：固定宽度、限高并隐藏滚动条</p>
           </div>
           <div class="field-control">
             <div class="segmented panel-mode-segmented" role="group" aria-label="面板模式">
@@ -251,8 +255,8 @@
                       title="高度固定，内容内滚">滚动</button>
               <button type="button" class="segment" id="panel-mode-auto"
                       data-panel-mode="auto" aria-pressed="true"
-                      aria-label="自适应模式：无滚动条，窗口随内容变高"
-                      title="无滚动条，窗口随内容变高">自适应</button>
+                      aria-label="自适应模式：固定宽度，随内容增高，达到上限后隐藏滚动条并自动跟随"
+                      title="固定宽度，限高后隐藏滚动条并自动跟随">自适应</button>
             </div>
           </div>
         </div>
@@ -516,17 +520,17 @@
         <div class="update-block">
           <div class="update-head">
             <div class="update-head-text">
-              <span class="update-title">检查更新</span>
-              <p class="update-hint" id="update-current-hint">当前版本 — · 自动下载替换并重启</p>
+              <span class="update-title">版本更新</span>
+              <p class="update-hint" id="update-current-hint">当前版本 — · 自动检查，下载后替换并重启</p>
             </div>
             <button type="button" class="btn" id="check-update">检查更新</button>
           </div>
 
-          <div class="update-status" id="update-status" data-state="idle" hidden>
+          <div class="update-status" id="update-status" data-state="idle" aria-live="polite" hidden>
             <p class="update-message" id="update-message"></p>
 
             <div class="update-notes" id="update-notes" hidden>
-              <p class="update-notes-text is-clamped" id="update-notes-text"></p>
+              <div class="update-notes-text markdown is-clamped" id="update-notes-text"></div>
               <button type="button" class="btn btn-ghost update-notes-toggle"
                       id="toggle-update-notes" hidden>展开全部</button>
             </div>
@@ -566,6 +570,7 @@
 
   <script src="shared/constants.js"></script>
   <script src="shared/skill-icons.js"></script>
+  <script src="shared/markdown.js"></script>
   <script src="shared/tauri-api.js"></script>
   <script src="settings.js"></script>
 </body>

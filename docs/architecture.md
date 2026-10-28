@@ -8,7 +8,7 @@ Lexora 是 Windows 桌面划词翻译工具，使用 Tauri v2 构建：Rust 负�
 lexora.exe
 ├─ 主线程 / Tauri runtime
 │   ├─ settings 窗口（WebView2，index.html）
-│   ├─ picker 窗口（WebView2，透明置顶，picker.html）
+│   ├─ picker 结果面板窗口（WebView2，透明置顶，picker.html）\n│   ├─ picker-toolbar 临时划词工具栏窗口（WebView2，透明置顶）
 │   ├─ capture-<n> 截图 overlay 窗口（每显示器一个，隐藏复用，capture.html）
 │   ├─ longshot 长截图预览窗口（手动滚动时显示，longshot.html）
 │   ├─ pin-<id> 钉图窗口（置顶无边框，pin.html）
@@ -32,7 +32,7 @@ lexora.exe
 | --- | --- |
 | `main.rs` | Tauri Builder、插件、窗口事件、生命周期、退出清理 |
 | `commands.rs` | 全部 `invoke` 命令；组装 `StatePayload` 广播前端 |
-| `windows.rs` | picker/settings/capture overlay 窗口几何（物理坐标 clamp）、显示/隐藏、pending payload |
+| `windows.rs` | picker 面板、临时工具栏、settings 与 capture overlay 的几何、显示/隐藏和 pending payload |
 | `capture.rs` | 截图会话：热点单实例守卫、xcap 抓屏、overlay 复用、裁切/标注合成、剪贴板、技能分发、长截图 seed/拼接算法 |
 | `longshot.rs` | 手动滚动长截图：预览窗口、后台抓帧线程、双向（行/列）拼接、方向切换、完成/取消 |
 | `pin.rs` | 钉在桌面窗口：图片 registry、DPI 适配尺寸、置顶窗口、拖动/复制/关闭 |
@@ -41,7 +41,7 @@ lexora.exe
 | `state.rs` | `AppState`：paths、logger、settings store、engine、selection、翻译任务句柄 |
 | `settings.rs` | 设置 schema、归一化、原子持久化（`settings.json`） |
 | `paths.rs` | 便携数据目录解析（exe 同级 `data/` 优先，回退 `%APPDATA%`） |
-| `logger.rs` | 滚动文件日志，API Key 脱敏 |
+| `logger.rs` | 10MB 滚动文件日志，保留一个历史分卷，API Key 脱敏 |
 | `win32.rs` | Win32 FFI：光标、显示器工作区、DPI、透明窗口/捕获排除、焦点移交、DWM 过渡禁用 |
 | `selection.rs` | `rdev` 全局钩子、拖选/多击判定、触发取词、外部点击与键盘操作隐藏 |
 | `selection/uia.rs` | 原生 UI Automation COM 取词（`CUIAutomation8` + 超时 + 重试） |
@@ -80,15 +80,15 @@ lexora.exe
 2. `rdev` 钩子判断「位移 ≥ 6px 的左键抬起」或多击（同一位置、间隔 ≤ 双击时间），向取词通道投递请求（回调内只做轻量判断）。
 3. 过滤：功能开关、自身进程、黑名单、同文本 400ms 去重。
 4. 独立线程创建 UIA COM 客户端（连接/事务超时 1.5s/1s），读取焦点元素的 TextPattern 选区；失败重试 2 次；主线程 `recv_timeout(1.5s)` 看门狗，超时放弃。
-5. 得到文本 + 鼠标物理坐标 + 显示器 scale，调用 `windows::show_picker`：用 `PhysicalPosition` 定位并 clamp 到工作区，展示 picker 窗口，推送 `picker-data` 事件。
-6. 点击「更多」可临时禁用当前应用/工具、打开设置或关闭；点击外部自动隐藏（面板固定时除外）。鼠标滚轮/触摸板滚动不会隐藏工具栏，长结果可在面板内滚动；结果按 Markdown 渲染（`web/shared/markdown.js`，HTML 先转义，链接经 `open_external` 打开）。
+5. 得到文本 + 鼠标物理坐标 + 显示器 scale。无面板或面板未固定时调用 `windows::show_picker` 在主 picker 中显示新工具栏并替换旧面板；已固定面板时调用 `windows::show_toolbar`，在独立 `picker-toolbar` 窗口中显示，不中止旧请求。
+6. 点击翻译、总结、解释、润色或文本自定义技能时，临时工具栏才调用 `picker_toolbar_run_skill` 替换旧面板；朗读、复制、搜索、截图入口不会立即替换面板。截图结果生成时才替换。点击外部只隐藏临时工具栏，未固定面板在普通外部单击后延迟隐藏，划词动作会取消该隐藏。
 
 ## 翻译数据流
 
 ```
 picker.js → invoke("picker_translate", {requestId,text,targetLang})
           → commands.rs 中止旧任务、spawn 任务
-          → engine.translate_stream()（在线：reqwest SSE；本地：确保 llama-server ready 后同样走 SSE）
+          → engine.translate_stream()（在线：reqwest SSE；本地：确保 llama-server ready 后同样走 SSE）\n          → model.log 记录调用开始与完成/失败/取消、耗时、分块和输出字符数
           → 每块 emit_to("picker","translate-event", {requestId,type:"chunk",text})
           → renderer 增量显示；错误 type:"error" 显示错误面板
 ```
@@ -98,7 +98,8 @@ picker.js → invoke("picker_translate", {requestId,text,targetLang})
 ## 离线模型与引擎
 
 - 引擎：llama.cpp 官方 `win-cpu-x64` 发布包（约 23MB），解压到 `<data>/engine/`。
-- 模型：GGUF 放在 `<data>/models/`，内置 Qwen2.5 0.5B/1.5B/3B Instruct Q4_K_M 下载目录（Apache-2.0），也支持手动导入任意 GGUF。
+- 模型：GGUF 放在 `<data>/models/`；内置 Hy-MT2 1.8B 翻译专用模型，以及 Qwen3.5 0.8B / 2B / 4B 的 Q4_K_M、Q3_K_M 六种通用/视觉选项，均从 ModelScope 下载（Apache-2.0），也支持手动导入 GGUF。Qwen3.5 各档搭配对应的 `mmproj-F16.gguf`，本地按模型规格区分投影器文件名，避免不同规格互相覆盖。
+- 选模：翻译自动使用 Hy-MT2；通用和视觉任务共用用户手动选择的唯一模型，持久化到 `settings.provider.local.selectedModel`（settings schema v7，JSON 中为 `provider.local.selectedModel`）。未选择时返回明确提示，不自动替选；CPU、内存和显存检测只用于推荐标签及理由。切换选择后需重启本地引擎。旧 Qwen2.5 文件保留，不再参与内置自动选择。
 - 启动参数：`llama-server.exe -m <model> --host 127.0.0.1 --port <free> -c <ctx> -t <threads> -ngl <gpuLayers> --no-webui`。
 - 健康检查 `/health`，最长等待 90s；进程日志写 `logs/llama.log`；应用退出时停止子进程。
 

@@ -9,7 +9,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-const MAX_LOG_BYTES: u64 = 2 * 1024 * 1024;
+pub(crate) const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct Logger {
@@ -57,9 +57,15 @@ impl Logger {
 }
 
 fn append_rotating(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    append_rotating_with_limit(path, bytes, MAX_LOG_BYTES)
+}
+
+fn append_rotating_with_limit(path: &Path, bytes: &[u8], limit: u64) -> std::io::Result<()> {
     if let Ok(metadata) = fs::metadata(path) {
-        if metadata.len() > MAX_LOG_BYTES {
+        if metadata.len() > 0 && metadata.len().saturating_add(bytes.len() as u64) > limit {
             let rotated = path.with_extension("log.1");
+            // Keep the current file plus one recent archive. Deleting the old
+            // archive before the rename bounds disk use to roughly 2 * limit.
             let _ = fs::remove_file(&rotated);
             let _ = fs::rename(path, &rotated);
         }
@@ -122,7 +128,8 @@ fn timestamp() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::redact_secrets;
+    use super::{append_rotating_with_limit, redact_secrets};
+    use std::fs;
 
     #[test]
     fn redacts_api_keys() {
@@ -132,6 +139,18 @@ mod tests {
         assert!(!result.contains("sk-1234567890abcdef"));
     }
 
+    #[test]
+    fn rotates_at_the_limit_and_keeps_only_one_archive() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("model.log");
+        append_rotating_with_limit(&path, b"first\n", 12).unwrap();
+        append_rotating_with_limit(&path, b"second\n", 12).unwrap();
+        append_rotating_with_limit(&path, b"third\n", 12).unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "third\n");
+        let archive = path.with_extension("log.1");
+        assert_eq!(fs::read_to_string(&archive).unwrap(), "second\n");
+    }
     #[test]
     fn keeps_normal_logs_intact() {
         let text = "translation finished in 120 ms";

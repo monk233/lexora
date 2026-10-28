@@ -21,9 +21,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, GetAncestor, GetCursorPos, GetForegroundWindow, GetSystemMetrics,
     GetWindowLongPtrW, GetWindowThreadProcessId, SetCursorPos, SetForegroundWindow,
     SetWindowLongPtrW, SetWindowPos, WindowFromPoint, GA_ROOT, GWL_EXSTYLE, HWND_TOP,
-    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
-    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WHEEL_DELTA,
-    WS_EX_NOACTIVATE,
+    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WHEEL_DELTA, WS_EX_NOACTIVATE,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -85,7 +84,10 @@ pub fn cursor_inside(left: i32, top: i32, width: i32, height: i32) -> bool {
     x >= left && x < left.saturating_add(width) && y >= top && y < top.saturating_add(height)
 }
 
-fn send_wheel(flags: windows::Win32::UI::Input::KeyboardAndMouse::MOUSE_EVENT_FLAGS, notches: i32) -> bool {
+fn send_wheel(
+    flags: windows::Win32::UI::Input::KeyboardAndMouse::MOUSE_EVENT_FLAGS,
+    notches: i32,
+) -> bool {
     if notches == 0 {
         return true;
     }

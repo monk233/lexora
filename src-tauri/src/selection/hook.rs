@@ -30,6 +30,10 @@ struct HookState {
     shift: bool,
     /// `true` once the shortcut fired, so auto-repeat only starts one capture.
     capture_fired: bool,
+    /// While an unpinned result panel is open, an outside press is resolved on
+    /// release. A drag or multi-click starts a capture and preserves the panel;
+    /// a plain click is sent to the delayed outside-click handler.
+    defer_panel_outside: bool,
 }
 
 /// Tracks consecutive non-drag clicks so double/triple click selections can
@@ -153,9 +157,16 @@ fn handle_key_release(state: &mut HookState, key: Key) {
 /// foreground application; the toolbar only steps out of the way. A sticky
 /// panel (pinned or an open result panel) is never dismissed this way.
 fn dismiss_picker_on_input(inner: &Arc<Inner>, reason: &'static str) {
-    if !inner.picker_visible.load(Ordering::Acquire)
-        || inner.panel_pinned.load(Ordering::Acquire)
-        || inner.panel_open.load(Ordering::Acquire)
+    if !inner.picker_visible.load(Ordering::Acquire) {
+        return;
+    }
+    let Some(app) = inner.app.get() else {
+        return;
+    };
+    // A transient toolbar may sit above an open panel. Input dismisses only
+    // that toolbar; the panel remains alive with its stream and pin state.
+    if !crate::windows::is_toolbar_visible(app)
+        && (inner.panel_pinned.load(Ordering::Acquire) || inner.panel_open.load(Ordering::Acquire))
     {
         return;
     }
@@ -166,11 +177,15 @@ fn handle_left_press(inner: &Arc<Inner>, state: &mut HookState) {
     // `ButtonRelease` carries no coordinates, so the latest `MouseMove` is the
     // drag origin. Mouse events are always delivered before the button event.
     state.press_origin = state.mouse;
+    state.defer_panel_outside = false;
 
-    // A left click outside the picker dismisses it (unless the panel is pinned).
-    // An open result panel is sticky for keyboard/right-click input, but an
-    // outside click still hides the picker while it is not pinned.
     if !inner.picker_visible.load(Ordering::Acquire) || inner.panel_pinned.load(Ordering::Acquire) {
+        return;
+    }
+    if inner.panel_open.load(Ordering::Acquire) {
+        // Resolve on release so dragging or double/triple-clicking a new word
+        // never hides the current panel merely because the press was outside.
+        state.defer_panel_outside = true;
         return;
     }
     if let Some((x, y)) = state.mouse {
@@ -188,6 +203,8 @@ fn handle_left_release(inner: &Arc<Inner>, state: &mut HookState) {
     let Some(end) = state.mouse else {
         return;
     };
+    let defer_panel_outside = state.defer_panel_outside;
+    state.defer_panel_outside = false;
 
     if is_drag_gesture(origin, end, DRAG_THRESHOLD_PX) {
         state.clicks.reset();
@@ -204,11 +221,18 @@ fn handle_left_release(inner: &Arc<Inner>, state: &mut HookState) {
     let count = state
         .clicks
         .register(end, Instant::now(), crate::win32::double_click_time());
-    if count < 2 || !inner.enabled.load(Ordering::Acquire) {
+    if count >= 2 && inner.enabled.load(Ordering::Acquire) {
+        let anchor = (end.0.round() as i32, end.1.round() as i32);
+        inner.send_capture(TriggerSource::Click, Some(anchor));
         return;
     }
-    let anchor = (end.0.round() as i32, end.1.round() as i32);
-    inner.send_capture(TriggerSource::Click, Some(anchor));
+
+    if defer_panel_outside {
+        inner.send_action(ActionRequest::OutsideClick {
+            x: end.0.round() as i32,
+            y: end.1.round() as i32,
+        });
+    }
 }
 
 /// A selection gesture needs a real drag, otherwise every click would fire UIA.

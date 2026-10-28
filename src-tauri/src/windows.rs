@@ -24,6 +24,7 @@ use crate::state::AppState;
 use crate::win32;
 
 pub const PICKER_LABEL: &str = "picker";
+pub const PICKER_TOOLBAR_LABEL: &str = "picker-toolbar";
 pub const SETTINGS_LABEL: &str = "settings";
 /// Label prefix of the screenshot overlay windows (`capture-<monitor index>`).
 pub const CAPTURE_PREFIX: &str = "capture-";
@@ -43,6 +44,8 @@ const ANCHOR_GAP: f64 = 12.0;
 const FOCUS_GUARD: Duration = Duration::from_millis(250);
 const EVENT_PICKER_DATA: &str = "picker-data";
 const EVENT_PICKER_HIDDEN: &str = "picker-hidden";
+const EVENT_TOOLBAR_DATA: &str = "picker-toolbar-data";
+const EVENT_TOOLBAR_HIDDEN: &str = "picker-toolbar-hidden";
 
 /// Payload pushed to the picker renderer, contract §5.3.
 #[derive(Debug, Clone, Serialize)]
@@ -66,6 +69,7 @@ impl From<&PickerPayload> for PickerData {
 /// Last payload, kept so `picker_ready` can replay a selection captured while
 /// the webview was still loading.
 static PENDING: Mutex<Option<PickerData>> = Mutex::new(None);
+static TOOLBAR_PENDING: Mutex<Option<PickerData>> = Mutex::new(None);
 /// Instant of the last `show_picker`, used to swallow the show/blur race.
 static LAST_SHOWN: Mutex<Option<Instant>> = Mutex::new(None);
 
@@ -115,31 +119,31 @@ pub fn show_guard_active() -> bool {
 /// purpose, contract §10.1), or when it was just shown and has not received
 /// focus yet.
 pub fn handle_picker_blur(app: &tauri::AppHandle) {
-    if capture_active(app) {
+    if capture_active(app) || show_guard_active() {
         return;
     }
-    if show_guard_active() {
-        return;
-    }
-    let pinned = state(app)
-        .map(|state| state.selection.is_panel_pinned())
-        .unwrap_or(false);
-    if pinned {
-        return;
+    if let Some(state) = state(app) {
+        if state.selection.is_panel_pinned() || state.selection.is_panel_open() {
+            return;
+        }
     }
     if is_picker_visible(app) {
         hide_picker(app);
     }
 }
 
-/// Positions the transparent picker at the selection anchor and shows it.
-/// Returns `false` when the picker window is missing.
-pub fn show_picker(app: &tauri::AppHandle, payload: &PickerPayload) -> bool {
-    let Some(window) = app.get_webview_window(PICKER_LABEL) else {
-        log_warn(app, "picker window missing");
-        return false;
-    };
+pub fn handle_toolbar_blur(app: &tauri::AppHandle) {
+    if !capture_active(app) && !show_guard_active() {
+        hide_toolbar(app);
+    }
+}
 
+fn show_selection_surface(
+    app: &tauri::AppHandle,
+    label: &str,
+    payload: &PickerPayload,
+) -> Option<(i32, i32, i32, i32, f64, bool, &'static str)> {
+    let window = app.get_webview_window(label)?;
     let mut scale = payload.scale_factor;
     if !scale.is_finite() || scale < 0.5 || scale > 8.0 {
         scale = window.scale_factor().unwrap_or(1.0);
@@ -152,58 +156,64 @@ pub fn show_picker(app: &tauri::AppHandle, payload: &PickerPayload) -> bool {
 
     let (anchor_x, anchor_y) = (payload.anchor_x, payload.anchor_y);
     let work = win32::work_area_physical(anchor_x, anchor_y);
-
     let width = ((BASE_WIDTH * scale).round() as i32).max(1);
     let height = ((BASE_HEIGHT * scale).round() as i32).max(1);
     let left_offset = (ANCHOR_LEFT_OFFSET * scale).round() as i32;
     let gap = (ANCHOR_GAP * scale).round() as i32;
-
-    // Preferred: below the selection, shifted left so the toolbar centres under
-    // the start of the selected word.
     let mut x = anchor_x - left_offset;
     let mut y = anchor_y + gap;
     let mut placement = "below";
 
     let max_x = work.right - width;
-    if max_x >= work.left {
-        x = x.clamp(work.left, max_x);
+    x = if max_x >= work.left {
+        x.clamp(work.left, max_x)
     } else {
-        x = work.left;
-    }
-
+        work.left
+    };
     if y + height > work.bottom {
-        // No room below: flip above the selection.
         y = anchor_y - height - gap;
         placement = "above";
     }
     let max_y = work.bottom - height;
-    if max_y >= work.top {
-        y = y.clamp(work.top, max_y);
+    y = if max_y >= work.top {
+        y.clamp(work.top, max_y)
     } else {
-        y = work.top;
-    }
+        work.top
+    };
 
-    // Resize/reposition while hidden, then show (avoids transient artifacts).
-    // The picker is configured as a non-activating window (`focusable: false`),
-    // so `show()` never steals keyboard focus from the application the user is
-    // working in. Do not call `set_focus()` here.
     let _ = window.set_size(PhysicalSize::new(width as u32, height as u32));
     let _ = window.set_position(PhysicalPosition::new(x, y));
     let was_visible = window.is_visible().unwrap_or(false);
     if !was_visible {
         let _ = window.show();
     }
-
     *lock(&LAST_SHOWN) = Some(Instant::now());
+    Some((x, y, width, height, scale, was_visible, placement))
+}
 
-    // A new selection always starts un-pinned and aborts a running stream.
+/// Positions the transparent panel/toolbar window at the selection anchor.
+/// When the dedicated transient toolbar is open, a new selection replaces it.
+pub fn show_picker(app: &tauri::AppHandle, payload: &PickerPayload) -> bool {
+    hide_toolbar(app);
+    let Some((x, y, width, height, scale, was_visible, placement)) =
+        show_selection_surface(app, PICKER_LABEL, payload)
+    else {
+        log_warn(app, "picker window missing");
+        return false;
+    };
+
+    // A new selection starts a fresh panel lifecycle and aborts any running
+    // stream. This is called only when no panel is already open, or after the
+    // user chose a panel-opening tool from the transient toolbar.
     if let Some(state) = state(app) {
         state.abort_translate();
         state.selection.set_panel_pinned(false);
         state.selection.set_picker_visible(true);
         state.log.info(&format!(
             "picker shown at physical=({x},{y}) size={width}x{height} scale={scale:.3} \
-             anchor=({anchor_x},{anchor_y}) placement={placement} text_chars={}",
+             anchor=({}, {}) placement={placement} text_chars={} reused={was_visible}",
+            payload.anchor_x,
+            payload.anchor_y,
             payload.text.chars().count()
         ));
     }
@@ -214,12 +224,59 @@ pub fn show_picker(app: &tauri::AppHandle, payload: &PickerPayload) -> bool {
     true
 }
 
+/// Shows the lightweight toolbar while an existing result panel remains open.
+/// It deliberately does not abort the panel stream, clear its pin, or reset the
+/// panel window.
+pub fn show_toolbar(app: &tauri::AppHandle, payload: &PickerPayload) -> bool {
+    let Some((x, y, width, height, scale, was_visible, placement)) =
+        show_selection_surface(app, PICKER_TOOLBAR_LABEL, payload)
+    else {
+        log_warn(app, "picker toolbar window missing");
+        return false;
+    };
+    if let Some(state) = state(app) {
+        state.selection.set_picker_visible(true);
+        state.log.info(&format!(
+            "picker toolbar shown at physical=({x},{y}) size={width}x{height} scale={scale:.3} \
+             anchor=({}, {}) placement={placement} text_chars={} reused={was_visible}",
+            payload.anchor_x,
+            payload.anchor_y,
+            payload.text.chars().count()
+        ));
+    }
+    let data = PickerData::from(payload);
+    *lock(&TOOLBAR_PENDING) = Some(data.clone());
+    let _ = app.emit_to(PICKER_TOOLBAR_LABEL, EVENT_TOOLBAR_DATA, data);
+    true
+}
+
+/// Hides the transient toolbar without touching the result panel or its stream.
+pub fn hide_toolbar(app: &tauri::AppHandle) -> bool {
+    let Some(window) = app.get_webview_window(PICKER_TOOLBAR_LABEL) else {
+        return false;
+    };
+    let was_visible = window.is_visible().unwrap_or(false);
+    if was_visible {
+        let _ = window.hide();
+    }
+    *lock(&TOOLBAR_PENDING) = None;
+    let _ = app.emit_to(
+        PICKER_TOOLBAR_LABEL,
+        EVENT_TOOLBAR_HIDDEN,
+        serde_json::json!({}),
+    );
+    if let Some(state) = state(app) {
+        state.selection.set_picker_visible(is_picker_visible(app));
+    }
+    was_visible
+}
 /// Hides the picker and tells the renderer to reset its state. Returns whether
 /// the picker was actually visible (see [`hide_settings`]: the screenshot flow
 /// only pauses when one of our windows really had to disappear from screen).
 pub fn hide_picker(app: &tauri::AppHandle) -> bool {
+    let toolbar_visible = hide_toolbar(app);
     let Some(window) = app.get_webview_window(PICKER_LABEL) else {
-        return false;
+        return toolbar_visible;
     };
     // The picker may have been made focusable for the follow-up input; make
     // sure a hidden picker never keeps keyboard focus.
@@ -239,13 +296,23 @@ pub fn hide_picker(app: &tauri::AppHandle) -> bool {
             state.log.info("picker hidden");
         }
     }
-    was_visible
+    was_visible || toolbar_visible
 }
 
 pub fn is_picker_visible(app: &tauri::AppHandle) -> bool {
     app.get_webview_window(PICKER_LABEL)
         .and_then(|window| window.is_visible().ok())
         .unwrap_or(false)
+}
+
+pub fn is_toolbar_visible(app: &tauri::AppHandle) -> bool {
+    app.get_webview_window(PICKER_TOOLBAR_LABEL)
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false)
+}
+
+pub fn is_any_picker_visible(app: &tauri::AppHandle) -> bool {
+    is_picker_visible(app) || is_toolbar_visible(app)
 }
 
 pub fn picker_scale_factor(app: &tauri::AppHandle) -> f64 {
@@ -260,6 +327,10 @@ pub fn take_pending() -> Option<PickerData> {
     lock(&PENDING).take()
 }
 
+pub fn take_toolbar_pending() -> Option<PickerData> {
+    lock(&TOOLBAR_PENDING).take()
+}
+
 /// Applies renderer-requested bounds (menus/panels need a bigger surface).
 /// `width`/`height` are logical pixels; there is no product size limit anymore,
 /// only basic sanitizing (`NaN`/infinite/<=0 fall back to the base size, at
@@ -267,7 +338,16 @@ pub fn take_pending() -> Option<PickerData> {
 /// kept inside the virtual desktop (all monitors), so panels can move across
 /// monitors. Returns the final bounds in logical pixels.
 pub fn resize_picker(app: &tauri::AppHandle, width: f64, height: f64) -> Option<serde_json::Value> {
-    let window = app.get_webview_window(PICKER_LABEL)?;
+    resize_picker_surface(app, PICKER_LABEL, width, height)
+}
+
+pub fn resize_picker_surface(
+    app: &tauri::AppHandle,
+    label: &str,
+    width: f64,
+    height: f64,
+) -> Option<serde_json::Value> {
+    let window = app.get_webview_window(label)?;
     let scale = window
         .scale_factor()
         .ok()
@@ -285,12 +365,8 @@ pub fn resize_picker(app: &tauri::AppHandle, width: f64, height: f64) -> Option<
     // Keep the whole panel inside the virtual desktop (all monitors) instead of
     // the work area of one monitor, so a panel can live on / cross any monitor
     // (user request: panels must be freely movable between displays).
-    let (x, y) = win32::clamp_to_virtual_screen(
-        current.x,
-        current.y,
-        physical_width,
-        physical_height,
-    );
+    let (x, y) =
+        win32::clamp_to_virtual_screen(current.x, current.y, physical_width, physical_height);
 
     let _ = window.set_size(PhysicalSize::new(
         physical_width as u32,

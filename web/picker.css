@@ -385,18 +385,30 @@ body.is-dragging-panel * {
  * grip is hidden; flex-grow keeps the card filling the window when the 360x240
  * minimum makes the window taller than the content (no transparent strip). */
 .panel.is-auto-mode {
-  flex: 1 0 auto;
+  flex: 1 1 auto;
+  height: 100%;
+  min-height: 0;
 }
 
 .panel.is-auto-mode .panel-body {
   max-height: none;
-  overflow-y: hidden;
+  /* Fixed-width auto mode grows only up to the screen-aware height limit.
+     Overflow remains reachable by keyboard/pointer scrolling, while the visual
+     scrollbar stays hidden. */
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.panel.is-auto-mode .panel-body::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 /* Temporary natural-height measurement state: while measuring, the card must
  * not keep a previously grown window height. */
 .panel.is-auto-measuring {
   flex: 0 0 auto;
+  height: auto;
 }
 
 /* scroll: fixed window size, the body scrolls inside and the grip is shown. */

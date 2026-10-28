@@ -58,13 +58,13 @@ lexora/
 
 - `LEXORA_DATA_DIR` 环境变量 > debug 模式 `<repo>/data` > `<exe目录>/data`（可写时） > `%APPDATA%\Lexora`。
 - `LEXORA_MODEL_DIR` / `LEXORA_LLAMA_DIR` 覆盖模型/引擎目录。
-- 结构：`settings.json`、`models/*.gguf`、`engine/llama-server.exe`、`logs/main.log`、`logs/llama.log`、`cache/*.part`。
+- 结构：`settings.json`、`models/*.gguf`、`engine/llama-server.exe`、`logs/main.log`、`logs/model.log`、`logs/llama.log`、`cache/*.part`。
 
 ## 4. 设置 Schema（已实现 `settings.rs`，camelCase JSON）
 
 ```jsonc
 {
-  "version": 6,                              // v1→v2 补 polish/search；v2→v3 补 screenshot；v3→v4 补 capture；v4→v5 补 captureSkills/capturePrompts；v5→v6 把本地工具（pin/形状/箭头/画笔/文字/序号/马赛克/长截图）纳入 captureSkills 并移除 copy；保留 custom
+  "version": 7,                              // v1→v2 补 polish/search；v2→v3 补 screenshot；v3→v4 补 capture；v4→v5 补 captureSkills/capturePrompts；v5→v6 把本地工具（pin/形状/箭头/画笔/文字/序号/马赛克/长截图）纳入 captureSkills 并移除 copy；保留 custom；v6→v7 增加 provider.local.selectedModel，旧配置迁移为空选择
   "picker": {
     "enabled": true,
     "skills": ["translate","summarize","explain","polish","read","copy","screenshot","search","custom-mvmei8cru1n5"],
@@ -100,7 +100,7 @@ lexora/
     "mode": "online",                     // online | local
     "online": { "preset": "deepseek", "baseUrl": "https://api.deepseek.com/v1", "apiKey": "", "model": "deepseek-chat",
                 "timeoutMs": 60000, "temperature": 0.2, "maxTokens": 1024 },
-    "local": { "contextSize": 4096, "threads": 0, "gpuLayers": 0, "autoStart": true, "keepRunning": false }
+    "local": { "selectedModel": "", "contextSize": 4096, "threads": 0, "gpuLayers": 0, "autoStart": true, "keepRunning": false }
   },
   "app": { "closeToTray": true, "startAtLogin": false, "theme": "system" },
   "capture": {
@@ -108,6 +108,8 @@ lexora/
   }
 }
 ```
+
+本地模型选择字段：`settings.provider.local.selectedModel`（序列化路径为 `provider.local.selectedModel`）保存唯一通用/视觉模型选择；默认空字符串，v6→v7 迁移不自动填入模型。硬件检测只提供推荐标签和理由，不自动选择。
 
 规则：归一化永不失败；非法值回退默认。运行时环境变量覆盖：`LEXORA_API_KEY`（覆盖 apiKey）、`LEXORA_LLAMA_URL`（引擎下载地址覆盖）、`LEXORA_UPDATE_API`（自更新 Release API 覆盖，仅测试用；覆盖时允许本地 http）。
 
@@ -265,8 +267,9 @@ impl EngineService {
 实现要求：
 - 在线：`{baseUrl}/chat/completions`，`stream:true`，SSE `data:` 行解析 `choices[0].delta.content`；非 SSE 响应按 JSON 兜底；超时/取消（abort）支持；错误映射中文 `message+hint`（401/404/429/5xx/网络/超时）。
 - 本地：
-  - 不再有「选择模型」配置：引擎按功能自动选择已安装模型。`translate` 优先 Hy-MT2（未安装则回退 Qwen/任意已装 GGUF）；`summarize`/`explain` 优先 Qwen2.5 3B（未安装则回退 Hy-MT2/任意已装 GGUF）。
-  - 「启动」由后端选择翻译优先模型并加载；「停止」后 `local_desired=false`，后续翻译/总结请求**绝不自动启动**引擎，只返回「本地模型未启动」错误提示。运行中若功能需要另一个模型，会停止当前 llama-server 并加载目标模型（日志记录 switching），期间请求等待。
+  - `LocalRole::Translate` 自动使用 Hy-MT2 1.8B；`General` / `Vision` 共用 `settings.provider.local.selectedModel` 的手动选择。未选择时返回明确提示；缺少文件时提示安装对应模型，不回退到旧 Qwen2.5 或其他已安装 GGUF。
+  - 用户手动选择唯一通用/视觉模型并持久化；硬件检测仅显示推荐标签和理由，不替用户选择。切换选择后需重启本地引擎。
+  - 「停止」后 `local_desired=false`，后续请求**绝不自动启动**引擎，只返回「本地模型未启动」错误提示。运行中在翻译模型与所选通用/视觉模型之间按任务加载，日志记录 switching，期间请求等待；这不改变用户保存的选择。
 - 运行状态记忆：用户点「启动」成功后持久化 provider.local.keepRunning=true；点「停止」置 false；应用退出只停 llama-server，不改 keepRunning。下次启动若为 true 且引擎/模型已安装，后台自动恢复引擎（日志 estoring local engine）并通过 state-changed 刷新设置页与托盘。
   - 未安装引擎 → 错误提示「下载 llama.cpp 引擎」；未安装模型 → 「下载/导入 GGUF」；启动前选空闲端口（TcpListener 127.0.0.1:0），`llama-server.exe -m <model> --host 127.0.0.1 --port <p> -c <ctxSize> -t <threads> -ngl <gpuLayers> --no-webui`，轮询 `/health` 最长 90s，stderr 写 `logs/llama.log`；进程退出/应用退出要清理；服务就绪后复用在线客户端逻辑。
 - 提示词（系统默认值为英文，用户可在设置里逐个技能自定义，空字符串表示用默认）：
@@ -277,15 +280,19 @@ impl EngineService {
   - 自定义技能：从 `picker.customSkills` 按 id 查找（不存在/未启用返回明确错误），`prompts::render_custom_prompt` 把 `{text}`（选中文本）、`{target}`/`{language}`（目标语言英文名）、`{program}`/`{app}`（当前应用名，空为「未知应用」）替换进提示词；未知 `{...}` 原样保留；system 为渲染后的提示词，user 为选中文本；本地模型角色使用 General；流式事件与翻译一致。
   - 内置润色：`prompts::polish_messages(text, custom)` 优先使用 `picker.prompts.polish`，空则用 `DEFAULT_POLISH_PROMPT`（英文）；截断 `picker.maxChars`；General 角色；流式事件与翻译一致。
 - 引擎下载：默认 URL `https://github.com/ggml-org/llama.cpp/releases/download/b11851/llama-b11851-bin-win-cpu-x64.zip`（23.1MB，已验证存在），可用 `LEXORA_LLAMA_URL` 覆盖；下载到 cache，zip 解压后把包含 `llama-server.exe` 的目录内容平铺到 `engine/`；进度事件 `app.emit("download-progress", ...)`。失败文案给出手动放置说明（解压到 engine 目录）。
-- 模型目录（两个模型，已验证 URL）：
-  | id | 名称 | 文件 | 大小 | 说明 |
-  | --- | --- | --- | --- | --- |
-  | `hy-mt2-1.8b` | 腾讯混元 Hy-MT2 1.8B（翻译模型） | Hy-MT2-1.8B-Q4_K_M.gguf | 1,133,080,448 | 翻译专用，仅 ModelScope |
-  | `qwen2.5-3b` | Qwen2.5 3B（通用模型） | qwen2.5-3b-instruct-q4_k_m.gguf | 2,104,932,768 | 通用：翻译/总结/解释 |
-  - Hy-MT2：`https://www.modelscope.cn/models/liaowenbin/Hy-MT2-1.8B-Q4_K_M-GGUF/resolve/master/Hy-MT2-1.8B-Q4_K_M.gguf`（无 HF 镜像，`hf_url` 为空时跳过）。
-  - Qwen2.5 3B：ModelScope（优先）`https://www.modelscope.cn/models/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/master/qwen2.5-3b-instruct-q4_k_m.gguf`；HF（回退）`https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf`。
-  - 下载按 `modelscope_url` → `hf_url` 顺序尝试（ModelScope 优先），空 URL 跳过；许可证均 Apache-2.0；`installed` = models 目录中存在同名文件。
-- 单测：SSE 解析、URL 归一化、错误映射、catalog 完整性、模型文件名/大小常量；不联网（用 mock 服务的需标 ignored 或用本地 axum? 不允许新增依赖，直接单测纯函数）。
+- 模型目录（Hy-MT2 + 六种 Qwen3.5，均使用 ModelScope）：
+  | 模型 | 量化 | 能力 | 配套文件 |
+  | --- | --- | --- | --- |
+  | Hy-MT2 1.8B | Q4_K_M | 翻译专用，自动使用 | 无 |
+  | Qwen3.5 0.8B | Q4_K_M / Q3_K_M | 通用文本与视觉，手动选择 | 对应 mmproj-F16 |
+  | Qwen3.5 2B | Q4_K_M / Q3_K_M | 通用文本与视觉，手动选择 | 对应 mmproj-F16 |
+  | Qwen3.5 4B | Q4_K_M / Q3_K_M | 通用文本与视觉，手动选择 | 对应 mmproj-F16 |
+  - Hy-MT2：`https://www.modelscope.cn/models/liaowenbin/Hy-MT2-1.8B-Q4_K_M-GGUF/resolve/master/Hy-MT2-1.8B-Q4_K_M.gguf`。
+  - Qwen3.5：`https://www.modelscope.cn/models/unsloth/Qwen3.5-{0.8B|2B|4B}-GGUF/resolve/master/<file>`；每个仓库的远程投影器名均为 `mmproj-F16.gguf`，本地按规格使用唯一名称，避免互相覆盖。
+  - 许可证均 Apache-2.0；空下载 URL 跳过。Qwen3.5 的 `installed` 要求主文件和对应投影器都存在；主模型完成后继续下载投影器。
+  - 移除旧 Qwen2.5 通用/视觉内置目录与自动选择；已安装旧文件不自动删除。
+- 模型调用日志：`logs/model.log` 每次请求记录 call id、操作、provider、model、输入规模、开始、完成/失败/取消、耗时、分块数与输出字符数；不记录提示词或模型正文。`main.log`、`model.log`、`llama.log` 使用应用日志器，单文件写入达到 10MB 时滚动为 `.1`，只保留当前文件与一个最近分卷，更早分卷自动删除。
+- SSE 空结果：若收到 `[DONE]`/EOF 但从未产生可见正文，必须返回错误，不能作为成功流结束。检测到仅 `reasoning_content`/`reasoning` 时提示推理模型可能耗尽最大输出 token；普通在线空响应提示重试、提高 token 或更换模型。单测覆盖 SSE 解析、空结果、URL 归一化、错误映射与 catalog 完整性。
 
 ### 6.2 `selection.rs`（T2，可拆 `selection/*.rs`）
 
@@ -335,7 +342,7 @@ pub struct SelectionService {
 
 ### 6.4 `updater.rs`（自更新，Windows）
 
-- 默认查询 `https://api.github.com/repos/monk233/lexora/releases/latest`（`User-Agent: Lexora/<版本>`，30s 超时）；测试可用环境变量 `LEXORA_UPDATE_API` 覆盖为本地 mock（覆盖时允许 http，仅本地测试使用）。
+- 默认查询 `https://api.github.com/repos/monk233/lexora/releases/latest`（`User-Agent: Lexora/<版本>`，30s 超时）；测试可用环境变量 `LEXORA_UPDATE_API` 覆盖为本地 mock（覆盖时允许 http，仅本地测试使用）。应用启动 2 秒后由 Rust 后台静默检查一次，之后每 6 小时复查；发现较新版本时通过 Tauri notification 插件弹 Windows 系统通知，并把版本号写入数据目录 `update-notified-version` 去重。后台检查结果通过 `update-available` 推送设置页。自动检查失败不打断用户，手动检查仍显示错误。Release 正文按安全 Markdown 渲染，HTML 先转义，外链沿用 `open_external`。
 - `UpdateInfo { currentVersion, latestVersion, hasUpdate, assetName, assetUrl, notes, publishedAt, sizeBytes }`（camelCase 序列化）；`version_is_newer` 按数字段比较，忽略 `v` 前缀与 prerelease/build。
 - 资产选择：Release assets 中名称以 `Lexora-` 开头、含 `win-x64`、以 `.exe` 结尾的第一个；无资产时报错。
 - `install_update`：重新 check → 校验 https（覆盖模式除外）→ 校验当前 exe 目录可写 → 流式下载到同目录临时文件（emit `update-progress`）→ 校验 MZ 头与大小 >1MB → 生成 `%TEMP%\lexora-update-*.ps1`（UTF-8 BOM，等待当前 pid 退出、把当前 exe 改名 `.old`、移动新 exe 到原路径、`Start-Process ... --show`，失败回滚并写 `update-error.log`）→ 隐藏窗口 spawn PowerShell → emit `ready` → 约 1.2s 后 `app.exit(0)`。
@@ -366,8 +373,8 @@ pub struct SelectionService {
   - 朗读：仅用 `window.speechSynthesis`（Windows 系统语音）；无语音时提示「系统未安装可用的语音包：Windows 设置 → 时间和语言 → 语音」。朗读中再次点击是「停止朗读」，必须静默恢复按钮态，不提示失败（忽略 `interrupted`/`canceled` 错误）。
   - 结果面板可通过标题栏空白处拖动整个工具窗口（`picker_drag_panel`，每次 mousemove 发送屏幕坐标差值的逻辑像素 delta）；按钮/语言下拉区域不触发拖动。
 - 结果面板右下角提供缩放手柄：拖动调用 `picker_resize`（无最大限制；最小窗口 360×240，窗口位置 clamp 到虚拟桌面，可跨屏），尺寸写入 localStorage `lexora.panelSize`，下次打开沿用；手动调整后 `.panel` 填满窗口、内容自适应不再覆盖用户尺寸；双击手柄恢复自动大小。
-- 面板模式（picker.panelMode）：`auto`（默认）无滚动条、窗口随内容自动变高、隐藏缩放手柄；`scroll` 使用固定窗口高度、panel-body 内部滚动，可拖拽缩放并记忆尺寸（不小于 360×240）。
-- 面板粘滞：结果面板打开时后端 panel_open=true，键盘/右键/滚轮不会隐藏；未钉住时点击面板外区域仍隐藏（钉住则保持）。点击继续提问输入框时按需激活 picker 窗口以获取键盘焦点，关闭面板后恢复非激活。
+- 面板模式（picker.panelMode）：`auto`（默认）固定宽度与滚动模式最小宽度一致，为 360px；窗口随内容自动变高，最大高度为 `min(当前屏幕可用高度-80px, 760px)`，隐藏缩放手柄；resize 合并为最多每 100ms 一次，且同一面板流式期间高度只增不减，避免闪烁；达到限高后 panel-body 隐藏滚动条并随流式内容自动滚到底部，用户向上滚动时暂停跟随，接近底部后恢复；`scroll` 使用固定窗口大小、可见滚动条，可拖拽缩放并记忆尺寸（不小于 360×240）。
+- 面板粘滞与多表面：结果面板打开时后端 panel_open=true。面板已钉住时，新划词由一个独立临时 `picker-toolbar` 窗口显示，只更新暂存选区，不隐藏或中止面板；点击翻译、总结、解释、润色或文本自定义技能时才替换面板，朗读、复制、搜索、截图入口不立即替换，截图结果真正生成时才替换。面板未钉住时，新划词立即隐藏旧面板并显示新选区的工具栏。任意时刻最多一个结果面板。
 - 工具栏胶囊在鼠标滚轮/触摸板滚动时自动隐藏；结果面板打开时 wheel 事件不隐藏面板。关闭结果面板时直接隐藏整个 picker（不再回退显示工具栏胶囊）。
 - 面板尺寸与窗口一致：自动尺寸按可见 panel 高度计算，窗口底部不再有透明隐藏区；toast 显示在面板顶部覆盖，不额外占位。
 - 继续提问/建议区为绝对定位的悬浮层，覆盖在面板正文底部、不占用布局高度；输入行与 chips 独立浮起；panel-body 动态留出底部 padding，保证末尾内容可滚动阅读。
@@ -383,7 +390,7 @@ pub struct SelectionService {
 - 翻译服务：
   - 分段控件「在线 API / 本地模型」立即保存 mode。
   - 在线：预设下拉（DeepSeek/OpenAI/Moonshot/智谱/OpenCode Go/Ollama/LM Studio/自定义）、服务地址、API Key（password + 显示切换）、模型名下拉（[拉取模型] 通过 `list_online_models` 拉取 `/models`，并保留「自定义模型…」手填兜底）、[测试连接]（显示延迟/模型列表/错误）、状态徽标。切换预设必须清空上一个服务商的 API Key / 模型名与模型缓存，且**不再自动填充模型名**；已知预设只填服务地址。OpenCode Go 预设（`provider.online.preset = "opencode-go"`）额外保存 `modelsBaseUrl = https://opencode.ai/inference/go/v1`（其 `/models` 与 `/chat/completions` 路径不同），发往该预设的所有请求自动附带 `x-opencode-session: lexora-<16位hex>` 请求头（进程内稳定，用于路由与 prompt caching）；客户端 `User-Agent` 固定为 `Lexora/<版本>`。`modelsBaseUrl` 为空时回退 `baseUrl`。
-  - 本地：引擎状态（未安装→[下载引擎]，显示进度/取消；已安装→版本状态）、已安装模型列表（显示名称、大小、角色徽标：翻译模型/通用模型/**视觉模型**/自定义模型；不再有模型下拉选择）、[下载模型]（弹目录列表：名称/大小/量化/协议/下载按钮+各自进度；多个模型可同时下载、可分别取消；不显示「推荐」标签；视觉模型显示「视觉」徽标，下载时先主模型后投影器）、[导入 GGUF]、[启动]/[停止]、当前状态徽标与错误提示。运行状态不再显示当前模型名；状态 badge 与启动/停止按钮靠该行最右并与左侧标签垂直居中。启动时后端自动选择模型；停止后翻译/总结不会自动启动；应用重启会恢复上次运行状态（keepRunning）。本地模式图片理解使用 Qwen2.5-VL 3B（含 mmproj）。
+  - 本地：引擎下载、进度/取消与状态；已安装模型列表；唯一通用/视觉模型手动选择并保存；硬件推荐标签和理由；模型目录提供 Hy-MT2 与六种 Qwen3.5，支持并行下载及分别取消，视觉投影器随主模型下载；[导入 GGUF]、[启动]/[停止]、错误提示。未选择时明确提示，不自动替选；切换选择需重启本地引擎。翻译自动使用 Hy-MT2；通用与图片理解共用所选 Qwen3.5。停止后请求不自动启动；应用重启按 keepRunning 恢复运行状态。
 - 划词行为：启用开关、紧凑模式开关（紧跟启用开关、右对齐）、面板模式（紧跟紧凑模式：滚动/自适应，保存 `picker.panelMode`）、技能开关 + 拖拽排序（无上下箭头）…（其余同前）。**技能按「文字技能 / 图片技能」两个 Tab 分类展示（第四轮修正）：文字技能 Tab = 内置文字技能 + 「截图」入口技能 + 自定义文字技能；图片技能 Tab = 单一列表（截图工具条全部有序条目：钉在桌面 / 形状 / 箭头 / 画笔 / 文字 / 序号 / 马赛克 / 提取文字 / 翻译 / 解释图片 / 长截图 + 自定义图片技能，顺序与开关保存 `picker.captureSkills`，可全部关闭；“翻译/解释图片”可编辑系统提示词 `picker.capturePrompts`，其余条目无提示词按钮；不再有「复制」条目）；文字技能 Tab 的「截图」行不带「图片」徽标**；两个分类各自独立开关与排序，Tab 内拖动只重排该分类并保留另一分类相对顺序）、每行显示技能图标（内置用 `LP.SKILL_MAP[id].icon`，自定义用自定义图标）、技能提示词编辑（行内展开 textarea，默认填充系统默认英文提示词，支持重置默认；translate 支持 `{target}` 占位符；支持 translate/summarize/explain/polish）、自定义技能管理（[添加技能] 打开内联表单：**图标选择器默认紧凑显示当前图标预览 +「更换图标」，点击展开 200 个 Lucide 图标 + 名称搜索过滤**；名称 ≤20、提示词必填 ≤4000、变量提示 `{text}/{target}/{language}/{program}/{app}`；支持编辑、删除二次确认）、搜索配置（搜索行「配置」按钮展开 Google/百度/Bing，保存 `picker.searchEngine`）、默认目标语言（auto 显示「自动识别」，共 38 种语言）、黑名单 chip 输入（回车添加/可删除）。截图快捷键可配置（见 §10.4）。恢复默认设置保留自定义技能与已下载模型/引擎。「开机自启」「关闭窗口后驻留托盘」两个开关行与划词开关一致：标签/开关垂直居中、开关靠右。
 - 快捷键（第二轮反馈起独立成卡片，不再放在「划词行为」内）：卡片头「快捷键」+ 说明「配置 Lexora 的全局快捷键。」；内含「截图快捷键」录制器——显示当前组合（如「Win + Shift + X」），点击后提示「请按下新的快捷键…（Esc 取消）」，按下「修饰键 + 主键」即调用 `capture_set_hotkey` 保存并立即生效；Esc 取消；冲突时内联提示并保留旧值；「恢复默认」还原 `Win+Shift+X`；保存 `capture.regionShortcut`。
 - 应用与启动：开机自启（portable 不支持时置灰说明）、关闭窗口后驻留托盘、打开数据/模型/日志/引擎目录、退出程序。
@@ -407,12 +414,12 @@ pub struct SelectionService {
 - 内置润色：工具栏「润色」流式返回 Markdown，默认英文提示词；设置页可编辑/重置；本地走 General 模型。
 - 内置搜索：工具栏「搜索」按 `picker.searchEngine` 打开系统浏览器搜索选中文本（Google/百度/Bing，URL 编码正确）；设置页可切换引擎。
 - 设置迁移/重置：version 1 旧配置升级后自动补上润色与搜索且保留 custom 技能；`reset_settings` 后自定义技能定义与启用状态仍在。
-- 设置页：在线模型可按 `/models` 拉取并下拉选择；切换服务商预设会清空上一预设的 Key/模型且不自动填模型名；技能可拖拽排序（设置窗口 `dragDropEnabled: false` 保证 Windows 上 HTML5 拖拽可用）；技能列表显示图标；自定义技能可增删改；技能提示词可编辑与重置（默认英文）；默认目标语言显示「自动识别」；不再有快捷键与本地模型下拉。
-- 本地模型目录提供 3 个模型：Hy-MT2 1.8B（翻译模型，ModelScope）、Qwen2.5 3B（通用模型）、Qwen2.5-VL 3B（视觉模型，主文件 + mmproj 投影器）；无需手动选择，启动后按功能自动使用对应模型（切换模型会重新加载）。
+- 设置页：在线模型可按 `/models` 拉取并下拉选择；切换服务商预设会清空上一预设的 Key/模型且不自动填模型名；技能可拖拽排序（设置窗口 `dragDropEnabled: false` 保证 Windows 上 HTML5 拖拽可用）；技能列表显示图标；自定义技能可增删改；技能提示词可编辑与重置（默认英文）；默认目标语言显示「自动识别」；不再有文字技能全局快捷键；本地通用/视觉模型支持手动选择。
+- 本地模型目录提供 Hy-MT2 1.8B 与 Qwen3.5 0.8B / 2B / 4B（各有 Q4_K_M / Q3_K_M），均从 ModelScope 下载；翻译自动使用 Hy-MT2，通用与视觉共用手动选择，硬件推荐不替选。
 - 提示词生效：自定义提示词保存后，下一次翻译/总结/解释请求使用自定义 system prompt；空值回退系统默认。
 - 在线模式：填 mock/真实 OpenAI 兼容服务后「测试连接」成功；picker 翻译流式显示。
-- 本地模式：安装引擎 + 下载/导入 Qwen2.5 GGUF 后启动成功，翻译流式返回；总结/解释可用。
-- 截图（§10）：快捷键开图无黑屏 loading；选区内拖动可平移、手柄可缩放；工具条与划词工具条同为白色主题；点击提取文字/翻译/解释图片/图片技能后截图关闭、图片入剪贴板、picker 结果面板流式输出且具备朗读/复制/重试/继续提问；本地安装 Qwen2.5-VL 3B 后可解释图片；设置页可录制截图快捷键并立即生效、冲突时提示。
+- 本地模式：安装引擎 + 下载 Hy-MT2 与完整 Qwen3.5、手动选择后启动成功，翻译流式返回；总结/解释可用；未选择时明确提示，切换选择后重启生效。
+- 截图（§10）：快捷键开图无黑屏 loading；选区内拖动可平移、手柄可缩放；工具条与划词工具条同为白色主题；点击提取文字/翻译/解释图片/图片技能后截图关闭、图片入剪贴板、picker 结果面板流式输出且具备朗读/复制/重试/继续提问；本地安装完整并手动选择 Qwen3.5 后可解释图片；设置页可录制截图快捷键并立即生效、冲突时提示。
 - 截图第二轮（§10.7/§10.8）：连续截图复用 overlay 窗口、无重建延迟与闪烁；提取文字默认走视觉模型（日志路径可见），视觉不可用才回退 Windows OCR；设置页快捷键为独立卡片；全屏选区内拖拽直接开始新框选。
 - 构建 release：`scripts/build-portable.ps1` 产出单个 `dist/Lexora-<version>-win-x64.exe`；双击运行后静默驻留托盘，数据写入 exe 同级 data/；Release 正文由 `scripts/release-notes.ps1` 生成排版化 changelog。
 
@@ -486,7 +493,7 @@ pub struct SelectionService {
      - `explain`：`engine.vision_stream(image_data_url, DEFAULT_EXPLAIN_IMAGE_PROMPT)`；
      - `custom`：`engine.vision_stream(data_url, render_image_prompt(skill.prompt, target))`；
      - 事件统一为 **`translate-event`**（`{requestId, type:"chunk"|"target"|"error"|"done", text?, targetLang?, message?, hint?}`）发往 picker 窗口。
-- 「视觉可用」判定 = `EngineService::can_use_vision()`：在线模式要求已配置服务地址与模型；本地模式要求 Qwen2.5-VL 3B（主文件 + mmproj）已安装（未启动时请求会得到「本地模型未启动」错误，由面板展示）。
+- 「视觉可用」判定 = `EngineService::can_use_vision()`：在线模式要求已配置服务地址与模型；本地模式要求手动选择的 Qwen3.5（主文件 + 对应 mmproj-F16）已安装（未启动时请求会得到「本地模型未启动」错误，由面板展示）。
 - `capture_retry`：先 `state.abort_translate()`；若传入 `targetLang` 且动作为 translate，先更新 LastCapture.targetLang 再重跑；其余按 LastCapture 重跑同一动作（ocr/translate 重新提取；explain/custom 重新发送图片），事件同上，requestId 用调用参数。
 - `capture_followup`：explain/custom 用新增的 `engine.vision_followup_stream(image_data_url, previous_answer, question, history)`（system 解释提示 + 图片 + 上一轮答案 + 历史 + 新问题）；ocr/translate 用 `engine.followup_stream(ocrText, previous_answer, question, history)`；事件同上。
 - `capture_close` 不清 `LastCapture`（重试/追问仍可用），下一次 `start_capture` 或 `new capture` 时覆盖释放。
@@ -522,18 +529,12 @@ pub struct SelectionService {
 - `translate-event` 的 `type` 扩展为 `"chunk" | "target" | "error" | "done"`；`target` 携带 `targetLang`（语言代码），仅图片翻译会发。
 
 ### 10.6 本地视觉（item 5）
-- 原因：目录里的 `qwen2.5-3b` 是 **Qwen2.5-3B-Instruct（纯文本）**，不具备视觉能力；视觉需要 Qwen2.5-VL 系列 + 视觉投影器（mmproj）。
-- 新增本地模型 `qwen2.5-vl-3b`（视觉模型，ModelScope 优先 / HF 兜底）：
-  | id | 名称 | 文件 | 大小 |
-  | --- | --- | --- | --- |
-  | `qwen2.5-vl-3b` | Qwen2.5-VL 3B（视觉模型） | `Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf` | 1,929,901,056 |
-  | 同上 | 视觉投影器 | `mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf` | 844,757,728 |
-  - ModelScope：`https://www.modelscope.cn/models/ggml-org/Qwen2.5-VL-3B-Instruct-GGUF/resolve/master/<file>`
-  - HF：`https://huggingface.co/ggml-org/Qwen2.5-VL-3B-Instruct-GGUF/resolve/main/<file>`
-- `ModelSpec` 增加 `vision: bool` 与 `mmproj: Option<MmprojSpec{filename,size_bytes,modelscope_url,hf_url}>`；`CatalogEntry` 增加 `vision: bool`；`scan_models` 过滤 `mmproj-*.gguf`（不当作独立模型）；`installed` = 主文件存在（VL 还要求 mmproj 存在）。
+- 本地视觉与通用任务共用用户手动选择的 Qwen3.5（0.8B / 2B / 4B，各有 Q4_K_M / Q3_K_M），不再自动选择 Qwen2.5-VL。模型及对应 mmproj-F16 从 ModelScope 下载。
+- 投影器远程文件名为 `mmproj-F16.gguf`，本地文件名按规格唯一，下载路径与本地文件名须分别处理；同规格的两种量化可共用对应投影器。
+- `ModelSpec` 提供 `vision` 与 `mmproj` 信息；`CatalogEntry` 标记视觉能力；`scan_models` 过滤 `mmproj-*.gguf`（不当作独立模型）；`installed` 要求主文件与对应投影器都存在。
 - 下载：主模型完成后继续下载 mmproj（同一个模型 id；进度事件先主文件后投影器，`filename` 字段区分；任一失败整体失败并清理临时文件）。
-- `LocalRole` 增加 `Vision`；`model_for_role(Vision)` 只返回「主文件 + mmproj 都存在」的 VL 模型；`llama.rs::ensure_model` 增加 `mmproj: Option<&str>` 参数，启动参数追加 `--mmproj <path>`，视觉模型 `-c` 至少 8192；模型或投影器变化时重启进程。
-- `EngineService::vision_stream`：本地模式不再报「本地不支持图片理解」；本地无 VL 模型时返回「本地视觉模型未安装」+ hint（去设置下载 Qwen2.5-VL 3B）；在线模式保持原逻辑。
+- `LocalRole` 增加 `Vision`；`model_for_role(Vision)` 只使用手动选择且「主文件 + 对应 mmproj 都存在」的 Qwen3.5；`llama.rs::ensure_model` 增加 `mmproj: Option<&str>` 参数，启动参数追加 `--mmproj <path>`，视觉模型 `-c` 至少 8192；模型或投影器变化时重启进程。
+- `EngineService::vision_stream`：本地未选择通用/视觉模型时明确提示去设置选择；文件不完整时提示下载所选 Qwen3.5 及对应投影器，不自动替选；在线模式保持原逻辑。
 - 本地模式「翻译」不再被拒绝（OCR + 文本翻译）；`capture.rs` 删除「本地模式一律报错」。
 
 ### 10.7 性能与无闪烁验收（第二轮）
@@ -543,7 +544,7 @@ pub struct SelectionService {
 - 桌面内容为动态视频/硬件合成窗口时，抓屏结果不应出现大块纯黑（若偶发，允许重抓一次，见实现说明）。
 
 ### 10.8 文字提取改用视觉模型（第二轮）
-- 「提取文字」不再直接使用 Windows OCR：优先 `engine.vision_stream(data_url, DEFAULT_OCR_PROMPT)` 转写（在线视觉模型 / 本地 Qwen2.5-VL 3B），结果以纯文本面板显示（朗读/复制/重试/追问不变）。
+- 「提取文字」不再直接使用 Windows OCR：优先 `engine.vision_stream(data_url, DEFAULT_OCR_PROMPT)` 转写（在线视觉模型 / 本地手动选择的 Qwen3.5），结果以纯文本面板显示（朗读/复制/重试/追问不变）。
 - 视觉不可用（在线未配置且本地无 VL 模型）**或视觉请求失败/未返回文本**时回退 Windows OCR，保证功能仍可用；日志注明走了哪条路径与回退原因。
 - 「翻译」同样优先用视觉模型转写后再翻译（缓存转写文本供重试/追问），视觉不可用时回退 Windows OCR + 文本翻译。
 - 新增 `DEFAULT_OCR_PROMPT`（engine/prompts.rs，英文，要求逐字转写、保留换行、不翻译/不总结/不加代码围栏），由 `engine.rs` 重新导出；`EngineService::can_use_vision()` 判定视觉可用性。
@@ -554,7 +555,7 @@ pub struct SelectionService {
 - 工具条为白色主题，与划词工具条一致。
 - 点击「提取文字/翻译/解释图片/自定义图片技能」后：截图 overlay 立即关闭、图片在剪贴板、picker 弹出结果面板流式输出；无「面板 + 框选」同屏。
 - 结果面板具备朗读/复制/重试/流式/继续提问；错误有可操作提示。
-- 在线视觉模型可解释图片；本地安装 Qwen2.5-VL 3B 后可本地解释图片；本地模式下翻译截图文字可用。
+- 在线视觉模型可解释图片；本地安装完整并手动选择 Qwen3.5 后可本地解释图片；本地模式下翻译截图文字可用。
 - 设置页可录制并保存新的截图快捷键，立即生效；冲突时提示且保留旧快捷键。
 - 第三轮（§10.1/§10.3/§10.5）：截图期间设置窗口与划词工具面板保持打开、不被拍进截图；设置页工具栏技能分「文字/图片」Tab 且各自独立开关排序；提取文字流式输出；图片翻译可切换目标语言，且面板显示的目标语言与实际一致。
 - 第四轮（§10.1/§10.2）：从工具面板点击「截图」后工具面板不再自行关闭，截图结束后保持可见；截图工具条按钮顺序/启用由设置 `picker.captureSkills` 控制；设置页「截图」入口技能归入文字技能分类，图片技能分类改为「复制/提取文字/翻译/解释图片」+ 自定义图片技能；隐藏截图窗口不再触发 2.5s 兜底（WebView2 后台节流被禁用）。

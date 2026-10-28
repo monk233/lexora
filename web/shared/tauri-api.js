@@ -351,7 +351,7 @@
         license: "MIT",
       },
       settings: {
-        version: 6,
+        version: 7,
         picker: {
           enabled: true,
           skills: ["translate", "summarize", "explain", "polish", "read", "copy", "screenshot", "search"],
@@ -378,10 +378,12 @@
             maxTokens: 1024,
           },
           local: {
+            selectedModel: "",
             contextSize: 4096,
             threads: 0,
             gpuLayers: 0,
             autoStart: true,
+            keepRunning: false,
           },
         },
         app: {
@@ -405,6 +407,15 @@
         localError: "",
         engineAvailable: engineInstalled,
       },
+      hardwareRecommendation: {
+        totalMemoryBytes: 17179869184,
+        cpuThreads: 12,
+        gpuVramBytes: 4294967296,
+        gpuName: "预览 GPU",
+        recommendedModelId: "qwen3.5-4b-q4-k-m",
+        recommendedQuant: "Q4_K_M",
+        reason: "内存和计算资源充足，优先模型效果",
+      },
       models: [installedModel],
       catalog: [
         mockCatalogEntry(
@@ -416,25 +427,7 @@
           true,
           true
         ),
-        mockCatalogEntry(
-          "qwen2.5-3b",
-          "Qwen2.5 3B（通用模型）",
-          "通用模型：翻译、总结、解释，建议 16GB+ 内存",
-          "qwen2.5-3b-instruct-q4_k_m.gguf",
-          2104932768,
-          false,
-          false
-        ),
-        mockCatalogEntry(
-          "qwen2.5-vl-3b",
-          "Qwen2.5-VL 3B（视觉模型）",
-          "可理解图片与文字，含视觉投影器（两个文件），建议 16GB+ 内存",
-          "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf",
-          1929901056,
-          false,
-          false,
-          true
-        ),
+
       ],
       download: null,
       downloads: [],
@@ -456,6 +449,21 @@
           "You are a vision assistant. Explain the content, the visible text and the key details of the image in Simplified Chinese, using Markdown. Do not invent information that is not in the image.",
       },
     };
+    [
+      ["0.8B", 532517120, 470167808],
+      ["2B", 1280835840, 1107149056],
+      ["4B", 2740937888, 2293388448],
+    ].forEach(function (spec) {
+      ["Q4_K_M", "Q3_K_M"].forEach(function (quant, index) {
+        var id = "qwen3.5-" + spec[0].toLowerCase() + "-" + quant.toLowerCase().replace(/_/g, "-");
+        mockStore.catalog.push(mockCatalogEntry(
+          id, "Qwen3.5 " + spec[0] + " " + quant,
+          "通用文本与视觉理解，下载包含视觉投影器；完整安装后请手动选择。",
+          "Qwen3.5-" + spec[0] + "-" + quant + ".gguf",
+          spec[index + 1], false, false, true
+        ));
+      });
+    });
     refreshMockDerived();
   }
 
@@ -764,7 +772,7 @@
 
     function attempt() {
       mockPickerTimer = null;
-      if (!mockHasListeners("picker-data")) {
+      if (!mockHasListeners(pickerDataEvent)) {
         mockPickerAttempts += 1;
         if (mockPickerAttempts < 8) {
           mockPickerTimer = window.setTimeout(attempt, 120);
@@ -1171,7 +1179,9 @@
       /* ---- picker ---- */
       case "picker_ready":
         scheduleMockPickerData(120);
-        scheduleMockPickerImage();
+        if (PICKER_SURFACE === "panel") {
+          scheduleMockPickerImage();
+        }
         return { ok: true };
       case "start_capture":
         return { ok: true, monitors: 1 };
@@ -1428,8 +1438,10 @@
       case "capture_close":
         return { ok: true };
       case "picker_close":
-        mockEmit("picker-hidden", {});
-        scheduleMockPickerData(1600);
+        mockEmit(pickerHiddenEvent, {});
+        if (PICKER_SURFACE === "panel") {
+          scheduleMockPickerData(1600);
+        }
         return { ok: true };
       case "picker_pin":
         mockStore.picker.pinned = !!args.pinned;
@@ -1437,6 +1449,9 @@
           mockStore.settings.picker.panelPinned = !!args.pinned;
         }
         return { ok: true, pinned: !!args.pinned };
+      case "picker_toolbar_run_skill":
+        mockEmit("picker-run-skill", { skill: String(args.skill || "") });
+        return { ok: true };
       case "picker_panel_state":
         return { ok: true };
       case "picker_activate":
@@ -1572,12 +1587,14 @@
           hasUpdate: true,
           assetName: "Lexora-0.1.1-win-x64.exe",
           assetUrl: "https://github.com/monk233/lexora/releases/download/v0.1.1/Lexora-0.1.1-win-x64.exe",
-          notes: "浏览器预览模式：这里显示新版本的更新说明。\\n\\n- 修复若干问题\\n- 改进技能面板",
+          notes: "### 本次更新\\n\\n- **Markdown 更新日志**\\n- 修复若干问题\\n- 改进技能面板\\n\\n```text\\nLexora 0.1.1\\n```",
           publishedAt: "2026-10-24T12:00:00Z",
           sizeBytes: 9500000,
         };
       }
-      case "install_update": {
+      case "notify_update_available":
+        console.info("[mock] 系统通知：发现新版本", String(args.version || ""));
+        return { ok: true };      case "install_update": {
         return new Promise(function (resolve) {
           window.setTimeout(function () {
             mockEmit("update-progress", { status: "downloading", received: 2800000, total: 9500000, percent: 30 });
@@ -1730,6 +1747,26 @@
   }
 
   function mockStartLocal() {
+    if (mockStore.engine.localState === "ready") {
+      return { ok: true };
+    }
+    var selectedId = mockStore.settings.provider.local.selectedModel;
+    if (!selectedId) {
+      return {
+        ok: false,
+        error: "尚未选择本地模型。",
+        hint: "请手动选择并完整下载 Qwen3.5 后启动。",
+      };
+    }
+    var entry = mockStore.catalog.filter(function (item) {
+      return item.id === selectedId && item.vision && item.installed;
+    })[0];
+    var preferred = entry && mockStore.models.filter(function (model) {
+      return model.catalogId === selectedId && model.file === entry.filename;
+    })[0];
+    if (!preferred) {
+      return { ok: false, error: "所选模型尚未完整安装，请下载后重新选择。" };
+    }
     if (!mockStore.engine.engineAvailable) {
       return {
         ok: false,
@@ -1737,20 +1774,6 @@
         hint: "请先在「翻译服务 → 本地模型」中下载引擎。",
       };
     }
-    if (!mockStore.models.length) {
-      return {
-        ok: false,
-        error: "尚未安装本地模型",
-        hint: "请先下载或导入 GGUF 模型。",
-      };
-    }
-    if (mockStore.engine.localState === "ready") {
-      return { ok: true };
-    }
-    var preferred =
-      mockStore.models.filter(function (model) {
-        return model.catalogId === "hy-mt2-1.8b";
-      })[0] || mockStore.models[0];
     mockStore.engine.localState = "starting";
     mockStore.engine.localError = "";
     mockStore.engine.localModelFile = preferred.file;
@@ -1827,24 +1850,35 @@
   /* pickerAPI                                                           */
   /* ------------------------------------------------------------------ */
 
+  var PICKER_SURFACE = /(?:^|[?&])surface=toolbar(?:&|$)/.test(
+    String(window.location.search || "")
+  )
+    ? "toolbar"
+    : "panel";
+  var pickerDataEvent = PICKER_SURFACE === "toolbar" ? "picker-toolbar-data" : "picker-data";
+  var pickerHiddenEvent = PICKER_SURFACE === "toolbar" ? "picker-toolbar-hidden" : "picker-hidden";
   window.pickerAPI = {
     live: LIVE,
+    surface: PICKER_SURFACE,
 
     ready: function () {
-      return safeInvoke("picker_ready", {});
+      return safeInvoke("picker_ready", { surface: PICKER_SURFACE });
     },
     onData: function (callback) {
-      return subscribe("picker-data", callback);
+      return subscribe(pickerDataEvent, callback);
     },
     onHidden: function (callback) {
-      return subscribe("picker-hidden", callback);
+      return subscribe(pickerHiddenEvent, callback);
+    },
+    onRunSkill: function (callback) {
+      return subscribe("picker-run-skill", callback);
     },
     /* Screenshot skills hand their result panel to the picker (see §10.5). */
     onImage: function (callback) {
       return subscribe("picker-image", callback);
     },
     close: function () {
-      return safeInvoke("picker_close", {});
+      return safeInvoke("picker_close", { surface: PICKER_SURFACE });
     },
     pin: function (pinned, remember) {
       return safeInvoke("picker_pin", {
@@ -1861,7 +1895,16 @@
       return safeInvoke("picker_activate", { active: !!active });
     },
     resize: function (width, height) {
-      return invokeQuiet("picker_resize", { width: width, height: height }, null);
+      return invokeQuiet(
+        "picker_resize",
+        { width: width, height: height, surface: PICKER_SURFACE },
+        null
+      );
+    },
+    runToolbarSkill: function (skill) {
+      return safeInvoke("picker_toolbar_run_skill", {
+        skill: String(skill == null ? "" : skill),
+      });
     },
     copy: function (text) {
       return safeInvoke("picker_copy", { text: String(text == null ? "" : text) });
@@ -2083,6 +2126,11 @@
     installUpdate: function () {
       return safeInvoke("install_update", {});
     },
+    notifyUpdateAvailable: function (version) {
+      return safeInvoke("notify_update_available", {
+        version: String(version == null ? "" : version),
+      });
+    },
     onUpdateProgress: function (callback) {
       return subscribe("update-progress", function (payload) {
         if (typeof callback === "function") {
@@ -2096,6 +2144,13 @@
 
     onState: function (callback) {
       return subscribe("state-changed", function (payload) {
+        if (typeof callback === "function") {
+          callback(payload);
+        }
+      });
+    },
+    onUpdateAvailable: function (callback) {
+      return subscribe("update-available", function (payload) {
         if (typeof callback === "function") {
           callback(payload);
         }

@@ -10,8 +10,7 @@
 //! process without a console window, then polls `/health` for at most 90s while
 //! watching for an early exit. `stop()` (and `Drop`) always terminate the child.
 
-use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Mutex;
@@ -27,7 +26,6 @@ use crate::settings::Settings;
 pub const START_TIMEOUT: Duration = Duration::from_secs(90);
 const HEALTH_INTERVAL: Duration = Duration::from_millis(300);
 const HEALTH_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
-const LLAMA_LOG_FILE: &str = "llama.log";
 
 /// Minimum context size for vision models: image tokens can easily consume
 /// several thousand positions, so the configured value is raised to this floor
@@ -205,7 +203,7 @@ impl LocalServer {
         if model_file.is_empty() {
             return Err(EngineError::new(
                 "尚未安装本地模型。",
-                "请先在「设置 → 本地模型」下载 Hy-MT2 或 Qwen2.5 3B，也可以导入 GGUF 文件。",
+                "请先在「设置 → 本地模型」下载 Hy-MT2，或手动选择并完整安装 Qwen3.5。",
             ));
         }
 
@@ -238,7 +236,7 @@ impl LocalServer {
                 if !path.is_file() {
                     return Err(EngineError::new(
                         format!("视觉投影器文件不存在：{file}。"),
-                        "请在「设置 → 本地模型」中重新下载 Qwen2.5-VL 3B（含视觉投影器），或重新下载该模型。",
+                        "请在「设置 → 本地模型」中重新下载所选 Qwen3.5 的视觉投影器，或重新下载该模型。",
                     ));
                 }
                 Some(path)
@@ -278,7 +276,6 @@ impl LocalServer {
         }
         let threads = resolve_threads(local.threads);
         let gpu_layers = local.gpu_layers.min(200);
-        let log_path = paths.logs_dir.join(LLAMA_LOG_FILE);
         logger.info(&format!(
             "starting llama-server: model={model_file} mmproj={} port={port} ctx={context_size} threads={threads} ngl={gpu_layers}",
             mmproj_file.as_deref().unwrap_or("-")
@@ -291,7 +288,7 @@ impl LocalServer {
             context_size,
             threads,
             gpu_layers,
-            &log_path,
+            logger.clone(),
         )
         .map_err(|error| {
             self.fail(
@@ -520,24 +517,14 @@ fn spawn_server(
     context_size: u32,
     threads: u32,
     gpu_layers: u32,
-    log_path: &Path,
+    logger: Logger,
 ) -> std::io::Result<Child> {
-    if let Some(parent) = log_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let mut log = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path)?;
-    let _ = writeln!(
-        log,
-        "\n=== llama-server start (port {port}, ctx {context_size}, threads {threads}, ngl {gpu_layers}, mmproj {}) ===",
+    logger.info(&format!(
+        "llama-server start: port={port} ctx={context_size} threads={threads} ngl={gpu_layers} mmproj={}",
         mmproj
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "-".to_string())
-    );
-    let stdout = log.try_clone()?;
-    let stderr = log.try_clone()?;
+    ));
 
     let mut command = build_server_command(
         binary,
@@ -548,15 +535,39 @@ fn spawn_server(
         threads,
         gpu_layers,
     );
-    command
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr));
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         command.creation_flags(CREATE_NO_WINDOW);
     }
-    command.spawn()
+
+    let mut child = command.spawn()?;
+    if let Some(stdout) = child.stdout.take() {
+        forward_output(stdout, logger.clone(), "stdout");
+    }
+    if let Some(stderr) = child.stderr.take() {
+        forward_output(stderr, logger, "stderr");
+    }
+    Ok(child)
+}
+
+fn forward_output<R: std::io::Read + Send + 'static>(
+    reader: R,
+    logger: Logger,
+    channel: &'static str,
+) {
+    std::thread::spawn(move || {
+        for line in BufReader::new(reader).lines() {
+            match line {
+                Ok(line) => logger.info(&format!("{channel}: {line}")),
+                Err(error) => {
+                    logger.warn(&format!("{channel} read failed: {error}"));
+                    break;
+                }
+            }
+        }
+    });
 }
 
 #[cfg(test)]

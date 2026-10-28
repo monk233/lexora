@@ -25,6 +25,7 @@
 
   var API = window.pickerAPI;
   var LP = window.LP || {};
+  var PICKER_SURFACE = API && API.surface === "toolbar" ? "toolbar" : "panel";
   /* Shared LP.DEFAULT_SKILLS is the source of truth (built-in skills); the
    * local list only keeps the toolbar usable if the shared script failed. */
   var FALLBACK_SKILLS = [
@@ -60,6 +61,14 @@
   var PANEL_MIN_HEIGHT = 240;
   var DEFAULT_PANEL_WIDTH = 520;
   var DEFAULT_PANEL_HEIGHT = 360;
+  /* Auto mode uses one deliberate reading width. Its height follows content
+   * until the screen-aware ceiling, then the hidden-scrollbar body follows the
+   * streamed answer from the bottom. */
+  var AUTO_PANEL_WIDTH = PANEL_MIN_WIDTH;
+  var AUTO_PANEL_MAX_HEIGHT = 760;
+  var AUTO_PANEL_SCREEN_MARGIN = 80;
+  var AUTO_PANEL_RESIZE_INTERVAL_MS = 200;
+  var AUTO_PANEL_HEIGHT_STEP = 48;
 
   /* Label fallback only: LP.SKILL_MAP is the primary source for built-in
    * labels/icons (see builtinSkillMeta). */
@@ -226,9 +235,10 @@
      * following the content size (double-clicking the grip restores that). */
     panelAutoResize: true,
     panelManualSize: null,
-    /* picker-data config.panelMode: "auto" (window follows the content, no
-     * scrollbar, no grip) or "scroll" (fixed window, body scrolls, grip). */
+    /* picker-data config.panelMode: "auto" (fixed width, screen-limited height,
+     * hidden scrollbar follows new content) or "scroll" (fixed user size). */
     panelMode: "auto",
+    autoPanelFollow: true,
     /* Last auto-mode window size sent to the shell, to avoid redundant resizes
      * on every streamed chunk. */
     lastAutoPanelSize: null,
@@ -356,43 +366,95 @@
     window.requestAnimationFrame(resizeToolbar);
   }
 
-  function resizePanelForContent() {
-    window.requestAnimationFrame(function () {
-      // Only auto mode follows the content; scroll mode keeps the fixed window
-      // and lets the panel body scroll instead.
-      if (!state.panelOpen || state.panelMode !== "auto") {
+  var autoPanelScrollFrame = 0;
+  var autoPanelResizeTimer = 0;
+
+  function scrollAutoPanelToEnd() {
+    if (state.panelOpen && state.panelMode === "auto" && state.autoPanelFollow) {
+      panelBody.scrollTop = panelBody.scrollHeight;
+    }
+  }
+
+  function followAutoPanelContent() {
+    if (
+      !state.panelOpen ||
+      state.panelMode !== "auto" ||
+      !state.autoPanelFollow ||
+      autoPanelScrollFrame
+    ) {
+      return;
+    }
+    autoPanelScrollFrame = window.requestAnimationFrame(function () {
+      autoPanelScrollFrame = window.requestAnimationFrame(function () {
+        autoPanelScrollFrame = 0;
+        if (state.panelOpen && state.panelMode === "auto" && state.autoPanelFollow) {
+          panelBody.scrollTop = panelBody.scrollHeight;
+        }
+      });
+    });
+  }
+  function autoPanelMaxHeight() {
+    var available = Number(window.screen && window.screen.availHeight) || AUTO_PANEL_MAX_HEIGHT;
+    return Math.max(
+      PANEL_MIN_HEIGHT,
+      Math.min(AUTO_PANEL_MAX_HEIGHT, Math.floor(available - AUTO_PANEL_SCREEN_MARGIN))
+    );
+  }
+
+  function flushAutoPanelResize() {
+    autoPanelResizeTimer = 0;
+    // Only auto mode follows the content; scroll mode keeps the user's size.
+    if (!state.panelOpen || state.panelMode !== "auto") {
+      return;
+    }
+    var width = AUTO_PANEL_WIDTH;
+    // Measure from scrollHeight without changing the panel's flex mode. Toggling
+    // a "natural height" class on every streamed chunk causes reflow flicker.
+    var panelHeight = panel.getBoundingClientRect().height;
+    var bodyHeight = panelBody.getBoundingClientRect().height;
+    var naturalHeight = panelHeight - bodyHeight + panelBody.scrollHeight + 4;
+    if (!isFinite(naturalHeight) || naturalHeight <= 0) {
+      return;
+    }
+    var maxHeight = autoPanelMaxHeight();
+    var desiredHeight = Math.ceil(naturalHeight);
+    if (desiredHeight < maxHeight) {
+      desiredHeight =
+        Math.ceil(desiredHeight / AUTO_PANEL_HEIGHT_STEP) * AUTO_PANEL_HEIGHT_STEP;
+    }
+    var height = Math.max(
+      PANEL_MIN_HEIGHT,
+      Math.min(maxHeight, desiredHeight)
+    );
+    var previous = state.lastAutoPanelSize;
+    // Intermediate Markdown layouts can transiently become shorter. During the
+    // stream, grow only: repeated grow/shrink cycles cause visible window flicker.
+    if (previous && previous[0] === width && height < previous[1]) {
+      height = previous[1];
+    }
+    scrollAutoPanelToEnd();
+    followAutoPanelContent();
+    if (previous && previous[0] === width && previous[1] === height) {
+      return;
+    }
+    state.lastAutoPanelSize = [width, height];
+    Promise.resolve(API.resize(width, height)).then(function () {
+      if (!state.panelOpen || state.panelMode !== "auto" || !state.autoPanelFollow) {
         return;
       }
-      var flat = String(panelBody.innerText || "").replace(/\s+/g, "");
-      var width = 480;
-      if (flat.length > 140) {
-        width = 560;
-      }
-      if (flat.length > 320) {
-        width = 640;
-      }
-      if (flat.length > 620) {
-        width = 720;
-      }
-      width = Math.max(PANEL_MIN_WIDTH, width);
-      // Measure the natural content height: while growing the auto panel fills
-      // the window, so a plain rect would keep a previously taller window alive.
-      panel.classList.add("is-auto-measuring");
-      var naturalHeight = panel.getBoundingClientRect().height;
-      panel.classList.remove("is-auto-measuring");
-      if (!isFinite(naturalHeight) || naturalHeight <= 0) {
-        return;
-      }
-      var height = Math.max(PANEL_MIN_HEIGHT, Math.ceil(naturalHeight + 4));
-      var previous = state.lastAutoPanelSize;
-      if (previous && previous[0] === width && previous[1] === height) {
-        return;
-      }
-      state.lastAutoPanelSize = [width, height];
-      API.resize(width, height);
+      followAutoPanelContent();
     });
   }
 
+  function resizePanelForContent() {
+    if (!state.panelOpen || state.panelMode !== "auto" || autoPanelResizeTimer) {
+      return;
+    }
+    autoPanelResizeTimer = window.setTimeout(
+      flushAutoPanelResize,
+      AUTO_PANEL_RESIZE_INTERVAL_MS
+    );
+  }
   /* ---- Panel head ------------------------------------------------------ */
 
   function normalizeTargetLang(code) {
@@ -843,7 +905,7 @@
     state.panelAutoResize = true;
     panel.classList.remove("is-manual-size");
     if (state.panelOpen) {
-      API.resize(DEFAULT_PANEL_WIDTH, DEFAULT_PANEL_HEIGHT);
+      API.resize(AUTO_PANEL_WIDTH, DEFAULT_PANEL_HEIGHT);
       resizePanelForContent();
     }
   }
@@ -1187,6 +1249,11 @@
     abortActiveRequest();
     stopSpeech();
     resetFollowup();
+    if (autoPanelResizeTimer) {
+      window.clearTimeout(autoPanelResizeTimer);
+      autoPanelResizeTimer = 0;
+    }
+    state.autoPanelFollow = true;
     // Switching skills (or opening a fresh screenshot panel) drops the image
     // context: the next picker-image event records it again.
     state.image = null;
@@ -1239,7 +1306,7 @@
       state.panelAutoResize = true;
       state.lastAutoPanelSize = null;
       panel.classList.remove("is-manual-size");
-      API.resize(DEFAULT_PANEL_WIDTH, DEFAULT_PANEL_HEIGHT);
+      API.resize(AUTO_PANEL_WIDTH, DEFAULT_PANEL_HEIGHT);
       resizePanelForContent();
     }
   }
@@ -1277,6 +1344,7 @@
     panelBody.innerHTML = "";
     panelBody.appendChild(node);
     panelBody.scrollTop = 0;
+    state.autoPanelFollow = true;
     syncPanelFoot();
   }
 
@@ -1825,10 +1893,12 @@
       if (!request.active) {
         return;
       }
-      var stickToBottom = isNearBottom(panelBody);
+      var stickToBottom =
+        state.panelMode === "auto" ? state.autoPanelFollow : isNearBottom(panelBody);
       renderRequestResult(request);
       if (stickToBottom) {
-        panelBody.scrollTop = panelBody.scrollHeight;
+        scrollAutoPanelToEnd();
+        followAutoPanelContent();
       }
       var output = requestOutputText(request);
       setPanelSpeakText(output);
@@ -2625,7 +2695,31 @@
     );
   }
 
+  function skillOpensPanel(skill) {
+    if (skill === "translate" || skill === "summarize" || skill === "explain" || skill === "polish") {
+      return true;
+    }
+    if (skill === "read" || skill === "copy" || skill === "search" || skill === "screenshot") {
+      return false;
+    }
+    var meta = skillMeta(skill);
+    return meta.kind !== "image";
+  }
+
   function runSkill(skill) {
+    if (PICKER_SURFACE === "toolbar" && skillOpensPanel(skill)) {
+      API.runToolbarSkill(skill).then(
+        function (result) {
+          if (result && result.ok === false) {
+            showToast("无法打开工具面板：" + friendlyError(result.error || "未知错误"));
+          }
+        },
+        function (error) {
+          showToast("无法打开工具面板：" + friendlyError(String(error)));
+        }
+      );
+      return;
+    }
     if (skill === "translate") {
       translateSkill();
     } else if (skill === "summarize" || skill === "explain") {
@@ -2662,14 +2756,16 @@
     setInputActivated(false);
     // Hidden picker: no screenshot context may survive into the next payload.
     state.image = null;
-    if (state.panelPinned) {
-      // The shell hid the picker; cancel the transient pin (preference stays).
-      setPanelPinned(false, true, false);
-    } else {
-      state.panelPinned = false;
-      syncPanelPin();
+    if (PICKER_SURFACE !== "toolbar") {
+      if (state.panelPinned) {
+        // The shell hid the panel; cancel the transient pin (preference stays).
+        setPanelPinned(false, true, false);
+      } else {
+        state.panelPinned = false;
+        syncPanelPin();
+      }
+      notifyPanelState(false);
     }
-    notifyPanelState(false);
     state.panelSpeakText = "";
     state.panelRetry = null;
     panel.hidden = true;
@@ -2771,6 +2867,52 @@
   });
 
   API.onTranslateEvent(handleTranslateEvent);
+  if (API && typeof API.onRunSkill === "function") {
+    API.onRunSkill(function (payload) {
+      if (PICKER_SURFACE === "panel" && payload && payload.skill) {
+        runSkill(String(payload.skill));
+      }
+    });
+  }
+
+  panelBody.addEventListener(
+    "wheel",
+    function (event) {
+      if (!state.panelOpen || state.panelMode !== "auto") {
+        return;
+      }
+      if (event.deltaY < 0) {
+        state.autoPanelFollow = false;
+        return;
+      }
+      window.requestAnimationFrame(function () {
+        if (isNearBottom(panelBody)) {
+          state.autoPanelFollow = true;
+        }
+      });
+    },
+    { passive: true }
+  );
+  panelBody.addEventListener("keydown", function (event) {
+    if (!state.panelOpen || state.panelMode !== "auto") {
+      return;
+    }
+    if (event.key === "PageUp" || event.key === "Home" || event.key === "ArrowUp") {
+      state.autoPanelFollow = false;
+    } else if (event.key === "End") {
+      state.autoPanelFollow = true;
+      followAutoPanelContent();
+    } else if (
+      (event.key === "PageDown" || event.key === "ArrowDown") &&
+      isNearBottom(panelBody)
+    ) {
+      state.autoPanelFollow = true;
+    }
+  });
+  new MutationObserver(function () {
+    scrollAutoPanelToEnd();
+    followAutoPanelContent();
+  }).observe(panelBody, { childList: true, subtree: true, characterData: true });
 
   /* Screenshot skills hand their result panel to the picker (picker-image,
    * contracts §10.5); the streaming chunks then arrive on translate-event. */
@@ -2838,6 +2980,8 @@
     window.__pickerImageState = function () {
       return {
         panelOpen: state.panelOpen,
+        panelMode: state.panelMode,
+        autoPanelFollow: state.autoPanelFollow,
         panelTitle: panelTitle ? panelTitle.textContent : "",
         image: state.image
           ? {

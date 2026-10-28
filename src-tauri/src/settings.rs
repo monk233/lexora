@@ -12,7 +12,7 @@ use std::sync::{Arc, RwLock};
 
 /// Version of the on-disk settings schema. Bumped whenever defaults or fields
 /// change so [`Settings::normalize`] can migrate an older file in place.
-pub const SETTINGS_VERSION: u32 = 6;
+pub const SETTINGS_VERSION: u32 = 7;
 /// Default global shortcut that starts a region screenshot.
 pub const DEFAULT_REGION_SHORTCUT: &str = "Win+Shift+X";
 /// Built-in picker skills, in their canonical toolbar order.
@@ -295,6 +295,8 @@ pub struct OnlineSettings {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct LocalSettings {
+    /// Explicit catalog selection for general and vision tasks; empty disables them.
+    pub selected_model: String,
     pub context_size: u32,
     pub threads: u32,
     pub gpu_layers: u32,
@@ -386,6 +388,7 @@ impl Default for OnlineSettings {
 impl Default for LocalSettings {
     fn default() -> Self {
         Self {
+            selected_model: String::new(),
             context_size: 4096,
             threads: 0,
             gpu_layers: 0,
@@ -628,6 +631,14 @@ impl Settings {
         self.provider.online.temperature = self.provider.online.temperature.clamp(0.0, 1.0);
         self.provider.online.max_tokens = self.provider.online.max_tokens.clamp(64, 8192);
 
+        let selected = self.provider.local.selected_model.trim();
+        self.provider.local.selected_model = if self.version >= 7
+            && crate::engine::models::spec_by_id(selected).is_some_and(|spec| spec.vision)
+        {
+            selected.to_string()
+        } else {
+            String::new()
+        };
         self.provider.local.context_size = self.provider.local.context_size.clamp(1024, 32_768);
         self.provider.local.threads = self.provider.local.threads.min(128);
         self.provider.local.gpu_layers = self.provider.local.gpu_layers.min(200);
@@ -991,6 +1002,44 @@ mod tests {
     }
 
     #[test]
+    fn manual_model_selection_migration_and_validation() {
+        let mut settings = Settings::default();
+        assert!(settings.provider.local.selected_model.is_empty());
+        settings.provider.local.selected_model = " qwen3.5-2b-q3-k-m ".into();
+        assert_eq!(
+            settings.clone().normalize().provider.local.selected_model,
+            "qwen3.5-2b-q3-k-m"
+        );
+        settings.version = 6;
+        assert!(settings
+            .clone()
+            .normalize()
+            .provider
+            .local
+            .selected_model
+            .is_empty());
+        settings.version = 7;
+        for invalid in [
+            "qwen2.5-3b",
+            "qwen2.5-vl-3b",
+            "hy-mt2-1.8b",
+            "missing",
+            "../model.gguf",
+        ] {
+            settings.provider.local.selected_model = invalid.into();
+            assert!(settings
+                .clone()
+                .normalize()
+                .provider
+                .local
+                .selected_model
+                .is_empty());
+        }
+        let value = serde_json::to_value(Settings::default()).unwrap();
+        assert_eq!(value["provider"]["local"]["selectedModel"], "");
+    }
+
+    #[test]
     fn all_supported_target_languages_are_accepted() {
         let mut languages = Vec::new();
         for code in TARGET_LANGS {
@@ -1030,7 +1079,7 @@ mod tests {
     fn defaults_are_normalized() {
         let settings = Settings::default().normalize();
         assert_eq!(settings.version, SETTINGS_VERSION);
-        assert_eq!(settings.version, 6);
+        assert_eq!(settings.version, 7);
         let expected: Vec<String> = SKILLS.iter().map(|skill| skill.to_string()).collect();
         assert_eq!(settings.picker.skills, expected);
         assert_eq!(settings.picker.skills.len(), 8);

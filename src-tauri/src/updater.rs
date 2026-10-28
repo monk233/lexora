@@ -19,11 +19,14 @@
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::{json, Value};
-use tauri::Emitter;
+
+use crate::state::AppState;
+use tauri::{Emitter, Manager};
 
 /// GitHub repository that publishes portable Lexora releases.
 pub const UPDATE_REPO: &str = "monk233/lexora";
@@ -45,8 +48,13 @@ const NOTES_MAX_CHARS: usize = 4_000;
 const MIN_UPDATE_BYTES: u64 = 1_000_000;
 /// Event pushed to the settings window while downloading.
 const PROGRESS_EVENT: &str = "update-progress";
+const UPDATE_AVAILABLE_EVENT: &str = "update-available";
 /// Give the frontend time to render `ready` before the process exits.
 const START_DELAY: Duration = Duration::from_millis(1_200);
+/// Product-level automatic update polling interval.
+const AUTO_CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+const AUTO_CHECK_INITIAL_DELAY: Duration = Duration::from_secs(2);
+const NOTIFIED_VERSION_FILE: &str = "update-notified-version";
 
 /// Result of an update check, exposed to the About page.
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -568,6 +576,127 @@ pub async fn check_update() -> Result<UpdateInfo, UpdateError> {
     parse_release(&release, env!("CARGO_PKG_VERSION"))
 }
 
+fn record_notification_success(
+    sent: Result<(), String>,
+    record: impl FnOnce(),
+) -> Result<(), String> {
+    sent?;
+    record();
+    Ok(())
+}
+
+/// Sends one native notification per latest version, persisted across restarts.
+pub fn notify_update_once(app: &tauri::AppHandle, version: &str) -> Result<bool, UpdateError> {
+    let version = normalize_tag(version);
+    if parse_version(&version).is_none() {
+        return Err(UpdateError::new(
+            "系统通知失败：版本号无效。",
+            "请打开设置页手动检查更新。",
+        ));
+    }
+    let Some(state) = app.try_state::<Arc<AppState>>() else {
+        return Err(UpdateError::new(
+            "系统通知失败：应用状态不可用。",
+            "请重启 Lexora 后重试。",
+        ));
+    };
+    let marker = state.paths.data_dir.join(NOTIFIED_VERSION_FILE);
+    if std::fs::read_to_string(&marker)
+        .ok()
+        .map(|value| normalize_tag(&value))
+        .as_deref()
+        == Some(version.as_str())
+    {
+        return Ok(false);
+    }
+    record_notification_success(
+        crate::notification::show_update_available(app, &version),
+        || {
+            if let Err(error) = std::fs::create_dir_all(&state.paths.data_dir)
+                .and_then(|_| std::fs::write(&marker, format!("{version}\n")))
+            {
+                state.log.warn(&format!(
+                    "could not persist notified update version v{version}: {error}"
+                ));
+            }
+        },
+    )
+    .map_err(|error| {
+        UpdateError::new(
+            "系统通知发送失败。",
+            format!("请打开设置页手动检查更新（{error}）。"),
+        )
+    })?;
+    state
+        .log
+        .info(&format!("system notification shown for update v{version}"));
+    Ok(true)
+}
+
+fn serialized_update_payload(info: &UpdateInfo) -> Value {
+    match serde_json::to_value(info) {
+        Ok(mut value) => {
+            if let Some(object) = value.as_object_mut() {
+                object.insert("ok".to_string(), json!(true));
+            }
+            value
+        }
+        Err(_) => json!({}),
+    }
+}
+
+async fn run_automatic_update_check(app: &tauri::AppHandle) {
+    match check_update().await {
+        Ok(info) if info.has_update => {
+            if let Some(state) = app.try_state::<Arc<AppState>>() {
+                state.log.info(&format!(
+                    "automatic update check found v{}",
+                    info.latest_version
+                ));
+            }
+            if let Err(error) = notify_update_once(app, &info.latest_version) {
+                if let Some(state) = app.try_state::<Arc<AppState>>() {
+                    state.log.warn(&format!(
+                        "automatic update notification failed: {}",
+                        error.message
+                    ));
+                }
+            }
+            let _ = app.emit_to(
+                crate::windows::SETTINGS_LABEL,
+                UPDATE_AVAILABLE_EVENT,
+                serialized_update_payload(&info),
+            );
+        }
+        Ok(info) => {
+            if let Some(state) = app.try_state::<Arc<AppState>>() {
+                state.log.info(&format!(
+                    "automatic update check: current version v{} is latest",
+                    info.latest_version
+                ));
+            }
+        }
+        Err(error) => {
+            if let Some(state) = app.try_state::<Arc<AppState>>() {
+                state
+                    .log
+                    .warn(&format!("automatic update check failed: {}", error.message));
+            }
+        }
+    }
+}
+
+/// Starts the process-level update poller. This must not depend on a visible
+/// settings webview because Lexora normally starts hidden in the tray.
+pub fn start_automatic_update_checker(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(AUTO_CHECK_INITIAL_DELAY).await;
+        loop {
+            run_automatic_update_check(&app).await;
+            tokio::time::sleep(AUTO_CHECK_INTERVAL).await;
+        }
+    });
+}
 /// Downloads the new exe next to the current one, streaming progress to the UI.
 async fn download_update(
     app: &tauri::AppHandle,
@@ -708,6 +837,17 @@ pub async fn install_update(app: &tauri::AppHandle) -> Result<UpdateInfo, Update
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn notification_failure_does_not_record_version_and_can_retry() {
+        let recorded = std::cell::Cell::new(false);
+        let failed =
+            super::record_notification_success(Err("toast failed".into()), || recorded.set(true));
+        assert_eq!(failed, Err("toast failed".into()));
+        assert!(!recorded.get());
+        super::record_notification_success(Ok(()), || recorded.set(true)).unwrap();
+        assert!(recorded.get());
+    }
+
     use super::*;
 
     fn release_json(assets: Value) -> Value {

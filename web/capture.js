@@ -142,6 +142,9 @@
     hoverLocal: null,
     hoverPending: null,
     hoverTimer: 0,
+    hoverSequence: 0,
+    hoverOwner: -1,
+    clickSequence: 0,
     /* Throttle for the cross-overlay selection broadcast while dragging. */
     broadcastTimer: 0,
     broadcastAt: 0,
@@ -400,6 +403,10 @@
     dom.longshot =
       byId("capture-longshot") ||
       (dom.bar ? dom.bar.querySelector('[data-action="longshot"]') : null);
+    if (dom.longshot && !dom.longshot.querySelector("svg")) {
+      dom.longshot.insertAdjacentHTML("afterbegin", LP.skillIconSvg("scroll"));
+      dom.longshot.querySelector("svg").setAttribute("class", "icon");
+    }
     /* Legacy progress pill (§11.14 removed the automatic long screenshot): the
      * element may still exist in old pages, so keep it permanently hidden. */
     dom.longshotProgress = byId("capture-longshot-progress");
@@ -538,6 +545,7 @@
     /* The pointer crossing to another monitor leaves this overlay without a
      * mouseleave from a child, so use the window-level mouseout. */
     window.addEventListener("mouseout", onWindowMouseOut);
+    window.addEventListener("pointercancel", onPointerCancel);
 
     each(handles, function (handle) {
       handle.addEventListener("mousedown", onHandleMouseDown);
@@ -963,6 +971,7 @@
     state.crossScreen = false;
     state.layout = [];
     state.layoutBounds = null;
+    state.hoverOwner = -1;
     state.hoverGlobal = null;
     state.hoverLocal = null;
     state.hoverPending = null;
@@ -1557,6 +1566,11 @@
   /* ---- Cross-overlay selection sync (global physical rect) -------------- */
 
   function broadcastSelection() {
+    if (state.phase === "selecting" && state.drag && state.drag.mode === "select" &&
+        !state.drag.moved && state.drag.snapGlobal) {
+      broadcastHover(state.drag.snapGlobal);
+      return;
+    }
     if (!API || typeof API.broadcastSelection !== "function") {
       return;
     }
@@ -1594,6 +1608,22 @@
    * (same rect), and another page's live preview never interrupts our drag. */
   function onSelectionState(payload) {
     if (!payload || state.closed || !state.shotReady) {
+      return;
+    }
+    /* Negative owners reserve the existing preview channel for window hover.
+     * Keep hover separate from manual selections and ignore our own echo. */
+    if (payload.phase === "selecting" && payload.owner <= -2) {
+      var hoverOwner = -2 - payload.owner;
+      if (hoverOwner === state.monitor || state.drag || state.selection || state.phase !== "selecting") {
+        return;
+      }
+      if (!payload.rect && state.hoverOwner !== hoverOwner) {
+        return;
+      }
+      state.hoverOwner = payload.rect ? hoverOwner : -1;
+      state.hoverGlobal = cloneGlobal(payload.rect);
+      state.hoverLocal = payload.rect ? globalToLocalRect(payload.rect) : null;
+      render();
       return;
     }
     var phase = payload.phase === "editing" ? "editing" : "selecting";
@@ -1637,7 +1667,7 @@
       return;
     }
     state.rect = localSelectionRect();
-    updateMask(state.rect);
+    updateMask(state.selection ? state.rect : hoverPreviewRect());
     updateOutline();
     updateSizeLabel();
     layoutHover();
@@ -1658,7 +1688,7 @@
     if (!dom.hover) {
       return;
     }
-    var local = state.hoverLocal;
+    var local = hoverPreviewRect();
     if (state.phase !== "selecting" || !local || state.selection) {
       setHidden(dom.hover, true);
       return;
@@ -1675,6 +1705,18 @@
     node.style.top = Math.round(top) + "px";
     node.style.width = Math.max(0, Math.round(width)) + "px";
     node.style.height = Math.max(0, Math.round(height)) + "px";
+  }
+
+  function hoverPreviewRect() {
+    if (state.phase !== "selecting") {
+      return null;
+    }
+    if (state.drag) {
+      return state.drag.mode === "select" && !state.drag.moved
+        ? state.drag.snapLocal
+        : null;
+    }
+    return state.hoverLocal;
   }
 
   /* Dims everything except `rect`; `null` dims the whole screen (no window is
@@ -1894,7 +1936,7 @@
   }
 
   /* Asks the shell which top-level window is under `point` (local CSS) and
-   * highlights it. Throttled to one in-flight IPC per HOVER_THROTTLE_MS. */
+   * highlights it. Requests are throttled; only the latest pointer result wins. */
   function requestHover(point) {
     if (!API || typeof API.hover !== "function") {
       return;
@@ -1915,6 +1957,7 @@
     }
     var generation = state.captureGeneration;
     var request;
+    var sequence = ++state.hoverSequence;
     try {
       request = API.hover(pending.x, pending.y);
     } catch (error) {
@@ -1922,7 +1965,7 @@
     }
     Promise.resolve(request).then(
       function (result) {
-        if (generation !== state.captureGeneration || state.closed) {
+        if (generation !== state.captureGeneration || sequence !== state.hoverSequence || state.closed) {
           return;
         }
         if (state.phase !== "selecting" || state.drag) {
@@ -1942,7 +1985,12 @@
       return;
     }
     var local = globalRect ? globalToLocalRect(globalRect) : null;
-    state.hoverGlobal = local ? globalRect : null;
+    var changed = !sameGlobalRect(globalRect, state.hoverGlobal) || state.hoverOwner !== state.monitor;
+    state.hoverGlobal = cloneGlobal(globalRect);
+    state.hoverOwner = state.monitor;
+    if (changed) {
+      broadcastHover(globalRect);
+    }
     if (sameRect(local, state.hoverLocal)) {
       return;
     }
@@ -1953,7 +2001,15 @@
   }
 
   function clearHover() {
+    state.hoverSequence += 1;
+    state.clickSequence += 1;
+    window.clearTimeout(state.hoverTimer);
+    state.hoverTimer = 0;
     state.hoverPending = null;
+    if (state.hoverOwner === state.monitor) {
+      broadcastHover(null);
+    }
+    state.hoverOwner = -1;
     state.hoverGlobal = null;
     if (!state.hoverLocal) {
       return;
@@ -1964,6 +2020,16 @@
     }
   }
 
+  function broadcastHover(rect) {
+    if (API && typeof API.broadcastSelection === "function") {
+      try {
+        API.broadcastSelection("selecting", cloneGlobal(rect), -2 - state.monitor);
+      } catch (error) {
+        /* A later preview or selection update restores the other overlays. */
+      }
+    }
+  }
+
   /* The hotkey can be pressed without moving the mouse afterwards: snap the
    * window already under the cursor once the overlay is painted. */
   function requestInitialHover() {
@@ -1971,10 +2037,13 @@
       return;
     }
     var generation = state.captureGeneration;
+    var sequence = state.hoverSequence;
     Promise.resolve(API.cursor()).then(
       function (result) {
         if (
           generation !== state.captureGeneration ||
+          sequence !== state.hoverSequence ||
+          state.drag ||
           state.closed ||
           state.phase !== "selecting"
         ) {
@@ -2456,6 +2525,11 @@
    * press point are stored in GLOBAL physical coordinates, so the drag can leave
    * this monitor and the other overlays render their slice of it. */
   function startSelecting(point) {
+    var start = localToPhysicalPoint(point);
+    var snapped = pointInRect(point, state.hoverLocal) && pointInRect(start, state.hoverGlobal);
+    var snapGlobal = snapped ? cloneGlobal(state.hoverGlobal) : null;
+    var snapLocal = snapped ? cloneGlobal(state.hoverLocal) : null;
+    clearHover();
     broadcastSelectionReset();
     state.phase = "selecting";
     state.selection = null;
@@ -2468,7 +2542,9 @@
     state.hoverTimer = 0;
     state.drag = {
       mode: "select",
-      start: localToPhysicalPoint(point),
+      start: start,
+      snapGlobal: snapGlobal,
+      snapLocal: snapLocal,
       moved: false
     };
     resetAnnotations();
@@ -2478,6 +2554,9 @@
     document.body.classList.add("is-dragging", "is-selecting");
     document.body.classList.remove("is-over-selection", "is-editing");
     render();
+    if (snapGlobal) {
+      broadcastHover(snapGlobal);
+    }
   }
 
   /* Clears the selection on every overlay (another monitor starts a new one). */
@@ -2538,8 +2617,7 @@
         var slop = CLICK_SLOP * currentDpr();
         var deltaX = Math.abs(current.x - state.drag.start.x);
         var deltaY = Math.abs(current.y - state.drag.start.y);
-        if (deltaX < slop && deltaY < slop) {
-          state.drag.moved = false;
+        if (!state.drag.moved && deltaX < slop && deltaY < slop) {
           state.selection = null;
         } else {
           state.drag.moved = true;
@@ -2594,11 +2672,20 @@
         enterEditing(cloneGlobal(rect));
         return;
       }
+      if (drag.moved) {
+        state.selection = null;
+        clearHover();
+        render();
+        broadcastSelectionReset();
+        return;
+      }
       /* Click: the snapped window (the whole rect, which may span monitors) or
        * the full screen under the pointer when nothing is snapped. */
-      enterEditing(
-        cloneGlobal(state.hoverGlobal || monitorRectOf(currentMonitorRect()))
-      );
+      if (drag.snapGlobal) {
+        enterEditing(cloneGlobal(drag.snapGlobal));
+      } else {
+        commitClickAt(drag.start);
+      }
       return;
     }
     state.drag = null;
@@ -2615,6 +2702,31 @@
         !!state.rect && pointInRect(point, state.rect) && !selectionCoversViewport()
       );
     }
+  }
+
+  function commitClickAt(point) {
+    var generation = state.captureGeneration;
+    var sequence = ++state.clickSequence;
+    state.hoverSequence += 1;
+    window.clearTimeout(state.hoverTimer);
+    state.hoverTimer = 0;
+    state.hoverPending = null;
+    var fallback = monitorRectOf(currentMonitorRect());
+    var request;
+    try {
+      request = API && typeof API.hover === "function" ? API.hover(point.x, point.y) : null;
+    } catch (error) {
+      request = Promise.reject(error);
+    }
+    function commit(result) {
+      if (generation !== state.captureGeneration || sequence !== state.clickSequence ||
+          state.closed || state.drag || state.phase !== "selecting") {
+        return;
+      }
+      var rect = result && result.ok && result.rect;
+      enterEditing(cloneGlobal(rect && rect.width > 0 && rect.height > 0 && pointInRect(point, rect) ? rect : fallback));
+    }
+    Promise.resolve(request).then(commit, function () { commit(null); });
   }
 
   /* Confirms a selection: switch to the editing phase so the toolbar, handles
@@ -2668,6 +2780,7 @@
     state.viewWidth = size.width;
     state.viewHeight = size.height;
     state.rect = localSelectionRect();
+    clearHover();
     state.hoverLocal = null;
     state.hoverGlobal = null;
     state.hoverPending = null;
@@ -2688,6 +2801,7 @@
 
   function onWindowBlur() {
     hideLoupe();
+    clearHover();
     if (!state.drag) {
       return;
     }
@@ -2706,6 +2820,10 @@
     state.selectionOwner = ownerForRect(state.selection);
     render();
     broadcastSelection();
+  }
+
+  function onPointerCancel() {
+    onWindowBlur();
   }
 
   function onKeyDown(event) {

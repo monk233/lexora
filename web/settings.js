@@ -748,36 +748,93 @@
     });
   }
 
-  /* Built-in catalog ids map to the runtime role; imports count as custom. */
+  function isQwen35(id) {
+    return /^qwen3\.5-(?:0\.8b|2b|4b)-q[34]-k-m$/.test(String(id || ""));
+  }
+
+  function selectedLocalModel() {
+    return state.settings.provider.local.selectedModel;
+  }
+
+  function recommendedModelId() {
+    return (state.hardwareRecommendation || {}).recommendedModelId || "";
+  }
+
   function modelRole(catalogId) {
     if (catalogId === "hy-mt2-1.8b") {
-      return { label: "翻译模型", builtin: true };
+      return { label: "翻译 · 自动使用", builtin: true };
     }
-    if (catalogId === "qwen2.5-3b") {
-      return { label: "通用模型", builtin: true };
+    if (isQwen35(catalogId)) {
+      return { label: "通用 / 视觉", builtin: true };
     }
-    if (catalogId === "qwen2.5-vl-3b") {
-      return { label: "视觉模型", builtin: true };
-    }
-    return { label: "自定义模型", builtin: false };
+    return { label: "其他本地模型", builtin: false };
   }
 
   function localModelRow(model) {
     var role = modelRole(model.catalogId);
-    var row = el("div", "model-card");
+    var entry = (state.catalog || []).filter(function (item) {
+      return item.id === model.catalogId;
+    })[0];
+    var selectable = isQwen35(model.catalogId) && !!entry && entry.installed === true;
+    var selected = selectable && selectedLocalModel() === model.catalogId;
+    var row = el("div", "model-card" + (selected ? " is-selected" : ""));
     row.setAttribute("data-file", model.file || "");
     var main = el("div", "model-card-main");
-    main.appendChild(
-      el("span", "model-card-name", model.name || model.file || "未命名模型")
-    );
+    main.appendChild(el("span", "model-card-name", model.name || model.file || "未命名模型"));
     var meta = el("div", "model-card-meta");
-    meta.appendChild(
-      el("span", "meta-pill" + (role.builtin ? " is-accent" : ""), role.label)
-    );
+    meta.appendChild(el("span", "meta-pill" + (role.builtin ? " is-accent" : ""), role.label));
     meta.appendChild(el("span", "meta-pill", LP.formatBytes(model.sizeBytes)));
+    if (model.catalogId === recommendedModelId()) {
+      meta.appendChild(el("span", "meta-pill is-accent", "推荐"));
+    }
     main.appendChild(meta);
     row.appendChild(main);
+    if (isQwen35(model.catalogId)) {
+      var button = el("button", "btn" + (selected ? " btn-primary" : ""),
+        selected ? "已选择" : selectable ? "选择" : "请补全下载");
+      button.type = "button";
+      button.disabled = !selectable;
+      button.setAttribute("aria-pressed", selected ? "true" : "false");
+      button.setAttribute("aria-label", (selected ? "当前模型：" : "选择模型：") + (model.name || model.file));
+      button.addEventListener("click", function () {
+        if (selectedLocalModel() === model.catalogId) {
+          return;
+        }
+        var engine = state.engine || {};
+        var running = engine.localState === "ready" || engine.localState === "starting" || engine.localState === "running";
+        save({ provider: { local: { selectedModel: model.catalogId } } });
+        if (running) {
+          toast("已更新模型选择；停止并重新启动本地引擎后生效", "info");
+        }
+      });
+      row.appendChild(button);
+    }
     return row;
+  }
+
+  function renderHardwareRecommendation() {
+    var hardware = state.hardwareRecommendation || {};
+    var summary = byId("local-hardware-summary");
+    if (summary) {
+      var parts = [];
+      if (hardware.totalMemoryBytes) {
+        parts.push("内存 " + LP.formatBytes(hardware.totalMemoryBytes));
+      }
+      if (hardware.cpuThreads) {
+        parts.push("CPU " + hardware.cpuThreads + " 线程");
+      }
+      if (hardware.gpuName) {
+        parts.push(String(hardware.gpuName));
+      }
+      if (hardware.gpuVramBytes) {
+        parts.push("显存 " + LP.formatBytes(hardware.gpuVramBytes));
+      }
+      summary.textContent = parts.length ? parts.join(" · ") : "暂未获取硬件信息";
+    }
+    var reason = byId("local-hardware-reason");
+    if (reason) {
+      reason.textContent = hardware.reason ? "推荐参考：" + hardware.reason : "硬件推荐仅供参考，请手动选择模型。";
+    }
   }
 
   /* ---- Downloads (concurrent: engine + several models) ----------------- */
@@ -886,6 +943,7 @@
 
     renderEngineProgress(engineDownload);
 
+    renderHardwareRecommendation();
     var models = Array.isArray(state.models) ? state.models : [];
     var list = byId("local-models");
     if (list) {
@@ -898,7 +956,8 @@
             model.sizeBytes,
           ].join("\u0001");
         })
-        .join("\u0002");
+        .join("\u0002") + "#" + selectedLocalModel() + "#" + recommendedModelId() + "#" +
+        (state.catalog || []).map(function (entry) { return entry.id + ":" + entry.installed; }).join("|");
       if (list.getAttribute("data-signature") !== signature) {
         list.setAttribute("data-signature", signature);
         list.innerHTML = "";
@@ -910,13 +969,14 @@
 
     var modelHint = byId("local-models-hint");
     if (modelHint) {
-      if (!models.length) {
-        modelHint.hidden = false;
-        modelHint.textContent =
-          "还没有本地模型：展开「模型目录」下载，或点击「导入 GGUF」。";
-      } else {
-        modelHint.hidden = true;
-      }
+      var selected = selectedLocalModel();
+      var installedSelection = (state.catalog || []).some(function (entry) {
+        return entry.id === selected && isQwen35(entry.id) && entry.installed === true;
+      });
+      modelHint.hidden = false;
+      modelHint.textContent = installedSelection
+        ? "通用文本与截图理解使用所选模型；Hy-MT2 自动负责文本翻译。切换模型后，运行中的引擎需停止并重新启动。"
+        : "请先下载完整的 Qwen3.5 模型（含视觉投影器），再手动选择通用 / 视觉模型。Hy-MT2 自动负责文本翻译。";
     }
 
     renderCatalog();
@@ -964,7 +1024,7 @@
     if (localState === "starting") {
       tone = "warn";
       label = "启动中…";
-    } else if (localState === "ready") {
+    } else if (localState === "ready" || localState === "running") {
       tone = "ok";
       label = "运行中";
     } else if (localState === "error") {
@@ -976,7 +1036,7 @@
       setTone(badge, tone);
     }
 
-    var running = localState === "ready" || localState === "starting";
+    var running = localState === "ready" || localState === "starting" || localState === "running";
     setHidden(startButton, running);
     setHidden(stopButton, !running);
     if (startButton) {
@@ -989,8 +1049,8 @@
 
     var hintNode = byId("local-state-hint");
     if (hintNode) {
-      if (localState === "ready") {
-        hintNode.textContent = "模型已加载";
+      if (localState === "ready" || localState === "running") {
+        hintNode.textContent = "模型已加载；更改模型选择后，需停止并重新启动本地引擎。";
       } else if (localState === "starting") {
         hintNode.textContent = "正在加载模型…";
       } else {
@@ -1019,7 +1079,10 @@
     var name = el("div", "catalog-name");
     name.appendChild(el("span", null, entry.name || entry.id));
     if (entry.vision === true) {
-      name.appendChild(el("span", "badge-vision", "视觉"));
+      name.appendChild(el("span", "badge-vision", "通用 / 视觉"));
+    }
+    if (entry.id === recommendedModelId()) {
+      name.appendChild(el("span", "meta-pill is-accent", "推荐"));
     }
     main.appendChild(name);
     if (entry.description) {
@@ -1096,7 +1159,7 @@
         })
         .join("|") +
       "#" +
-      activeIds.join(",");
+      activeIds.join(",") + "#" + recommendedModelId();
     if (signature !== list.getAttribute("data-signature")) {
       list.setAttribute("data-signature", signature);
       list.innerHTML = "";
@@ -1107,7 +1170,7 @@
     updateCatalogProgress();
   }
 
-  /* Progress text for one catalog row. VL model downloads fetch the main GGUF
+  /* Progress text for one catalog row. Qwen3.5 downloads fetch the main GGUF
    * first and then the mmproj projector; the stage label makes that switch
    * visible instead of showing a percentage that appears to restart (§10.6). */
   function catalogProgressText(progress) {
@@ -3249,7 +3312,7 @@
     var version = updateCurrentVersion();
     hint.textContent =
       (version ? "当前版本 v" + version : "当前版本 —") +
-      " · 自动下载并替换当前 exe，更新后自动重启";
+      " · 启动时自动检查，下载后替换当前 exe 并重启";
   }
 
   function formatUpdateTime(value) {
@@ -3289,8 +3352,8 @@
     return notes.trim();
   }
 
-  /* Notes are rendered as plain text (whitespace preserved), clamped to ~200
-   * characters with an explicit expand/collapse toggle. */
+  /* Release notes are Markdown from the GitHub release body. The shared
+   * renderer escapes raw HTML, so provider-controlled markup cannot execute. */
   function renderUpdateNotes() {
     var wrap = byId("update-notes");
     var textNode = byId("update-notes-text");
@@ -3304,18 +3367,17 @@
       return;
     }
     setHidden(wrap, false);
-    var limit = 200;
-    var clamped = notes.length > limit;
-    textNode.textContent =
-      clamped && !updateNotesExpanded ? notes.slice(0, limit) + "…" : notes;
-    if (clamped && !updateNotesExpanded) {
-      textNode.classList.add("is-clamped");
+    textNode.classList.add("markdown");
+    if (LP && typeof LP.renderMarkdown === "function") {
+      textNode.innerHTML = LP.renderMarkdown(notes);
     } else {
-      textNode.classList.remove("is-clamped");
+      textNode.textContent = notes;
     }
+    textNode.classList.toggle("is-clamped", !updateNotesExpanded);
     if (toggle) {
-      setHidden(toggle, !clamped);
       toggle.textContent = updateNotesExpanded ? "收起" : "展开全部";
+      toggle.setAttribute("aria-expanded", updateNotesExpanded ? "true" : "false");
+      setHidden(toggle, !(updateNotesExpanded || notes.length > 240));
     }
   }
 
@@ -3473,15 +3535,39 @@
     renderUpdate();
   }
 
-  function checkForUpdates() {
+  function notifyUpdateAvailable(result) {
+    if (
+      !result ||
+      !result.hasUpdate ||
+      !result.latestVersion ||
+      !API ||
+      typeof API.notifyUpdateAvailable !== "function"
+    ) {
+      return;
+    }
+    API.notifyUpdateAvailable(String(result.latestVersion)).then(
+      function () {},
+      function () {
+        /* The update card remains available if a native notification fails. */
+      }
+    );
+  }
+  function checkForUpdates(options) {
+    var opts = options && typeof options === "object" ? options : {};
+    var automatic = opts.automatic === true;
     if (!API || typeof API.checkUpdate !== "function") {
-      toast("当前版本不支持检查更新", "error");
+      if (!automatic) {
+        toast("当前版本不支持检查更新", "error");
+      }
       return;
     }
     if (updateChecking || updateInstalling) {
       return;
     }
     if (updateState === "downloading" || updateState === "ready") {
+      return;
+    }
+    if (automatic && updateState === "available" && updateInfo && updateInfo.hasUpdate) {
       return;
     }
     updateChecking = true;
@@ -3496,24 +3582,33 @@
       function (result) {
         updateChecking = false;
         if (!result || result.ok === false) {
-          updateState = "error";
-          updateErrorTitle = "检查更新失败";
-          updateErrorText = (result && result.error) || "未知错误";
-          updateErrorHint = (result && result.hint) || "";
+          if (automatic) {
+            updateState = "idle";
+          } else {
+            updateState = "error";
+            updateErrorTitle = "检查更新失败";
+            updateErrorText = (result && result.error) || "未知错误";
+            updateErrorHint = (result && result.hint) || "";
+          }
           renderUpdate();
           return;
         }
         updateInfo = result;
         updateNotesExpanded = false;
         updateState = result.hasUpdate ? "available" : "latest";
+        notifyUpdateAvailable(result);
         renderUpdate();
       },
       function (error) {
         updateChecking = false;
-        updateState = "error";
-        updateErrorTitle = "检查更新失败";
-        updateErrorText = String(error || "未知错误");
-        updateErrorHint = "";
+        if (automatic) {
+          updateState = "idle";
+        } else {
+          updateState = "error";
+          updateErrorTitle = "检查更新失败";
+          updateErrorText = String(error || "未知错误");
+          updateErrorHint = "";
+        }
         renderUpdate();
       }
     );
@@ -4224,10 +4319,25 @@
     byId("open-repo").addEventListener("click", function () {
       openExternal((state && state.app && state.app.repoUrl) || LP.REPO_URL);
     });
-    byId("check-update").addEventListener("click", checkForUpdates);
+    byId("check-update").addEventListener("click", function () {
+      checkForUpdates({ automatic: false });
+    });
     byId("install-update").addEventListener("click", installAppUpdate);
     byId("dismiss-update").addEventListener("click", dismissUpdate);
     byId("toggle-update-notes").addEventListener("click", toggleUpdateNotes);
+    byId("update-notes-text").addEventListener("click", function (event) {
+      var link = event.target && event.target.closest
+        ? event.target.closest("a[data-external]")
+        : null;
+      if (!link) {
+        return;
+      }
+      event.preventDefault();
+      var href = String(link.getAttribute("href") || "");
+      if (/^https?:\/\//i.test(href)) {
+        openExternal(href);
+      }
+    });
     byId("reset-settings").addEventListener("click", function () {
       armDanger(byId("reset-settings"), "确认恢复默认", resetSettings);
     });
@@ -4296,6 +4406,17 @@
     API.onState(handleStateChanged);
     API.onDownloadProgress(handleDownloadProgress);
     API.onToast(handleToast);
+    if (typeof API.onUpdateAvailable === "function") {
+      API.onUpdateAvailable(function (info) {
+        if (!info || info.ok === false) {
+          return;
+        }
+        updateInfo = info;
+        updateNotesExpanded = false;
+        updateState = info.hasUpdate ? "available" : "latest";
+        renderUpdate();
+      });
+    }
     /* Progress is only emitted while installing; subscribing once is enough
      * for the lifetime of the settings window. */
     if (typeof API.onUpdateProgress === "function") {

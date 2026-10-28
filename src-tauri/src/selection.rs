@@ -20,7 +20,7 @@ mod hook;
 mod uia;
 mod win;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread;
@@ -40,6 +40,9 @@ const DUPLICATE_WINDOW: Duration = Duration::from_millis(400);
 const STALE_TRIGGER: Duration = Duration::from_secs(3);
 /// Minimum interval between two capture failure log lines.
 const ERROR_LOG_INTERVAL: Duration = Duration::from_secs(3);
+/// Delay that lets a first click become the start of a double-click selection
+/// before an unpinned panel treats it as a normal outside click.
+const PANEL_OUTSIDE_CLICK_DELAY: Duration = Duration::from_millis(500);
 
 /// Payload pushed to the picker webview when a selection is captured.
 #[derive(Debug, Clone, Serialize)]
@@ -131,6 +134,9 @@ struct Inner {
     /// capture flow ends.
     capture_active: AtomicBool,
     capturing: AtomicBool,
+    /// Incremented when a real selection capture is queued. A delayed outside
+    /// click compares this value and cancels itself when a selection started.
+    capture_serial: AtomicU64,
     started: AtomicBool,
     last_selection: Mutex<Option<PickerPayload>>,
     dedup: Mutex<TextDedup>,
@@ -150,6 +156,7 @@ impl Inner {
         }
         let sender = lock(&self.capture_tx).as_ref().cloned();
         if let Some(sender) = sender {
+            self.capture_serial.fetch_add(1, Ordering::AcqRel);
             let request = CaptureRequest {
                 source,
                 anchor,
@@ -220,6 +227,7 @@ impl SelectionService {
             panel_open: AtomicBool::new(false),
             capture_active: AtomicBool::new(false),
             capturing: AtomicBool::new(false),
+            capture_serial: AtomicU64::new(0),
             started: AtomicBool::new(false),
             last_selection: Mutex::new(None),
             dedup: Mutex::new(TextDedup::default()),
@@ -417,7 +425,16 @@ fn process_capture(inner: &Arc<Inner>, request: &CaptureRequest) -> Result<(), S
         config: config.picker_config,
     };
 
-    if !crate::windows::show_picker(app, &payload) {
+    let preserve_open_panel = preserve_panel_for_selection(
+        inner.panel_open.load(Ordering::Acquire),
+        inner.panel_pinned.load(Ordering::Acquire),
+    );
+    let shown = if preserve_open_panel {
+        crate::windows::show_toolbar(app, &payload)
+    } else {
+        crate::windows::show_picker(app, &payload)
+    };
+    if !shown {
         return Err("取词成功但 picker 窗口不存在，无法显示".to_string());
     }
     *lock(&inner.last_selection) = Some(payload);
@@ -430,6 +447,9 @@ fn process_capture(inner: &Arc<Inner>, request: &CaptureRequest) -> Result<(), S
     Ok(())
 }
 
+fn preserve_panel_for_selection(panel_open: bool, panel_pinned: bool) -> bool {
+    panel_open && panel_pinned
+}
 fn action_worker(inner: Arc<Inner>, receiver: Receiver<ActionRequest>) {
     while let Ok(request) = receiver.recv() {
         // While a screenshot is being taken the picker/settings stay open and
@@ -441,38 +461,45 @@ fn action_worker(inner: Arc<Inner>, receiver: Receiver<ActionRequest>) {
         }
         match request {
             ActionRequest::OutsideClick { x, y } => {
-                if inner.panel_pinned.load(Ordering::Acquire) {
-                    continue;
-                }
                 let Some(app) = inner.app.get() else {
                     continue;
                 };
-                let Some(window) = app.get_webview_window(PICKER_LABEL) else {
-                    inner.picker_visible.store(false, Ordering::Release);
-                    continue;
-                };
-                // The authoritative visibility check: `set_picker_visible` may lag
-                // behind a hide performed by the window/main layer.
-                if !window.is_visible().unwrap_or(false) {
-                    inner.picker_visible.store(false, Ordering::Release);
+                if crate::windows::is_toolbar_visible(app)
+                    && !window_contains_point(app, crate::windows::PICKER_TOOLBAR_LABEL, x, y)
+                {
+                    crate::windows::hide_toolbar(app);
+                }
+                if crate::windows::is_any_picker_visible(app)
+                    && (window_contains_point(app, crate::windows::PICKER_LABEL, x, y)
+                        || window_contains_point(app, crate::windows::PICKER_TOOLBAR_LABEL, x, y))
+                {
                     continue;
                 }
-                let (Ok(position), Ok(size)) = (window.outer_position(), window.outer_size())
-                else {
+                if inner.panel_pinned.load(Ordering::Acquire) {
                     continue;
-                };
-                // Positions from Tauri are physical pixels, like the hook coordinates.
-                let inside = x >= position.x
-                    && x < position.x + size.width as i32
-                    && y >= position.y
-                    && y < position.y + size.height as i32;
-                if inside {
+                }
+                if inner.panel_open.load(Ordering::Acquire) {
+                    let before = inner.capture_serial.load(Ordering::Acquire);
+                    thread::sleep(PANEL_OUTSIDE_CLICK_DELAY);
+                    if inner.capture_serial.load(Ordering::Acquire) != before {
+                        continue;
+                    }
+                }
+                if !crate::windows::is_any_picker_visible(app) {
+                    inner.picker_visible.store(false, Ordering::Release);
                     continue;
                 }
                 crate::windows::hide_picker(app);
                 inner.picker_visible.store(false, Ordering::Release);
             }
             ActionRequest::DismissOnInput { reason } => {
+                let Some(app) = inner.app.get() else {
+                    continue;
+                };
+                if crate::windows::is_toolbar_visible(app) {
+                    crate::windows::hide_toolbar(app);
+                    continue;
+                }
                 // Sticky panel: pinned pickers and open result panels must not
                 // be dismissed by keyboard/right-click input. An outside left
                 // click is handled by `OutsideClick` and still hides un-pinned
@@ -505,9 +532,9 @@ fn action_worker(inner: Arc<Inner>, receiver: Receiver<ActionRequest>) {
     }
 }
 
-/// True when the physical point lies inside the picker window rectangle.
-fn picker_contains_point(app: &tauri::AppHandle, x: i32, y: i32) -> bool {
-    let Some(window) = app.get_webview_window(PICKER_LABEL) else {
+/// True when the physical point lies inside one picker surface rectangle.
+fn window_contains_point(app: &tauri::AppHandle, label: &str, x: i32, y: i32) -> bool {
+    let Some(window) = app.get_webview_window(label) else {
         return false;
     };
     if !window.is_visible().unwrap_or(false) {
@@ -520,6 +547,11 @@ fn picker_contains_point(app: &tauri::AppHandle, x: i32, y: i32) -> bool {
         && x < position.x + size.width as i32
         && y >= position.y
         && y < position.y + size.height as i32
+}
+
+/// True when the physical point lies inside the panel window rectangle.
+fn picker_contains_point(app: &tauri::AppHandle, x: i32, y: i32) -> bool {
+    window_contains_point(app, PICKER_LABEL, x, y)
 }
 
 fn config_from_settings(settings: &Settings) -> WorkerConfig {
@@ -745,6 +777,13 @@ mod tests {
         assert_eq!(config.picker_config["panelPinned"], true);
     }
 
+    #[test]
+    fn only_pinned_panels_survive_a_new_selection() {
+        assert!(!preserve_panel_for_selection(false, false));
+        assert!(!preserve_panel_for_selection(false, true));
+        assert!(!preserve_panel_for_selection(true, false));
+        assert!(preserve_panel_for_selection(true, true));
+    }
     #[test]
     fn panel_open_state_is_tracked_and_reset_when_hidden() {
         let dir = tempfile::TempDir::new().unwrap();

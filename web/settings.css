@@ -1803,6 +1803,88 @@ textarea {
   word-break: break-word;
 }
 
+.update-notes-text.markdown {
+  white-space: normal;
+}
+
+.update-notes-text.markdown > :first-child {
+  margin-top: 0;
+}
+
+.update-notes-text.markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.update-notes-text.markdown h1,
+.update-notes-text.markdown h2,
+.update-notes-text.markdown h3,
+.update-notes-text.markdown h4 {
+  margin: 12px 0 6px;
+  color: var(--text);
+  line-height: 1.35;
+}
+
+.update-notes-text.markdown h1 {
+  font-size: 16px;
+}
+
+.update-notes-text.markdown h2 {
+  font-size: 14px;
+}
+
+.update-notes-text.markdown h3,
+.update-notes-text.markdown h4 {
+  font-size: 12.5px;
+}
+
+.update-notes-text.markdown p,
+.update-notes-text.markdown ul,
+.update-notes-text.markdown ol,
+.update-notes-text.markdown blockquote,
+.update-notes-text.markdown pre,
+.update-notes-text.markdown table {
+  margin: 0 0 8px;
+}
+
+.update-notes-text.markdown ul,
+.update-notes-text.markdown ol {
+  padding-left: 20px;
+}
+
+.update-notes-text.markdown blockquote {
+  padding: 6px 10px;
+  border-left: 3px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text-muted);
+}
+
+.update-notes-text.markdown code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--surface);
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+}
+
+.update-notes-text.markdown pre {
+  max-height: 220px;
+  padding: 8px 10px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+}
+
+.update-notes-text.markdown pre code {
+  padding: 0;
+  background: transparent;
+}
+
+.update-notes-text.markdown a {
+  color: var(--primary);
+  text-decoration: underline;
+}
+
 .update-notes-text.is-clamped {
   max-height: 84px;
   overflow: hidden;
@@ -1935,4 +2017,19 @@ textarea {
   .skill-item {
     transition: none;
   }
+}
+
+/* Manual local model selection and hardware advice. */
+.local-hardware {
+  margin-bottom: 10px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.local-hardware p { margin: 0 0 4px; }
+.model-card.is-selected { border-color: var(--primary); }
+.model-card > .btn { flex-shrink: 0; }
+@media (max-width: 480px) {
+  .model-card { flex-wrap: wrap; }
 }

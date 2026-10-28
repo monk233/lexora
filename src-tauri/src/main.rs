@@ -17,6 +17,7 @@ mod commands;
 mod engine;
 mod logger;
 mod longshot;
+mod notification;
 mod paths;
 mod pin;
 mod selection;
@@ -36,6 +37,8 @@ use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
 use state::AppState;
 
 fn main() {
+    // Establish the Shell identity before Tauri creates any windows.
+    let notification_process_identity = notification::set_process_identity();
     ensure_webview2_scheduling_args();
     let app = tauri::Builder::default()
         // The single-instance plugin must be registered before any other plugin.
@@ -57,7 +60,8 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
-        .setup(|app| {
+        .plugin(tauri_plugin_notification::init())
+        .setup(move |app| {
             let paths = paths::AppPaths::resolve();
             let log = logger::Logger::new(&paths.logs_dir, "main");
             log.info(&format!(
@@ -68,6 +72,13 @@ fn main() {
                 std::env::args().collect::<Vec<_>>()
             ));
             log.info(&format!("data dir: {}", paths.data_dir.display()));
+            if let Err(error) =
+                notification_process_identity.and_then(|_| notification::initialize())
+            {
+                log.warn(&format!(
+                    "notification identity initialization failed: {error}"
+                ));
+            }
 
             let panic_log = log.clone();
             std::panic::set_hook(Box::new(move |info| {
@@ -83,11 +94,16 @@ fn main() {
 
             state.selection.start(app.handle().clone());
             crate::capture::start_hotkey_listener(app.handle().clone());
+            crate::updater::start_automatic_update_checker(app.handle().clone());
 
             // The picker/settings windows are shown and hidden all the time; a
             // DWM fade would read as a flash on capture exit (round 21). Disable
             // their open/close transitions as well.
-            for label in [windows::SETTINGS_LABEL, windows::PICKER_LABEL] {
+            for label in [
+                windows::SETTINGS_LABEL,
+                windows::PICKER_LABEL,
+                windows::PICKER_TOOLBAR_LABEL,
+            ] {
                 if let Some(window) = app.get_webview_window(label) {
                     if !crate::win32::disable_transitions(&window) {
                         log.warn(&format!("could not disable transitions for '{label}'"));
@@ -142,6 +158,10 @@ fn main() {
                     api.prevent_close();
                     windows::hide_picker(window.app_handle());
                 }
+                windows::PICKER_TOOLBAR_LABEL => {
+                    api.prevent_close();
+                    windows::hide_toolbar(window.app_handle());
+                }
                 label if label.starts_with(crate::pin::PIN_PREFIX) => {
                     // A pinned window is closed through `pin_close` (buttons,
                     // double click, Esc, Alt+F4) so the registry is cleaned up.
@@ -150,8 +170,9 @@ fn main() {
                         crate::pin::close(window.app_handle(), id);
                     }
                 }
-                label if label == crate::longshot::LONG_SHOT_LABEL
-                    || label == crate::longshot::LONG_SHOT_BAR_LABEL =>
+                label
+                    if label == crate::longshot::LONG_SHOT_LABEL
+                        || label == crate::longshot::LONG_SHOT_BAR_LABEL =>
                 {
                     // Closing the preview or its control bar (Alt+F4 / OS close)
                     // behaves like the cancel button: stop stitching and restore
@@ -193,6 +214,8 @@ fn main() {
             WindowEvent::Focused(false) => {
                 if window.label() == windows::PICKER_LABEL {
                     windows::handle_picker_blur(window.app_handle());
+                } else if window.label() == windows::PICKER_TOOLBAR_LABEL {
+                    windows::handle_toolbar_blur(window.app_handle());
                 }
             }
             _ => {}
@@ -215,6 +238,7 @@ fn main() {
             commands::set_start_at_login,
             commands::quit_app,
             commands::check_update,
+            commands::notify_update_available,
             commands::install_update,
             commands::start_capture,
             commands::capture_monitor_info,
@@ -251,6 +275,7 @@ fn main() {
             commands::picker_close,
             commands::picker_pin,
             commands::picker_panel_state,
+            commands::picker_toolbar_run_skill,
             commands::picker_activate,
             commands::picker_resize,
             commands::picker_drag_panel,

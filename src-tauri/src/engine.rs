@@ -16,21 +16,24 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use futures_util::stream::{BoxStream, StreamExt};
+use futures_util::stream::{BoxStream, Stream, StreamExt};
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{json, Value};
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use tauri::Emitter;
 
 use crate::logger::Logger;
 use crate::paths::AppPaths;
 use crate::settings::{Settings, SettingsStore};
 
+pub mod hardware;
 mod llama;
-mod models;
+pub(crate) mod models;
 mod openai;
 mod prompts;
 
@@ -135,7 +138,7 @@ pub struct CatalogEntry {
     pub languages: String,
     pub recommended: bool,
     pub installed: bool,
-    /// `true` for the multimodal model (Qwen2.5-VL 3B + projector).
+    /// `true` for Qwen3.5 multimodal variants that require a projector.
     pub vision: bool,
 }
 
@@ -305,6 +308,14 @@ impl<'a> DownloadReporter<'a> {
         self.cancel.load(Ordering::SeqCst)
     }
 
+    fn phase(&mut self, filename: &str, total: u64) {
+        self.progress.filename = filename.to_string();
+        self.progress.received = 0;
+        self.progress.total = total;
+        self.progress.percent = 0.0;
+        self.status("downloading");
+    }
+
     fn set_total(&mut self, total: u64) {
         if total > 0 {
             self.progress.total = total;
@@ -386,18 +397,25 @@ pub struct EngineService {
     paths: AppPaths,
     settings: Arc<SettingsStore>,
     logger: Logger,
+    model_logger: Logger,
+    model_call_seq: AtomicU64,
     http: reqwest::Client,
     local: llama::LocalServer,
     /// True after the user clicked "启动" and until they click "停止". While it
     /// is false a request never starts the local server on its own.
     local_desired: AtomicBool,
+    /// Catalog id captured by explicit start, retained across task role changes.
+    active_selection: Mutex<Option<String>>,
+    /// Serialize start/stop and request preparation, without holding a lock during streaming.
+    local_lifecycle: tokio::sync::Mutex<()>,
     /// Registry of concurrent downloads (engine + one per model id).
     download: Mutex<DownloadState>,
+    /// Serialize shared projector installation so Q3/Q4 never overwrite it concurrently.
+    projector_download: tokio::sync::Mutex<()>,
 }
 
 /// Which model role a request needs. Hy-MT2 is translation-specialised,
-/// Qwen2.5 3B handles summarization/explanation, and Qwen2.5-VL (weights +
-/// multimodal projector) is the only role that can read images.
+/// the manually selected Qwen3.5 handles general text and images with its projector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LocalRole {
     Translate,
@@ -410,13 +428,91 @@ enum LocalRole {
 /// config so both paths give the same actionable hint.
 fn local_vision_missing_error() -> EngineError {
     EngineError::new(
-        "本地视觉模型未安装。",
-        "请在「设置 → 本地模型」下载 Qwen2.5-VL 3B（含视觉投影器），或切换到支持视觉的在线模型。",
+        "本地视觉模型未安装或尚未选择。",
+        "请在「设置 → 本地模型」手动选择 Qwen3.5，并完整下载模型权重及视觉投影器；也可切换到支持视觉的在线模型。",
     )
+}
+
+struct ModelLogMeta {
+    logger: Logger,
+    call_id: u64,
+    operation: String,
+    provider: String,
+    model: String,
+    detail: String,
+    started: Instant,
+}
+
+struct LoggedModelStream {
+    inner: BoxStream<'static, Result<String, EngineError>>,
+    logger: Logger,
+    call_id: u64,
+    operation: String,
+    started: Instant,
+    chunks: u64,
+    output_chars: usize,
+    finished: bool,
+}
+
+impl Stream for LoggedModelStream {
+    type Item = Result<String, EngineError>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.as_mut().get_mut();
+        match this.inner.as_mut().poll_next(cx) {
+            Poll::Ready(Some(Ok(chunk))) => {
+                this.chunks += 1;
+                this.output_chars += chunk.chars().count();
+                Poll::Ready(Some(Ok(chunk)))
+            }
+            Poll::Ready(Some(Err(error))) => {
+                this.finished = true;
+                this.logger.error(&format!(
+                    "model call finish: id={} operation={} status=error duration_ms={} chunks={} output_chars={} error={}",
+                    this.call_id,
+                    this.operation,
+                    this.started.elapsed().as_millis(),
+                    this.chunks,
+                    this.output_chars,
+                    error.message
+                ));
+                Poll::Ready(Some(Err(error)))
+            }
+            Poll::Ready(None) => {
+                this.finished = true;
+                this.logger.info(&format!(
+                    "model call finish: id={} operation={} status=success duration_ms={} chunks={} output_chars={}",
+                    this.call_id,
+                    this.operation,
+                    this.started.elapsed().as_millis(),
+                    this.chunks,
+                    this.output_chars
+                ));
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl Drop for LoggedModelStream {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.logger.warn(&format!(
+                "model call finish: id={} operation={} status=cancelled duration_ms={} chunks={} output_chars={}",
+                self.call_id,
+                self.operation,
+                self.started.elapsed().as_millis(),
+                self.chunks,
+                self.output_chars
+            ));
+        }
+    }
 }
 
 impl EngineService {
     pub fn new(paths: AppPaths, settings: Arc<SettingsStore>, logger: Logger) -> Self {
+        let model_logger = Logger::new(&paths.logs_dir, "model");
         let http = reqwest::Client::builder()
             .user_agent(concat!("Lexora/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(15))
@@ -427,13 +523,68 @@ impl EngineService {
             paths,
             settings,
             logger,
+            model_logger,
+            model_call_seq: AtomicU64::new(1),
             http,
             local: llama::LocalServer::new(),
             local_desired: AtomicBool::new(false),
+            active_selection: Mutex::new(None),
+            local_lifecycle: tokio::sync::Mutex::new(()),
             download: Mutex::new(DownloadState::default()),
+            projector_download: tokio::sync::Mutex::new(()),
         }
     }
 
+    async fn logged_stream(
+        &self,
+        operation: &str,
+        config: &openai::OnlineConfig,
+        detail: String,
+        messages: Vec<Value>,
+    ) -> Result<BoxStream<'static, Result<String, EngineError>>, EngineError> {
+        let meta = ModelLogMeta {
+            logger: self.model_logger.clone(),
+            call_id: self.model_call_seq.fetch_add(1, Ordering::Relaxed),
+            operation: operation.to_string(),
+            provider: if config.local {
+                "local".to_string()
+            } else if config.preset.trim().is_empty() {
+                "online".to_string()
+            } else {
+                format!("online:{}", config.preset)
+            },
+            model: config.model.clone(),
+            detail,
+            started: Instant::now(),
+        };
+        meta.logger.info(&format!(
+            "model call start: id={} operation={} provider={} model={} {}",
+            meta.call_id, meta.operation, meta.provider, meta.model, meta.detail
+        ));
+
+        match openai::stream_chat(&self.http, config, messages, config.header_timeout()).await {
+            Ok(stream) => Ok(Box::pin(LoggedModelStream {
+                inner: stream,
+                logger: meta.logger,
+                call_id: meta.call_id,
+                operation: meta.operation,
+                started: meta.started,
+                chunks: 0,
+                output_chars: 0,
+                finished: false,
+            })),
+            Err(error) => {
+                meta.logger.error(&format!(
+                    "model call finish: id={} operation={} status=error duration_ms={} chunks=0 output_chars=0 error={}",
+                    meta.call_id,
+                    meta.operation,
+                    meta.started.elapsed().as_millis(),
+                    error.message
+                ));
+                Err(error)
+            }
+        }
+    }
     // -- status ------------------------------------------------------------- //
 
     pub fn status(&self) -> EngineStatus {
@@ -441,8 +592,7 @@ impl EngineService {
         let local = self.local.snapshot();
         let engine_available = self.paths.engine_installed();
         let online_configured = settings.online_configured();
-        let installed = models::scan_models(&self.paths.models_dir);
-        let has_models = !installed.is_empty();
+        let has_models = self.default_local_model().is_some();
 
         let local_model_file = local.model_file.clone();
         let local_model_name = local.model_name.clone();
@@ -472,15 +622,11 @@ impl EngineService {
                     } else if !has_models {
                         (
                             false,
-                            "尚未安装本地模型。请下载 Hy-MT2（翻译）或 Qwen2.5 3B（通用），也可以导入 GGUF 文件。"
+                            "尚未安装本地模型。请下载 Hy-MT2（翻译），或手动选择并完整安装 Qwen3.5（通用与视觉）。"
                                 .to_string(),
                         )
                     } else {
-                        (
-                            false,
-                            "本地模型未启动。点击「启动」后使用。"
-                                .to_string(),
-                        )
+                        (false, "本地模型未启动。点击「启动」后使用。".to_string())
                     }
                 }
             }
@@ -520,51 +666,24 @@ impl EngineService {
         }
     }
 
-    /// Installed GGUF models, catalog entries first.
-    fn installed_local_models(&self) -> Vec<ModelInfo> {
-        models::scan_models(&self.paths.models_dir)
-    }
-
-    /// Resolves which installed model to use for a role. Preferred catalog model
-    /// wins; any imported GGUF is used as a fallback so importing one model is
-    /// enough to use the local engine.
-    ///
-    /// `Vision` is special: it only resolves the Qwen2.5-VL weights *and* its
-    /// multimodal projector, because llama.cpp cannot read images without it.
+    /// Translation uses Hy-MT2 exclusively. General/vision require an explicit,
+    /// completely installed catalog selection; imported or legacy files never win.
     fn model_for_role(&self, role: LocalRole) -> Option<String> {
-        if role == LocalRole::Vision {
-            return self
-                .installed_vision_model()
-                .map(|(model_file, _)| model_file);
+        if role != LocalRole::Translate {
+            return self.installed_vision_model().map(|(weights, _)| weights);
         }
-        let installed = self.installed_local_models();
-        if installed.is_empty() {
-            return None;
-        }
-        let preferred: [&str; 2] = match role {
-            LocalRole::Translate => [models::TRANSLATION_MODEL_ID, models::GENERAL_MODEL_ID],
-            LocalRole::General => [models::GENERAL_MODEL_ID, models::TRANSLATION_MODEL_ID],
-            // Handled above; kept exhaustive for clarity.
-            LocalRole::Vision => [models::VISION_MODEL_ID, models::VISION_MODEL_ID],
-        };
-        for id in preferred {
-            if let Some(spec) = models::spec_by_id(id) {
-                if installed
-                    .iter()
-                    .any(|model| model.file.eq_ignore_ascii_case(spec.filename))
-                {
-                    return Some(spec.filename.to_string());
-                }
-            }
-        }
-        installed.first().map(|model| model.file.clone())
+        let spec = models::spec_by_id(models::TRANSLATION_MODEL_ID)?;
+        self.paths
+            .models_dir
+            .join(spec.filename)
+            .is_file()
+            .then(|| spec.filename.to_string())
     }
 
     /// Multimodal projector that belongs to `model_file`, when it is installed.
     /// A vision model is always loaded together with its projector — even for
     /// text requests — so switching between text and image tasks does not
-    /// restart the server. A partially installed VL model (weights only) still
-    /// works as a plain text model.
+    /// restart the server. Both files are required for every Qwen3.5 task.
     fn mmproj_for_model(&self, model_file: &str) -> Option<String> {
         let mmproj = models::spec_by_filename(model_file)?.mmproj?;
         self.paths
@@ -577,7 +696,21 @@ impl EngineService {
     /// The installed vision model as `(weights, projector)` file names. Both
     /// files must exist; a lone projector or lone weights is not usable.
     fn installed_vision_model(&self) -> Option<(String, String)> {
-        let spec = models::spec_by_id(models::VISION_MODEL_ID)?;
+        let selection = self
+            .active_selection
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let selected =
+            selection.unwrap_or_else(|| self.settings.get().provider.local.selected_model);
+        self.installed_selection(&selected)
+    }
+
+    fn installed_selection(&self, selected: &str) -> Option<(String, String)> {
+        let spec = models::spec_by_id(selected)?;
+        if !spec.vision {
+            return None;
+        }
         let mmproj = spec.mmproj?;
         let has_weights = self.paths.models_dir.join(spec.filename).is_file();
         let has_mmproj = self.paths.models_dir.join(mmproj.filename).is_file();
@@ -594,7 +727,7 @@ impl EngineService {
     }
 
     /// `true` when an image request can be served right now: online mode with a
-    /// configured endpoint, or local mode with the Qwen2.5-VL model installed
+    /// configured endpoint, or local mode with the selected Qwen3.5 model installed
     /// (the call itself still fails with a clear message when the local engine
     /// was not started). Screenshot OCR/translate use this to prefer the vision
     /// model and fall back to the Windows OCR engine otherwise.
@@ -607,9 +740,17 @@ impl EngineService {
         }
     }
 
-    /// Model started by the settings "启动" button: translation-preferred.
+    /// Resolve the explicit selection; never fall back when it is empty.
     fn default_local_model(&self) -> Option<String> {
-        self.model_for_role(LocalRole::Translate)
+        self.model_for_role(LocalRole::General)
+    }
+
+    fn clear_local_selection(&self) {
+        self.local_desired.store(false, Ordering::Release);
+        *self
+            .active_selection
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     // -- translation -------------------------------------------------------- //
@@ -654,7 +795,22 @@ impl EngineService {
                 "translate"
             }
         ));
-        openai::stream_chat(&self.http, &config, messages, config.header_timeout()).await
+        self.logged_stream(
+            "translate",
+            &config,
+            format!(
+                "input_chars={} target={} mode={}",
+                truncated.chars().count(),
+                target,
+                if dictionary {
+                    "dictionary"
+                } else {
+                    "translate"
+                }
+            ),
+            messages,
+        )
+        .await
     }
 
     /// Streams the translation of a screenshot region's text with the
@@ -694,14 +850,24 @@ impl EngineService {
             truncated.chars().count(),
             target
         ));
-        openai::stream_chat(&self.http, &config, messages, config.header_timeout()).await
+        self.logged_stream(
+            "screenshot_translate",
+            &config,
+            format!(
+                "input_chars={} target={} custom_prompt=true",
+                truncated.chars().count(),
+                target
+            ),
+            messages,
+        )
+        .await
     }
 
     /// Streams a vision (screenshot) request.
     ///
     /// `image_data_url` is a `data:image/png;base64,...` URL; `system` is the
     /// rendered instruction. Online mode uses the configured OpenAI-compatible
-    /// endpoint; local mode uses the Qwen2.5-VL model together with its
+    /// endpoint; local mode uses the manually selected Qwen3.5 together with its
     /// multimodal projector (`--mmproj`), both loaded on demand by
     /// [`llama::LocalServer::ensure_model`].
     pub async fn vision_stream(
@@ -743,7 +909,13 @@ impl EngineService {
             config.model,
             image_data_url.len()
         ));
-        openai::stream_chat(&self.http, &config, messages, config.header_timeout()).await
+        self.logged_stream(
+            "vision",
+            &config,
+            format!("image_bytes={}", image_data_url.len()),
+            messages,
+        )
+        .await
     }
 
     /// Streams a follow-up question about a screenshot that was already
@@ -822,7 +994,17 @@ impl EngineService {
             image_data_url.len(),
             recent.len()
         ));
-        openai::stream_chat(&self.http, &config, messages, config.header_timeout()).await
+        self.logged_stream(
+            "vision_followup",
+            &config,
+            format!(
+                "image_bytes={} history={}",
+                image_data_url.len(),
+                recent.len()
+            ),
+            messages,
+        )
+        .await
     }
 
     /// Streams a polish (rewriting) request. Uses the general model role like
@@ -852,7 +1034,13 @@ impl EngineService {
             if config.local { "local" } else { "online" },
             truncated.chars().count()
         ));
-        openai::stream_chat(&self.http, &config, messages, config.header_timeout()).await
+        self.logged_stream(
+            "polish",
+            &config,
+            format!("input_chars={}", truncated.chars().count()),
+            messages,
+        )
+        .await
     }
 
     /// Streams a user-defined skill: the stored prompt is rendered with the
@@ -908,7 +1096,17 @@ impl EngineService {
             if config.local { "local" } else { "online" },
             truncated.chars().count()
         ));
-        openai::stream_chat(&self.http, &config, messages, config.header_timeout()).await
+        self.logged_stream(
+            "custom_skill",
+            &config,
+            format!(
+                "skill={} input_chars={}",
+                skill_id,
+                truncated.chars().count()
+            ),
+            messages,
+        )
+        .await
     }
 
     pub async fn assist_stream(
@@ -945,7 +1143,17 @@ impl EngineService {
             if config.local { "local" } else { "online" },
             truncated.chars().count()
         ));
-        openai::stream_chat(&self.http, &config, messages, config.header_timeout()).await
+        self.logged_stream(
+            "assist",
+            &config,
+            format!(
+                "action={} input_chars={}",
+                action,
+                truncated.chars().count()
+            ),
+            messages,
+        )
+        .await
     }
 
     /// Streams a follow-up question about the original selection and the
@@ -979,7 +1187,13 @@ impl EngineService {
             user_chars,
             history.len()
         ));
-        openai::stream_chat(&self.http, &config, messages, config.header_timeout()).await
+        self.logged_stream(
+            "followup",
+            &config,
+            format!("input_chars={} history={}", user_chars, history.len()),
+            messages,
+        )
+        .await
     }
 
     pub async fn assist(&self, action: &str, text: &str) -> Result<String, EngineError> {
@@ -1034,6 +1248,7 @@ impl EngineService {
         role: LocalRole,
     ) -> Result<openai::OnlineConfig, EngineError> {
         if settings.is_local_mode() {
+            let _lifecycle = self.local_lifecycle.lock().await;
             if !self.local_desired.load(Ordering::Acquire) {
                 return Err(EngineError::new(
                     "本地模型未启动。",
@@ -1041,12 +1256,12 @@ impl EngineService {
                 ));
             }
             let Some(model_file) = self.model_for_role(role) else {
-                return Err(if role == LocalRole::Vision {
+                return Err(if role != LocalRole::Translate {
                     local_vision_missing_error()
                 } else {
                     EngineError::new(
                         "尚未安装本地模型。",
-                        "请在「设置 → 本地模型」下载 Hy-MT2（翻译）或 Qwen2.5 3B（通用），也可以导入 GGUF 文件。",
+                        "请在「设置 → 本地模型」下载 Hy-MT2（翻译）；通用与视觉任务需手动选择并完整安装 Qwen3.5。",
                     )
                 });
             };
@@ -1061,6 +1276,10 @@ impl EngineService {
                     &self.logger,
                 )
                 .await?;
+            if !self.local_desired.load(Ordering::Acquire) {
+                self.local.stop(Some(&self.logger));
+                return Err(EngineError::new("本地模型已停止。", "请重新点击启动。"));
+            }
             self.local_config(settings, &model_file)
         } else {
             let config = self.online_config(settings);
@@ -1245,12 +1464,7 @@ impl EngineService {
             Duration::from_millis(settings.provider.online.timeout_ms.clamp(2_000, 120_000));
         let config = openai::OnlineConfig {
             base_url: openai::normalize_base_url(base_url),
-            models_base_url: settings
-                .provider
-                .online
-                .models_base_url
-                .trim()
-                .to_string(),
+            models_base_url: settings.provider.online.models_base_url.trim().to_string(),
             api_key: api_key.trim().to_string(),
             model: String::new(),
             timeout_ms: settings.provider.online.timeout_ms,
@@ -1336,11 +1550,20 @@ impl EngineService {
             return Ok(self.model_info_for(&final_path));
         }
 
+        let mut reporter = DownloadReporter::begin(
+            &app,
+            &self.download,
+            "model",
+            spec.id,
+            spec.filename,
+            spec.size_bytes,
+        )?;
+
         // Phase 1: model weights (skipped when a previous attempt already saved
         // them but failed on the projector).
         if !final_path.is_file() {
             self.download_model_file(
-                &app,
+                &mut reporter,
                 spec.id,
                 spec.filename,
                 spec.size_bytes,
@@ -1358,6 +1581,20 @@ impl EngineService {
         // Phase 2: multimodal projector (same model id, distinct filename in the
         // progress events so the UI shows both stages).
         if let Some(mmproj) = spec.mmproj {
+            reporter.phase(mmproj.filename, mmproj.size_bytes);
+            reporter.status("waiting");
+            let _projector_guard = match cancellable_projector_lock(
+                &self.projector_download,
+                &reporter.cancel,
+            )
+            .await
+            {
+                Ok(guard) => guard,
+                Err(error) => {
+                    reporter.cancelled();
+                    return Err(error);
+                }
+            };
             let mmproj_path = self.paths.models_dir.join(mmproj.filename);
             if !mmproj_path.is_file() {
                 self.logger.info(&format!(
@@ -1365,7 +1602,7 @@ impl EngineService {
                     mmproj.filename, spec.filename
                 ));
                 self.download_model_file(
-                    &app,
+                    &mut reporter,
                     spec.id,
                     mmproj.filename,
                     mmproj.size_bytes,
@@ -1394,6 +1631,11 @@ impl EngineService {
             }
         }
 
+        if reporter.is_cancelled() {
+            reporter.cancelled();
+            return Err(cancelled_error());
+        }
+        reporter.succeed();
         self.logger.info(&format!(
             "model installed: {} ({} bytes)",
             spec.filename, spec.size_bytes
@@ -1403,24 +1645,20 @@ impl EngineService {
 
     /// Downloads one file of a model (weights or vision projector) with the
     /// ModelScope → Hugging Face fallback, size verification, cancellation and
-    /// `.part` cleanup. The model id is registered in the download registry for
-    /// the duration of the phase; phases run sequentially so the second phase
-    /// reuses the same id with a different filename.
+    /// `.part` cleanup. The caller retains one registry entry and cancellation
+    /// token across both files and the projector lock wait.
     async fn download_model_file(
         &self,
-        app: &tauri::AppHandle,
+        reporter: &mut DownloadReporter<'_>,
         spec_id: &str,
         filename: &str,
         size_bytes: u64,
         urls: Vec<&'static str>,
         manual_hint: &str,
     ) -> Result<(), EngineError> {
-        let part = models::part_path(&self.paths.cache_dir, filename);
+        let part = models::part_path(&self.paths.cache_dir, &format!("{spec_id}-{filename}"));
         let final_path = self.paths.models_dir.join(filename);
-        // Reserves the model id in the registry; a second request for the same
-        // model fails with "该模型正在下载中" while other models stay free.
-        let mut reporter =
-            DownloadReporter::begin(app, &self.download, "model", spec_id, filename, size_bytes)?;
+        reporter.phase(filename, size_bytes);
         if urls.is_empty() {
             let error = EngineError::new(
                 "该模型没有可用的下载地址。",
@@ -1440,12 +1678,12 @@ impl EngineService {
             if index > 0 {
                 self.logger
                     .warn(&format!("model download falling back to mirror: {url}"));
-                reporter.status("downloading");
+                reporter.phase(filename, size_bytes);
             }
             self.logger
                 .info(&format!("downloading model {} from {}", filename, url));
             let attempt = self
-                .download_to_file(url, &part, &mut reporter, Some(size_bytes))
+                .download_to_file(url, &part, reporter, Some(size_bytes))
                 .await;
             match attempt {
                 Ok(()) => {
@@ -1474,6 +1712,11 @@ impl EngineService {
             ));
         }
 
+        if reporter.is_cancelled() {
+            let _ = std::fs::remove_file(&part);
+            reporter.cancelled();
+            return Err(cancelled_error());
+        }
         reporter.status("verifying");
         let actual = std::fs::metadata(&part).map(|meta| meta.len()).unwrap_or(0);
         if actual != size_bytes {
@@ -1500,7 +1743,6 @@ impl EngineService {
                 format!("请检查磁盘空间与目录权限后重试；系统错误：{error}"),
             ));
         }
-        reporter.succeed();
         self.logger.info(&format!(
             "model file saved: {} ({} bytes)",
             filename, size_bytes
@@ -1637,7 +1879,7 @@ impl EngineService {
         if metadata.len() > models::MAX_IMPORT_BYTES {
             return Err(EngineError::new(
                 "模型文件超过 4GB，暂不支持导入。",
-                "请选择 4GB 以内的 GGUF 模型，例如内置列表中的 Qwen2.5 系列（Q4_K_M 量化）。",
+                "请选择 4GB 以内的 GGUF 模型，例如内置列表中的 Qwen3.5 系列。",
             ));
         }
         if !models::looks_like_gguf(&path) {
@@ -1700,10 +1942,17 @@ impl EngineService {
         self.logger.info(&format!("model removed: {file}"));
 
         // A vision model consists of the weights + a projector; remove the
-        // projector too so no orphaned ~800 MB file stays behind.
+        // projector only when no installed quantization still shares it.
         if let Some(mmproj) = models::spec_by_filename(&file).and_then(|spec| spec.mmproj) {
             let mmproj_path = self.paths.models_dir.join(mmproj.filename);
-            if mmproj_path.is_file() {
+            let shared = models::CATALOG.iter().any(|other| {
+                other.filename != file
+                    && self.paths.models_dir.join(other.filename).is_file()
+                    && other
+                        .mmproj
+                        .is_some_and(|projector| projector.filename == mmproj.filename)
+            });
+            if !shared && mmproj_path.is_file() {
                 match std::fs::remove_file(&mmproj_path) {
                     Ok(()) => self
                         .logger
@@ -1721,14 +1970,30 @@ impl EngineService {
     // -- local engine ------------------------------------------------------- //
 
     pub async fn start_local(&self) -> Result<(), EngineError> {
+        let _lifecycle = self.local_lifecycle.lock().await;
+        if self.local_desired.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        self.clear_local_selection();
         let settings = self.settings.get();
-        let Some(model_file) = self.default_local_model() else {
-            return Err(EngineError::new(
-                "尚未安装本地模型。",
-                "请先在「设置 → 本地模型」下载 Hy-MT2（翻译）或 Qwen2.5 3B（通用），也可以导入 GGUF 文件。",
-            ));
+        let Some((model_file, projector)) =
+            self.installed_selection(&settings.provider.local.selected_model)
+        else {
+            return Err(if settings.provider.local.selected_model.is_empty() {
+                EngineError::new(
+                    "尚未选择本地模型。",
+                    "请手动选择并完整下载 Qwen3.5 后启动。",
+                )
+            } else {
+                local_vision_missing_error()
+            });
         };
-        let mmproj_file = self.mmproj_for_model(&model_file);
+        let mmproj_file = Some(projector);
+        *self
+            .active_selection
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) =
+            Some(settings.provider.local.selected_model.clone());
         self.local_desired.store(true, Ordering::Release);
         let result = self
             .local
@@ -1741,8 +2006,13 @@ impl EngineService {
                 &self.logger,
             )
             .await;
+        if !self.local_desired.load(Ordering::Acquire) {
+            self.local.stop(Some(&self.logger));
+            self.clear_local_selection();
+            return Err(EngineError::new("本地引擎启动已取消。", "请重新点击启动。"));
+        }
         if result.is_err() {
-            self.local_desired.store(false, Ordering::Release);
+            self.clear_local_selection();
         } else {
             // Remember the user's explicit start so the next launch can restore
             // the engine (see `main::restore_local_engine`).
@@ -1752,7 +2022,8 @@ impl EngineService {
     }
 
     pub async fn stop_local(&self) -> Result<(), EngineError> {
-        self.local_desired.store(false, Ordering::Release);
+        let _lifecycle = self.local_lifecycle.lock().await;
+        self.clear_local_selection();
         self.local.stop(Some(&self.logger));
         self.set_keep_running(false);
         Ok(())
@@ -1761,7 +2032,7 @@ impl EngineService {
     /// App shutdown: kill llama-server without forgetting that the user had
     /// started it, so a restart can restore the previous running state.
     pub fn shutdown_local(&self) {
-        self.local_desired.store(false, Ordering::Release);
+        self.clear_local_selection();
         self.local.stop(Some(&self.logger));
     }
 
@@ -1888,6 +2159,26 @@ impl EngineService {
         let _ = std::io::Write::flush(&mut file);
         let _ = file.sync_all();
         Ok(())
+    }
+}
+
+/// Cancellation remains observable while queued and is rechecked after acquisition.
+async fn cancellable_projector_lock<'a>(
+    lock: &'a tokio::sync::Mutex<()>,
+    cancel: &AtomicBool,
+) -> Result<tokio::sync::MutexGuard<'a, ()>, EngineError> {
+    let acquire = lock.lock();
+    tokio::pin!(acquire);
+    loop {
+        if cancel.load(Ordering::SeqCst) {
+            return Err(cancelled_error());
+        }
+        if let Ok(guard) = tokio::time::timeout(Duration::from_millis(25), &mut acquire).await {
+            if cancel.load(Ordering::SeqCst) {
+                return Err(cancelled_error());
+            }
+            return Ok(guard);
+        }
     }
 }
 
@@ -2090,6 +2381,170 @@ mod tests {
     }
 
     #[test]
+    fn logged_model_stream_records_chunks_output_and_completion() {
+        let dir = TempDir::new().unwrap();
+        let logger = Logger::new(dir.path(), "model");
+        logger.info("model call start: id=1 operation=test provider=local model=stub");
+        let inner: BoxStream<'static, Result<String, EngineError>> =
+            Box::pin(futures_util::stream::iter(vec![
+                Ok("ab".to_string()),
+                Ok("c".to_string()),
+            ]));
+        let mut logged = LoggedModelStream {
+            inner,
+            logger: logger.clone(),
+            call_id: 1,
+            operation: "test".to_string(),
+            started: Instant::now(),
+            chunks: 0,
+            output_chars: 0,
+            finished: false,
+        };
+        block_on(async { while logged.next().await.is_some() {} });
+        let text = std::fs::read_to_string(logger.path()).unwrap();
+        assert!(text.contains("model call start"));
+        assert!(text.contains("status=success"));
+        assert!(text.contains("chunks=2"));
+        assert!(text.contains("output_chars=3"));
+    }
+    #[test]
+    fn active_selection_survives_settings_changes_until_cleared() {
+        let env = test_env();
+        for spec in &models::CATALOG {
+            std::fs::write(env.paths.models_dir.join(spec.filename), b"fake").unwrap();
+            if let Some(projector) = spec.mmproj {
+                std::fs::write(env.paths.models_dir.join(projector.filename), b"fake").unwrap();
+            }
+        }
+        let first = &models::CATALOG[1];
+        let second = &models::CATALOG[3];
+        *env.service.active_selection.lock().unwrap() = Some(first.id.to_string());
+        env.service.local_desired.store(true, Ordering::Release);
+        env.store
+            .update_json(json!({"provider":{"local":{"selectedModel":second.id}}}))
+            .unwrap();
+        for role in [LocalRole::General, LocalRole::Vision] {
+            assert_eq!(
+                env.service.model_for_role(role).as_deref(),
+                Some(first.filename)
+            );
+        }
+        assert_eq!(
+            env.service.model_for_role(LocalRole::Translate).as_deref(),
+            Some(models::CATALOG[0].filename)
+        );
+        env.service.clear_local_selection();
+        assert_eq!(
+            env.service.model_for_role(LocalRole::General).as_deref(),
+            Some(second.filename)
+        );
+        assert!(!env.service.local_desired.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn failed_start_clears_snapshot_and_missing_selection_never_uses_translation() {
+        block_on(async {
+            let env = test_env();
+            std::fs::write(
+                env.paths.models_dir.join(models::CATALOG[0].filename),
+                b"fake",
+            )
+            .unwrap();
+            let error = env.service.start_local().await.unwrap_err();
+            assert!(error.message.contains("选择"));
+            assert!(env.service.active_selection.lock().unwrap().is_none());
+            let spec = &models::CATALOG[1];
+            std::fs::write(env.paths.models_dir.join(spec.filename), b"fake").unwrap();
+            std::fs::write(
+                env.paths.models_dir.join(spec.mmproj.unwrap().filename),
+                b"fake",
+            )
+            .unwrap();
+            env.store
+                .update_json(json!({"provider":{"local":{"selectedModel":spec.id}}}))
+                .unwrap();
+            assert!(env.service.start_local().await.is_err()); // No engine binary installed.
+            assert!(env.service.active_selection.lock().unwrap().is_none());
+            assert!(!env.service.local_desired.load(Ordering::Acquire));
+            assert!(
+                !env.service
+                    .chat_config(&env.store.get(), LocalRole::General)
+                    .await
+                    .unwrap()
+                    .local
+            );
+        });
+    }
+
+    #[test]
+    fn repeated_start_keeps_snapshot_and_stop_clears_it() {
+        block_on(async {
+            let env = test_env();
+            *env.service.active_selection.lock().unwrap() = Some(models::CATALOG[1].id.to_string());
+            env.service.local_desired.store(true, Ordering::Release);
+            env.service.start_local().await.unwrap();
+            assert_eq!(
+                env.service.active_selection.lock().unwrap().as_deref(),
+                Some(models::CATALOG[1].id)
+            );
+            env.service.stop_local().await.unwrap();
+            assert!(env.service.active_selection.lock().unwrap().is_none());
+        });
+    }
+
+    #[test]
+    fn queued_projector_download_can_be_cancelled_without_releasing_lock() {
+        block_on(async {
+            let registry = Mutex::new(DownloadState::default());
+            let (_, cancel, _) =
+                reserve_download(&registry, "model", "queued", "weights", 1).unwrap();
+            let lock = tokio::sync::Mutex::new(());
+            let held = lock.lock().await;
+            let waiter = cancellable_projector_lock(&lock, &cancel);
+            tokio::pin!(waiter);
+            assert!(tokio::time::timeout(Duration::from_millis(10), &mut waiter)
+                .await
+                .is_err());
+            assert!(reserve_download(&registry, "model", "queued", "projector", 1).is_err());
+            assert_eq!(cancel_tasks(&registry, Some("queued")).len(), 1);
+            assert!(tokio::time::timeout(Duration::from_secs(1), &mut waiter)
+                .await
+                .unwrap()
+                .is_err());
+            drop(held);
+            assert!(lock.try_lock().is_ok());
+            assert!(cancellable_projector_lock(&lock, &cancel).await.is_err());
+        });
+    }
+
+    #[test]
+    fn projector_waiter_acquires_after_previous_task_and_cancel_all_reaches_queue() {
+        block_on(async {
+            let registry = Mutex::new(DownloadState::default());
+            let (_, first, _) =
+                reserve_download(&registry, "model", "first", "projector", 1).unwrap();
+            let (_, second, _) =
+                reserve_download(&registry, "model", "second", "projector", 1).unwrap();
+            let lock = tokio::sync::Mutex::new(());
+            let held = cancellable_projector_lock(&lock, &first).await.unwrap();
+            let waiter = cancellable_projector_lock(&lock, &second);
+            tokio::pin!(waiter);
+            assert!(tokio::time::timeout(Duration::from_millis(10), &mut waiter)
+                .await
+                .is_err());
+            drop(held);
+            let acquired = tokio::time::timeout(Duration::from_secs(1), &mut waiter)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(cancel_tasks(&registry, None).len(), 2);
+            assert!(second.load(Ordering::SeqCst));
+            drop(acquired);
+            assert!(cancellable_projector_lock(&lock, &second).await.is_err());
+        });
+    }
+
+    #[test]
     fn service_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<EngineService>();
@@ -2143,46 +2598,27 @@ mod tests {
     }
 
     #[test]
-    fn local_mode_tracks_engine_and_model_availability() {
+    fn unselected_models_never_fall_back() {
         let env = test_env();
-        std::fs::write(env.paths.llama_binary(), b"stub").unwrap();
-        env.store
-            .update_json(json!({"provider": {"mode": "local"}}))
-            .unwrap();
-
-        let status = env.service.status();
-        assert!(status.engine_available);
-        assert!(!status.ready);
-        assert!(
-            status.hint.contains("模型"),
-            "expected model hint, got {}",
-            status.hint
-        );
-
-        // Installing a model is enough; no model selection is persisted.
+        for spec in &models::CATALOG {
+            std::fs::write(env.paths.models_dir.join(spec.filename), b"fake").unwrap();
+            if let Some(projector) = spec.mmproj {
+                std::fs::write(env.paths.models_dir.join(projector.filename), b"fake").unwrap();
+            }
+        }
         std::fs::write(
-            env.paths.models_dir.join(models::CATALOG[1].filename),
-            b"fake",
+            env.paths.models_dir.join("qwen2.5-3b-instruct-q4_k_m.gguf"),
+            b"legacy",
         )
         .unwrap();
-        let status = env.service.status();
-        assert!(status.local_model_file.is_empty());
-        assert!(status.local_model_name.is_empty());
-        assert!(!status.ready);
-        assert!(
-            status.hint.contains("启动"),
-            "expected start hint, got {}",
-            status.hint
-        );
-        assert_eq!(status.provider_label, "本地模型");
+        assert_eq!(env.service.model_for_role(LocalRole::General), None);
+        assert_eq!(env.service.model_for_role(LocalRole::Vision), None);
+        assert!(!env.service.has_local_vision());
         assert_eq!(
             env.service.model_for_role(LocalRole::Translate),
-            Some(models::CATALOG[1].filename.to_string())
+            Some(models::CATALOG[0].filename.to_string())
         );
-        assert_eq!(
-            env.service.model_for_role(LocalRole::General),
-            Some(models::CATALOG[1].filename.to_string())
-        );
+        assert!(env.store.get().provider.local.selected_model.is_empty());
     }
 
     #[test]
@@ -2203,66 +2639,65 @@ mod tests {
     }
 
     #[test]
-    fn model_roles_prefer_their_catalog_model() {
+    fn model_roles_follow_manual_selection() {
         let env = test_env();
-        for spec in models::CATALOG.iter() {
+        for spec in &models::CATALOG {
             std::fs::write(env.paths.models_dir.join(spec.filename), b"fake").unwrap();
-            if let Some(mmproj) = spec.mmproj {
-                std::fs::write(env.paths.models_dir.join(mmproj.filename), b"fake").unwrap();
+            if let Some(projector) = spec.mmproj {
+                std::fs::write(env.paths.models_dir.join(projector.filename), b"fake").unwrap();
             }
         }
-        assert_eq!(
-            env.service.model_for_role(LocalRole::Translate),
-            Some(models::CATALOG[0].filename.to_string())
-        );
-        assert_eq!(
-            env.service.model_for_role(LocalRole::General),
-            Some(models::CATALOG[1].filename.to_string())
-        );
-        assert_eq!(
-            env.service.model_for_role(LocalRole::Vision),
-            Some(models::CATALOG[2].filename.to_string())
-        );
-        assert!(env.service.has_local_vision());
-        assert_eq!(
-            env.service.default_local_model(),
-            Some(models::CATALOG[0].filename.to_string())
-        );
+        for spec in models::CATALOG.iter().filter(|spec| spec.vision) {
+            env.store
+                .update_json(json!({"provider":{"local":{"selectedModel":spec.id}}}))
+                .unwrap();
+            assert_eq!(
+                env.service.model_for_role(LocalRole::General),
+                Some(spec.filename.to_string())
+            );
+            assert_eq!(
+                env.service.model_for_role(LocalRole::Vision),
+                Some(spec.filename.to_string())
+            );
+            assert_eq!(
+                env.service.model_for_role(LocalRole::Translate),
+                Some(models::CATALOG[0].filename.to_string())
+            );
+        }
     }
 
     #[test]
-    fn vision_model_needs_weights_and_projector() {
+    fn selected_model_requires_both_files_for_text_and_vision() {
         let env = test_env();
         let spec = &models::CATALOG[2];
-        let mmproj = spec.mmproj.expect("vision model must ship a projector");
-
-        // Weights only: the model cannot see images, so the vision role must
-        // not resolve it (text roles may still use it as a plain GGUF).
+        let projector = spec.mmproj.unwrap();
+        env.store
+            .update_json(json!({"provider":{"local":{"selectedModel":spec.id}}}))
+            .unwrap();
         std::fs::write(env.paths.models_dir.join(spec.filename), b"fake").unwrap();
-        assert!(!env.service.has_local_vision());
+        assert_eq!(env.service.model_for_role(LocalRole::General), None);
         assert_eq!(env.service.model_for_role(LocalRole::Vision), None);
+        assert_eq!(env.service.model_for_role(LocalRole::Translate), None);
+        std::fs::write(env.paths.models_dir.join(projector.filename), b"fake").unwrap();
+        assert!(env.service.has_local_vision());
         assert_eq!(
-            env.service.model_for_role(LocalRole::Translate),
+            env.service.model_for_role(LocalRole::General),
             Some(spec.filename.to_string())
         );
-
-        // Weights + projector: vision role resolves and the projector is picked
-        // up automatically for the local server.
-        std::fs::write(env.paths.models_dir.join(mmproj.filename), b"fake").unwrap();
-        assert!(env.service.has_local_vision());
         assert_eq!(
             env.service.model_for_role(LocalRole::Vision),
             Some(spec.filename.to_string())
         );
         assert_eq!(
             env.service.mmproj_for_model(spec.filename),
-            Some(mmproj.filename.to_string())
+            Some(projector.filename.to_string())
         );
-        // Text models never load a projector.
         assert_eq!(
-            env.service.mmproj_for_model(models::CATALOG[1].filename),
+            env.service.mmproj_for_model(models::CATALOG[0].filename),
             None
         );
+        std::fs::remove_file(env.paths.models_dir.join(spec.filename)).unwrap();
+        assert!(!env.service.has_local_vision());
     }
 
     #[test]
@@ -2275,15 +2710,15 @@ mod tests {
         .unwrap();
         let installed = env.service.installed_models();
         assert_eq!(installed.len(), 1);
-        assert_eq!(installed[0].catalog_id, "qwen2.5-3b");
+        assert_eq!(installed[0].catalog_id, "qwen3.5-0.8b-q4-k-m");
         assert_eq!(installed[0].size_bytes, 9);
 
         let catalog = env.service.catalog();
-        assert_eq!(catalog.len(), 3);
+        assert_eq!(catalog.len(), 7);
         assert!(!catalog[0].installed);
-        assert!(catalog[1].installed);
+        assert!(!catalog[1].installed);
         assert_eq!(catalog[1].filename, models::CATALOG[1].filename);
-        assert_eq!(catalog[2].id, "qwen2.5-vl-3b");
+        assert_eq!(catalog[2].id, "qwen3.5-0.8b-q3-k-m");
         assert!(catalog[2].vision);
         assert!(!catalog[2].installed);
     }
@@ -2362,7 +2797,7 @@ mod tests {
             error.message
         );
         assert!(
-            error.hint.contains("Qwen2.5-VL") && error.hint.contains("设置"),
+            error.hint.contains("Qwen3.5") && error.hint.contains("设置"),
             "hint: {}",
             error.hint
         );
@@ -2377,6 +2812,9 @@ mod tests {
         let mmproj = spec.mmproj.expect("vision model must ship a projector");
         std::fs::write(env.paths.models_dir.join(spec.filename), b"fake").unwrap();
         std::fs::write(env.paths.models_dir.join(mmproj.filename), b"fake").unwrap();
+        env.store
+            .update_json(json!({"provider":{"local":{"selectedModel":spec.id}}}))
+            .unwrap();
         env.store
             .update_json(json!({"provider": {"mode": "local"}}))
             .unwrap();
@@ -2464,7 +2902,7 @@ mod tests {
             "message: {}",
             error.message
         );
-        assert!(error.hint.contains("Qwen2.5-VL"), "hint: {}", error.hint);
+        assert!(error.hint.contains("Qwen3.5"), "hint: {}", error.hint);
     }
 
     #[test]
@@ -2599,12 +3037,19 @@ mod tests {
     fn start_local_without_engine_reports_download_hint() {
         let env = test_env();
         std::fs::write(
-            env.paths.models_dir.join(models::CATALOG[0].filename),
+            env.paths.models_dir.join(models::CATALOG[1].filename),
+            b"fake",
+        )
+        .unwrap();
+        std::fs::write(
+            env.paths
+                .models_dir
+                .join(models::CATALOG[1].mmproj.unwrap().filename),
             b"fake",
         )
         .unwrap();
         env.store
-            .update_json(json!({"provider": {"mode": "local"}}))
+            .update_json(json!({"provider": {"mode": "local", "local": {"selectedModel": models::CATALOG[1].id}}}))
             .unwrap();
         let error = block_on(env.service.start_local()).unwrap_err();
         assert!(error.message.contains("引擎"), "message: {}", error.message);
@@ -2837,13 +3282,62 @@ mod tests {
         let projector = env.paths.models_dir.join(mmproj.filename);
         std::fs::write(&weights, b"x").unwrap();
         std::fs::write(&projector, b"x").unwrap();
+        env.store
+            .update_json(json!({"provider":{"local":{"selectedModel":spec.id}}}))
+            .unwrap();
         assert!(env.service.has_local_vision());
 
         env.service.remove_model(spec.filename).unwrap();
         assert!(!weights.exists());
-        // No orphaned ~800MB projector file is left behind.
+        // An unshared projector is removed with the last weights file.
         assert!(!projector.exists());
         assert!(!env.service.has_local_vision());
+    }
+
+    #[test]
+    fn removing_one_quantization_preserves_shared_projector() {
+        let env = test_env();
+        let first = &models::CATALOG[1];
+        let second = &models::CATALOG[2];
+        let projector = first.mmproj.unwrap().filename;
+        std::fs::write(env.paths.models_dir.join(first.filename), b"weights").unwrap();
+        std::fs::write(env.paths.models_dir.join(second.filename), b"weights").unwrap();
+        std::fs::write(env.paths.models_dir.join(projector), b"projector").unwrap();
+        env.store
+            .update_json(json!({"provider":{"local":{"selectedModel":second.id}}}))
+            .unwrap();
+        env.service.remove_model(first.filename).unwrap();
+        assert!(env.paths.models_dir.join(projector).is_file());
+        assert!(env.service.has_local_vision());
+        env.service.remove_model(second.filename).unwrap();
+        assert!(!env.paths.models_dir.join(projector).exists());
+    }
+
+    #[test]
+    fn legacy_imports_and_incomplete_selection_never_start_as_fallback() {
+        let env = test_env();
+        for file in [
+            "qwen2.5-3b-instruct-q4_k_m.gguf",
+            "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf",
+            "custom.gguf",
+        ] {
+            std::fs::write(env.paths.models_dir.join(file), b"fake").unwrap();
+        }
+        assert_eq!(env.service.model_for_role(LocalRole::Translate), None);
+        assert_eq!(env.service.default_local_model(), None);
+        std::fs::write(
+            env.paths.models_dir.join(models::CATALOG[0].filename),
+            b"translation",
+        )
+        .unwrap();
+        env.store
+            .update_json(json!({"provider":{"local":{"selectedModel":models::CATALOG[1].id}}}))
+            .unwrap();
+        assert_eq!(env.service.default_local_model(), None);
+        let error = block_on(env.service.start_local()).unwrap_err();
+        assert!(error.hint.contains("手动选择 Qwen3.5"));
+        assert!(error.hint.contains("视觉投影器"));
+        assert_eq!(env.service.installed_models().len(), 4);
     }
 
     #[test]

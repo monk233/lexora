@@ -45,6 +45,27 @@
         "minimizable": false,
         "closable": false,
         "backgroundColor": "#00000000"
+      },
+      {
+        "label": "picker-toolbar",
+        "title": "Lexora",
+        "url": "picker.html?surface=toolbar",
+        "width": 440,
+        "height": 56,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "visible": false,
+        "focus": false,
+        "focusable": false,
+        "center": false,
+        "maximizable": false,
+        "minimizable": false,
+        "closable": false,
+        "backgroundColor": "#00000000"
       }
     ],
     "security": {

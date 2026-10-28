@@ -237,13 +237,7 @@ fn pin_is_scrollable(display_w: f64, display_h: f64, width: u32, height: u32) ->
 /// Logical window size of a pin at `zoom` (1.0 = image pixel per physical
 /// pixel). Tall screenshots keep the work-area height cap and scroll inside the
 /// window instead of growing beyond the screen (contract §11.5).
-fn pin_zoom_size(
-    width: u32,
-    height: u32,
-    scale: f64,
-    zoom: f64,
-    work_height: i32,
-) -> (f64, f64) {
+fn pin_zoom_size(width: u32, height: u32, scale: f64, zoom: f64, work_height: i32) -> (f64, f64) {
     let scale = if scale.is_finite() && scale > 0.1 {
         scale
     } else {
@@ -255,7 +249,11 @@ fn pin_zoom_size(
     let logical_h = (base_h * zoom).max(1.0);
     let max_h = ((work_height.max(1) as f64) * MAX_WORK_AREA_RATIO / scale).max(1.0);
     let tall = base_h / base_w >= TALL_IMAGE_ASPECT;
-    let display_h = if tall { logical_h.min(max_h) } else { logical_h };
+    let display_h = if tall {
+        logical_h.min(max_h)
+    } else {
+        logical_h
+    };
     let physical_w = ((logical_w * scale).round() as i64).max(1);
     let physical_h = ((display_h * scale).round() as i64).max(1);
     (physical_w as f64 / scale, physical_h as f64 / scale)
@@ -306,7 +304,11 @@ pub fn create_pin(
     /* The work area and DPI scale follow the anchor when there is one (the pin
      * stays where the screenshot was taken), otherwise the cursor. */
     let (anchor_point, scale, work) = match anchor {
-        Some((x, y)) => (Some((x, y)), win32::monitor_scale_factor(x, y), win32::work_area_physical(x, y)),
+        Some((x, y)) => (
+            Some((x, y)),
+            win32::monitor_scale_factor(x, y),
+            win32::work_area_physical(x, y),
+        ),
         None => {
             let cursor = win32::cursor_physical();
             (
@@ -345,13 +347,9 @@ pub fn create_pin(
     let position = match anchor_point {
         /* Keep the image exactly where the selection was; only clamp it back
          * into the work area when the display size differs from the selection. */
-        Some((x, y)) => win32::clamp_to_work_area(
-            x,
-            y,
-            physical_w as i32,
-            physical_h as i32,
-            &work,
-        ),
+        Some((x, y)) => {
+            win32::clamp_to_work_area(x, y, physical_w as i32, physical_h as i32, &work)
+        }
         None => {
             let cursor = win32::cursor_physical();
             pin_window_position(
@@ -790,7 +788,9 @@ pub fn edit_window(
             new_height.max(1) as u32,
         ))
         .and_then(|_| window.set_position(PhysicalPosition::new(new_x, new_y)))
-        .map_err(|error| EngineError::new("无法展开编辑工具栏。", format!("请重试（{error}）。")))?;
+        .map_err(|error| {
+            EngineError::new("无法展开编辑工具栏。", format!("请重试（{error}）。"))
+        })?;
     if let Some(entry) = lock_registry().get_mut(id) {
         entry.edit_restore = Some(base);
     }

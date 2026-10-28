@@ -1,11 +1,8 @@
 //! Local GGUF model catalog, directory scanning and filename helpers.
 //!
 //! The catalog is a compile-time constant so the settings UI always has a stable
-//! list of downloadable models, even offline. Lexora offers exactly three
-//! models: a translation-specialised Tencent Hunyuan Hy-MT2, a general-purpose
-//! Qwen2.5 3B and a vision model (Qwen2.5-VL 3B, which needs a separate
-//! multimodal projector). `tests` in this module guard against accidental edits
-//! that would break a download.
+//! list of downloadable models, even offline. Hy-MT2 handles translation;
+//! six Qwen3.5 variants share one projector per model size.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -17,6 +14,7 @@ use crate::engine::{CatalogEntry, EngineError, ModelInfo};
 /// images to a GGUF model without it, so it is downloaded alongside the weights.
 #[derive(Debug, Clone, Copy)]
 pub struct MmprojSpec {
+    pub remote_filename: &'static str,
     pub filename: &'static str,
     pub size_bytes: u64,
     pub hf_url: &'static str,
@@ -42,11 +40,10 @@ pub struct ModelSpec {
     pub mmproj: Option<MmprojSpec>,
 }
 
-/// The local models offered by Lexora: one translation-specialised (Hy-MT2),
-/// one general-purpose (Qwen2.5 3B) and one vision model (Qwen2.5-VL 3B).
+/// One translation model and six manually selected multimodal variants.
 /// Downloads try `modelscope_url` first and fall back to `hf_url`; `hf_url` may
 /// be empty when the model is only distributed through ModelScope.
-pub const CATALOG: [ModelSpec; 3] = [
+pub const CATALOG: [ModelSpec; 7] = [
     ModelSpec {
         id: "hy-mt2-1.8b",
         name: "腾讯混元 Hy-MT2 1.8B（翻译模型）",
@@ -62,46 +59,75 @@ pub const CATALOG: [ModelSpec; 3] = [
         mmproj: None,
     },
     ModelSpec {
-        id: "qwen2.5-3b",
-        name: "Qwen2.5 3B（通用模型）",
-        description: "通用模型：翻译、总结、解释，建议 16GB+ 内存",
-        filename: "qwen2.5-3b-instruct-q4_k_m.gguf",
-        size_bytes: 2_104_932_768,
-        license: "Apache-2.0",
-        languages: "多语言",
-        recommended: false,
-        hf_url: "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
-        modelscope_url: "https://www.modelscope.cn/models/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/master/qwen2.5-3b-instruct-q4_k_m.gguf",
-        vision: false,
-        mmproj: None,
+        id: "qwen3.5-0.8b-q4-k-m",
+        name: "Qwen3.5 0.8B Q4_K_M",
+        description: "通用文本与视觉理解；需同时安装模型和视觉投影器，使用前请手动选择",
+        filename: "Qwen3.5-0.8B-Q4_K_M.gguf", size_bytes: 532517120,
+        license: "Apache-2.0", languages: "多语言", recommended: false,
+        hf_url: "", modelscope_url: "https://www.modelscope.cn/models/unsloth/Qwen3.5-0.8B-GGUF/resolve/master/Qwen3.5-0.8B-Q4_K_M.gguf", vision: true,
+        mmproj: Some(MmprojSpec { filename: "mmproj-Qwen3.5-0.8B-F16.gguf",
+            remote_filename: "mmproj-F16.gguf", size_bytes: 204987232, hf_url: "",
+            modelscope_url: "https://www.modelscope.cn/models/unsloth/Qwen3.5-0.8B-GGUF/resolve/master/mmproj-F16.gguf" }),
     },
     ModelSpec {
-        id: "qwen2.5-vl-3b",
-        name: "Qwen2.5-VL 3B（视觉模型）",
-        description: "可理解图片与文字，含视觉投影器（两个文件），建议 16GB+ 内存",
-        filename: "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf",
-        size_bytes: 1_929_901_056,
-        license: "Apache-2.0",
-        languages: "多语言",
-        recommended: false,
-        hf_url: "https://huggingface.co/ggml-org/Qwen2.5-VL-3B-Instruct-GGUF/resolve/main/Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf",
-        modelscope_url: "https://www.modelscope.cn/models/ggml-org/Qwen2.5-VL-3B-Instruct-GGUF/resolve/master/Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf",
-        vision: true,
-        mmproj: Some(MmprojSpec {
-            filename: "mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf",
-            size_bytes: 844_757_728,
-            hf_url: "https://huggingface.co/ggml-org/Qwen2.5-VL-3B-Instruct-GGUF/resolve/main/mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf",
-            modelscope_url: "https://www.modelscope.cn/models/ggml-org/Qwen2.5-VL-3B-Instruct-GGUF/resolve/master/mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf",
-        }),
+        id: "qwen3.5-0.8b-q3-k-m",
+        name: "Qwen3.5 0.8B Q3_K_M",
+        description: "通用文本与视觉理解；需同时安装模型和视觉投影器，使用前请手动选择",
+        filename: "Qwen3.5-0.8B-Q3_K_M.gguf", size_bytes: 470167808,
+        license: "Apache-2.0", languages: "多语言", recommended: false,
+        hf_url: "", modelscope_url: "https://www.modelscope.cn/models/unsloth/Qwen3.5-0.8B-GGUF/resolve/master/Qwen3.5-0.8B-Q3_K_M.gguf", vision: true,
+        mmproj: Some(MmprojSpec { filename: "mmproj-Qwen3.5-0.8B-F16.gguf",
+            remote_filename: "mmproj-F16.gguf", size_bytes: 204987232, hf_url: "",
+            modelscope_url: "https://www.modelscope.cn/models/unsloth/Qwen3.5-0.8B-GGUF/resolve/master/mmproj-F16.gguf" }),
+    },
+    ModelSpec {
+        id: "qwen3.5-2b-q4-k-m",
+        name: "Qwen3.5 2B Q4_K_M",
+        description: "通用文本与视觉理解；需同时安装模型和视觉投影器，使用前请手动选择",
+        filename: "Qwen3.5-2B-Q4_K_M.gguf", size_bytes: 1280835840,
+        license: "Apache-2.0", languages: "多语言", recommended: false,
+        hf_url: "", modelscope_url: "https://www.modelscope.cn/models/unsloth/Qwen3.5-2B-GGUF/resolve/master/Qwen3.5-2B-Q4_K_M.gguf", vision: true,
+        mmproj: Some(MmprojSpec { filename: "mmproj-Qwen3.5-2B-F16.gguf",
+            remote_filename: "mmproj-F16.gguf", size_bytes: 668227264, hf_url: "",
+            modelscope_url: "https://www.modelscope.cn/models/unsloth/Qwen3.5-2B-GGUF/resolve/master/mmproj-F16.gguf" }),
+    },
+    ModelSpec {
+        id: "qwen3.5-2b-q3-k-m",
+        name: "Qwen3.5 2B Q3_K_M",
+        description: "通用文本与视觉理解；需同时安装模型和视觉投影器，使用前请手动选择",
+        filename: "Qwen3.5-2B-Q3_K_M.gguf", size_bytes: 1107149056,
+        license: "Apache-2.0", languages: "多语言", recommended: false,
+        hf_url: "", modelscope_url: "https://www.modelscope.cn/models/unsloth/Qwen3.5-2B-GGUF/resolve/master/Qwen3.5-2B-Q3_K_M.gguf", vision: true,
+        mmproj: Some(MmprojSpec { filename: "mmproj-Qwen3.5-2B-F16.gguf",
+            remote_filename: "mmproj-F16.gguf", size_bytes: 668227264, hf_url: "",
+            modelscope_url: "https://www.modelscope.cn/models/unsloth/Qwen3.5-2B-GGUF/resolve/master/mmproj-F16.gguf" }),
+    },
+    ModelSpec {
+        id: "qwen3.5-4b-q4-k-m",
+        name: "Qwen3.5 4B Q4_K_M",
+        description: "通用文本与视觉理解；需同时安装模型和视觉投影器，使用前请手动选择",
+        filename: "Qwen3.5-4B-Q4_K_M.gguf", size_bytes: 2740937888,
+        license: "Apache-2.0", languages: "多语言", recommended: false,
+        hf_url: "", modelscope_url: "https://www.modelscope.cn/models/unsloth/Qwen3.5-4B-GGUF/resolve/master/Qwen3.5-4B-Q4_K_M.gguf", vision: true,
+        mmproj: Some(MmprojSpec { filename: "mmproj-Qwen3.5-4B-F16.gguf",
+            remote_filename: "mmproj-F16.gguf", size_bytes: 672423616, hf_url: "",
+            modelscope_url: "https://www.modelscope.cn/models/unsloth/Qwen3.5-4B-GGUF/resolve/master/mmproj-F16.gguf" }),
+    },
+    ModelSpec {
+        id: "qwen3.5-4b-q3-k-m",
+        name: "Qwen3.5 4B Q3_K_M",
+        description: "通用文本与视觉理解；需同时安装模型和视觉投影器，使用前请手动选择",
+        filename: "Qwen3.5-4B-Q3_K_M.gguf", size_bytes: 2293388448,
+        license: "Apache-2.0", languages: "多语言", recommended: false,
+        hf_url: "", modelscope_url: "https://www.modelscope.cn/models/unsloth/Qwen3.5-4B-GGUF/resolve/master/Qwen3.5-4B-Q3_K_M.gguf", vision: true,
+        mmproj: Some(MmprojSpec { filename: "mmproj-Qwen3.5-4B-F16.gguf",
+            remote_filename: "mmproj-F16.gguf", size_bytes: 672423616, hf_url: "",
+            modelscope_url: "https://www.modelscope.cn/models/unsloth/Qwen3.5-4B-GGUF/resolve/master/mmproj-F16.gguf" }),
     },
 ];
 
-/// Catalog id of the translation-specialised model (Hy-MT2 1.8B).
+/// Fixed translation model; general and vision models require manual selection.
 pub const TRANSLATION_MODEL_ID: &str = "hy-mt2-1.8b";
-/// Catalog id of the general-purpose model (Qwen2.5 3B).
-pub const GENERAL_MODEL_ID: &str = "qwen2.5-3b";
-/// Catalog id of the vision model (Qwen2.5-VL 3B + mmproj projector).
-pub const VISION_MODEL_ID: &str = "qwen2.5-vl-3b";
 
 /// Files larger than this are rejected on import (the FLINT const keeps the
 /// comparison lossless on 32-bit builds; Lexora ships 64-bit only).
@@ -368,101 +394,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn catalog_has_translation_general_and_vision_models() {
-        assert_eq!(CATALOG.len(), 3);
-        assert_eq!(CATALOG[0].id, "hy-mt2-1.8b");
-        assert_eq!(CATALOG[1].id, "qwen2.5-3b");
-        assert_eq!(CATALOG[2].id, "qwen2.5-vl-3b");
-        let recommended: Vec<&str> = CATALOG
-            .iter()
-            .filter(|spec| spec.recommended)
-            .map(|spec| spec.id)
-            .collect();
-        assert_eq!(recommended, vec!["hy-mt2-1.8b"]);
-        // Only the vision model is multimodal and only it carries a projector.
-        let vision: Vec<&str> = CATALOG
-            .iter()
-            .filter(|spec| spec.vision)
-            .map(|spec| spec.id)
-            .collect();
-        assert_eq!(vision, vec!["qwen2.5-vl-3b"]);
-        assert!(CATALOG[0].mmproj.is_none());
-        assert!(CATALOG[1].mmproj.is_none());
-        assert!(CATALOG[2].mmproj.is_some());
-    }
-
-    #[test]
-    fn catalog_sizes_and_urls_are_complete() {
-        let mut filenames = Vec::new();
-        for spec in CATALOG.iter() {
-            assert!(spec.size_bytes > 400_000_000);
-            assert!(spec.filename.ends_with(".gguf"));
-            assert!(!spec.license.is_empty());
-            assert!(!spec.languages.is_empty());
-            assert!(spec
-                .modelscope_url
-                .starts_with("https://www.modelscope.cn/models/"));
+    fn catalog_contract() {
+        assert_eq!(CATALOG.len(), 7);
+        assert_eq!(CATALOG[0].id, TRANSLATION_MODEL_ID);
+        for (spec, expected_size) in CATALOG.iter().zip([
+            1_133_080_448,
+            532_517_120,
+            470_167_808,
+            1_280_835_840,
+            1_107_149_056,
+            2_740_937_888,
+            2_293_388_448,
+        ]) {
+            assert_eq!(spec.size_bytes, expected_size);
+        }
+        let mut filenames = std::collections::HashSet::new();
+        for spec in &CATALOG {
+            assert!(filenames.insert(spec.filename));
+            assert!(spec.hf_url.is_empty());
             assert!(spec.modelscope_url.ends_with(spec.filename));
-            assert!(spec.modelscope_url.contains("/resolve/master/"));
-            // Empty HF URL means ModelScope is the only source.
-            if !spec.hf_url.is_empty() {
-                assert!(spec.hf_url.starts_with("https://huggingface.co/"));
-                assert!(spec.hf_url.ends_with(spec.filename));
-                assert!(spec.hf_url.contains("/resolve/main/"));
-            }
-            assert!(!filenames.contains(&spec.filename));
-            filenames.push(spec.filename);
-            if let Some(mmproj) = spec.mmproj {
-                assert!(mmproj.size_bytes > 400_000_000);
-                assert!(mmproj.filename.ends_with(".gguf"));
-                assert!(is_mmproj_file(mmproj.filename));
-                assert!(mmproj
+            assert_eq!(download_urls(spec), vec![spec.modelscope_url]);
+            if spec.vision {
+                let projector = spec.mmproj.unwrap();
+                assert!(projector
                     .modelscope_url
-                    .starts_with("https://www.modelscope.cn/models/"));
-                assert!(mmproj.modelscope_url.ends_with(mmproj.filename));
-                assert!(mmproj.modelscope_url.contains("/resolve/master/"));
-                assert!(mmproj.hf_url.starts_with("https://huggingface.co/"));
-                assert!(mmproj.hf_url.ends_with(mmproj.filename));
-                assert!(mmproj.hf_url.contains("/resolve/main/"));
-                assert!(!filenames.contains(&mmproj.filename));
-                filenames.push(mmproj.filename);
+                    .ends_with(projector.remote_filename));
+                assert!(projector.hf_url.is_empty());
+                assert_eq!(
+                    mmproj_download_urls(&projector),
+                    vec![projector.modelscope_url]
+                );
             }
         }
-        assert_eq!(CATALOG[0].size_bytes, 1_133_080_448);
-        assert_eq!(CATALOG[1].size_bytes, 2_104_932_768);
-        assert_eq!(CATALOG[2].size_bytes, 1_929_901_056);
-        // Hy-MT2 is only distributed through ModelScope.
-        assert!(CATALOG[0].hf_url.is_empty());
-        // Vision model + projector constants are pinned by the contract.
-        assert_eq!(CATALOG[2].filename, "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf");
-        let mmproj = CATALOG[2]
-            .mmproj
-            .expect("vision model must ship a projector");
-        assert_eq!(mmproj.filename, "mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf");
-        assert_eq!(mmproj.size_bytes, 844_757_728);
-        assert!(CATALOG[2].vision);
-        assert!(!CATALOG[0].vision && !CATALOG[1].vision);
-        assert_eq!(VISION_MODEL_ID, "qwen2.5-vl-3b");
-    }
-
-    #[test]
-    fn download_mirrors_prefer_modelscope_then_huggingface() {
-        let hy = download_urls(&CATALOG[0]);
-        assert_eq!(hy, vec![CATALOG[0].modelscope_url]);
-
-        let qwen = download_urls(&CATALOG[1]);
-        assert_eq!(qwen, vec![CATALOG[1].modelscope_url, CATALOG[1].hf_url]);
-        assert!(qwen[0].starts_with("https://www.modelscope.cn/"));
-        assert!(qwen[1].starts_with("https://huggingface.co/"));
-
-        // The projector follows the same ModelScope-first policy.
-        let mmproj = CATALOG[2]
-            .mmproj
-            .expect("vision model must ship a projector");
-        let urls = mmproj_download_urls(&mmproj);
-        assert_eq!(urls, vec![mmproj.modelscope_url, mmproj.hf_url]);
-        assert!(urls[0].starts_with("https://www.modelscope.cn/"));
-        assert!(urls[1].starts_with("https://huggingface.co/"));
+        assert_eq!(CATALOG.iter().filter(|spec| spec.vision).count(), 6);
+        assert_ne!(
+            CATALOG[1].mmproj.unwrap().filename,
+            CATALOG[3].mmproj.unwrap().filename
+        );
     }
 
     #[test]
@@ -472,12 +440,12 @@ mod tests {
             Some("hy-mt2-1.8b")
         );
         assert_eq!(
-            spec_by_filename("Qwen2.5-3B-Instruct-Q4_K_M.GGUF").map(|spec| spec.id),
-            Some("qwen2.5-3b")
+            spec_by_filename("QWEN3.5-0.8B-Q4_K_M.GGUF").map(|spec| spec.id),
+            Some("qwen3.5-0.8b-q4-k-m")
         );
         assert_eq!(
-            spec_by_filename("Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf").map(|spec| spec.id),
-            Some("qwen2.5-vl-3b")
+            spec_by_filename("Qwen3.5-0.8B-Q3_K_M.gguf").map(|spec| spec.id),
+            Some("qwen3.5-0.8b-q3-k-m")
         );
         // The projector is never resolved as a standalone model.
         assert!(spec_by_filename("mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf").is_none());
@@ -531,13 +499,13 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         fs::write(dir.path().join(CATALOG[1].filename), b"x").unwrap();
         let entries = catalog_entries(dir.path());
-        assert_eq!(entries.len(), 3);
+        assert_eq!(entries.len(), 7);
         assert!(!entries[0].installed);
-        assert!(entries[1].installed);
-        assert_eq!(entries[1].id, "qwen2.5-3b");
+        assert!(!entries[1].installed);
+        assert_eq!(entries[1].id, "qwen3.5-0.8b-q4-k-m");
         assert_eq!(entries[1].license, "Apache-2.0");
-        assert!(!entries[1].vision);
-        assert_eq!(entries[2].id, "qwen2.5-vl-3b");
+        assert!(entries[1].vision);
+        assert_eq!(entries[2].id, "qwen3.5-0.8b-q3-k-m");
         assert!(entries[2].vision);
     }
 

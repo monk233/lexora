@@ -475,11 +475,7 @@ fn preview_placement_for(
 /// Physical pixel target for the preview JPEG: the window is already shaped to
 /// the stitched image (fixed height, aspect-ratio width), so the target is the
 /// window's client size, capped so the JPEG stays cheap to encode/send.
-fn preview_target_size(
-    runtime: &Runtime,
-    display_width: u32,
-    display_height: u32,
-) -> (u32, u32) {
+fn preview_target_size(runtime: &Runtime, display_width: u32, display_height: u32) -> (u32, u32) {
     let (_, physical) = preview_placement_for(runtime, display_width, display_height);
     let width = (physical.0 as u32).clamp(60, 900);
     let height = (physical.1 as u32).clamp(60, 1200);
@@ -629,20 +625,14 @@ fn capture_loop(app: AppHandle, runtime: Arc<Runtime>) {
 
     let geometry = runtime.geometry;
     let (selection_x, selection_y, selection_w, selection_h) = geometry.screen_rect();
-    let selection_center = (
-        selection_x + selection_w / 2,
-        selection_y + selection_h / 2,
-    );
+    let selection_center = (selection_x + selection_w / 2, selection_y + selection_h / 2);
     // Pick the monitor under the selection directly: matching by position/size
     // could fail (toolkit vs physical geometry) and the old fallback to the first
     // monitor could grab the wrong screen on multi-monitor setups.
     let monitor = match xcap::Monitor::from_point(selection_center.0, selection_center.1) {
         Ok(monitor) => monitor,
         Err(error) => {
-            log_warn(
-                &app,
-                &format!("longshot: monitor lookup failed: {error}"),
-            );
+            log_warn(&app, &format!("longshot: monitor lookup failed: {error}"));
             match xcap::Monitor::all() {
                 Ok(mut monitors) if !monitors.is_empty() => monitors.swap_remove(0),
                 Ok(_) => {
@@ -722,12 +712,8 @@ fn capture_loop(app: AppHandle, runtime: Arc<Runtime>) {
         }
         let mut scrolled_this_round = false;
         if autoscroll {
-            let pointer_inside = win32::cursor_inside(
-                selection_x,
-                selection_y,
-                selection_w,
-                selection_h,
-            );
+            let pointer_inside =
+                win32::cursor_inside(selection_x, selection_y, selection_w, selection_h);
             if pointer_inside {
                 autoscroll_armed = true;
                 match direction {
@@ -861,11 +847,7 @@ fn capture_loop(app: AppHandle, runtime: Arc<Runtime>) {
             }
             emit_progress(&app, progress);
         }
-        maybe_show_preview_fallback(
-            &preview_window,
-            &mut fallback_shown,
-            loop_started.elapsed(),
-        );
+        maybe_show_preview_fallback(&preview_window, &mut fallback_shown, loop_started.elapsed());
     }
     if let Some(recorder) = recorder {
         let _ = recorder.stop();
@@ -887,8 +869,7 @@ fn resize_preview_window(
     }
     let scale = runtime.scale;
     let (_, position) = preview_placement_for(runtime, display_width, display_height);
-    let (logical_w, logical_h) =
-        preview_placement_for(runtime, display_width, display_height).0;
+    let (logical_w, logical_h) = preview_placement_for(runtime, display_width, display_height).0;
     let physical = (
         ((logical_w * scale).round() as u32).max(1),
         ((logical_h * scale).round() as u32).max(1),
@@ -1615,23 +1596,35 @@ mod tests {
         // width = height × aspect (2:1, capped at 560).
         let selection = (100, 100, 600, 300);
         let bar = (BAR_LOGICAL_WIDTH as i32, BAR_LOGICAL_HEIGHT as i32);
-        let ((width, height), position) =
-            preview_placement(600, 300, 1.0, &work(), selection, bar);
+        let ((width, height), position) = preview_placement(600, 300, 1.0, &work(), selection, bar);
         assert!((height - 300.0).abs() < 0.01, "height={height}");
-        assert!((width - PREVIEW_WIDTH_MAX as f64).abs() < 0.01, "width={width}");
+        assert!(
+            (width - PREVIEW_WIDTH_MAX as f64).abs() < 0.01,
+            "width={width}"
+        );
         assert_eq!(position, (708, 100));
 
         // A very long image keeps height/bottom alignment and narrows.
         let ((tall_width, tall_height), tall_position) =
             preview_placement(600, 6_000, 1.0, &work(), selection, bar);
-        assert!((tall_height - 300.0).abs() < 0.01, "tall_height={tall_height}");
-        assert!((tall_width - PREVIEW_WIDTH_MIN as f64).abs() < 0.01, "width={tall_width}");
+        assert!(
+            (tall_height - 300.0).abs() < 0.01,
+            "tall_height={tall_height}"
+        );
+        assert!(
+            (tall_width - PREVIEW_WIDTH_MIN as f64).abs() < 0.01,
+            "width={tall_width}"
+        );
         assert_eq!(tall_position, (708, 100));
 
         // No room on the right: the preview moves to the left side.
         let right_edge = (1700, 100, 200, 300);
         let (_, placed) = preview_placement(600, 300, 1.0, &work(), right_edge, bar);
-        assert!(placed.0 < 1700, "x={} should be left of the selection", placed.0);
+        assert!(
+            placed.0 < 1700,
+            "x={} should be left of the selection",
+            placed.0
+        );
         assert!(placed.0 >= 0);
     }
 

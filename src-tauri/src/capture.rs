@@ -987,8 +987,8 @@ impl CaptureService {
         let settings = settings_of(app)?;
         let action = parse_skill_action(action)?;
         let requested_skill = trimmed(skill_id);
-        let requested_target = trimmed(target_lang)
-            .unwrap_or_else(|| settings.picker.default_target_lang.clone());
+        let requested_target =
+            trimmed(target_lang).unwrap_or_else(|| settings.picker.default_target_lang.clone());
         let meta = resolve_skill_meta(
             &settings,
             action,
@@ -2906,10 +2906,8 @@ pub(crate) fn png_data_url(image: &RgbaImage) -> Result<String, EngineError> {
 pub(crate) fn preview_jpeg_data_url(image: &RgbaImage, quality: u8) -> Result<String, EngineError> {
     use std::io::Cursor;
     let mut cursor = Cursor::new(Vec::new());
-    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(
-        &mut cursor,
-        quality.clamp(1, 100),
-    );
+    let mut encoder =
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, quality.clamp(1, 100));
     encoder.encode_image(image).map_err(|error| {
         EngineError::new(
             "编码长截图预览失败。",
@@ -3570,10 +3568,7 @@ mod tests {
         // Nothing reported readiness yet: both overlays get the fallback show.
         assert_eq!(missing_ready_monitors(&shots, &HashSet::new()), vec![0, 1]);
         // A healthy secondary renderer must not hide the missing primary one.
-        assert_eq!(
-            missing_ready_monitors(&shots, &HashSet::from([1])),
-            vec![0]
-        );
+        assert_eq!(missing_ready_monitors(&shots, &HashSet::from([1])), vec![0]);
         // Every renderer painted: a healthy capture gets no extra show.
         assert!(missing_ready_monitors(&shots, &HashSet::from([0, 1])).is_empty());
     }

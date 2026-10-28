@@ -52,6 +52,7 @@ pub struct StatePayload {
     pub engine: EngineStatus,
     pub models: Vec<ModelInfo>,
     pub catalog: Vec<CatalogEntry>,
+    pub hardware_recommendation: crate::engine::hardware::HardwareRecommendation,
     /// Every download currently in flight (engine + one entry per model id).
     pub downloads: Vec<DownloadProgress>,
     pub picker: PickerRuntime,
@@ -104,6 +105,7 @@ pub fn build_state(app: &AppHandle, state: &AppState) -> StatePayload {
         engine: state.engine.status(),
         models: state.engine.installed_models(),
         catalog: state.engine.catalog(),
+        hardware_recommendation: crate::engine::hardware::detect(),
         downloads: state.engine.download_state(),
         picker: PickerRuntime {
             visible: crate::windows::is_picker_visible(app),
@@ -537,6 +539,18 @@ pub async fn check_update() -> Value {
     }
 }
 
+/// Sends the native update notification once per latest version.
+#[tauri::command]
+pub fn notify_update_available(app: AppHandle, version: String) -> Value {
+    match crate::updater::notify_update_once(&app, &version) {
+        Ok(notified) => json!({ "ok": true, "notified": notified }),
+        Err(error) => json!({
+            "ok": false,
+            "error": error.message,
+            "hint": error.hint,
+        }),
+    }
+}
 /// Downloads and schedules the new portable exe. Progress is pushed to the
 /// settings window as `update-progress`; the app exits right after this returns.
 #[tauri::command]
@@ -973,17 +987,65 @@ pub fn pin_close(app: AppHandle, id: u64) -> Value {
 // Picker window commands (§5.2)
 // ---------------------------------------------------------------------------
 
+fn picker_surface_label(surface: Option<String>) -> &'static str {
+    if surface.as_deref() == Some("toolbar") {
+        crate::windows::PICKER_TOOLBAR_LABEL
+    } else {
+        crate::windows::PICKER_LABEL
+    }
+}
+
 #[tauri::command]
-pub fn picker_ready(app: AppHandle) -> Value {
-    if let Some(data) = crate::windows::take_pending() {
+pub fn picker_ready(app: AppHandle, surface: Option<String>) -> Value {
+    if picker_surface_label(surface) == crate::windows::PICKER_TOOLBAR_LABEL {
+        if let Some(data) = crate::windows::take_toolbar_pending() {
+            let _ = app.emit_to(
+                crate::windows::PICKER_TOOLBAR_LABEL,
+                "picker-toolbar-data",
+                data,
+            );
+        }
+    } else if let Some(data) = crate::windows::take_pending() {
         let _ = app.emit_to(crate::windows::PICKER_LABEL, "picker-data", data);
     }
     json!({ "ok": true })
 }
 
 #[tauri::command]
-pub fn picker_close(app: AppHandle) -> Value {
-    crate::windows::hide_picker(&app);
+pub fn picker_close(app: AppHandle, surface: Option<String>) -> Value {
+    if picker_surface_label(surface) == crate::windows::PICKER_TOOLBAR_LABEL {
+        crate::windows::hide_toolbar(&app);
+    } else {
+        crate::windows::hide_picker(&app);
+    }
+    json!({ "ok": true })
+}
+
+/// A panel-opening tool selected from the transient toolbar. The old panel and
+/// its stream remain alive until this exact click, then the main picker window
+/// is repositioned and the requested tool starts against the latest selection.
+#[tauri::command]
+pub fn picker_toolbar_run_skill(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    skill: String,
+) -> Value {
+    let skill = skill.trim().to_string();
+    if skill.is_empty() {
+        return json!({ "ok": false, "error": "没有可执行的工具。" });
+    }
+    let Some(payload) = state.selection.last_selection() else {
+        return json!({ "ok": false, "error": "划词内容已失效，请重新选择文本。" });
+    };
+    crate::windows::hide_toolbar(&app);
+    if !crate::windows::show_picker(&app, &payload) {
+        return json!({ "ok": false, "error": "工具面板窗口不可用。" });
+    }
+    let _ = app.emit_to(
+        crate::windows::PICKER_LABEL,
+        "picker-run-skill",
+        json!({ "skill": skill }),
+    );
     json!({ "ok": true })
 }
 
@@ -1044,8 +1106,18 @@ pub fn picker_activate(app: AppHandle, active: bool) -> Value {
 }
 
 #[tauri::command]
-pub fn picker_resize(app: AppHandle, width: Option<f64>, height: Option<f64>) -> Option<Value> {
-    crate::windows::resize_picker(&app, width.unwrap_or(440.0), height.unwrap_or(56.0))
+pub fn picker_resize(
+    app: AppHandle,
+    width: Option<f64>,
+    height: Option<f64>,
+    surface: Option<String>,
+) -> Option<Value> {
+    crate::windows::resize_picker_surface(
+        &app,
+        picker_surface_label(surface),
+        width.unwrap_or(440.0),
+        height.unwrap_or(56.0),
+    )
 }
 
 /// Moves the picker window by a logical-pixel delta (dragging the result panel).
@@ -1120,6 +1192,7 @@ pub fn picker_translate(
                                 "requestId": rid.clone(),
                                 "type": "error",
                                 "message": error.message,
+                                "hint": error.hint,
                             }));
                             return;
                         }
@@ -1135,6 +1208,7 @@ pub fn picker_translate(
                     "requestId": rid.clone(),
                     "type": "error",
                     "message": error.message,
+                                "hint": error.hint,
                 }));
             }
         }
@@ -1193,6 +1267,7 @@ pub fn picker_polish(
                                 "requestId": rid.clone(),
                                 "type": "error",
                                 "message": error.message,
+                                "hint": error.hint,
                             }));
                             return;
                         }
@@ -1208,6 +1283,7 @@ pub fn picker_polish(
                     "requestId": rid.clone(),
                     "type": "error",
                     "message": error.message,
+                                "hint": error.hint,
                 }));
             }
         }
@@ -1275,6 +1351,7 @@ pub fn picker_custom_skill(
                                 "requestId": rid.clone(),
                                 "type": "error",
                                 "message": error.message,
+                                "hint": error.hint,
                             }));
                             return;
                         }
@@ -1290,6 +1367,7 @@ pub fn picker_custom_skill(
                     "requestId": rid.clone(),
                     "type": "error",
                     "message": error.message,
+                                "hint": error.hint,
                 }));
             }
         }
@@ -1368,6 +1446,7 @@ pub fn picker_assist(
                                 "requestId": rid.clone(),
                                 "type": "error",
                                 "message": error.message,
+                                "hint": error.hint,
                             }));
                             return;
                         }
@@ -1383,6 +1462,7 @@ pub fn picker_assist(
                     "requestId": rid.clone(),
                     "type": "error",
                     "message": error.message,
+                                "hint": error.hint,
                 }));
             }
         }
@@ -1461,6 +1541,7 @@ pub fn picker_followup(
                                 "requestId": rid.clone(),
                                 "type": "error",
                                 "message": error.message,
+                                "hint": error.hint,
                             }));
                             return;
                         }
@@ -1476,6 +1557,7 @@ pub fn picker_followup(
                     "requestId": rid.clone(),
                     "type": "error",
                     "message": error.message,
+                                "hint": error.hint,
                 }));
             }
         }
@@ -1559,7 +1641,20 @@ pub fn picker_disable_tool(app: AppHandle, state: State<'_, Arc<AppState>>) -> V
 
 #[cfg(test)]
 mod tests {
-    use super::persist_panel_pinned;
+    use super::{persist_panel_pinned, picker_surface_label};
+
+    #[test]
+    fn picker_surface_routes_resize_and_close_to_the_right_window() {
+        assert_eq!(
+            picker_surface_label(Some("toolbar".to_string())),
+            crate::windows::PICKER_TOOLBAR_LABEL
+        );
+        assert_eq!(picker_surface_label(None), crate::windows::PICKER_LABEL);
+        assert_eq!(
+            picker_surface_label(Some("panel".to_string())),
+            crate::windows::PICKER_LABEL
+        );
+    }
 
     #[test]
     fn pin_preference_is_persisted_through_settings() {
