@@ -109,8 +109,10 @@ picker.js → invoke("picker_translate", {requestId,text,targetLang})
 
 - 引擎：llama.cpp 官方 `win-cpu-x64` 发布包（约 23MB），解压到 `<data>/engine/`。
 - 模型：GGUF 放在 `<data>/models/`；仅内置 Qwen3.5 0.8B / 2B / 4B 的 Q4_K_M、Q3_K_M 六种翻译 / 通用 / 视觉选项，均从 ModelScope 下载（Apache-2.0），也支持手动导入 GGUF。Qwen3.5 各档搭配对应的 `mmproj-F16.gguf`，本地按模型规格区分投影器文件名，避免不同规格互相覆盖。
-- 选模：翻译、通用文本和视觉任务共用用户手动选择的唯一 Qwen3.5 模型，持久化到 `settings.provider.local.selectedModel`（settings schema v7，JSON 中为 `provider.local.selectedModel`）。未选择时返回明确提示，不自动替选；CPU、内存和显存检测只用于推荐标签及理由。推荐梯度以内存与线程为主、显存可升档：显存 ≥10GB 且内存 ≥16GB、线程 ≥8，或内存 ≥32GB 且线程 ≥12 时为 4B Q4；内存 ≥24GB 且线程 ≥8 为 4B Q3；内存 ≥16GB 按线程为 2B Q4/Q3；内存 ≥8GB、线程 ≥6 为 0.8B Q4；其余为 0.8B Q3。内置引擎为 CPU 版，显存不影响实际推理速度。切换选择后需重启本地引擎。旧 Qwen2.5 文件保留，不再参与内置自动选择。
-- 启动参数：`llama-server.exe -m <model> --host 127.0.0.1 --port <free> -c <ctx> -t <threads> -ngl <gpuLayers> --no-webui`。
+- 选模：翻译、通用文本和视觉任务共用用户手动选择的唯一 Qwen3.5 模型，持久化到 `settings.provider.local.selectedModel`（settings schema v9，JSON 中为 `provider.local.selectedModel`）。未选择时返回明确提示，不自动替选；CPU、内存和显存检测只用于推荐标签及理由。推荐梯度以内存与线程为主、显存可升档：显存 ≥10GB 且内存 ≥16GB、线程 ≥8，或内存 ≥32GB 且线程 ≥12 时为 4B Q4；内存 ≥24GB 且线程 ≥8 为 4B Q3；内存 ≥16GB 按线程为 2B Q4/Q3；内存 ≥8GB、线程 ≥6 为 0.8B Q4；其余为 0.8B Q3。内置引擎为 CPU 版，显存不影响实际推理速度。切换选择后需重启本地引擎。旧 Qwen2.5 文件保留，不再参与内置自动选择。
+- 启动参数：`llama-server.exe -m <model> --host 127.0.0.1 --port <free> -c <ctx> -t <threads> -ngl <gpuLayers> -np 1 -b 512 -ub 256 --no-warmup --no-webui`，视觉请求追加 `--mmproj <path>`（`-c` 至少 8192）。应用同一时刻只跑一个流，因此只用 1 个 server slot；512/256 的批大小与 `--no-warmup` 用来压低常驻内存与启动峰值。实测 0.8B Q4 在 `-c 4096` 下私有内存约 0.9GB（原默认参数约 1.4GB），2B 约 1.7GB（原约 2.2GB）。
+- 内存按需加载：启动与文字/翻译任务不加载视觉投影器（省 0.2–0.7GB），首次截图视觉任务时重启并追加 `--mmproj`；之后文字请求复用该 server，不反复重启。投影器缺失时文字任务可用，视觉任务给出补下载提示。
+- 空闲自动停止与孤儿清理：`provider.local.idleTimeoutMinutes`（默认 10，0 关闭）到期且无请求（请求开始与每个流式分块都会刷新空闲计时）时停止 llama-server，保留 `keepRunning` 与「启动」记忆，下次请求或点「启动」重新加载。子进程绑定 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的 Job Object，应用崩溃即由系统回收；PID 写入 `<data>/llama-server.pid`，下次启动只在进程镜像等于本应用 `engine/llama-server.exe` 时终止残留进程。所有停止/失败路径都 kill + wait 并删除 PID 文件。
 - 健康检查 `/health`，最长等待 90s；进程日志写 `logs/llama.log`；应用退出时停止子进程。
 
 本地模型迁移兼容：旧 Hy-MT2 和 Qwen2.5 文件不自动删除，仅作为「其他本地模型」显示并支持手动删除，不再提供内置下载、自动选择或推荐。所有本地 AI 任务使用 `provider.local.selectedModel` 手动选择的 Qwen3.5；未选择时本地 AI 不可用，追问建议与入口静默隐藏。

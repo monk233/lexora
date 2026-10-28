@@ -11,10 +11,15 @@
 //! watching for an early exit. `stop()` (and `Drop`) always terminate the child.
 
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Mutex;
+#[cfg(windows)]
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
+
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
 
 use crate::engine::models::model_display_name;
 use crate::engine::EngineError;
@@ -26,6 +31,10 @@ use crate::settings::Settings;
 pub const START_TIMEOUT: Duration = Duration::from_secs(90);
 const HEALTH_INTERVAL: Duration = Duration::from_millis(300);
 const HEALTH_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Pid of the running server, written next to the settings file so a crashed
+/// app run cannot leak an orphan `llama-server.exe` forever.
+const PID_FILE_NAME: &str = "llama-server.pid";
 
 /// Minimum context size for vision models: image tokens can easily consume
 /// several thousand positions, so the configured value is raised to this floor
@@ -89,6 +98,7 @@ struct Runtime {
     model_file: String,
     model_name: String,
     mmproj_file: String,
+    pid_file: Option<PathBuf>,
     error: String,
 }
 
@@ -101,6 +111,7 @@ impl Runtime {
             model_file: String::new(),
             model_name: String::new(),
             mmproj_file: String::new(),
+            pid_file: None,
             error: String::new(),
         }
     }
@@ -159,6 +170,16 @@ impl LocalServer {
         }
     }
 
+    /// `true` when the ready server can serve `model_file` without a restart.
+    /// Text requests reuse a server that already loaded a projector (loading it
+    /// again would only cost memory), while vision requests require one.
+    pub fn is_running_for(&self, model_file: &str, need_vision: bool) -> bool {
+        let runtime = self.lock();
+        runtime.state == LocalState::Ready
+            && runtime.model_file.eq_ignore_ascii_case(model_file.trim())
+            && (!need_vision || !runtime.mmproj_file.trim().is_empty())
+    }
+
     /// `true` when the ready server already runs exactly this model + projector
     /// combination. `mmproj_file = None` (or blank) means a text-only server;
     /// loading a vision projector and loading none are different configurations
@@ -190,8 +211,10 @@ impl LocalServer {
         runtime.mmproj_file = projector.to_string();
     }
 
-    /// Starts (or reuses) the server for `model_file` + optional `mmproj_file`
-    /// and returns the base URL. A different running model/projector is stopped
+    /// Starts (or reuses) the server for `model_file` and returns the base URL.
+    /// `need_vision` decides whether the multimodal projector is loaded: text
+    /// requests start a text-only server (lower memory) and vision requests
+    /// restart it with the projector. A different running model is stopped
     /// first (role-based model switching).
     pub async fn ensure_model(
         &self,
@@ -199,6 +222,7 @@ impl LocalServer {
         settings: &Settings,
         model_file: &str,
         mmproj_file: Option<&str>,
+        need_vision: bool,
         http: &reqwest::Client,
         logger: &Logger,
     ) -> Result<String, EngineError> {
@@ -216,7 +240,7 @@ impl LocalServer {
         }
 
         let snapshot = self.snapshot();
-        if self.is_running_model(&model_file, mmproj_file.as_deref()) {
+        if self.is_running_for(&model_file, need_vision) {
             if let Some(url) = self.base_url() {
                 return Ok(url);
             }
@@ -238,8 +262,8 @@ impl LocalServer {
             ));
         }
 
-        let mmproj_path = match mmproj_file.as_deref() {
-            Some(file) => {
+        let mmproj_path = match (need_vision, mmproj_file.as_deref()) {
+            (true, Some(file)) => {
                 let path = paths.models_dir.join(file);
                 if !path.is_file() {
                     return Err(EngineError::new(
@@ -249,7 +273,7 @@ impl LocalServer {
                 }
                 Some(path)
             }
-            None => None,
+            _ => None,
         };
 
         if !snapshot.model_file.is_empty()
@@ -275,8 +299,8 @@ impl LocalServer {
 
         let local = &settings.provider.local;
         let port = free_port()?;
-        let context_size = effective_context_size(local.context_size, mmproj_path.is_some());
-        if mmproj_path.is_some() && context_size != local.context_size.clamp(1024, 32_768) {
+        let context_size = effective_context_size(local.context_size, need_vision);
+        if need_vision && context_size != local.context_size.clamp(1024, 32_768) {
             logger.info(&format!(
                 "vision model context raised to {context_size} (configured {})",
                 local.context_size
@@ -307,6 +331,7 @@ impl LocalServer {
             )
         })?;
 
+        let server_pid = child.id();
         {
             let mut runtime = self.lock();
             runtime.child = Some(child);
@@ -316,6 +341,15 @@ impl LocalServer {
             runtime.model_name = model_display_name(&model_file);
             runtime.mmproj_file = mmproj_file.clone().unwrap_or_default();
             runtime.error.clear();
+            let pid_file = paths.data_dir.join(PID_FILE_NAME);
+            if let Err(error) = std::fs::write(&pid_file, server_pid.to_string()) {
+                logger.warn(&format!(
+                    "could not record llama-server pid ({}): {error}",
+                    pid_file.display()
+                ));
+            } else {
+                runtime.pid_file = Some(pid_file);
+            }
         }
 
         let health_url = format!("http://127.0.0.1:{port}/health");
@@ -368,6 +402,9 @@ impl LocalServer {
         if let Some(mut child) = runtime.child.take() {
             kill_child(&mut child);
         }
+        if let Some(pid_file) = runtime.pid_file.take() {
+            let _ = std::fs::remove_file(pid_file);
+        }
         *runtime = Runtime::new();
         drop(runtime);
         if was_active {
@@ -385,6 +422,9 @@ impl LocalServer {
             let mut runtime = self.lock();
             if let Some(mut child) = runtime.child.take() {
                 kill_child(&mut child);
+            }
+            if let Some(pid_file) = runtime.pid_file.take() {
+                let _ = std::fs::remove_file(pid_file);
             }
             runtime.state = LocalState::Error;
             runtime.error = message.clone();
@@ -436,6 +476,136 @@ fn describe_exit(status: &ExitStatus) -> String {
         None => "进程被强制结束".to_string(),
     }
 }
+
+/// Kills a `llama-server.exe` left behind by an earlier crashed/exited run.
+/// Only a process whose image is exactly this app's engine binary is touched,
+/// so an unrelated process that reused the recorded pid is never killed.
+pub fn cleanup_stale_server(paths: &AppPaths, logger: &Logger) -> Option<u32> {
+    let pid_file = paths.data_dir.join(PID_FILE_NAME);
+    let pid = std::fs::read_to_string(&pid_file)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u32>().ok());
+    let killed = match pid {
+        Some(pid) => kill_stale_process(pid, &paths.llama_binary(), logger),
+        None => false,
+    };
+    let _ = std::fs::remove_file(&pid_file);
+    if killed {
+        pid
+    } else {
+        None
+    }
+}
+
+#[cfg(windows)]
+fn kill_stale_process(pid: u32, binary: &Path, logger: &Logger) -> bool {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, TerminateProcess, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+    };
+    if pid == 0 {
+        return false;
+    }
+    unsafe {
+        let Ok(process) = OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
+            false,
+            pid,
+        ) else {
+            return false;
+        };
+        let mut buffer = [0u16; 32_768];
+        let mut size = buffer.len() as u32;
+        let image_matches = QueryFullProcessImageNameW(
+            process,
+            PROCESS_NAME_WIN32,
+            windows::core::PWSTR(buffer.as_mut_ptr()),
+            &mut size,
+        )
+        .is_ok()
+            && same_binary(
+                Path::new(&String::from_utf16_lossy(&buffer[..size as usize])),
+                binary,
+            );
+        let killed = image_matches && TerminateProcess(process, 1).is_ok();
+        let _ = CloseHandle(process);
+        if killed {
+            logger.warn(&format!(
+                "killed stale llama-server from a previous run (pid {pid})"
+            ));
+        }
+        killed
+    }
+}
+
+#[cfg(not(windows))]
+fn kill_stale_process(_pid: u32, _binary: &Path, _logger: &Logger) -> bool {
+    false
+}
+
+fn same_binary(actual: &Path, expected: &Path) -> bool {
+    if actual.as_os_str().is_empty() {
+        return false;
+    }
+    let normalize = |path: &Path| {
+        path.to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .replace('/', "\\")
+            .to_ascii_lowercase()
+    };
+    normalize(actual) == normalize(expected)
+}
+
+/// Process-wide job object that kills the child if this app dies without
+/// running its cleanup (crash, task manager, power loss).
+#[cfg(windows)]
+fn kill_on_close_job() -> Option<windows::Win32::Foundation::HANDLE> {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::JobObjects::{
+        CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    static JOB: OnceLock<usize> = OnceLock::new();
+    let raw = *JOB.get_or_init(|| unsafe {
+        let Ok(job) = CreateJobObjectW(None, None) else {
+            return 0;
+        };
+        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let configured = SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const core::ffi::c_void,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+        .is_ok();
+        if !configured {
+            let _ = windows::Win32::Foundation::CloseHandle(job);
+            return 0;
+        }
+        job.0 as usize
+    });
+    (raw != 0).then(|| HANDLE(raw as *mut core::ffi::c_void))
+}
+
+#[cfg(windows)]
+fn attach_to_kill_on_close_job(child: &Child) {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::JobObjects::AssignProcessToJobObject;
+    let Some(job) = kill_on_close_job() else {
+        return;
+    };
+    let process = HANDLE(child.as_raw_handle() as *mut core::ffi::c_void);
+    unsafe {
+        // Best effort: a process that already belongs to a non-breakaway job
+        // cannot be added, and that must never break engine startup.
+        let _ = AssignProcessToJobObject(job, process);
+    }
+}
+
+#[cfg(not(windows))]
+fn attach_to_kill_on_close_job(_child: &Child) {}
 
 /// Chooses `-t`: the user value when set, otherwise half the logical CPUs
 /// clamped to a sensible 2..=8 range.
@@ -507,6 +677,16 @@ fn build_server_command(
         .arg(threads.to_string())
         .arg("-ngl")
         .arg(gpu_layers.to_string())
+        // One request at a time (contract §5.2): spare server slots only cost
+        // memory. Small prefill batches and no warmup keep the resident set and
+        // the startup peak low; warmup would allocate the maximum batch once.
+        .arg("-np")
+        .arg("1")
+        .arg("-b")
+        .arg("512")
+        .arg("-ub")
+        .arg("256")
+        .arg("--no-warmup")
         .arg("--no-webui");
     if let Some(mmproj) = mmproj {
         command.arg("--mmproj").arg(mmproj);
@@ -551,6 +731,7 @@ fn spawn_server(
     }
 
     let mut child = command.spawn()?;
+    attach_to_kill_on_close_job(&child);
     if let Some(stdout) = child.stdout.take() {
         forward_output(stdout, logger.clone(), "stdout");
     }
@@ -678,6 +859,14 @@ mod tests {
         assert!(text_args.contains(&"-m".to_string()));
         assert!(text_args.contains(&model.to_string_lossy().to_string()));
         assert!(text_args.contains(&"--no-webui".to_string()));
+        // Memory guards: one slot, small prefill batches, no warmup.
+        assert!(text_args.contains(&"-np".to_string()));
+        assert!(text_args.contains(&"1".to_string()));
+        assert!(text_args.contains(&"-b".to_string()));
+        assert!(text_args.contains(&"512".to_string()));
+        assert!(text_args.contains(&"-ub".to_string()));
+        assert!(text_args.contains(&"256".to_string()));
+        assert!(text_args.contains(&"--no-warmup".to_string()));
 
         let vision = build_server_command(binary, model, Some(mmproj), 18000, 8192, 4, 0);
         let vision_args: Vec<String> = vision
@@ -694,6 +883,58 @@ mod tests {
         );
         // The weights flag stays first and the projector comes after it.
         assert_eq!(vision_args.first().map(String::as_str), Some("-m"));
+    }
+
+    #[test]
+    fn text_requests_reuse_a_vision_server_but_vision_requires_the_projector() {
+        let server = LocalServer::new();
+        let model = "Qwen3.5-2B-Q4_K_M.gguf";
+        let projector = "mmproj-Qwen3.5-2B-F16.gguf";
+        mark_ready(&server, model, Some(projector), 18082);
+        // A text request never restarts a server that already loaded the projector.
+        assert!(server.is_running_for(model, false));
+        assert!(server.is_running_for(model, true));
+        // A text-only server cannot serve vision without a restart.
+        mark_ready(&server, model, None, 18082);
+        assert!(server.is_running_for(model, false));
+        assert!(!server.is_running_for(model, true));
+        // A different model always forces a restart.
+        assert!(!server.is_running_for("Qwen3.5-0.8B-Q4_K_M.gguf", false));
+    }
+
+    #[test]
+    fn same_binary_ignores_case_and_unc_prefix() {
+        assert!(same_binary(
+            Path::new(r"\\?\E:\DATA\engine\llama-server.exe"),
+            Path::new(r"e:\data\engine\llama-server.exe")
+        ));
+        assert!(same_binary(
+            Path::new("E:/data/engine/llama-server.exe"),
+            Path::new(r"E:\data\engine\llama-server.exe")
+        ));
+        assert!(!same_binary(Path::new(""), Path::new("x")));
+        assert!(!same_binary(
+            Path::new(r"E:\other\llama-server.exe"),
+            Path::new(r"E:\data\engine\llama-server.exe")
+        ));
+    }
+
+    #[test]
+    fn cleanup_stale_server_ignores_missing_or_invalid_pid_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = crate::paths::AppPaths {
+            data_dir: temp.path().to_path_buf(),
+            settings_file: temp.path().join("settings.json"),
+            models_dir: temp.path().join("models"),
+            engine_dir: temp.path().join("engine"),
+            logs_dir: temp.path().join("logs"),
+            cache_dir: temp.path().join("cache"),
+        };
+        let logger = Logger::new(&paths.logs_dir, "test");
+        assert_eq!(cleanup_stale_server(&paths, &logger), None);
+        std::fs::write(paths.data_dir.join(PID_FILE_NAME), "not-a-pid").unwrap();
+        assert_eq!(cleanup_stale_server(&paths, &logger), None);
+        assert!(!paths.data_dir.join(PID_FILE_NAME).exists());
     }
 
     #[test]

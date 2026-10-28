@@ -590,6 +590,10 @@ pub struct EngineService {
     active_selection: Mutex<Option<String>>,
     /// Serialize start/stop and request preparation, without holding a lock during streaming.
     local_lifecycle: tokio::sync::Mutex<()>,
+    /// Last time a local request started or streamed a chunk; drives the idle
+    /// auto-stop. Shared with `LoggedModelStream` so a long generation counts
+    /// as activity.
+    last_activity: Arc<Mutex<Instant>>,
     /// Registry of concurrent downloads (engine + one per model id).
     download: Mutex<DownloadState>,
     suggestions: SuggestionTasks,
@@ -631,6 +635,7 @@ struct LoggedModelStream {
     call_id: u64,
     operation: String,
     started: Instant,
+    last_activity: Arc<Mutex<Instant>>,
     chunks: u64,
     output_chars: usize,
     finished: bool,
@@ -645,6 +650,9 @@ impl Stream for LoggedModelStream {
             Poll::Ready(Some(Ok(chunk))) => {
                 this.chunks += 1;
                 this.output_chars += chunk.chars().count();
+                if let Ok(mut last) = this.last_activity.lock() {
+                    *last = Instant::now();
+                }
                 Poll::Ready(Some(Ok(chunk)))
             }
             Poll::Ready(Some(Err(error))) => {
@@ -712,6 +720,7 @@ impl EngineService {
             local_desired: AtomicBool::new(false),
             active_selection: Mutex::new(None),
             local_lifecycle: tokio::sync::Mutex::new(()),
+            last_activity: Arc::new(Mutex::new(Instant::now())),
             download: Mutex::new(DownloadState::default()),
             suggestions: SuggestionTasks::default(),
             projector_download: tokio::sync::Mutex::new(()),
@@ -752,6 +761,7 @@ impl EngineService {
                 call_id: meta.call_id,
                 operation: meta.operation,
                 started: meta.started,
+                last_activity: self.last_activity.clone(),
                 chunks: 0,
                 output_chars: 0,
                 finished: false,
@@ -851,14 +861,33 @@ impl EngineService {
 
     /// Every role uses the same explicit, completely installed Qwen3.5 selection.
     /// Imported or legacy files never become a fallback.
-    fn model_for_role(&self, _role: LocalRole) -> Option<String> {
-        self.installed_vision_model().map(|(weights, _)| weights)
+    fn model_for_role(&self, role: LocalRole) -> Option<String> {
+        if role == LocalRole::Vision {
+            self.installed_vision_model().map(|(weights, _)| weights)
+        } else {
+            self.installed_text_model()
+        }
+    }
+
+    /// Weights of the selected model; unlike [`Self::installed_vision_model`]
+    /// the projector is optional, so text tasks work before the projector is
+    /// downloaded.
+    fn installed_text_model(&self) -> Option<String> {
+        let selection = self
+            .active_selection
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let selected =
+            selection.unwrap_or_else(|| self.settings.get().provider.local.selected_model);
+        let spec = models::spec_by_id(&selected)?;
+        let weights = self.paths.models_dir.join(spec.filename);
+        weights.is_file().then(|| spec.filename.to_string())
     }
 
     /// Multimodal projector that belongs to `model_file`, when it is installed.
-    /// A vision model is always loaded together with its projector — even for
-    /// text requests — so switching between text and image tasks does not
-    /// restart the server. Both files are required for every Qwen3.5 task.
+    /// Vision requests load it on demand; text requests run without it to keep
+    /// the resident set small.
     fn mmproj_for_model(&self, model_file: &str) -> Option<String> {
         let mmproj = models::spec_by_filename(model_file)?.mmproj?;
         self.paths
@@ -1541,20 +1570,32 @@ impl EngineService {
                     "请在「设置 → 翻译服务 → 本地模型」点击「启动」，或切换到在线 API。",
                 ));
             }
+            let need_vision = role == LocalRole::Vision;
             let Some(model_file) = self.model_for_role(role) else {
                 return Err(local_vision_missing_error());
             };
-            let mmproj_file = self.mmproj_for_model(&model_file);
+            let mmproj_file = if need_vision {
+                let projector = self.mmproj_for_model(&model_file);
+                if projector.is_none() {
+                    return Err(local_vision_missing_error());
+                }
+                projector
+            } else {
+                None
+            };
+            self.note_activity();
             self.local
                 .ensure_model(
                     &self.paths,
                     settings,
                     &model_file,
                     mmproj_file.as_deref(),
+                    need_vision,
                     &self.http,
                     &self.logger,
                 )
                 .await?;
+            self.note_activity();
             if !self.local_desired.load(Ordering::Acquire) {
                 self.local.stop(Some(&self.logger));
                 return Err(EngineError::new("本地模型已停止。", "请重新点击启动。"));
@@ -2251,37 +2292,42 @@ impl EngineService {
 
     /// Caller must hold local_lifecycle throughout startup.
     async fn start_local_locked(&self) -> Result<(), EngineError> {
-        if self.local_desired.load(Ordering::Acquire) {
+        // A server stopped by the idle timeout keeps `local_desired`; pressing
+        // 启动 after that must reload it instead of returning immediately.
+        if self.local_desired.load(Ordering::Acquire)
+            && self.local.snapshot().state != LocalState::Stopped
+        {
             return Ok(());
         }
         self.clear_local_selection();
         let settings = self.settings.get();
-        let Some((model_file, projector)) =
-            self.installed_selection(&settings.provider.local.selected_model)
-        else {
+        // Text tasks only need the weights; the projector is loaded on demand
+        // by the first vision request.
+        let Some(model_file) = self.installed_text_model() else {
             return Err(if settings.provider.local.selected_model.is_empty() {
                 EngineError::new(
                     "尚未选择本地模型。",
-                    "请手动选择并完整下载 Qwen3.5 后启动。",
+                    "请手动选择并完整下载 Qwen3.5 模型后启动。",
                 )
             } else {
                 local_vision_missing_error()
             });
         };
-        let mmproj_file = Some(projector);
         *self
             .active_selection
             .lock()
             .unwrap_or_else(|e| e.into_inner()) =
             Some(settings.provider.local.selected_model.clone());
         self.local_desired.store(true, Ordering::Release);
+        self.note_activity();
         let result = self
             .local
             .ensure_model(
                 &self.paths,
                 &settings,
                 &model_file,
-                mmproj_file.as_deref(),
+                None,
+                false,
                 &self.http,
                 &self.logger,
             )
@@ -2299,8 +2345,49 @@ impl EngineService {
             // Remember the user's explicit start so the next launch can restore
             // the engine (see `main::restore_local_engine`).
             self.set_keep_running(true);
+            self.note_activity();
         }
         result.map(|_| ())
+    }
+
+    /// Updates the idle timer; called when a request starts and while chunks
+    /// stream in.
+    fn note_activity(&self) {
+        if let Ok(mut last) = self.last_activity.lock() {
+            *last = Instant::now();
+        }
+    }
+
+    /// Stops the local server after `provider.local.idleTimeoutMinutes` without
+    /// a request and releases its memory. The remembered "started" state stays,
+    /// so the next request (or 启动) reloads the engine. Returns `true` when a
+    /// server was stopped.
+    pub async fn stop_idle_local(&self) -> bool {
+        let settings = self.settings.get();
+        let minutes = settings.provider.local.idle_timeout_minutes;
+        if minutes == 0 || !self.local_desired.load(Ordering::Acquire) {
+            return false;
+        }
+        // Never race a start/stop or a request that is preparing the engine.
+        let Ok(_lifecycle) = self.local_lifecycle.try_lock() else {
+            return false;
+        };
+        let idle = self
+            .last_activity
+            .lock()
+            .map(|last| last.elapsed())
+            .unwrap_or_default();
+        if idle < Duration::from_secs(u64::from(minutes) * 60) {
+            return false;
+        }
+        if self.local.snapshot().state == LocalState::Stopped {
+            return false;
+        }
+        self.local.stop(Some(&self.logger));
+        self.logger.info(&format!(
+            "llama-server stopped after {minutes} min without requests (idle timeout)"
+        ));
+        true
     }
 
     pub async fn stop_local(&self) -> Result<(), EngineError> {
@@ -2325,6 +2412,15 @@ impl EngineService {
     pub fn shutdown_local(&self) {
         self.clear_local_selection();
         self.local.stop(Some(&self.logger));
+    }
+
+    /// Kills a `llama-server.exe` left behind by an earlier crashed/exited run.
+    /// Called once during startup, before any restore attempt.
+    pub fn cleanup_stale_local(&self) {
+        if let Some(pid) = llama::cleanup_stale_server(&self.paths, &self.logger) {
+            self.logger
+                .warn(&format!("removed stale llama-server (pid {pid})"));
+        }
     }
 
     /// Persists `provider.local.keepRunning` (best effort; a read-only config
@@ -3131,6 +3227,7 @@ mod tests {
             call_id: 1,
             operation: "test".to_string(),
             started: Instant::now(),
+            last_activity: Arc::new(Mutex::new(Instant::now())),
             chunks: 0,
             output_chars: 0,
             finished: false,
@@ -3215,12 +3312,18 @@ mod tests {
     fn repeated_start_keeps_snapshot_and_stop_clears_it() {
         block_on(async {
             let env = test_env();
-            *env.service.active_selection.lock().unwrap() = Some(models::CATALOG[1].id.to_string());
+            let spec = &models::CATALOG[1];
+            // Simulate a server that is already loading: start must be a no-op
+            // and keep the captured selection.
+            env.service
+                .local
+                .set_test_loading_files(spec.filename, spec.mmproj.unwrap().filename);
+            *env.service.active_selection.lock().unwrap() = Some(spec.id.to_string());
             env.service.local_desired.store(true, Ordering::Release);
             env.service.start_local().await.unwrap();
             assert_eq!(
                 env.service.active_selection.lock().unwrap().as_deref(),
-                Some(models::CATALOG[1].id)
+                Some(spec.id)
             );
             env.service.stop_local().await.unwrap();
             assert!(env.service.active_selection.lock().unwrap().is_none());
@@ -3673,9 +3776,17 @@ mod tests {
             .update_json(json!({"provider":{"local":{"selectedModel":spec.id}}}))
             .unwrap();
         std::fs::write(env.paths.models_dir.join(spec.filename), b"fake").unwrap();
-        assert_eq!(env.service.model_for_role(LocalRole::General), None);
+        // Weights alone are enough for text tasks; vision needs the projector.
+        assert_eq!(
+            env.service.model_for_role(LocalRole::General),
+            Some(spec.filename.to_string())
+        );
+        assert_eq!(
+            env.service.model_for_role(LocalRole::Translate),
+            Some(spec.filename.to_string())
+        );
         assert_eq!(env.service.model_for_role(LocalRole::Vision), None);
-        assert_eq!(env.service.model_for_role(LocalRole::Translate), None);
+        assert!(!env.service.has_local_vision());
         std::fs::write(env.paths.models_dir.join(projector.filename), b"fake").unwrap();
         assert!(env.service.has_local_vision());
         assert_eq!(

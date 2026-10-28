@@ -1060,6 +1060,8 @@
   function renderLocalState(preserveError) {
     var engine = state.engine || {};
     var localState = engine.localState || "stopped";
+    var localSettings =
+      (state.settings && state.settings.provider && state.settings.provider.local) || {};
     var badge = byId("local-state-badge");
     var startButton = byId("start-local");
     var stopButton = byId("stop-local");
@@ -1104,12 +1106,17 @@
         hintNode.textContent = "模型已加载；更改模型选择后，需重启本地引擎。";
       } else if (localState === "starting") {
         hintNode.textContent = "正在加载模型…";
+      } else if (localSettings.keepRunning === true) {
+        hintNode.textContent =
+          "已因空闲自动停止以释放内存；下次请求或点「启动」会重新加载。";
       } else {
         hintNode.textContent =
           "本地模型未启动时翻译/总结不会自动启动，请点击「启动」";
       }
       hintNode.hidden = false;
     }
+
+    renderLocalIdleTimeout();
 
     var errorNode = byId("local-error");
     if (errorNode && !preserveError) {
@@ -1119,6 +1126,32 @@
         hideInlineError(errorNode);
       }
     }
+  }
+
+  /* Idle auto-stop minutes: 0 disables it, empty/invalid falls back to 10. */
+  function renderLocalIdleTimeout() {
+    var local =
+      (state && state.settings && state.settings.provider && state.settings.provider.local) ||
+      {};
+    var input = byId("local-idle-timeout");
+    if (!input || input === document.activeElement) {
+      return;
+    }
+    var minutes = Number(local.idleTimeoutMinutes);
+    if (!isFinite(minutes) || minutes < 0) {
+      minutes = 10;
+    }
+    assignFieldValue(input, String(Math.round(minutes)));
+  }
+
+  function saveLocalIdleTimeout(raw) {
+    var minutes = Math.round(Number(raw));
+    if (!isFinite(minutes) || minutes < 0) {
+      minutes = 10;
+    }
+    minutes = Math.min(240, minutes);
+    save({ provider: { local: { idleTimeoutMinutes: minutes } } });
+    renderLocalIdleTimeout();
   }
 
   function catalogRow(entry) {
@@ -4175,6 +4208,9 @@
     });
     byId("import-model").addEventListener("click", importModel);
     byId("start-local").addEventListener("click", startLocal);
+    byId("local-idle-timeout").addEventListener("change", function (event) {
+      saveLocalIdleTimeout(event.target.value);
+    });
     byId("stop-local").addEventListener("click", stopLocal);
     byId("restart-local").addEventListener("click", restartLocal);
     byId("catalog-list").addEventListener("click", function (event) {

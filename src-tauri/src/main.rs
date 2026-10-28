@@ -116,7 +116,10 @@ fn main() {
             }
 
             sync_autostart(&state);
+            // Kill a llama-server orphaned by an earlier crash before restoring.
+            state.engine.cleanup_stale_local();
             restore_local_engine(app.handle(), &state);
+            spawn_idle_engine_watchdog(app.handle().clone());
 
             let args: Vec<String> = std::env::args().collect();
             let force_show = wants_settings_window(&args);
@@ -334,6 +337,34 @@ fn sync_autostart(state: &AppState) {
             "failed to synchronize autostart to {wanted}: {error}"
         )),
     }
+}
+
+/// Periodically stops the local engine when no request arrived for the
+/// configured idle period; the remembered started state is kept, so the next
+/// request (or 启动) reloads it.
+fn spawn_idle_engine_watchdog(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let mut ticks = tokio::time::interval(Duration::from_secs(30));
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticks.tick().await;
+            let engine = {
+                let Some(state) = app.try_state::<Arc<AppState>>() else {
+                    return;
+                };
+                state.engine.clone()
+            };
+            if engine.stop_idle_local().await {
+                if let Some(state) = app.try_state::<Arc<AppState>>() {
+                    crate::tray::refresh(&app);
+                    commands::broadcast_state(&app, &state);
+                    state
+                        .log
+                        .info("idle timeout: local engine stopped to free memory");
+                }
+            }
+        }
+    });
 }
 
 /// Restores the local llama.cpp engine when it was running in the previous

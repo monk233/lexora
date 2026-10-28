@@ -64,7 +64,7 @@ lexora/
 
 ```jsonc
 {
-  "version": 8,                              // v1→v2 补 polish/search；v2→v3 补 screenshot；v3→v4 补 capture；v4→v5 补 captureSkills/capturePrompts；v5→v6 把本地工具（pin/形状/箭头/画笔/文字/序号/马赛克/长截图）纳入 captureSkills 并移除 copy；保留 custom；v6→v7 增加 provider.local.selectedModel，旧配置迁移为空选择；v7→v8 增加单词查询提示词 picker.prompts.wordLookup（默认空，历史提示词保留）
+  "version": 9,                              // v1→v2 补 polish/search；v2→v3 补 screenshot；v3→v4 补 capture；v4→v5 补 captureSkills/capturePrompts；v5→v6 把本地工具（pin/形状/箭头/画笔/文字/序号/马赛克/长截图）纳入 captureSkills 并移除 copy；保留 custom；v6→v7 增加 provider.local.selectedModel，旧配置迁移为空选择；v7→v8 增加单词查询提示词 picker.prompts.wordLookup；v8→v9 增加 provider.local.idleTimeoutMinutes（默认 10 分钟，0 = 关闭）
   "picker": {
     "enabled": true,
     "skills": ["translate","summarize","explain","read","copy","search"],
@@ -102,7 +102,7 @@ lexora/
     "mode": "online",                     // online | local
     "online": { "preset": "deepseek", "baseUrl": "https://api.deepseek.com/v1", "apiKey": "", "model": "deepseek-chat",
                 "timeoutMs": 60000, "temperature": 0.2, "maxTokens": 1024 },
-    "local": { "selectedModel": "", "contextSize": 4096, "threads": 0, "gpuLayers": 0, "autoStart": true, "keepRunning": false }
+    "local": { "selectedModel": "", "contextSize": 4096, "threads": 0, "gpuLayers": 0, "autoStart": true, "keepRunning": false, "idleTimeoutMinutes": 10 }
   },
   "app": { "closeToTray": true, "startAtLogin": true, "theme": "system" },
   "capture": {
@@ -111,7 +111,7 @@ lexora/
 }
 ```
 
-本地模型选择字段：`settings.provider.local.selectedModel`（序列化路径为 `provider.local.selectedModel`）保存唯一本地模型选择；默认空字符串，v6→v7 迁移不自动填入模型。硬件检测只提供推荐标签和理由，不自动选择。推荐梯度：显存 ≥10GB 且内存 ≥16GB、线程 ≥8，或内存 ≥32GB 且线程 ≥12 时为 4B Q4；内存 ≥24GB、线程 ≥8 为 4B Q3；内存 ≥16GB 按线程为 2B Q4（≥8）/Q3（≥6）；内存 ≥8GB、线程 ≥6 为 0.8B Q4；其余为 0.8B Q3。显存只作展示与升档参考，内置引擎为 CPU 版。
+本地模型选择字段：`settings.provider.local.selectedModel`（序列化路径为 `provider.local.selectedModel`）保存唯一本地模型选择；默认空字符串，v6→v7 迁移不自动填入模型。`provider.local.idleTimeoutMinutes`（v9，默认 10，范围 0–240）控制空闲自动停止：超过该分钟数无请求时停止 llama-server 释放内存，保留 `keepRunning` 记忆与「启动」状态，下次请求或点「启动」重新加载；0 关闭。硬件检测只提供推荐标签和理由，不自动选择。推荐梯度：显存 ≥10GB 且内存 ≥16GB、线程 ≥8，或内存 ≥32GB 且线程 ≥12 时为 4B Q4；内存 ≥24GB、线程 ≥8 为 4B Q3；内存 ≥16GB 按线程为 2B Q4（≥8）/Q3（≥6）；内存 ≥8GB、线程 ≥6 为 0.8B Q4；其余为 0.8B Q3。显存只作展示与升档参考，内置引擎为 CPU 版。
 
 新配置和恢复默认采用上述开关与内置技能默认值（自定义技能仍保留定义与启用状态）；已保存的显式选择及顺序不变。旧配置缺失 skills/captureSkills 时沿用历史完整技能集合，缺失 compact/startAtLogin 时仍为 false；历史版本迁移保持原策略，不因新默认重新开启已关闭技能。
 
@@ -277,9 +277,11 @@ impl EngineService {
   - 用户手动选择唯一本地模型并持久化；硬件检测仅显示推荐标签和理由，不替用户选择。切换选择后需重启本地引擎。
   - 「停止」后 `local_desired=false`，后续请求**绝不自动启动**引擎，只返回「本地模型未启动」错误提示。所有本地 AI 任务复用用户手动选择的同一 Qwen3.5，不再按翻译与通用角色切换模型。
 - 运行状态记忆：用户点「启动」成功后持久化 provider.local.keepRunning=true；点「停止」置 false；应用退出只停 llama-server，不改 keepRunning。下次启动若为 true 且引擎/模型已安装，后台自动恢复引擎（日志 `restoring local engine`）并通过 state-changed 刷新设置页与托盘。
-  - 未安装引擎 → 错误提示「下载 llama.cpp 引擎」；未安装模型 → 「下载/导入 GGUF」；启动前选空闲端口（TcpListener 127.0.0.1:0），`llama-server.exe -m <model> --host 127.0.0.1 --port <p> -c <ctxSize> -t <threads> -ngl <gpuLayers> --no-webui`，轮询 `/health` 最长 90s，stderr 写 `logs/llama.log`；进程退出/应用退出要清理；服务就绪后复用在线客户端逻辑。
+  - 未安装引擎 → 错误提示「下载 llama.cpp 引擎」；未安装模型 → 「下载/导入 GGUF」；启动前选空闲端口（TcpListener 127.0.0.1:0），启动参数 `llama-server.exe -m <model> --host 127.0.0.1 --port <p> -c <ctxSize> -t <threads> -ngl <gpuLayers> -np 1 -b 512 -ub 256 --no-warmup --no-webui`；视觉请求额外追加 `--mmproj <path>` 且 `-c` 至少 8192。轮询 `/health` 最长 90s，stderr 写 `logs/llama.log`。文字任务启动/复用不带视觉投影器的 server（省 0.2–0.7GB），首次视觉请求重启并加载投影器；之后文字请求复用该 server，不反复重启。
+  - 空闲自动停止：`provider.local.idleTimeoutMinutes`（默认 10，0 关闭）到期且无请求时停止 llama-server 释放全部模型内存；保留 keepRunning 与「启动」记忆，下次请求或点「启动」重新加载。请求开始与流式分块都会刷新空闲计时，长时间生成不会被误停。
+  - 孤儿进程与句柄：spawn 后把 PID 写入 `<data>/llama-server.pid`，并把子进程加入 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的 Job Object，应用崩溃/被强杀时由系统回收；下次启动读取 PID 文件，仅当进程镜像路径与本应用 `engine/llama-server.exe` 一致才 TerminateProcess，之后删除文件。正常停止、启动失败与超时路径都会 kill + wait 回收句柄并删除 PID 文件。
 - 提示词（系统默认值为英文，用户可在设置里逐个技能自定义，空字符串表示用默认）：
-  - 翻译 system：`You are a professional translation engine. Translate the user's text into {target}. Output only the translation without explanations or added labels. Preserve paragraphs, lists, Markdown structure, code and placeholders; leave code and placeholders unchanged. Do not repeat the source text.`；`{target}`/`{language}` 替换为英文语言名（38 种翻译目标语言，如 Simplified Chinese / Traditional Chinese / Portuguese / Uyghur），自定义提示词若不含占位符则在末尾追加 `Target language: <name>.`。
+  - 翻译 system（普通任务）：`You are a professional translator. Translate the user's text into {target}. Write the entire translation in {target}. Output only the translation: no explanations, labels, notes or source text. Preserve paragraphs, lists, Markdown structure, code and placeholders; leave code and placeholders unchanged.`；单词/短语使用 `picker.prompts.wordLookup`，默认 `You are a careful dictionary assistant. ...`（词头、英文 IPA / 中文拼音、词性、至多 3 个义项、可选例句，释义使用目标语言）；算法按输入形态自动切换。`{target}`/`{language}` 替换为英文语言名（38 种翻译目标语言，如 Simplified Chinese / Traditional Chinese / Portuguese / Uyghur），自定义提示词若不含占位符则在末尾追加 `Target language: <name>.`。
   - 总结 system：`You are a concise Chinese writing assistant. Summarize the user's text in Simplified Chinese in 3-5 key points. Preserve the central meaning without adding unsupported facts or repeating points.`
   - 解释 system：`You are a knowledge assistant. Explain the user's text in Simplified Chinese: start with one sentence stating the core meaning, add at most 3 necessary points and optionally one short example. Usually use 150-250 Chinese characters; simple content should be shorter. Avoid excessive background, repetition and unrelated detail.`
   - 文本截断：翻译取前 `picker.maxChars`；总结/解释取前 8000 字符；自定义提示词归一化后最多 4000 字符。
@@ -545,7 +547,7 @@ pub struct SelectionService {
 - 投影器远程文件名为 `mmproj-F16.gguf`，本地文件名按规格唯一，下载路径与本地文件名须分别处理；同规格的两种量化可共用对应投影器。
 - `ModelSpec` 提供 `vision` 与 `mmproj` 信息；`CatalogEntry` 标记视觉能力；`scan_models` 过滤 `mmproj-*.gguf`（不当作独立模型）；`installed` 要求主文件与对应投影器都存在。
 - 下载：主模型完成后继续下载 mmproj（同一个模型 id；进度事件先主文件后投影器，`filename` 字段区分；任一失败整体失败并清理临时文件）。
-- `LocalRole` 增加 `Vision`；`model_for_role(Vision)` 只使用手动选择且「主文件 + 对应 mmproj 都存在」的 Qwen3.5；`llama.rs::ensure_model` 增加 `mmproj: Option<&str>` 参数，启动参数追加 `--mmproj <path>`，视觉模型 `-c` 至少 8192；模型或投影器变化时重启进程。
+- `LocalRole` 增加 `Vision`；`model_for_role(Vision)` 只使用手动选择且「主文件 + 对应 mmproj 都存在」的 Qwen3.5，文字角色（Translate/General）只需要主文件；`llama.rs::ensure_model` 增加 `mmproj: Option<&str>` 与 `need_vision` 参数，视觉请求启动参数追加 `--mmproj <path>` 且 `-c` 至少 8192，文字请求不带投影器；文字请求可复用已带投影器的运行中 server（不降级），视觉请求要求投影器配置一致；模型或投影器变化时重启进程。
 - `EngineService::vision_stream`：本地未选择 Qwen3.5 模型时明确提示去设置选择；文件不完整时提示下载所选 Qwen3.5 及对应投影器，不自动替选；在线模式保持原逻辑。
 - 本地模式「翻译」不再被拒绝（OCR + 文本翻译）；`capture.rs` 删除「本地模式一律报错」。
 

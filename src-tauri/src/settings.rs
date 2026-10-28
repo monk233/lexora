@@ -12,7 +12,7 @@ use std::sync::{Arc, RwLock};
 
 /// Version of the on-disk settings schema. Bumped whenever defaults or fields
 /// change so [`Settings::normalize`] can migrate an older file in place.
-pub const SETTINGS_VERSION: u32 = 8;
+pub const SETTINGS_VERSION: u32 = 9;
 /// Default global shortcut that starts a region screenshot.
 pub const DEFAULT_REGION_SHORTCUT: &str = "Win+Shift+X";
 /// Built-in picker skills, in their canonical toolbar order.
@@ -337,6 +337,10 @@ pub struct LocalSettings {
     /// next app launch can restore the engine instead of asking the user to
     /// press 启动 again. Cleared by an explicit 停止 (but not by app exit).
     pub keep_running: bool,
+    /// Stop `llama-server.exe` after this many minutes without a request and
+    /// release its memory. The remembered "started" state stays, so the next
+    /// request (or the 启动 button) reloads it. 0 disables the idle stop.
+    pub idle_timeout_minutes: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -426,6 +430,7 @@ impl Default for LocalSettings {
             gpu_layers: 0,
             auto_start: true,
             keep_running: false,
+            idle_timeout_minutes: 10,
         }
     }
 }
@@ -678,6 +683,8 @@ impl Settings {
         self.provider.local.context_size = self.provider.local.context_size.clamp(1024, 32_768);
         self.provider.local.threads = self.provider.local.threads.min(128);
         self.provider.local.gpu_layers = self.provider.local.gpu_layers.min(200);
+        self.provider.local.idle_timeout_minutes =
+            self.provider.local.idle_timeout_minutes.min(240);
 
         if !["system", "light", "dark"].contains(&self.app.theme.as_str()) {
             self.app.theme = "system".to_string();
@@ -1125,23 +1132,34 @@ mod tests {
     fn local_keep_running_defaults_false_and_roundtrips() {
         let settings = Settings::default().normalize();
         assert!(!settings.provider.local.keep_running);
+        assert_eq!(settings.provider.local.idle_timeout_minutes, 10);
         let value = serde_json::to_value(&settings).unwrap();
         assert_eq!(value["provider"]["local"]["keepRunning"], false);
+        assert_eq!(value["provider"]["local"]["idleTimeoutMinutes"], 10);
         let loaded: Settings = serde_json::from_value(value).unwrap();
         assert!(!loaded.provider.local.keep_running);
+        assert_eq!(loaded.provider.local.idle_timeout_minutes, 10);
         let (store, _dir) = store();
         let updated = store
-            .update_json(json!({"provider": {"local": {"keepRunning": true}}}))
+            .update_json(
+                json!({"provider": {"local": {"keepRunning": true, "idleTimeoutMinutes": 600}}}),
+            )
             .unwrap();
         assert!(updated.provider.local.keep_running);
+        // Values above 4 hours are clamped, 0 keeps the disabled semantics.
+        assert_eq!(updated.provider.local.idle_timeout_minutes, 240);
         assert!(store.get().provider.local.keep_running);
+        let disabled = store
+            .update_json(json!({"provider": {"local": {"idleTimeoutMinutes": 0}}}))
+            .unwrap();
+        assert_eq!(disabled.provider.local.idle_timeout_minutes, 0);
     }
 
     #[test]
     fn defaults_are_normalized() {
         let settings = Settings::default().normalize();
         assert_eq!(settings.version, SETTINGS_VERSION);
-        assert_eq!(SETTINGS_VERSION, 8);
+        assert_eq!(SETTINGS_VERSION, 9);
         let expected = vec![
             "translate",
             "summarize",
@@ -1344,19 +1362,20 @@ mod tests {
     }
 
     #[test]
-    fn schema_eight_adds_the_dictionary_prompt_and_preserves_history() {
+    fn schema_nine_adds_the_idle_timeout_and_preserves_history() {
         let legacy: Settings = serde_json::from_value(json!({
-            "version": 7,
+            "version": 8,
             "picker": {
-                "prompts": { "translate": "Translate into {target}.", "explain": "Explain simply." },
-                "capturePrompts": { "translate": "Screenshot instruction" },
+                "prompts": { "translate": "Translate into {target}.", "explain": "Explain simply.", "wordLookup": "Look it up." },
+                "capturePrompts": { "translate": "Screenshot instruction", "wordLookup": "Screenshot word." },
                 "customSkills": [{ "id": "custom-example", "label": "Example", "prompt": "Historical prompt" }]
             }
         }))
         .unwrap();
         let migrated = legacy.normalize();
-        assert_eq!(migrated.version, 8);
-        assert_eq!(migrated.picker.prompts.word_lookup, "");
+        assert_eq!(migrated.version, 9);
+        assert_eq!(migrated.provider.local.idle_timeout_minutes, 10);
+        assert_eq!(migrated.picker.prompts.word_lookup, "Look it up.");
         assert_eq!(
             migrated.picker.prompts.translate,
             "Translate into {target}."

@@ -385,6 +385,7 @@
             gpuLayers: 0,
             autoStart: true,
             keepRunning: false,
+            idleTimeoutMinutes: 10,
           },
         },
         app: {
