@@ -102,7 +102,7 @@ $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=9420"
 
 ## 发布流程（维护者）
 
-1. 同步版本号：`package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 三处保持一致（当前 `0.3.0`）。
+1. 同步版本号：`package.json`、`package-lock.json`（根与根包）、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`（仅 `lexora` 包）、`src-tauri/tauri.conf.json` 六个版本字段保持一致（当前 `0.4.0`）。
 2. 在 `CHANGELOG.md` 中把 `## [Unreleased]` 整理为 `## [<version>] - YYYY-MM-DD` 小节（Keep a Changelog 风格）。Release 正文由该小节生成；缺少时退化为按 conventional-commit 类型分组的提交列表。
 3. 更新文档：`docs/user-guide.md`（用户功能）、`docs/building.md`（构建变化）、`docs/contracts.md`（行为契约有改动时）。
 4. 本地构建并冒烟：`cargo fmt --check && cargo test`、`node --check`、`scripts/build-portable.ps1`，启动新 exe 手动验证关键流程。
