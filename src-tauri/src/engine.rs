@@ -64,6 +64,9 @@ const DOWNLOAD_READ_TIMEOUT: Duration = Duration::from_secs(120);
 /// Local requests have no total timeout (model prefill can be slow on CPUs), so
 /// only the "waiting for headers" phase is bounded.
 const LOCAL_HEADER_TIMEOUT_MS: u64 = 300_000;
+/// Idle auto-stop: stop `llama-server` after this many minutes without a
+/// request and release its memory. Not user-configurable on purpose.
+pub const LOCAL_IDLE_TIMEOUT_MINUTES: u32 = 10;
 
 /// Request-only limits: never raise the user's limit or persist a task budget.
 fn effective_max_tokens(user_max_tokens: u32, mode: &str, prompt_source: &str) -> u32 {
@@ -2358,14 +2361,12 @@ impl EngineService {
         }
     }
 
-    /// Stops the local server after `provider.local.idleTimeoutMinutes` without
-    /// a request and releases its memory. The remembered "started" state stays,
+    /// Stops the local server after [`LOCAL_IDLE_TIMEOUT_MINUTES`] without a
+    /// request and releases its memory. The remembered "started" state stays,
     /// so the next request (or 启动) reloads the engine. Returns `true` when a
     /// server was stopped.
     pub async fn stop_idle_local(&self) -> bool {
-        let settings = self.settings.get();
-        let minutes = settings.provider.local.idle_timeout_minutes;
-        if minutes == 0 || !self.local_desired.load(Ordering::Acquire) {
+        if !self.local_desired.load(Ordering::Acquire) {
             return false;
         }
         // Never race a start/stop or a request that is preparing the engine.
@@ -2377,7 +2378,7 @@ impl EngineService {
             .lock()
             .map(|last| last.elapsed())
             .unwrap_or_default();
-        if idle < Duration::from_secs(u64::from(minutes) * 60) {
+        if idle < Duration::from_secs(u64::from(LOCAL_IDLE_TIMEOUT_MINUTES) * 60) {
             return false;
         }
         if self.local.snapshot().state == LocalState::Stopped {
@@ -2385,7 +2386,7 @@ impl EngineService {
         }
         self.local.stop(Some(&self.logger));
         self.logger.info(&format!(
-            "llama-server stopped after {minutes} min without requests (idle timeout)"
+            "llama-server stopped after {LOCAL_IDLE_TIMEOUT_MINUTES} min without requests (idle timeout)"
         ));
         true
     }
@@ -2405,6 +2406,47 @@ impl EngineService {
         self.local.stop(Some(&self.logger));
         self.set_keep_running(false);
         self.start_local_locked().await
+    }
+
+    /// `true` when the remembered start state is active (server loading or
+    /// ready). A server stopped by the idle timeout is not active: the next
+    /// request loads the currently selected model anyway.
+    pub fn local_engine_active(&self) -> bool {
+        self.local_desired.load(Ordering::Acquire)
+            && matches!(
+                self.local.snapshot().state,
+                LocalState::Starting | LocalState::Ready
+            )
+    }
+
+    /// Handles a `provider.local.selectedModel` change: drop the captured model
+    /// selection so the next request uses the new one, and restart a running
+    /// server so the switch takes effect immediately. Returns `true` when a
+    /// restart was performed.
+    pub async fn on_selected_model_changed(&self) -> bool {
+        // Capture the activity before clearing the selection: the clear helper
+        // also resets `local_desired`, which would make every switch look idle.
+        let active = self.local_engine_active();
+        self.clear_local_selection();
+        if !active {
+            return false;
+        }
+        self.logger
+            .info("restarting local engine after model switch");
+        match self.restart_local().await {
+            Ok(()) => {
+                self.logger
+                    .info("local engine restarted after model switch");
+                true
+            }
+            Err(error) => {
+                self.logger.warn(&format!(
+                    "local engine restart after model switch failed: {} ({})",
+                    error.message, error.hint
+                ));
+                false
+            }
+        }
     }
 
     /// App shutdown: kill llama-server without forgetting that the user had

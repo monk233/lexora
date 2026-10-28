@@ -45,7 +45,7 @@ async function main() {
       restartLocal() { return new Promise((resolve) => { releaseRestart = resolve; }); },
     },
   });
-  for (const name of ["modelRole", "localModelRow", "armDanger", "disarmDanger", "renderLocalIdleTimeout", "renderLocalState", "runLocalAction", "restartLocal"]) vm.runInContext(extract(name), context);
+  for (const name of ["modelRole", "localModelRow", "armDanger", "disarmDanger", "renderLocalState", "runLocalAction", "restartLocal"]) vm.runInContext(extract(name), context);
   context.refreshState = async () => { context.renderLocalState(); };
   for (const catalogId of ["qwen3.5-2b-q3-k-m", undefined]) {
     const row = context.localModelRow({ catalogId, file: "builtin.gguf" });
@@ -126,7 +126,7 @@ function savingHarness() {
       restartLocal() { calls.push("restart:" + persisted); return Promise.resolve({ ok: true }); },
     },
   });
-  for (const name of ["optimisticApply", "enqueuePatch", "flushSaveQueue", "save", "renderLocalIdleTimeout", "renderLocalState", "runLocalAction", "restartLocal"]) vm.runInContext(extract(name), context);
+  for (const name of ["optimisticApply", "enqueuePatch", "flushSaveQueue", "save", "renderLocalState", "runLocalAction", "restartLocal"]) vm.runInContext(extract(name), context);
   context.renderAll = () => context.renderLocalState();
   context.applyState = () => {};
   context.refreshState = async () => { refreshes++; context.renderLocalState(); return { ok: true }; };

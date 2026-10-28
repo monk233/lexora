@@ -169,12 +169,32 @@ pub fn update_settings(
     state: State<'_, Arc<AppState>>,
     patch: Value,
 ) -> Result<Value, String> {
-    let previous_shortcut = state.settings.get().capture.region_shortcut;
+    let previous = state.settings.get();
+    let previous_shortcut = previous.capture.region_shortcut;
     let settings = state.settings.update_json(patch)?;
     state.selection.apply_settings(&settings);
     state.abort_translate();
     if settings.capture.region_shortcut != previous_shortcut {
         sync_capture_hotkey(&app, &state, &settings);
+    }
+    // Switching the local model restarts a running engine automatically so the
+    // new weights are loaded without asking the user to press 重启.
+    let selected_model_changed =
+        previous.provider.local.selected_model != settings.provider.local.selected_model;
+    if selected_model_changed {
+        state.log.info(&format!(
+            "local model selection changed: '{}' -> '{}'",
+            previous.provider.local.selected_model, settings.provider.local.selected_model
+        ));
+        let engine = state.engine.clone();
+        let app_handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            engine.on_selected_model_changed().await;
+            if let Some(app_state) = app_handle.try_state::<Arc<AppState>>() {
+                crate::tray::refresh(&app_handle);
+                broadcast_state(&app_handle, &app_state);
+            }
+        });
     }
     crate::tray::refresh(&app);
     broadcast_state(&app, &state);

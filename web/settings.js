@@ -817,7 +817,7 @@
         var running = engine.localState === "ready" || engine.localState === "starting" || engine.localState === "running";
         save({ provider: { local: { selectedModel: model.catalogId } } });
         if (running) {
-          toast("已更新模型选择；重启本地引擎后生效", "info");
+          toast("已切换模型，正在重启本地引擎…", "info");
         }
       });
       row.appendChild(button);
@@ -1020,7 +1020,7 @@
       });
       modelHint.hidden = false;
       modelHint.textContent = installedSelection
-        ? "所有本地 AI 任务共用手动选择的 Qwen3.5，包括翻译、通用文本与截图理解。切换模型后，运行中的引擎需停止并重新启动。"
+        ? "所有本地 AI 任务共用手动选择的 Qwen3.5，包括翻译、通用文本与截图理解。切换模型后，运行中的引擎会自动重启。"
         : "请先下载完整的 Qwen3.5 模型（含视觉投影器），再手动选择翻译 / 通用 / 视觉模型。未选择时所有本地 AI 任务不可用。";
     }
 
@@ -1103,7 +1103,7 @@
     var hintNode = byId("local-state-hint");
     if (hintNode) {
       if (localState === "ready" || localState === "running") {
-        hintNode.textContent = "模型已加载；更改模型选择后，需重启本地引擎。";
+        hintNode.textContent = "模型已加载；切换模型后会自动重启本地引擎。";
       } else if (localState === "starting") {
         hintNode.textContent = "正在加载模型…";
       } else if (localSettings.keepRunning === true) {
@@ -1116,7 +1116,6 @@
       hintNode.hidden = false;
     }
 
-    renderLocalIdleTimeout();
 
     var errorNode = byId("local-error");
     if (errorNode && !preserveError) {
@@ -1128,31 +1127,7 @@
     }
   }
 
-  /* Idle auto-stop minutes: 0 disables it, empty/invalid falls back to 10. */
-  function renderLocalIdleTimeout() {
-    var local =
-      (state && state.settings && state.settings.provider && state.settings.provider.local) ||
-      {};
-    var input = byId("local-idle-timeout");
-    if (!input || input === document.activeElement) {
-      return;
-    }
-    var minutes = Number(local.idleTimeoutMinutes);
-    if (!isFinite(minutes) || minutes < 0) {
-      minutes = 10;
-    }
-    assignFieldValue(input, String(Math.round(minutes)));
-  }
-
-  function saveLocalIdleTimeout(raw) {
-    var minutes = Math.round(Number(raw));
-    if (!isFinite(minutes) || minutes < 0) {
-      minutes = 10;
-    }
-    minutes = Math.min(240, minutes);
-    save({ provider: { local: { idleTimeoutMinutes: minutes } } });
-    renderLocalIdleTimeout();
-  }
+  /* Idle auto-stop is fixed at 10 minutes in the backend; there is no setting. */
 
   function catalogRow(entry) {
     var row = el("li", "catalog-item");
@@ -4208,9 +4183,6 @@
     });
     byId("import-model").addEventListener("click", importModel);
     byId("start-local").addEventListener("click", startLocal);
-    byId("local-idle-timeout").addEventListener("change", function (event) {
-      saveLocalIdleTimeout(event.target.value);
-    });
     byId("stop-local").addEventListener("click", stopLocal);
     byId("restart-local").addEventListener("click", restartLocal);
     byId("catalog-list").addEventListener("click", function (event) {

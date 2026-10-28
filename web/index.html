@@ -164,7 +164,7 @@
           <div class="field">
             <div class="field-label">
               <span class="field-name">本地模型</span>
-              <p class="field-hint">所有本地 AI 任务共用手动选择的 Qwen3.5：翻译 / 通用 / 视觉；未选择时本地 AI 不可用</p>
+              <p class="field-hint">所有本地 AI 任务共用手动选择的 Qwen3.5：翻译 / 通用 / 视觉；未选择时本地 AI 不可用。切换模型后运行中的引擎会自动重启。</p>
             </div>
             <div class="field-control">
               <div class="local-hardware" aria-live="polite">
@@ -191,7 +191,7 @@
           <div class="field field-switch local-state-field">
             <div class="field-label">
               <span class="field-name">运行状态</span>
-              <p class="field-hint">需先启动本地引擎；翻译 / 通用 / 视觉共用你手动选择的模型</p>
+              <p class="field-hint">需先启动本地引擎；翻译 / 通用 / 视觉共用你手动选择的模型；空闲 10 分钟后自动停止以释放内存</p>
             </div>
             <div class="field-control">
               <div class="inline-actions">
@@ -202,17 +202,6 @@
               </div>
               <p class="inline-hint" id="local-state-hint" hidden></p>
               <p class="inline-error" id="local-error" hidden></p>
-            </div>
-          </div>
-
-          <div class="field">
-            <div class="field-label">
-              <label class="field-name" for="local-idle-timeout">空闲自动停止</label>
-              <p class="field-hint">超过该分钟数没有请求时停止本地引擎释放内存；下次划词或点「启动」会重新加载，0 = 关闭</p>
-            </div>
-            <div class="field-control">
-              <input class="input" id="local-idle-timeout" type="number" min="0" max="240"
-                     step="1" inputmode="numeric" aria-label="空闲自动停止分钟数">
             </div>
           </div>
         </div>
