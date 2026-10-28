@@ -1509,6 +1509,38 @@ pub struct FollowupTurn {
     pub answer: String,
 }
 
+/// Cancel only auxiliary suggestions and wait until model/HTTP work has exited.
+#[tauri::command]
+pub async fn cancel_followups(app: AppHandle, request_id: String) -> Value {
+    let state = app.state::<Arc<AppState>>().inner().clone();
+    match state.engine.cancel_followups(&request_id).await {
+        Ok(()) => json!({"ok": true}),
+        Err(error) => json!({"ok": false, "error": error.message}),
+    }
+}
+
+/// Suggestions are optional and must never interrupt or abort a primary model request.
+#[tauri::command]
+pub async fn generate_followups(
+    app: AppHandle,
+    request_id: String,
+    skill: String,
+    source: String,
+    initial_answer: String,
+    history: Vec<FollowupTurn>,
+) -> Value {
+    let state = app.state::<Arc<AppState>>().inner().clone();
+    let turns = history
+        .into_iter()
+        .map(|turn| (turn.question, turn.answer))
+        .collect::<Vec<_>>();
+    let suggestions = state
+        .engine
+        .generate_followups(&request_id, &skill, &source, &initial_answer, &turns)
+        .await;
+    json!({"ok": true, "requestId": request_id, "suggestions": suggestions})
+}
+
 /// Streams a follow-up question about the original selection and the previous
 /// answer through the same `translate-event` channel as translation; the picker
 /// appends the streamed answer below the previous result.
@@ -1609,6 +1641,7 @@ pub fn picker_status(state: State<'_, Arc<AppState>>) -> Value {
         "mode": status.mode,
         "ready": status.ready,
         "configured": configured,
+        "suggestionsAvailable": state.engine.suggestions_available(),
         "providerLabel": status.provider_label,
         "localState": status.local_state,
         "hint": status.hint,

@@ -109,8 +109,7 @@
 
   /* ---- Languages ------------------------------------------------------- */
 
-  /* Languages supported by the Hy-MT2 translation model (33 languages plus
-   * Chinese variants and minority languages, see the official model card).
+  /* Translation target languages, shared by online and local AI tasks.
    * Common targets first for a short dropdown. */
   LP.LANGUAGES = [
     { value: "zh", label: "中文" },

@@ -211,7 +211,7 @@ impl LocalServer {
         if model_file.is_empty() {
             return Err(EngineError::new(
                 "尚未安装本地模型。",
-                "请先在「设置 → 本地模型」下载 Hy-MT2，或手动选择并完整安装 Qwen3.5。",
+                "请先在「设置 → 本地模型」手动选择并完整安装 Qwen3.5 模型及视觉投影器。",
             ));
         }
 

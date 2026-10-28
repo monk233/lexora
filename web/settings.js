@@ -775,11 +775,8 @@
   }
 
   function modelRole(catalogId) {
-    if (catalogId === "hy-mt2-1.8b") {
-      return { label: "翻译 · 自动使用", builtin: true };
-    }
     if (isQwen35(catalogId)) {
-      return { label: "通用 / 视觉", builtin: true };
+      return { label: "翻译 / 通用 / 视觉", builtin: true };
     }
     return { label: "其他本地模型", builtin: false };
   }
@@ -1021,8 +1018,8 @@
       });
       modelHint.hidden = false;
       modelHint.textContent = installedSelection
-        ? "通用文本与截图理解使用所选模型；Hy-MT2 自动负责文本翻译。切换模型后，运行中的引擎需停止并重新启动。"
-        : "请先下载完整的 Qwen3.5 模型（含视觉投影器），再手动选择通用 / 视觉模型。Hy-MT2 自动负责文本翻译。";
+        ? "所有本地 AI 任务共用手动选择的 Qwen3.5，包括翻译、通用文本与截图理解。切换模型后，运行中的引擎需停止并重新启动。"
+        : "请先下载完整的 Qwen3.5 模型（含视觉投影器），再手动选择翻译 / 通用 / 视觉模型。未选择时所有本地 AI 任务不可用。";
     }
 
     renderCatalog();
@@ -1131,7 +1128,7 @@
     var name = el("div", "catalog-name");
     name.appendChild(el("span", null, entry.name || entry.id));
     if (entry.vision === true) {
-      name.appendChild(el("span", "badge-vision", "通用 / 视觉"));
+      name.appendChild(el("span", "badge-vision", "翻译 / 通用 / 视觉"));
     }
     if (entry.id === recommendedModelId()) {
       name.appendChild(el("span", "meta-pill is-accent", "推荐"));

@@ -67,7 +67,7 @@ use tauri_plugin_clipboard_manager::ClipboardExt;
 
 use crate::engine::{EngineError, EngineService};
 use crate::logger::Logger;
-use crate::selection::{picker_config, PickerPayload};
+use crate::selection::{picker_config_with_engine, PickerPayload};
 use crate::settings::{
     normalize_shortcut, parse_shortcut, Settings, Shortcut, ShortcutKey, DEFAULT_REGION_SHORTCUT,
 };
@@ -1032,6 +1032,7 @@ impl CaptureService {
         hide_overlays: bool,
         log_label: &str,
     ) -> Result<CaptureJob, EngineError> {
+        let engine = engine_of(app)?;
         // Image clipboard; a failure only flips the flag, the flow continues.
         let clipboard = write_clipboard_image(app, &image);
 
@@ -1057,7 +1058,7 @@ impl CaptureService {
             anchor_x: anchor.0,
             anchor_y: anchor.1,
             scale_factor: scale,
-            config: picker_config(settings),
+            config: picker_config_with_engine(settings, &engine),
         };
         if !crate::windows::show_picker(app, &payload) {
             return Err(EngineError::new(
@@ -3503,6 +3504,21 @@ mod tests {
     use super::*;
     use crate::settings::CustomSkill;
     use image::Rgba;
+
+    #[test]
+    fn screenshot_picker_config_uses_runtime_engine_capabilities() {
+        let source = include_str!("capture.rs");
+        let shared_tail = source
+            .split_once("fn finish_skill_job(")
+            .expect("shared screenshot and pinned-image skill entry point")
+            .1
+            .split_once("// Tell the picker which panel to open")
+            .expect("picker payload before streaming event")
+            .0;
+        assert!(shared_tail.contains("let engine = engine_of(app)?;"));
+        assert!(shared_tail.contains("config: picker_config_with_engine(settings, &engine)"));
+        assert!(!shared_tail.contains("config: picker_config(settings)"));
+    }
 
     fn pixel_image() -> RgbaImage {
         RgbaImage::from_fn(10, 10, |x, y| Rgba([x as u8, y as u8, 0, 255]))

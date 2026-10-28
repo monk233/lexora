@@ -27,9 +27,10 @@ async function checkSettingsMerge(withSharedHelpers) {
   assert.equal((await api.getState()).state.engine.localState, "stopped");
   result = await api.getState();
   assert.equal((await api.restartLocal()).ok, false, "Restart requires a selected model");
-  const builtin = result.state.models.find((model) => model.catalogId === "hy-mt2-1.8b");
-  assert.ok(builtin);
-  assert.equal((await api.removeModel(builtin.file)).ok, false, "Built-in models cannot be deleted");
+  const legacy = result.state.models.find((model) => model.file === "Hy-MT2-1.8B-Q4_K_M.gguf");
+  assert.ok(legacy);
+  assert.equal(legacy.catalogId, "");
+  assert.equal((await api.removeModel(legacy.file)).ok, true, "Legacy models can be deleted");
   assert.equal((await api.removeModel("missing.gguf")).ok, false);
   await api.importModel();
   const imported = (await api.getState()).state.models.find((model) => model.catalogId === "");
@@ -37,7 +38,8 @@ async function checkSettingsMerge(withSharedHelpers) {
   assert.equal((await api.removeModel(imported.file)).ok, true);
   result = await api.getState();
   assert.equal(result.state.models.some((model) => model.file === imported.file), false);
-  assert.equal(result.state.catalog.find((entry) => entry.id === "hy-mt2-1.8b").installed, true);
+  assert.equal(result.state.catalog.length, 6);
+  assert.equal(result.state.catalog.some((entry) => entry.id === "hy-mt2-1.8b"), false);
   const original = JSON.parse(JSON.stringify(result.state.settings.provider));
   const ids = result.state.catalog.filter((entry) => entry.vision).map((entry) => entry.id);
   assert.equal(ids.length, 6);
@@ -73,7 +75,7 @@ async function checkSettingsMerge(withSharedHelpers) {
   assert.equal((await api.getState()).state.engine.localState, "stopped");
   await api.stopLocal();
   await api.updateSettings({ provider: { local: { selectedModel: "hy-mt2-1.8b" } } });
-  assert.equal((await api.startLocal()).ok, false, "Translation models cannot be selected for startup");
+  assert.equal((await api.startLocal()).ok, false, "Removed legacy models cannot be selected for startup");
   await api.updateSettings({ provider: { local: { selectedModel: selectedId } } });
   // Other settings updates must preserve the manual selection and sibling fields.
   result = await api.updateSettings({ provider: { online: { model: "another-model" } } });

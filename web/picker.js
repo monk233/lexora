@@ -253,6 +253,12 @@
     /* Follow-up conversation of the current AI panel. */
     followupHistory: [],
     followupAnswer: "",
+    initialAnswer: "",
+    followupSkill: "",
+    suggestionsAvailable: false,
+    followupSession: 0,
+    suggestionVersion: 0,
+    suggestionRound: -1,
     followupBusy: false,
     speaking: false,
     translating: false,
@@ -1506,8 +1512,12 @@
   }
 
   function resetFollowup() {
+    state.followupSession += 1;
+    invalidateFollowupSuggestions();
     state.followupHistory = [];
     state.followupAnswer = "";
+    state.initialAnswer = "";
+    state.followupSkill = "";
     state.followupBusy = false;
     if (panelFollowupInput) {
       panelFollowupInput.value = "";
@@ -1526,17 +1536,146 @@
     });
   }
 
-  function singleEnglishWord(text) {
-    var word = String(text == null ? "" : text).trim();
-    return /^[A-Za-z][A-Za-z'-]{0,39}$/.test(word) ? word : "";
+  var suggestionRequest = null;
+  var suggestionCancellation = null;
+  var suggestionPrefetch = null;
+
+  function cancelFollowupSuggestions() {
+    var current = suggestionRequest;
+    if (!current) {
+      return suggestionCancellation;
+    }
+    suggestionRequest = null;
+    var previous = suggestionCancellation;
+    var cancellation;
+    try {
+      cancellation = API && typeof API.cancelFollowups === "function"
+        ? API.cancelFollowups(current.id) : null;
+    } catch (ignored) {
+      cancellation = null;
+    }
+    var pending = Promise.all([previous, cancellation]).catch(function () {
+      // Cancellation failures must not prevent the user's next request.
+    });
+    suggestionCancellation = pending;
+    pending.then(function () {
+      if (suggestionCancellation === pending) suggestionCancellation = null;
+    });
+    return pending;
   }
 
-  function wordSuggestions(word) {
-    return [
-      "用「" + word + "」造几个句子。",
-      "「" + word + "」和近义词有什么区别？",
-      "「" + word + "」有哪些常见搭配？",
-    ];
+  function runAfterSuggestions(request, start) {
+    var pending = cancelFollowupSuggestions();
+    function dispatch() {
+      if (request && (!request.active || activeRequest !== request)) return { ok: true };
+      var result = start();
+      if (request) refreshFollowupSuggestions(request, false, true);
+      return result;
+    }
+    if (pending) return pending.then(dispatch);
+    try { return Promise.resolve(dispatch()); }
+    catch (error) { return Promise.reject(error); }
+  }
+
+  function invalidateFollowupSuggestions() {
+    state.suggestionVersion += 1;
+    state.suggestionRound = -1;
+    if (suggestionPrefetch) {
+      window.clearTimeout(suggestionPrefetch.timer);
+      window.clearTimeout(suggestionPrefetch.startTimer);
+    }
+    suggestionPrefetch = null;
+    cancelFollowupSuggestions();
+    setFollowupSuggestions([]);
+  }
+
+  // One prefetch belongs to one primary request, including a follow-up round.
+  async function refreshFollowupSuggestions(request, completed, dispatched) {
+    if (!request || request.suggestionsStarted || request.failed ||
+        !state.suggestionsAvailable ||
+        !state.panelOpen || !API || typeof API.generateFollowups !== "function") return;
+    var source = state.text;
+    if (state.image) {
+      source = [state.image.ocrText, state.image.cachedText, state.image.sourceText, state.image.text]
+        .find(function (text) { return typeof text === "string" && text.trim(); }) || source;
+    }
+    // Known source or a new question is enough; only images without text need body context.
+    var body = String(request.raw || "").trim();
+    if (!String(source || "").trim() && !(request.kind === "followup" && request.question) &&
+        (!body || (!completed && body.replace(/\s/g, "").length < 120))) return;
+    request.suggestionsStarted = true;
+    var session = state.followupSession;
+    var version = ++state.suggestionVersion;
+    var round = state.followupHistory.length;
+    var history = state.followupHistory.map(function (turn) {
+      return { question: turn.question, answer: turn.answer };
+    });
+    // Snapshot known context once, including the current question before any reply arrives.
+    if (request.kind === "followup" && !completed) history.push({ question: request.question, answer: request.raw || "" });
+    var initialAnswer = request.kind === "followup" ? state.initialAnswer : request.raw || "";
+    var skill = request.kind === "followup" ? state.followupSkill :
+      request.skillId || request.imageAction || request.action || request.kind;
+    var current = { id: makeRequestId(), request: request, ready: false, list: [],
+      done: false, deadline: null, timer: null, session: session, version: version,
+      round: round + (request.kind === "followup" && !completed ? 1 : 0) };
+    suggestionPrefetch = current;
+    setFollowupSuggestions([]);
+    var pending = cancelFollowupSuggestions();
+    if (pending) await pending;
+    if (suggestionPrefetch !== current || !state.panelOpen || !state.suggestionsAvailable ||
+        session !== state.followupSession || version !== state.suggestionVersion) return;
+    async function generate() {
+      if (suggestionPrefetch !== current || !state.panelOpen || !state.suggestionsAvailable ||
+          session !== state.followupSession || version !== state.suggestionVersion) return;
+      suggestionRequest = current;
+      try {
+        var response = await API.generateFollowups(current.id, skill, source, initialAnswer, history);
+        if (suggestionPrefetch !== current || session !== state.followupSession ||
+            version !== state.suggestionVersion || !state.panelOpen || !state.suggestionsAvailable) return;
+        current.list = response && response.ok && response.requestId === current.id &&
+          Array.isArray(response.suggestions) ? response.suggestions : [];
+        current.list = current.list.filter(function (text) { return typeof text === "string" && text.trim(); })
+          .map(function (text) { return text.trim(); })
+          .filter(function (text, index, all) { return all.indexOf(text) === index; }).slice(0, 3);
+        current.ready = true;
+        showPrefetchedSuggestions(current);
+      } catch (ignored) {
+        // Optional generation failures never affect the main answer.
+        current.ready = true;
+      } finally {
+        if (suggestionRequest === current) suggestionRequest = null;
+        if (current.ready) window.clearTimeout(current.timer);
+      }
+    }
+    // Dispatch the main request first so it can acquire its inference slot.
+    if (dispatched) current.startTimer = window.setTimeout(generate, 50);
+    else await generate();
+  }
+
+  function showPrefetchedSuggestions(current) {
+    if (suggestionPrefetch !== current || !current.done || !current.ready ||
+        !state.panelOpen || !state.suggestionsAvailable || state.followupBusy ||
+        current.session !== state.followupSession || current.version !== state.suggestionVersion ||
+        current.round !== state.followupHistory.length) return;
+    if (Date.now() > current.deadline) {
+      invalidateFollowupSuggestions();
+      return;
+    }
+    window.clearTimeout(current.timer);
+    setFollowupSuggestions(current.list);
+    syncFollowupOverlay(true);
+  }
+
+  function finishFollowupSuggestions(request) {
+    refreshFollowupSuggestions(request, true);
+    var current = suggestionPrefetch;
+    if (!current || current.request !== request || current.done) return;
+    current.done = true;
+    current.deadline = Date.now() + 3000;
+    if (current.ready) showPrefetchedSuggestions(current);
+    else current.timer = window.setTimeout(function () {
+      if (suggestionPrefetch === current) invalidateFollowupSuggestions();
+    }, 3000);
   }
 
   function setFollowupSuggestions(list) {
@@ -1567,16 +1706,14 @@
       return;
     }
     state.followupAnswer = request.raw;
+    state.initialAnswer = request.raw;
+    state.followupSkill = request.skillId || request.imageAction || request.action || request.kind;
     state.followupBusy = false;
-    panelFollowup.hidden = false;
+    panelFollowup.hidden = !state.suggestionsAvailable;
     panelFollowup.classList.remove("is-busy");
     panelFollowupInput.disabled = false;
     panelFollowupSend.disabled = false;
-    var word = "";
-    if (request.kind === "translate" || (request.kind === "assist" && request.action === "explain")) {
-      word = singleEnglishWord(state.text);
-    }
-    setFollowupSuggestions(word ? wordSuggestions(word) : []);
+    finishFollowupSuggestions(request);
     window.requestAnimationFrame(function () {
       syncFollowupOverlay(true);
     });
@@ -1633,7 +1770,9 @@
       showToast("当前版本不支持继续提问");
       return;
     }
-    var previousAnswer = state.followupAnswer;
+    invalidateFollowupSuggestions();
+    syncFollowupOverlay(true);
+    var previousAnswer = state.initialAnswer;
     var history = state.followupHistory.slice();
     var block = appendFollowupBlock(question);
     panelFollowupInput.value = "";
@@ -1655,9 +1794,12 @@
     };
     activeRequest = request;
     state.translating = true;
-    var stream = imageMode
-      ? API.captureFollowup(request.id, question, previousAnswer, history)
-      : API.followup(request.id, state.text, previousAnswer, question, history);
+    var source = state.text;
+    var stream = runAfterSuggestions(request, function () {
+      return imageMode
+        ? API.captureFollowup(request.id, question, previousAnswer, history)
+        : API.followup(request.id, source, previousAnswer, question, history);
+    });
     Promise.resolve(stream).then(
       function (response) {
         if (!request.active) {
@@ -1693,9 +1835,9 @@
       return;
     }
     renderMarkdownInto(request.result, request.raw);
-    state.followupAnswer = request.raw;
     state.followupHistory.push({ question: request.question, answer: request.raw });
     setFollowupBusy(false);
+    finishFollowupSuggestions(request);
     setPanelSpeakText(plainFromMarkdown(request.raw));
     setPanelCopyText(plainFromMarkdown(request.raw));
     panelBody.scrollTop = panelBody.scrollHeight;
@@ -1708,6 +1850,7 @@
     if (!request || request.failed) {
       return;
     }
+    invalidateFollowupSuggestions();
     request.failed = true;
     request.active = false;
     if (activeRequest === request) {
@@ -1844,6 +1987,7 @@
     if (!request || request.failed) {
       return;
     }
+    invalidateFollowupSuggestions();
     request.failed = true;
     request.active = false;
     if (activeRequest === request) {
@@ -1939,6 +2083,7 @@
       removeLoadingRow(request);
       request.raw += event.text || "";
       renderTranslationDraft(request);
+      refreshFollowupSuggestions(request);
       return;
     }
     if (event.type === "done") {
@@ -2000,7 +2145,7 @@
     state.translating = true;
     resizePanelForContent();
 
-    API.translate(request.id, state.text, targetLang).then(
+    runAfterSuggestions(request, function () { return API.translate(request.id, state.text, targetLang); }).then(
       function (response) {
         if (!request.active) {
           return;
@@ -2124,6 +2269,7 @@
     };
     activeRequest = request;
     state.translating = true;
+    refreshFollowupSuggestions(request, false, true);
     resizePanelForContent();
     return request;
   }
@@ -2153,7 +2299,7 @@
     }
     var response;
     try {
-      response = API.captureRetry(requestId, targetLang);
+      response = runAfterSuggestions(request, function () { return API.captureRetry(requestId, targetLang); });
     } catch (error) {
       failTranslation(request, String(error));
       return;
@@ -2285,7 +2431,7 @@
       return;
     }
 
-    API.polish(request.id, state.text).then(
+    runAfterSuggestions(request, function () { return API.polish(request.id, state.text); }).then(
       function (response) {
         if (!request.active) {
           return;
@@ -2350,7 +2496,7 @@
       return;
     }
 
-    API.customSkill(request.id, id, state.text, state.programName).then(
+    runAfterSuggestions(request, function () { return API.customSkill(request.id, id, state.text, state.programName); }).then(
       function (response) {
         if (!request.active) {
           return;
@@ -2450,7 +2596,7 @@
       return;
     }
 
-    API.assist(request.id, action, state.text).then(
+    runAfterSuggestions(request, function () { return API.assist(request.id, action, state.text); }).then(
       function (response) {
         if (!request.active) {
           return;
@@ -2659,7 +2805,8 @@
     }
     var result;
     try {
-      result = captureAPI.start(String(presetSkillId || ""));
+      invalidateFollowupSuggestions();
+      result = runAfterSuggestions(null, function () { return captureAPI.start(String(presetSkillId || "")); });
     } catch (error) {
       showToast("截图失败：" + friendlyError(String(error)));
       return;
@@ -2752,6 +2899,7 @@
 
   function resetForHidden() {
     abortActiveRequest();
+    resetFollowup();
     stopSpeech();
     setInputActivated(false);
     // Hidden picker: no screenshot context may survive into the next payload.
@@ -2923,6 +3071,7 @@
   API.onData(function (payload) {
     var data = payload || {};
     var config = data.config || {};
+    state.suggestionsAvailable = config.suggestionsAvailable === true;
     state.text = String(data.text || "");
     state.programName = String(data.programName || "");
     state.defaultTargetLang = String(config.defaultTargetLang || "auto");

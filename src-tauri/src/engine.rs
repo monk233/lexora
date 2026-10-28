@@ -171,6 +171,138 @@ struct DownloadState {
     tasks: HashMap<String, ActiveDownload>,
 }
 
+/// A registered auxiliary request owns both cancellation and completion signals.
+#[derive(Default)]
+struct SuggestionTasks(Mutex<HashMap<String, SuggestionState>>);
+
+enum SuggestionState {
+    Active(Arc<SuggestionTask>),
+    Cancelled(Instant),
+}
+
+const SUGGESTION_CANCEL_TTL: Duration = Duration::from_secs(300);
+const MAX_SUGGESTION_TOMBSTONES: usize = 64;
+
+fn prune_suggestion_tombstones(tasks: &mut HashMap<String, SuggestionState>, now: Instant) {
+    tasks.retain(|_, state| match state {
+        SuggestionState::Active(_) => true,
+        SuggestionState::Cancelled(at) => now.duration_since(*at) < SUGGESTION_CANCEL_TTL,
+    });
+    while tasks
+        .values()
+        .filter(|s| matches!(s, SuggestionState::Cancelled(_)))
+        .count()
+        > MAX_SUGGESTION_TOMBSTONES
+    {
+        let oldest = tasks
+            .iter()
+            .filter_map(|(id, state)| match state {
+                SuggestionState::Cancelled(at) => Some((id.clone(), *at)),
+                _ => None,
+            })
+            .min_by_key(|(_, at)| *at)
+            .unwrap()
+            .0;
+        tasks.remove(&oldest);
+    }
+}
+
+struct SuggestionTask {
+    cancelled: tokio::sync::watch::Sender<bool>,
+    completed: tokio::sync::watch::Sender<bool>,
+}
+
+struct SuggestionGuard<'a> {
+    registry: &'a SuggestionTasks,
+    id: String,
+    task: Arc<SuggestionTask>,
+}
+
+impl SuggestionTasks {
+    fn register(&self, id: &str) -> Option<SuggestionGuard<'_>> {
+        let mut tasks = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        prune_suggestion_tombstones(&mut tasks, Instant::now());
+        if tasks.contains_key(id) {
+            return None;
+        }
+        let task = Arc::new(SuggestionTask {
+            cancelled: tokio::sync::watch::channel(false).0,
+            completed: tokio::sync::watch::channel(false).0,
+        });
+        tasks.insert(id.to_string(), SuggestionState::Active(task.clone()));
+        Some(SuggestionGuard {
+            registry: self,
+            id: id.to_string(),
+            task,
+        })
+    }
+
+    async fn cancel(&self, id: &str) -> Result<(), EngineError> {
+        let task = {
+            let mut tasks = self.0.lock().unwrap_or_else(|e| e.into_inner());
+            let now = Instant::now();
+            prune_suggestion_tombstones(&mut tasks, now);
+            match tasks.get(id) {
+                Some(SuggestionState::Active(task)) => {
+                    task.cancelled.send_replace(true);
+                    Some(task.clone())
+                }
+                _ => {
+                    tasks.insert(id.to_string(), SuggestionState::Cancelled(now));
+                    prune_suggestion_tombstones(&mut tasks, now);
+                    None
+                }
+            }
+        };
+        let Some(task) = task else {
+            return Ok(());
+        };
+        let mut completed = task.completed.subscribe();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !*completed.borrow_and_update() {
+                if completed.changed().await.is_err() {
+                    break;
+                }
+            }
+        })
+        .await
+        .map_err(|_| EngineError::new("取消追问建议超时。", "请继续操作，建议会在后台退出。"))
+    }
+}
+
+impl SuggestionTask {
+    /// Poll cancellation first, including when both branches are already ready.
+    /// Only use for HTTP completion. Model startup must finish without being dropped.
+    async fn run<F: std::future::Future>(&self, future: F) -> Option<F::Output> {
+        let mut cancelled = self.cancelled.subscribe();
+        let cancellation = async {
+            while !*cancelled.borrow_and_update() {
+                if cancelled.changed().await.is_err() {
+                    break;
+                }
+            }
+        };
+        futures_util::pin_mut!(cancellation, future);
+        match futures_util::future::select(cancellation, future).await {
+            futures_util::future::Either::Left(_) => None,
+            futures_util::future::Either::Right((result, _)) => Some(result),
+        }
+    }
+}
+
+impl Drop for SuggestionGuard<'_> {
+    fn drop(&mut self) {
+        let mut tasks = self.registry.0.lock().unwrap_or_else(|e| e.into_inner());
+        tasks.remove(&self.id);
+        if *self.task.cancelled.borrow() {
+            let now = Instant::now();
+            tasks.insert(self.id.clone(), SuggestionState::Cancelled(now));
+            prune_suggestion_tombstones(&mut tasks, now);
+        }
+        self.task.completed.send_replace(true);
+    }
+}
+
 /// Registry key for a download (`engine` or `model:<id>`).
 fn download_key(kind: &str, id: &str) -> String {
     if kind == "engine" {
@@ -410,12 +542,12 @@ pub struct EngineService {
     local_lifecycle: tokio::sync::Mutex<()>,
     /// Registry of concurrent downloads (engine + one per model id).
     download: Mutex<DownloadState>,
+    suggestions: SuggestionTasks,
     /// Serialize shared projector installation so Q3/Q4 never overwrite it concurrently.
     projector_download: tokio::sync::Mutex<()>,
 }
 
-/// Which model role a request needs. Hy-MT2 is translation-specialised,
-/// the manually selected Qwen3.5 handles general text and images with its projector.
+/// Request intent; every role uses the manually selected Qwen3.5 and projector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LocalRole {
     Translate,
@@ -428,7 +560,7 @@ enum LocalRole {
 /// config so both paths give the same actionable hint.
 fn local_vision_missing_error() -> EngineError {
     EngineError::new(
-        "本地视觉模型未安装或尚未选择。",
+        "本地模型未安装或尚未选择。",
         "请在「设置 → 本地模型」手动选择 Qwen3.5，并完整下载模型权重及视觉投影器；也可切换到支持视觉的在线模型。",
     )
 }
@@ -531,6 +663,7 @@ impl EngineService {
             active_selection: Mutex::new(None),
             local_lifecycle: tokio::sync::Mutex::new(()),
             download: Mutex::new(DownloadState::default()),
+            suggestions: SuggestionTasks::default(),
             projector_download: tokio::sync::Mutex::new(()),
         }
     }
@@ -622,7 +755,7 @@ impl EngineService {
                     } else if !has_models {
                         (
                             false,
-                            "尚未安装本地模型。请下载 Hy-MT2（翻译），或手动选择并完整安装 Qwen3.5（通用与视觉）。"
+                            "请手动选择并完整下载 Qwen3.5 模型及视觉投影器，用于全部本地 AI 技能。"
                                 .to_string(),
                         )
                     } else {
@@ -666,18 +799,10 @@ impl EngineService {
         }
     }
 
-    /// Translation uses Hy-MT2 exclusively. General/vision require an explicit,
-    /// completely installed catalog selection; imported or legacy files never win.
-    fn model_for_role(&self, role: LocalRole) -> Option<String> {
-        if role != LocalRole::Translate {
-            return self.installed_vision_model().map(|(weights, _)| weights);
-        }
-        let spec = models::spec_by_id(models::TRANSLATION_MODEL_ID)?;
-        self.paths
-            .models_dir
-            .join(spec.filename)
-            .is_file()
-            .then(|| spec.filename.to_string())
+    /// Every role uses the same explicit, completely installed Qwen3.5 selection.
+    /// Imported or legacy files never become a fallback.
+    fn model_for_role(&self, _role: LocalRole) -> Option<String> {
+        self.installed_vision_model().map(|(weights, _)| weights)
     }
 
     /// Multimodal projector that belongs to `model_file`, when it is installed.
@@ -738,6 +863,109 @@ impl EngineService {
         } else {
             settings.online_configured()
         }
+    }
+
+    /// Suggestions only use the configured online model or a complete, manually selected General model.
+    pub fn suggestions_available(&self) -> bool {
+        let settings = self.settings.get();
+        if settings.is_local_mode() {
+            self.installed_selection(&settings.provider.local.selected_model)
+                .is_some()
+                && self.model_for_role(LocalRole::General).is_some()
+        } else {
+            settings.online_configured()
+        }
+    }
+
+    /// Best-effort auxiliary request. It never participates in the primary stream.
+    pub async fn generate_followups(
+        &self,
+        request_id: &str,
+        skill: &str,
+        source: &str,
+        initial_answer: &str,
+        history: &[(String, String)],
+    ) -> Vec<String> {
+        // Register before any selection or preparation so an earlier cancellation wins.
+        let Some(task) = self.suggestions.register(request_id) else {
+            self.model_logger.info("model call done: operation=generate_followups status=cancelled parse_ok=false valid_count=0 success=false");
+            return Vec::new();
+        };
+        if *task.task.cancelled.borrow() {
+            self.model_logger.info("model call done: operation=generate_followups status=cancelled parse_ok=false valid_count=0 success=false");
+            return Vec::new();
+        }
+        if !self.suggestions_available() {
+            return Vec::new();
+        }
+        let settings = self.settings.get();
+        // Never cancel/drop startup: lifecycle serialization and health checks must
+        // finish even if cancel's 10s wait expires. Check again before starting HTTP.
+        let config_result = self.chat_config(&settings, LocalRole::General).await;
+        if *task.task.cancelled.borrow() {
+            self.model_logger.info("model call done: operation=generate_followups status=cancelled parse_ok=false valid_count=0 success=false");
+            return Vec::new();
+        }
+        let Ok(mut config) = config_result else {
+            self.model_logger.info("model call done: operation=generate_followups status=error parse_ok=false valid_count=0 success=false");
+            return Vec::new();
+        };
+        config.temperature = 0.2;
+        let (system, user) = prompts::suggestion_messages(skill, source, initial_answer, history);
+        let input_chars = system.chars().count() + user.chars().count();
+        let messages = vec![
+            json!({"role":"system", "content":system}),
+            json!({"role":"user", "content":user}),
+        ];
+        let id = self.model_call_seq.fetch_add(1, Ordering::Relaxed);
+        let provider = if config.local { "local" } else { "online" };
+        let started = Instant::now();
+        self.model_logger.info(&format!("model call start: id={id} operation=generate_followups provider={provider} model={} input_chars={input_chars} history={}", config.model, history.len()));
+        let timeout = Duration::from_millis(config.timeout_ms.clamp(5_000, 300_000));
+        let result = task
+            .task
+            .run(openai::chat_completion(
+                &self.http, &config, messages, 64, timeout,
+            ))
+            .await;
+        let output_chars = result
+            .as_ref()
+            .and_then(|result| result.as_ref().ok())
+            .map(|answer| answer.chars().count())
+            .unwrap_or(0);
+        let (status, parse_ok, suggestions) = match result {
+            None => ("cancelled", false, Vec::new()),
+            Some(Err(_)) => ("error", false, Vec::new()),
+            Some(Ok(answer)) => {
+                let raw = answer.trim();
+                let json = if let Some(fenced) = raw.strip_prefix("```") {
+                    fenced
+                        .split_once('\n')
+                        .and_then(|(_, body)| body.trim_end().strip_suffix("```"))
+                        .map(str::trim)
+                        .unwrap_or("")
+                } else {
+                    raw
+                };
+                let parse_ok = matches!(serde_json::from_str::<Value>(json), Ok(Value::Array(_)));
+                let suggestions = prompts::parse_suggestions(&answer);
+                let status = if !parse_ok {
+                    "parse_error"
+                } else if suggestions.is_empty() {
+                    "empty"
+                } else {
+                    "success"
+                };
+                (status, parse_ok, suggestions)
+            }
+        };
+        // Only fixed metadata is logged; provider bodies and generated text stay private.
+        self.model_logger.info(&format!("model call done: id={id} operation=generate_followups provider={provider} model={} elapsed_ms={} output_chars={output_chars} status={status} parse_ok={parse_ok} valid_count={} success={}", config.model, started.elapsed().as_millis(), suggestions.len(), status == "success"));
+        suggestions
+    }
+
+    pub async fn cancel_followups(&self, request_id: &str) -> Result<(), EngineError> {
+        self.suggestions.cancel(request_id).await
     }
 
     /// Resolve the explicit selection; never fall back when it is empty.
@@ -952,47 +1180,18 @@ impl EngineService {
         };
         let config = self.chat_config(&settings, role).await?;
 
-        let recent = if history.len() > prompts::FOLLOWUP_HISTORY_MAX_TURNS {
-            &history[history.len() - prompts::FOLLOWUP_HISTORY_MAX_TURNS..]
-        } else {
-            history
-        };
-        let mut messages = vec![
-            json!({"role": "system", "content": prompts::DEFAULT_EXPLAIN_IMAGE_PROMPT}),
-            json!({
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "请分析这张截图。"},
-                    {"type": "image_url", "image_url": {"url": image_data_url}},
-                ],
-            }),
-        ];
-        let previous =
-            prompts::truncate_chars(previous_answer.trim(), prompts::FOLLOWUP_SEGMENT_MAX_CHARS);
-        if !previous.is_empty() {
-            messages.push(json!({"role": "assistant", "content": previous}));
-        }
-        for (turn_question, turn_answer) in recent {
-            let turn_question =
-                prompts::truncate_chars(turn_question.trim(), prompts::FOLLOWUP_SEGMENT_MAX_CHARS);
-            let turn_answer =
-                prompts::truncate_chars(turn_answer.trim(), prompts::FOLLOWUP_SEGMENT_MAX_CHARS);
-            if turn_question.is_empty() && turn_answer.is_empty() {
-                continue;
-            }
-            messages.push(json!({"role": "user", "content": turn_question}));
-            messages.push(json!({"role": "assistant", "content": turn_answer}));
-        }
-        messages.push(json!({
-            "role": "user",
-            "content": prompts::truncate_chars(question, prompts::FOLLOWUP_SEGMENT_MAX_CHARS),
-        }));
+        let messages =
+            prompts::vision_followup_messages(image_data_url, previous_answer, question, history);
+        let recent_count = messages
+            .len()
+            .saturating_sub(3 + usize::from(!previous_answer.trim().is_empty()))
+            / 2;
         self.logger.info(&format!(
             "vision followup stream start: provider={} model={} bytes={} history={}",
             if config.local { "local" } else { "online" },
             config.model,
             image_data_url.len(),
-            recent.len()
+            recent_count
         ));
         self.logged_stream(
             "vision_followup",
@@ -1000,7 +1199,7 @@ impl EngineService {
             format!(
                 "image_bytes={} history={}",
                 image_data_url.len(),
-                recent.len()
+                recent_count
             ),
             messages,
         )
@@ -1240,8 +1439,7 @@ impl EngineService {
 
     /// Resolves the endpoint used for translation / assist / vision. In local
     /// mode the user must have started the engine explicitly ("启动"); the model
-    /// is then picked by role and swapped automatically when necessary. The
-    /// vision role additionally loads the model's multimodal projector.
+    /// is resolved from the manual selection for every role, with its projector.
     async fn chat_config(
         &self,
         settings: &Settings,
@@ -1256,14 +1454,7 @@ impl EngineService {
                 ));
             }
             let Some(model_file) = self.model_for_role(role) else {
-                return Err(if role != LocalRole::Translate {
-                    local_vision_missing_error()
-                } else {
-                    EngineError::new(
-                        "尚未安装本地模型。",
-                        "请在「设置 → 本地模型」下载 Hy-MT2（翻译）；通用与视觉任务需手动选择并完整安装 Qwen3.5。",
-                    )
-                });
+                return Err(local_vision_missing_error());
             };
             let mmproj_file = self.mmproj_for_model(&model_file);
             self.local
@@ -2333,6 +2524,256 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    #[test]
+    fn suggestion_cancellation_waits_for_exit_and_deduplicates_ids() {
+        block_on(async {
+            let registry = SuggestionTasks::default();
+            let guard = registry.register("old").unwrap();
+            assert!(registry.register("old").is_none());
+            let completed = guard.task.completed.subscribe();
+            let cancel = registry.cancel("old");
+            futures_util::pin_mut!(cancel);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(5), &mut cancel)
+                    .await
+                    .is_err(),
+                "Cancel must wait for the registered task to exit"
+            );
+            assert!(*guard.task.cancelled.borrow());
+            assert!(!*completed.borrow());
+            drop(guard);
+            cancel.await.unwrap();
+            assert!(*completed.borrow());
+            assert!(registry.register("old").is_none());
+            registry.cancel("old").await.unwrap();
+            registry.cancel("unknown").await.unwrap();
+        });
+    }
+
+    #[test]
+    fn cancelled_suggestion_never_polls_http_and_drops_inflight_http() {
+        block_on(async {
+            let registry = SuggestionTasks::default();
+            let guard = registry.register("before-http").unwrap();
+            guard.task.cancelled.send_replace(true);
+            let called = AtomicBool::new(false);
+            assert!(guard
+                .task
+                .run(async {
+                    called.store(true, Ordering::SeqCst);
+                })
+                .await
+                .is_none());
+            assert!(!called.load(Ordering::SeqCst));
+            drop(guard);
+
+            let guard = registry.register("during-http").unwrap();
+            let entered = tokio::sync::Notify::new();
+            let dropped = AtomicBool::new(false);
+            struct OnDrop<'a>(&'a AtomicBool);
+            impl Drop for OnDrop<'_> {
+                fn drop(&mut self) {
+                    self.0.store(true, Ordering::SeqCst);
+                }
+            }
+            let work = async {
+                let result = guard
+                    .task
+                    .run(async {
+                        let _cleanup = OnDrop(&dropped);
+                        entered.notify_one();
+                        std::future::pending::<()>().await;
+                    })
+                    .await;
+                assert!(result.is_none());
+                assert!(dropped.load(Ordering::SeqCst));
+                assert!(guard
+                    .task
+                    .run(async {
+                        panic!("HTTP must not start after cancellation");
+                    })
+                    .await
+                    .is_none());
+                drop(guard);
+            };
+            let cancel = async {
+                entered.notified().await;
+                registry.cancel("during-http").await.unwrap();
+                assert!(dropped.load(Ordering::SeqCst));
+            };
+            futures_util::future::join(work, cancel).await;
+        });
+    }
+
+    #[test]
+    fn suggestion_guard_cleans_up_on_success_error_and_abort() {
+        block_on(async {
+            let registry = SuggestionTasks::default();
+            for failed in [false, true] {
+                let id = format!("finished-{failed}");
+                let guard = registry.register(&id).unwrap();
+                let done = guard.task.completed.subscribe();
+                let _ = guard
+                    .task
+                    .run(async {
+                        if failed {
+                            Err(())
+                        } else {
+                            Ok(())
+                        }
+                    })
+                    .await;
+                drop(guard);
+                assert!(*done.borrow());
+                registry.cancel(&id).await.unwrap();
+            }
+            let guard = registry.register("aborted").unwrap();
+            let done = guard.task.completed.subscribe();
+            drop(guard);
+            assert!(*done.borrow());
+            assert!(registry.register("aborted").is_some());
+        });
+    }
+
+    #[test]
+    fn suggestion_cancel_before_register_and_tombstone_cleanup() {
+        block_on(async {
+            let registry = SuggestionTasks::default();
+            registry.cancel("early").await.unwrap();
+            registry.cancel("early").await.unwrap();
+            assert!(registry.register("early").is_none());
+            assert!(registry.register("early").is_none());
+            let active = registry.register("active").unwrap();
+            for n in 0..100 {
+                registry.cancel(&format!("early-{n}")).await.unwrap();
+            }
+            {
+                let mut tasks = registry.0.lock().unwrap();
+                assert_eq!(tasks.len(), MAX_SUGGESTION_TOMBSTONES + 1);
+                assert!(matches!(
+                    tasks.get("active"),
+                    Some(SuggestionState::Active(_))
+                ));
+                tasks.insert(
+                    "expired".into(),
+                    SuggestionState::Cancelled(Instant::now() - SUGGESTION_CANCEL_TTL),
+                );
+            }
+            let expired = registry.register("expired").unwrap();
+            assert!(registry.register("active").is_none());
+            drop(expired);
+            drop(active);
+        });
+    }
+
+    #[test]
+    fn suggestion_cancel_during_startup_waits_for_startup_then_skips_http() {
+        block_on(async {
+            let registry = SuggestionTasks::default();
+            let guard = registry.register("startup").unwrap();
+            let entered = tokio::sync::Notify::new();
+            let release = tokio::sync::Notify::new();
+            let startup_finished = AtomicBool::new(false);
+            let work = async {
+                // Mirror generate_followups: startup is awaited in full, never selected
+                // against cancellation. This leaves lifecycle cleanup in control.
+                assert!(!*guard.task.cancelled.borrow());
+                let config = async {
+                    entered.notify_one();
+                    release.notified().await;
+                    startup_finished.store(true, Ordering::SeqCst);
+                    42
+                }
+                .await;
+                assert_eq!(config, 42);
+                assert!(*guard.task.cancelled.borrow());
+                assert!(guard
+                    .task
+                    .run(async {
+                        panic!("Cancelled startup must not issue HTTP");
+                    })
+                    .await
+                    .is_none());
+                drop(guard);
+            };
+            let cancel = async {
+                entered.notified().await;
+                let cancellation = registry.cancel("startup");
+                futures_util::pin_mut!(cancellation);
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(5), &mut cancellation)
+                        .await
+                        .is_err()
+                );
+                assert!(!startup_finished.load(Ordering::SeqCst));
+                release.notify_one();
+                cancellation.await.unwrap();
+                assert!(startup_finished.load(Ordering::SeqCst));
+                assert!(registry.register("startup").is_none());
+            };
+            futures_util::future::join(work, cancel).await;
+        });
+    }
+
+    #[test]
+    fn cancelled_generate_keeps_waiting_for_chat_config_lifecycle() {
+        block_on(async {
+            let env = test_env();
+            let spec = models::CATALOG.iter().find(|spec| spec.vision).unwrap();
+            env.store
+                .update_json(json!({"provider":{"mode":"local",
+                "local":{"selectedModel":spec.id}}}))
+                .unwrap();
+            std::fs::write(env.paths.models_dir.join(spec.filename), b"weights").unwrap();
+            std::fs::write(
+                env.paths
+                    .models_dir
+                    .join(spec.mmproj.as_ref().unwrap().filename),
+                b"projector",
+            )
+            .unwrap();
+            assert!(env.service.suggestions_available());
+            let lifecycle = env.service.local_lifecycle.lock().await;
+            env.service.cancel_followups("early-loading").await.unwrap();
+            assert!(tokio::time::timeout(
+                Duration::from_millis(100),
+                env.service
+                    .generate_followups("early-loading", "explain", "source", "answer", &[]),
+            )
+            .await
+            .expect("Early cancellation must skip chat_config entirely")
+            .is_empty());
+            let generate =
+                env.service
+                    .generate_followups("loading", "explain", "source", "answer", &[]);
+            futures_util::pin_mut!(generate);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(5), &mut generate)
+                    .await
+                    .is_err()
+            );
+            let cancel = env.service.cancel_followups("loading");
+            futures_util::pin_mut!(cancel);
+            assert!(tokio::time::timeout(Duration::from_millis(5), &mut cancel)
+                .await
+                .is_err());
+            // Cancellation must not drop the real chat_config future while it waits
+            // for lifecycle ownership. No later primary request is needed for exit.
+            assert!(
+                tokio::time::timeout(Duration::from_millis(5), &mut generate)
+                    .await
+                    .is_err()
+            );
+            drop(lifecycle);
+            assert!(generate.await.is_empty());
+            cancel.await.unwrap();
+            let log = std::fs::read_to_string(env.service.model_logger.path()).unwrap();
+            assert!(log.contains("status=cancelled parse_ok=false valid_count=0 success=false"));
+            assert!(!log.contains("source"));
+            assert!(!log.contains("answer"));
+        });
+    }
+
     struct TestEnv {
         service: EngineService,
         store: Arc<SettingsStore>,
@@ -2443,7 +2884,7 @@ mod tests {
         }
         assert_eq!(
             env.service.model_for_role(LocalRole::Translate).as_deref(),
-            Some(models::CATALOG[0].filename)
+            Some(first.filename)
         );
         env.service.clear_local_selection();
         assert_eq!(
@@ -2557,6 +2998,272 @@ mod tests {
     }
 
     #[test]
+    fn suggestions_require_selected_complete_general_and_never_translation_fallback() {
+        let env = test_env();
+        env.store
+            .update_json(json!({"provider":{"mode":"local", "local":{"selectedModel":""}}}))
+            .unwrap();
+        std::fs::write(
+            env.paths.models_dir.join(models::CATALOG[0].filename),
+            b"translation",
+        )
+        .unwrap();
+        assert!(!env.service.suggestions_available());
+        assert!(env.service.suggestions.0.lock().unwrap().is_empty());
+        assert!(block_on(env.service.generate_followups(
+            "test-suggestions",
+            "translate",
+            "private source",
+            "private answer",
+            &[]
+        ))
+        .is_empty());
+        assert!(!env.service.model_logger.path().exists());
+        assert!(!env.service.local_desired.load(Ordering::Acquire));
+        let spec = models::CATALOG.iter().find(|spec| spec.vision).unwrap();
+        env.store
+            .update_json(json!({"provider":{"local":{"selectedModel":spec.id}}}))
+            .unwrap();
+        std::fs::write(env.paths.models_dir.join(spec.filename), b"weights").unwrap();
+        assert!(!env.service.suggestions_available());
+        assert!(env.service.suggestions.0.lock().unwrap().is_empty());
+        std::fs::write(
+            env.paths.models_dir.join(spec.mmproj.unwrap().filename),
+            b"projector",
+        )
+        .unwrap();
+        assert!(env.service.suggestions_available());
+        assert_eq!(
+            env.service.model_for_role(LocalRole::General),
+            Some(spec.filename.into())
+        );
+    }
+
+    #[test]
+    fn suggestion_request_is_non_streaming_and_logs_only_metadata() {
+        assert_suggestion_request("私密初始回答");
+    }
+
+    #[test]
+    fn suggestion_request_can_predict_before_initial_answer() {
+        assert_suggestion_request("");
+    }
+
+    fn assert_suggestion_request(initial_answer: &str) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let env = test_env();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut bytes = Vec::new();
+            let mut buffer = [0; 4096];
+            let payload = loop {
+                let count = socket.read(&mut buffer).unwrap();
+                assert!(count > 0);
+                bytes.extend_from_slice(&buffer[..count]);
+                if let Some(boundary) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&bytes[..boundary]).to_lowercase();
+                    let length: usize = headers
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length:"))
+                        .unwrap()
+                        .trim()
+                        .parse()
+                        .unwrap();
+                    if bytes.len() >= boundary + 4 + length {
+                        break serde_json::from_slice::<Value>(
+                            &bytes[boundary + 4..boundary + 4 + length],
+                        )
+                        .unwrap();
+                    }
+                }
+            };
+            let body = json!({"choices":[{"message":{"content":serde_json::json!(["私密建议问题"]).to_string()}}]}).to_string();
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+            payload
+        });
+        env.store.update_json(json!({"provider":{"mode":"online", "online":{"baseUrl":format!("http://{address}/v1"),"model":"test-model"}}})).unwrap();
+        let suggestions = block_on(env.service.generate_followups(
+            "test-suggestions",
+            "translate",
+            "私密原文",
+            initial_answer,
+            &[("第一问".into(), "第一答".into())],
+        ));
+        let payload = server.join().unwrap();
+        assert_eq!(suggestions, vec!["私密建议问题"]);
+        assert_eq!(payload["stream"], false);
+        assert_eq!(payload["max_tokens"], 64);
+        assert_eq!(payload["temperature"], 0.2);
+        assert!(payload["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("第一答"));
+        let log = std::fs::read_to_string(env.service.model_logger.path()).unwrap();
+        assert!(log.contains("operation=generate_followups provider=online model=test-model"));
+        assert!(log.contains("elapsed_ms="));
+        assert!(log.contains("output_chars="));
+        assert!(log.contains("status=success parse_ok=true valid_count=1 success=true"));
+        for private in [
+            "私密原文",
+            "私密初始回答",
+            "第一问",
+            "第一答",
+            "私密建议问题",
+        ] {
+            assert!(!log.contains(private));
+        }
+    }
+
+    #[test]
+    fn suggestions_silently_ignore_invalid_output_and_provider_failure() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        for (status, body, expected) in [
+            (
+                "200 OK",
+                json!({"choices":[{"message":{"content":"private invalid output"}}]}).to_string(),
+                "status=parse_error parse_ok=false valid_count=0 success=false",
+            ),
+            (
+                "200 OK",
+                json!({"choices":[{"message":{"content":"[]"}}]}).to_string(),
+                "status=empty parse_ok=true valid_count=0 success=false",
+            ),
+            (
+                "200 OK",
+                json!({"choices":[{"message":{"content":"[null, \" \"]"}}]}).to_string(),
+                "status=empty parse_ok=true valid_count=0 success=false",
+            ),
+            (
+                "500 Internal Server Error",
+                "private provider body".into(),
+                "status=error parse_ok=false valid_count=0 success=false",
+            ),
+        ] {
+            let env = test_env();
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut bytes = Vec::new();
+                let mut buffer = [0; 4096];
+                loop {
+                    let count = socket.read(&mut buffer).unwrap();
+                    assert!(count > 0);
+                    bytes.extend_from_slice(&buffer[..count]);
+                    if let Some(boundary) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&bytes[..boundary]).to_lowercase();
+                        let length: usize = headers
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length:"))
+                            .unwrap()
+                            .trim()
+                            .parse()
+                            .unwrap();
+                        if bytes.len() >= boundary + 4 + length {
+                            break;
+                        }
+                    }
+                }
+                write!(socket, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            });
+            env.store.update_json(json!({"provider":{"mode":"online", "online":{"baseUrl":format!("http://{address}/v1"),"model":"test-model"}}})).unwrap();
+            assert!(block_on(env.service.generate_followups(
+                "test-suggestions",
+                "ocr",
+                "private source",
+                "private initial answer",
+                &[]
+            ))
+            .is_empty());
+            server.join().unwrap();
+            let log = std::fs::read_to_string(env.service.model_logger.path()).unwrap();
+            assert!(!log.contains("private"));
+            assert!(log.contains(expected), "{log}");
+        }
+    }
+
+    #[test]
+    fn cancelled_suggestion_http_logs_terminal_status_and_completes_registration() {
+        use std::io::Read;
+        use std::net::TcpListener;
+        block_on(async {
+            let env = test_env();
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let (entered, received) = tokio::sync::oneshot::channel();
+            let server = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut buffer = [0; 4096];
+                assert!(socket.read(&mut buffer).unwrap() > 0);
+                entered.send(()).unwrap();
+                // Cancellation drops the HTTP future and closes the connection.
+                while let Ok(count) = socket.read(&mut buffer) {
+                    if count == 0 {
+                        break;
+                    }
+                }
+            });
+            env.store.update_json(json!({"provider":{"mode":"online", "online":{"baseUrl":format!("http://{address}/v1"),"model":"test-model"}}})).unwrap();
+            let generate = env.service.generate_followups(
+                "cancel-http",
+                "explain",
+                "private source",
+                "private answer",
+                &[],
+            );
+            let cancel = async {
+                received.await.unwrap();
+                env.service.cancel_followups("cancel-http").await.unwrap();
+            };
+            let (suggestions, ()) = futures_util::future::join(generate, cancel).await;
+            assert!(suggestions.is_empty());
+            server.join().unwrap();
+            let log = std::fs::read_to_string(env.service.model_logger.path()).unwrap();
+            assert!(log.contains("status=cancelled parse_ok=false valid_count=0 success=false"));
+            assert!(!log.contains("private"));
+            assert!(!env
+                .service
+                .suggestions
+                .0
+                .lock()
+                .unwrap()
+                .values()
+                .any(|state| matches!(state, SuggestionState::Active(_))));
+        });
+    }
+
+    #[test]
+    fn online_suggestions_follow_configuration() {
+        let env = test_env();
+        assert!(env.service.suggestions_available());
+        env.store
+            .update_json(json!({"provider":{"online":{"baseUrl":"", "model":""}}}))
+            .unwrap();
+        assert!(!env.service.suggestions_available());
+        assert!(block_on(env.service.generate_followups(
+            "test-suggestions",
+            "explain",
+            "source",
+            "answer",
+            &[]
+        ))
+        .is_empty());
+    }
+
+    #[test]
     fn service_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<EngineService>();
@@ -2626,10 +3333,7 @@ mod tests {
         assert_eq!(env.service.model_for_role(LocalRole::General), None);
         assert_eq!(env.service.model_for_role(LocalRole::Vision), None);
         assert!(!env.service.has_local_vision());
-        assert_eq!(
-            env.service.model_for_role(LocalRole::Translate),
-            Some(models::CATALOG[0].filename.to_string())
-        );
+        assert_eq!(env.service.model_for_role(LocalRole::Translate), None);
         assert!(env.store.get().provider.local.selected_model.is_empty());
     }
 
@@ -2673,7 +3377,7 @@ mod tests {
             );
             assert_eq!(
                 env.service.model_for_role(LocalRole::Translate),
-                Some(models::CATALOG[0].filename.to_string())
+                Some(spec.filename.to_string())
             );
         }
     }
@@ -2722,15 +3426,15 @@ mod tests {
         .unwrap();
         let installed = env.service.installed_models();
         assert_eq!(installed.len(), 1);
-        assert_eq!(installed[0].catalog_id, "qwen3.5-0.8b-q4-k-m");
+        assert_eq!(installed[0].catalog_id, "qwen3.5-0.8b-q3-k-m");
         assert_eq!(installed[0].size_bytes, 9);
 
         let catalog = env.service.catalog();
-        assert_eq!(catalog.len(), 7);
+        assert_eq!(catalog.len(), 6);
         assert!(!catalog[0].installed);
         assert!(!catalog[1].installed);
         assert_eq!(catalog[1].filename, models::CATALOG[1].filename);
-        assert_eq!(catalog[2].id, "qwen3.5-0.8b-q3-k-m");
+        assert_eq!(catalog[2].id, "qwen3.5-2b-q4-k-m");
         assert!(catalog[2].vision);
         assert!(!catalog[2].installed);
     }
@@ -2740,7 +3444,7 @@ mod tests {
         let env = test_env();
         let catalog = env.service.catalog();
         assert!(catalog.iter().all(|entry| !entry.installed));
-        assert!(catalog.iter().any(|entry| entry.recommended));
+        assert!(catalog.iter().all(|entry| entry.id.starts_with("qwen3.5-")));
         assert!(catalog.iter().any(|entry| entry.vision));
         let value = serde_json::to_value(&catalog[2]).unwrap();
         assert_eq!(
@@ -2804,7 +3508,7 @@ mod tests {
         .err()
         .expect("expected engine error");
         assert!(
-            error.message.contains("本地视觉模型未安装"),
+            error.message.contains("本地模型未安装"),
             "message: {}",
             error.message
         );
@@ -2910,7 +3614,7 @@ mod tests {
         .err()
         .expect("expected engine error");
         assert!(
-            error.message.contains("本地视觉模型未安装"),
+            error.message.contains("本地模型未安装"),
             "message: {}",
             error.message
         );
@@ -3018,6 +3722,21 @@ mod tests {
             .expect("expected engine error");
         assert!(error.message.contains("配置"), "message: {}", error.message);
         assert!(!error.hint.is_empty());
+    }
+
+    #[test]
+    fn local_translation_without_selection_reports_selection_error() {
+        let env = test_env();
+        env.store
+            .update_json(json!({"provider":{"mode":"local"}}))
+            .unwrap();
+        env.service.local_desired.store(true, Ordering::Release);
+        let error = block_on(env.service.translate_stream("hello world", "zh"))
+            .err()
+            .unwrap();
+        assert!(error.message.contains("尚未选择"));
+        assert!(error.hint.contains("手动选择 Qwen3.5"));
+        assert_eq!(env.service.local.snapshot().state, LocalState::Stopped);
     }
 
     #[test]
@@ -3149,15 +3868,18 @@ mod tests {
         assert_eq!(download_key("engine", ""), "engine");
         // The engine id is always the empty string in the UI contract.
         assert_eq!(download_key("engine", "llama.cpp"), "engine");
-        assert_eq!(download_key("model", "hy-mt2-1.8b"), "model:hy-mt2-1.8b");
+        assert_eq!(
+            download_key("model", "qwen3.5-0.8b-q4-k-m"),
+            "model:qwen3.5-0.8b-q4-k-m"
+        );
     }
 
     #[test]
     fn concurrent_downloads_are_tracked_independently() {
         let state = Mutex::new(DownloadState::default());
         reserve_download(&state, "engine", "", "llama.zip", 0).unwrap();
-        reserve_download(&state, "model", "hy-mt2-1.8b", "a.gguf", 10).unwrap();
-        reserve_download(&state, "model", "qwen2.5-3b", "b.gguf", 20).unwrap();
+        reserve_download(&state, "model", "qwen3.5-0.8b-q4-k-m", "a.gguf", 10).unwrap();
+        reserve_download(&state, "model", "qwen3.5-2b-q3-k-m", "b.gguf", 20).unwrap();
 
         let guard = state.lock().unwrap();
         let downloads = download_list(&guard);
@@ -3165,18 +3887,19 @@ mod tests {
         // Stable order: engine first, then models sorted by id.
         assert_eq!(downloads[0].kind, "engine");
         assert_eq!(downloads[0].id, "");
-        assert_eq!(downloads[1].id, "hy-mt2-1.8b");
+        assert_eq!(downloads[1].id, "qwen3.5-0.8b-q4-k-m");
         assert_eq!(downloads[1].status, "downloading");
         assert_eq!(downloads[1].total, 10);
-        assert_eq!(downloads[2].id, "qwen2.5-3b");
+        assert_eq!(downloads[2].id, "qwen3.5-2b-q3-k-m");
         assert_eq!(downloads[2].total, 20);
     }
 
     #[test]
     fn duplicate_downloads_of_the_same_id_are_rejected() {
         let state = Mutex::new(DownloadState::default());
-        reserve_download(&state, "model", "hy-mt2-1.8b", "a.gguf", 1).unwrap();
-        let error = reserve_download(&state, "model", "hy-mt2-1.8b", "a.gguf", 1).unwrap_err();
+        reserve_download(&state, "model", "qwen3.5-0.8b-q4-k-m", "a.gguf", 1).unwrap();
+        let error =
+            reserve_download(&state, "model", "qwen3.5-0.8b-q4-k-m", "a.gguf", 1).unwrap_err();
         assert!(
             error.message.contains("该模型正在下载中"),
             "message: {}",
@@ -3201,13 +3924,13 @@ mod tests {
         let (_, engine_cancel, _) =
             reserve_download(&state, "engine", "", "engine.zip", 0).unwrap();
         let (_, model_cancel, _) =
-            reserve_download(&state, "model", "hy-mt2-1.8b", "a.gguf", 1).unwrap();
+            reserve_download(&state, "model", "qwen3.5-0.8b-q4-k-m", "a.gguf", 1).unwrap();
         let (_, other_cancel, _) =
             reserve_download(&state, "model", "qwen2.5-3b", "b.gguf", 1).unwrap();
 
         assert_eq!(
-            cancel_tasks(&state, Some("hy-mt2-1.8b")),
-            vec!["model:hy-mt2-1.8b".to_string()]
+            cancel_tasks(&state, Some("qwen3.5-0.8b-q4-k-m")),
+            vec!["model:qwen3.5-0.8b-q4-k-m".to_string()]
         );
         assert!(!engine_cancel.load(Ordering::SeqCst));
         assert!(model_cancel.load(Ordering::SeqCst));
@@ -3231,9 +3954,13 @@ mod tests {
     #[test]
     fn finished_downloads_leave_the_registry() {
         let state = Mutex::new(DownloadState::default());
-        reserve_download(&state, "model", "hy-mt2-1.8b", "a.gguf", 1).unwrap();
+        reserve_download(&state, "model", "qwen3.5-0.8b-q4-k-m", "a.gguf", 1).unwrap();
         assert_eq!(download_list(&state.lock().unwrap()).len(), 1);
-        state.lock().unwrap().tasks.remove("model:hy-mt2-1.8b");
+        state
+            .lock()
+            .unwrap()
+            .tasks
+            .remove("model:qwen3.5-0.8b-q4-k-m");
         assert!(download_list(&state.lock().unwrap()).is_empty());
     }
 
@@ -3241,13 +3968,19 @@ mod tests {
     fn engine_service_exposes_the_download_registry() {
         let env = test_env();
         assert!(env.service.download_state().is_empty());
-        let (_, cancel, _) =
-            reserve_download(&env.service.download, "model", "hy-mt2-1.8b", "a.gguf", 10).unwrap();
-        assert!(env.service.has_download("model", "hy-mt2-1.8b"));
+        let (_, cancel, _) = reserve_download(
+            &env.service.download,
+            "model",
+            "qwen3.5-0.8b-q4-k-m",
+            "a.gguf",
+            10,
+        )
+        .unwrap();
+        assert!(env.service.has_download("model", "qwen3.5-0.8b-q4-k-m"));
         assert!(!env.service.has_download("model", "other"));
         assert_eq!(env.service.download_state().len(), 1);
 
-        env.service.cancel_download(Some("hy-mt2-1.8b"));
+        env.service.cancel_download(Some("qwen3.5-0.8b-q4-k-m"));
         assert!(cancel.load(Ordering::SeqCst));
         // The entry stays until its reporter finishes/drops.
         assert_eq!(env.service.download_state().len(), 1);
@@ -3284,9 +4017,12 @@ mod tests {
                 assert!(env.service.remove_model_file(file).await.is_err());
                 assert!(path.is_file());
             }
-            let path = env.paths.models_dir.join("legacy.gguf");
+            let path = env.paths.models_dir.join("Hy-MT2-1.8B-Q4_K_M.gguf");
             std::fs::write(&path, b"fake").unwrap();
-            env.service.remove_model_file("legacy.gguf").await.unwrap();
+            env.service
+                .remove_model_file("Hy-MT2-1.8B-Q4_K_M.gguf")
+                .await
+                .unwrap();
             assert!(!path.exists());
             assert_eq!(
                 env.store.get().provider.local.selected_model,

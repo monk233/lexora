@@ -328,13 +328,14 @@
      * `?compact=1` previews the icon-only picker toolbar. */
     var engineInstalled = !/[?&]engine=0(?:&|$)/.test(query);
     var compactToolbar = /[?&]compact=1(?:&|$)/.test(query);
+    // Legacy file preview: outside the built-in catalog and removable.
     var installedModel = {
       file: "Hy-MT2-1.8B-Q4_K_M.gguf",
       name: "Hy-MT2-1.8B-Q4_K_M",
       path: "C:\\Users\\Preview\\AppData\\Roaming\\Lexora\\models\\Hy-MT2-1.8B-Q4_K_M.gguf",
       sizeBytes: 1133080448,
       modifiedAt: Date.now() - 86400000,
-      catalogId: "hy-mt2-1.8b",
+      catalogId: "",
     };
 
     mockStore = {
@@ -417,18 +418,7 @@
         reason: "内存和计算资源充足，优先模型效果",
       },
       models: [installedModel],
-      catalog: [
-        mockCatalogEntry(
-          "hy-mt2-1.8b",
-          "腾讯混元 Hy-MT2 1.8B（翻译模型）",
-          "翻译专用，速度快，中英及多语互译",
-          "Hy-MT2-1.8B-Q4_K_M.gguf",
-          1133080448,
-          true,
-          true
-        ),
-
-      ],
+      catalog: [],
       download: null,
       downloads: [],
       picker: { visible: false, pinned: false },
@@ -458,7 +448,7 @@
         var id = "qwen3.5-" + spec[0].toLowerCase() + "-" + quant.toLowerCase().replace(/_/g, "-");
         mockStore.catalog.push(mockCatalogEntry(
           id, "Qwen3.5 " + spec[0] + " " + quant,
-          "通用文本与视觉理解，下载包含视觉投影器；完整安装后请手动选择。",
+          "翻译 / 通用 / 视觉共用所选 Qwen3.5，下载包含视觉投影器；完整安装后请手动选择，未选择时本地 AI 不可用。",
           "Qwen3.5-" + spec[0] + "-" + quant + ".gguf",
           spec[index + 1], false, false, true
         ));
@@ -492,9 +482,11 @@
     } else if (engine.mode === "local") {
       engine.hint = !engine.engineAvailable
         ? "尚未安装 llama.cpp 引擎"
-        : !mockStore.models.length
-          ? "尚未安装本地模型"
-          : "本地模型未启动";
+        : !local.selectedModel
+          ? "尚未选择本地模型，请手动选择并完整下载 Qwen3.5"
+          : !mockStore.catalog.some(function (entry) { return entry.id === local.selectedModel && entry.installed; })
+            ? "所选 Qwen3.5 尚未完整安装（含视觉投影器）"
+            : "本地模型未启动";
     } else {
       engine.hint = "请填写在线服务地址与模型名";
     }
@@ -799,6 +791,7 @@
           searchEngine: picker.searchEngine || "google",
           panelMode: picker.panelMode === "scroll" ? "scroll" : "auto",
           panelPinned: panelPinned,
+          suggestionsAvailable: mockSuggestionsAvailable(),
         },
       });
     }
@@ -1527,12 +1520,56 @@
         );
         return { ok: true };
       }
+      case "cancel_followups": {
+        var tasks = window.__mockFollowupTasks || Object.create(null);
+        if (tasks[args.requestId]) tasks[args.requestId]();
+        return { ok: true };
+      }
+      case "generate_followups": {
+        var controls = window.__mockFollowups || {};
+        if (controls.skills && controls.skills[args.skill]) {
+          controls = Object.assign({}, controls, controls.skills[args.skill]);
+        }
+        var recorded = clone(args);
+        if (!window.__mockFollowupRequests) window.__mockFollowupRequests = [];
+        window.__mockFollowupRequests.push(recorded);
+        if (!mockSuggestionsAvailable()) return { ok: true, requestId: args.requestId, suggestions: [] };
+        if (!window.__mockFollowupTasks) window.__mockFollowupTasks = Object.create(null);
+        return new Promise(function (resolve, reject) {
+          var tasks = window.__mockFollowupTasks;
+          var timer = window.setTimeout(function () {
+            delete tasks[recorded.requestId];
+            if (controls.fail) {
+              reject(new Error("模拟建议生成失败"));
+              return;
+            }
+            var history = Array.isArray(recorded.history) ? recorded.history : [];
+            var topic = history.length ? history[history.length - 1].question : recorded.source || recorded.initialAnswer;
+            topic = String(topic || "当前内容").slice(0, 32);
+            resolve({
+              ok: true,
+              requestId: recorded.requestId,
+              suggestions: controls.empty || !mockSuggestionsAvailable() ? [] : [
+                "关于「" + topic + "」，还能补充哪些细节？",
+                "能结合「" + topic + "」举个具体例子吗？",
+                "第 " + (history.length + 1) + " 轮讨论中，有哪些需要注意的问题？",
+              ],
+            });
+          }, Number(controls.delay) || 0);
+          tasks[recorded.requestId] = function () {
+            window.clearTimeout(timer);
+            delete tasks[recorded.requestId];
+            resolve({ ok: true, requestId: recorded.requestId, suggestions: [] });
+          };
+        });
+      }
       case "picker_status":
         return {
           ok: true,
           mode: mockStore.engine.mode,
           ready: mockStore.engine.ready,
           configured: mockStore.engine.onlineConfigured,
+          suggestionsAvailable: mockSuggestionsAvailable(),
           providerLabel: mockStore.engine.providerLabel,
           localState: mockStore.engine.localState,
           hint: mockStore.engine.hint,
@@ -1834,6 +1871,16 @@
     return result;
   }
 
+  function mockSuggestionsAvailable() {
+    if (mockStore.settings.provider.mode !== "local") {
+      return mockStore.engine.onlineConfigured;
+    }
+    var selected = mockStore.settings.provider.local.selectedModel;
+    return /^qwen3\.5-/.test(selected || "") && mockStore.catalog.some(function (entry) {
+      return entry.id === selected && entry.installed;
+    });
+  }
+
   function mockInvoke(command, args) {
     if (!mockStore) {
       initMockStore();
@@ -2001,6 +2048,18 @@
     /* Opens an https URL in the system browser (search skill). */
     openExternal: function (url) {
       return safeInvoke("open_external", { url: String(url == null ? "" : url) });
+    },
+    cancelFollowups: function (requestId) {
+      return safeInvoke("cancel_followups", { requestId: String(requestId == null ? "" : requestId) });
+    },
+    generateFollowups: function (requestId, skill, source, initialAnswer, history) {
+      return safeInvoke("generate_followups", {
+        requestId: String(requestId == null ? "" : requestId),
+        skill: String(skill == null ? "" : skill),
+        source: String(source == null ? "" : source),
+        initialAnswer: String(initialAnswer == null ? "" : initialAnswer),
+        history: Array.isArray(history) ? history : [],
+      });
     },
     status: function () {
       return safeInvoke("picker_status", {});

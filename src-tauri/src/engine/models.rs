@@ -1,7 +1,7 @@
 //! Local GGUF model catalog, directory scanning and filename helpers.
 //!
 //! The catalog is a compile-time constant so the settings UI always has a stable
-//! list of downloadable models, even offline. Hy-MT2 handles translation;
+//! list of downloadable models, even offline. All local AI tasks use Qwen3.5;
 //! six Qwen3.5 variants share one projector per model size.
 
 use std::fs;
@@ -40,24 +40,10 @@ pub struct ModelSpec {
     pub mmproj: Option<MmprojSpec>,
 }
 
-/// One translation model and six manually selected multimodal variants.
+/// Six manually selected multimodal variants for all local AI tasks.
 /// Downloads try `modelscope_url` first and fall back to `hf_url`; `hf_url` may
 /// be empty when the model is only distributed through ModelScope.
-pub const CATALOG: [ModelSpec; 7] = [
-    ModelSpec {
-        id: "hy-mt2-1.8b",
-        name: "腾讯混元 Hy-MT2 1.8B（翻译模型）",
-        description: "翻译专用，速度快，中英及多语互译",
-        filename: "Hy-MT2-1.8B-Q4_K_M.gguf",
-        size_bytes: 1_133_080_448,
-        license: "Apache-2.0",
-        languages: "多语言",
-        recommended: true,
-        hf_url: "",
-        modelscope_url: "https://www.modelscope.cn/models/liaowenbin/Hy-MT2-1.8B-Q4_K_M-GGUF/resolve/master/Hy-MT2-1.8B-Q4_K_M.gguf",
-        vision: false,
-        mmproj: None,
-    },
+pub const CATALOG: [ModelSpec; 6] = [
     ModelSpec {
         id: "qwen3.5-0.8b-q4-k-m",
         name: "Qwen3.5 0.8B Q4_K_M",
@@ -125,9 +111,6 @@ pub const CATALOG: [ModelSpec; 7] = [
             modelscope_url: "https://www.modelscope.cn/models/unsloth/Qwen3.5-4B-GGUF/resolve/master/mmproj-F16.gguf" }),
     },
 ];
-
-/// Fixed translation model; general and vision models require manual selection.
-pub const TRANSLATION_MODEL_ID: &str = "hy-mt2-1.8b";
 
 /// Files larger than this are rejected on import (the FLINT const keeps the
 /// comparison lossless on 32-bit builds; Lexora ships 64-bit only).
@@ -395,10 +378,9 @@ mod tests {
 
     #[test]
     fn catalog_contract() {
-        assert_eq!(CATALOG.len(), 7);
-        assert_eq!(CATALOG[0].id, TRANSLATION_MODEL_ID);
+        assert_eq!(CATALOG.len(), 6);
+        assert!(spec_by_id("hy-mt2-1.8b").is_none());
         for (spec, expected_size) in CATALOG.iter().zip([
-            1_133_080_448,
             532_517_120,
             470_167_808,
             1_280_835_840,
@@ -437,7 +419,7 @@ mod tests {
     fn spec_lookup_matches_case_insensitively() {
         assert_eq!(
             spec_by_filename("Hy-MT2-1.8B-Q4_K_M.gguf").map(|spec| spec.id),
-            Some("hy-mt2-1.8b")
+            None
         );
         assert_eq!(
             spec_by_filename("QWEN3.5-0.8B-Q4_K_M.GGUF").map(|spec| spec.id),
@@ -477,9 +459,12 @@ mod tests {
         assert_eq!(models.len(), 2);
         // Catalog models are listed before imported ones.
         assert_eq!(models[0].file, CATALOG[0].filename);
-        assert_eq!(models[0].catalog_id, "hy-mt2-1.8b");
+        assert_eq!(models[0].catalog_id, CATALOG[0].id);
         assert_eq!(models[0].size_bytes, 8);
-        assert_eq!(models[0].name, "Hy-MT2-1.8B-Q4_K_M");
+        assert_eq!(
+            models[0].name,
+            CATALOG[0].filename.trim_end_matches(".gguf")
+        );
         assert!(models[0].modified_at > 0);
         assert_eq!(models[1].file, "my-custom-model.gguf");
         assert_eq!(models[1].catalog_id, "");
@@ -487,6 +472,18 @@ mod tests {
             models.iter().all(|model| !is_mmproj_file(&model.file)),
             "projector files must be filtered out: {models:?}"
         );
+    }
+
+    #[test]
+    fn legacy_translation_model_is_a_custom_residual() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = "Hy-MT2-1.8B-Q4_K_M.gguf";
+        fs::write(dir.path().join(file), b"legacy").unwrap();
+        let models = scan_models(dir.path());
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].file, file);
+        assert!(models[0].catalog_id.is_empty());
+        assert!(dir.path().join(file).is_file());
     }
 
     #[test]
@@ -499,13 +496,13 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         fs::write(dir.path().join(CATALOG[1].filename), b"x").unwrap();
         let entries = catalog_entries(dir.path());
-        assert_eq!(entries.len(), 7);
+        assert_eq!(entries.len(), 6);
         assert!(!entries[0].installed);
         assert!(!entries[1].installed);
-        assert_eq!(entries[1].id, "qwen3.5-0.8b-q4-k-m");
+        assert_eq!(entries[1].id, "qwen3.5-0.8b-q3-k-m");
         assert_eq!(entries[1].license, "Apache-2.0");
         assert!(entries[1].vision);
-        assert_eq!(entries[2].id, "qwen3.5-0.8b-q3-k-m");
+        assert_eq!(entries[2].id, "qwen3.5-2b-q4-k-m");
         assert!(entries[2].vision);
     }
 

@@ -151,7 +151,7 @@ const CUSTOM_SKILL_MAX: usize = 20;
 const CUSTOM_SKILL_LABEL_MAX_CHARS: usize = 20;
 const CUSTOM_SKILL_ID_MAX_CHARS: usize = 40;
 const CUSTOM_SKILL_ICON_MAX_CHARS: usize = 40;
-/// Languages supported by the Hy-MT2 translation model (33 languages plus
+/// Translation target languages offered by the application (33 languages plus
 /// Chinese variants and minority languages). `auto` asks the shell to resolve
 /// the target from the source text.
 pub const TARGET_LANGS: [&str; 39] = [
@@ -1045,6 +1045,13 @@ mod tests {
             settings.clone().normalize().provider.local.selected_model,
             "qwen3.5-2b-q3-k-m"
         );
+        for spec in crate::engine::models::CATALOG {
+            settings.provider.local.selected_model = spec.id.into();
+            assert_eq!(
+                settings.clone().normalize().provider.local.selected_model,
+                spec.id
+            );
+        }
         settings.version = 6;
         assert!(settings
             .clone()
@@ -1086,7 +1093,7 @@ mod tests {
                 languages.push(code);
             }
         }
-        // Hy-MT2 supports 38 translation languages (33 + Chinese variants and
+        // The application offers 38 translation languages (33 + Chinese variants and
         // minority languages); auto is the extra default option.
         assert_eq!(languages.len(), 38);
         assert!(TARGET_LANGS.contains(&"zh-hant"));

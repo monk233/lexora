@@ -22,18 +22,18 @@ Lexora 是 Windows 划词翻译工具。在浏览器、Word、PDF、IDE 等任�
 
 - **划选触发**：拖动选词、双击单词、三击段落均可唤起工具栏；`Delete`、`Ctrl+C` 等操作仍作用于原应用，继续操作时工具栏自动隐藏。
 - **翻译、总结、解释、润色、朗读、复制、搜索**：流式输出，结果按 Markdown 渲染（标题、列表、代码块、表格、链接），可固定、拖动、滚动；搜索默认 Google，可切换百度 / Bing。
-- **双引擎**：云端支持任意 OpenAI 兼容接口（DeepSeek / OpenAI / Moonshot / 智谱 / OpenCode Go / Ollama / LM Studio / 自建服务），可拉取模型列表；本地在应用内安装 llama.cpp 引擎，翻译自动使用腾讯混元 Hy-MT2 1.8B，通用和视觉任务使用用户手动选择的 Qwen3.5（0.8B / 2B / 4B，各有 Q4_K_M / Q3_K_M），断网可用，支持并行下载。
+- **双引擎**：云端支持任意 OpenAI 兼容接口（DeepSeek / OpenAI / Moonshot / 智谱 / OpenCode Go / Ollama / LM Studio / 自建服务），可拉取模型列表；本地在应用内安装 llama.cpp 引擎，所有本地 AI 任务（翻译、通用文本与视觉理解）共用用户手动选择的 Qwen3.5（0.8B / 2B / 4B，各有 Q4_K_M / Q3_K_M），断网可用，支持并行下载。
 - **技能可配置**：技能可拖拽排序、增删；内置润色与自定义技能均可改提示词；自定义技能可选 200 个图标、自定义名称与提示词，提示词支持 `{text}`、`{target}`、`{program}` 等变量。
 - **截图工具**：点击工具栏「截图」或按自定义快捷键（默认 Win+Shift+X）框选屏幕；可复制图片、提取文字（视觉模型优先，回退本地 OCR）、翻译、解释图片；结果在划词面板中流式显示，支持朗读/复制/重试/追问。自定义技能支持文本/图片两类。
 - **截图标注**：形状（矩形 / 圆形 / 直线，描边或实心填充）、箭头（实心三角头 + 锥形尾）、画笔、文本、序号、马赛克；颜色（预设 + 自定义 HSV + 吸色器）与粗细/字号可调，拖动实时预览；点击标注可选中，支持移动 / 缩放 / 旋转与 `Delete` 删除、一步撤回/重做；标注限制在选区内并合成进导出图片。
 - **钉在桌面**：把框选（含标注）钉成无边框置顶窗口，可拖动、复制，双击 / `Esc` 关闭；超长图保持可读宽度并在窗口内滚动。
 - **长截图（手动滚动）**：选区保持实时可见，侧边预览窗口边滚边拼；支持竖向/横向与上下/左右来回滚动；完成后复制并钉图，取消返回截图界面；全程不自动滚动。
 - 截图界面可被系统截图/录屏拍到；截图过程中再次触发截图会被忽略，不会重复抓屏。
-- **继续追问**：翻译/总结/解释/润色/自定义结果下方可直接输入问题，多轮流式对话，答案保留在同一面板。
-- **单词词典**：英文单词输出音标 + 释义，中文词语输出拼音 + 释义，其他语言仅翻译；英文单词附 3 个可点击追问建议。
+- **继续追问**：所有 AI 文字/图片技能结果下方支持多轮流式对话，并由模型根据原文、初始回答与历史问答动态生成最多 3 条可点击追问建议，每轮成功回答后刷新，不使用固定预设。在线使用已配置的在线模型；本地仅使用手动选择且完整安装的 Qwen3.5 本地模型；未选择时静默隐藏建议区和追问入口，建议生成失败也不提示。上下文保留最近 10 轮，并按字符预算裁剪。
+- **单词词典**：英文单词输出音标 + 释义，中文词语输出拼音 + 释义，其他语言仅翻译。
 - **面板可调**：结果面板右下角可拖拽调整大小并记住，双击手柄恢复自动尺寸。
 - **工具栏收纳**：超出宽度的技能自动收进「更多」面板，技能项与配置项以分隔线区分，菜单可滚动；图标选择器默认紧凑，需要时展开 200 图标搜索面板。
-- **38 种语言**：覆盖 Hy-MT2 支持的全部语言，含繁体中文、粤语、藏语、哈萨克语、蒙古语、维吾尔语等。
+- **38 种语言**：提供 38 种翻译目标语言，含繁体中文、粤语、藏语、哈萨克语、蒙古语、维吾尔语等。
 - **便携单文件**：单个 exe（约 10.5 MB），免安装、托盘常驻、静默启动、单实例、可选开机自启；数据保存在 exe 同级 `data/` 目录。
 - **状态延续**：本地引擎的启动状态会记住，重启 Lexora 后自动恢复；只有点「停止」才会清除。
 - **自动更新**：关于页「检查更新」可自动下载新版本、替换当前 exe 并重启；免安装单文件场景可原地升级，`data/` 目录不受影响。
@@ -49,6 +49,10 @@ Lexora 是 Windows 划词翻译工具。在浏览器、Word、PDF、IDE 等任�
 <p align="center">
   <img src="docs/images/settings.png" alt="Lexora 设置页" width="640">
 </p>
+
+本地模型迁移兼容：旧 Hy-MT2 和 Qwen2.5 文件不自动删除，仅作为「其他本地模型」显示并支持手动删除，不再提供内置下载、自动选择或推荐。所有本地 AI 任务使用 `provider.local.selectedModel` 手动选择的 Qwen3.5；未选择时本地 AI 不可用，追问建议与入口静默隐藏。
+
+动态追问时序：主回答收到首个非空 chunk 后启动建议预取；每次最多 3 条。主回答或本轮追问完成时，已有预取结果立即展示，否则最多等待 3000 ms；超时取消并静默丢弃迟到结果，不显示固定建议。该截止仅限制前端等待时间，不保证实机模型能在 3 秒内成功生成建议。多轮追问继续保留原文、初始回答与历史；建议生成另用精简上下文（原文和初始回答各最多 800 字符，最近 6 轮每段最多 500 字符，总计最多 3000 字符，输出最多 80 tokens），普通多轮追问预算保持不变。
 
 ## 快速开始
 
@@ -66,7 +70,7 @@ Lexora 是 Windows 划词翻译工具。在浏览器、Word、PDF、IDE 等任�
 
 **本地模型（离线）**
 
-设置 → 翻译服务 → 选择「本地模型」→ 下载 llama.cpp 引擎 → 从 ModelScope 下载 Hy-MT2（翻译）及所需 Qwen3.5（通用与视觉，含对应 mmproj-F16 投影器）→ 手动选择一个通用/视觉模型 → 点「启动」。翻译自动使用 Hy-MT2；总结、解释和图片理解共用手动选择的模型。硬件检测只显示推荐标签和理由，不代替选择；未选择时明确提示。切换模型后需重启本地引擎。
+设置 → 翻译服务 → 选择「本地模型」→ 下载 llama.cpp 引擎 → 从 ModelScope 下载所需 Qwen3.5（翻译 / 通用 / 视觉，含对应 mmproj-F16 投影器）→ 手动选择一个 Qwen3.5 本地模型 → 点「启动」。文本翻译、总结、解释、润色、自定义技能及图片 OCR、翻译、解释共用手动选择的模型。硬件检测只显示推荐标签和理由，不代替选择；未选择时明确提示。切换模型后需重启本地引擎。
 
 ### 3. 开始划词
 
@@ -115,7 +119,6 @@ Tauri v2 + Rust（窗口、托盘、全局输入钩子、Windows UI Automation �
 - [selection-hook](https://github.com/0xfullex/selection-hook)（MIT）
 - [llama.cpp](https://github.com/ggml-org/llama.cpp)（MIT）
 - [Qwen3.5](https://www.modelscope.cn/models/unsloth/Qwen3.5-0.8B-GGUF)（Apache-2.0）
-- [腾讯混元 Hy-MT2](https://www.modelscope.cn/models/liaowenbin/Hy-MT2-1.8B-Q4_K_M-GGUF)（Apache-2.0）
 - [Lucide](https://lucide.dev)（ISC，自定义技能图标库）
 - [rdev](https://github.com/Narsil/rdev)（MIT）
 
@@ -133,7 +136,7 @@ Tauri v2 + Rust（窗口、托盘、全局输入钩子、Windows UI Automation �
 
 **Lexora** is a selection translator for Windows. Select text in any app — a browser, Word, a PDF, your IDE — and a floating toolbar appears next to the cursor with translate, summarize, explain, polish, read aloud, copy, and search. The toolbar does not take keyboard focus.
 
-- Works with any OpenAI-compatible endpoint, or offline with llama.cpp + GGUF models (Hy-MT2 for translation, a manually selected Qwen3.5 0.8B / 2B / 4B model in Q4_K_M or Q3_K_M for general and vision tasks, with its mmproj-F16 projector). Models are downloaded from ModelScope; hardware recommendations never select a model. Changing the selection requires restarting the local engine.
+- Works with any OpenAI-compatible endpoint, or offline with llama.cpp + GGUF models (one manually selected Qwen3.5 0.8B / 2B / 4B model in Q4_K_M or Q3_K_M for translation, general text and vision tasks, with its mmproj-F16 projector). Models are downloaded from ModelScope; hardware recommendations never select a model. Changing the selection requires restarting the local engine.
 - Results stream in and render as Markdown; the panel can be pinned, moved, resized, and scrolled; search uses Google, Baidu, or Bing.
 - Screenshot tools: capture, copy, OCR, translate and explain regions; local annotations (shapes, arrow, pen, text, numbers, mosaic) that can be selected, moved, resized, rotated and undone; pin-to-desktop windows; manual-scroll long screenshots with a live side preview.
 - 38 translation languages.

@@ -422,7 +422,13 @@ fn process_capture(inner: &Arc<Inner>, request: &CaptureRequest) -> Result<(), S
         anchor_x: anchor.0,
         anchor_y: anchor.1,
         scale_factor: crate::win32::monitor_scale_factor(anchor.0, anchor.1),
-        config: config.picker_config,
+        config: {
+            let mut picker_config = config.picker_config;
+            let state = app.state::<Arc<crate::AppState>>();
+            picker_config["suggestionsAvailable"] =
+                serde_json::json!(state.engine.suggestions_available());
+            picker_config
+        },
     };
 
     let preserve_open_panel = preserve_panel_for_selection(
@@ -574,6 +580,7 @@ pub(crate) fn picker_config(settings: &Settings) -> serde_json::Value {
     serde_json::json!({
         "skills": &settings.picker.skills,
         "compact": settings.picker.compact,
+        "suggestionsAvailable": if settings.is_local_mode() { false } else { settings.online_configured() },
         "defaultTargetLang": &settings.picker.default_target_lang,
         // Search engine used by the built-in `search` skill.
         "searchEngine": &settings.picker.search_engine,
@@ -586,6 +593,16 @@ pub(crate) fn picker_config(settings: &Settings) -> serde_json::Value {
         // definition (including the prompt) stays in settings.
         "customSkills": enabled_custom_skill_metadata(settings),
     })
+}
+
+/// Runtime capability for screenshot result panels and other picker entry points.
+pub(crate) fn picker_config_with_engine(
+    settings: &Settings,
+    engine: &crate::engine::EngineService,
+) -> serde_json::Value {
+    let mut config = picker_config(settings);
+    config["suggestionsAvailable"] = serde_json::json!(engine.suggestions_available());
+    config
 }
 
 /// Metadata (`{id,label,icon}`) of the custom skills enabled in

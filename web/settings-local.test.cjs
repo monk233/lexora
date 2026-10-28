@@ -47,11 +47,13 @@ async function main() {
   });
   for (const name of ["modelRole", "localModelRow", "armDanger", "disarmDanger", "renderLocalState", "runLocalAction", "restartLocal"]) vm.runInContext(extract(name), context);
   context.refreshState = async () => { context.renderLocalState(); };
-  for (const catalogId of ["hy-mt2-1.8b", "qwen3.5-2b-q3-k-m", undefined]) {
+  for (const catalogId of ["qwen3.5-2b-q3-k-m", undefined]) {
     const row = context.localModelRow({ catalogId, file: "builtin.gguf" });
     assert.equal(row.children.some((child) => child.className.includes("btn-danger")), false);
   }
-  const row = context.localModelRow({ catalogId: "", file: "old.gguf" });
+  assert.equal(context.modelRole("hy-mt2-1.8b").label, "其他本地模型");
+  assert.equal(context.modelRole("").builtin, false);
+  const row = context.localModelRow({ catalogId: "", file: "Hy-MT2-1.8B-Q4_K_M.gguf" });
   nodes["local-models"].appendChild(row);
   const button = row.querySelector(".btn-danger");
   button.click();

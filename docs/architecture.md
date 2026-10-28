@@ -95,13 +95,25 @@ picker.js → invoke("picker_translate", {requestId,text,targetLang})
 
 总结/解释：`picker_assist` 非流式等待完整结果。文本长度：翻译取 `picker.maxChars`（默认 5000），总结/解释取 8000 字符。
 
+## 动态追问
+
+所有 AI 文字/图片技能通过 `generate_followups` 独立生成最多 3 条建议，不使用固定预设。多轮追问保留原文、独立初始回答及有序历史；普通追问保留最近 10 轮，单段最多 4000 字符、总文本预算 20000 字符。图片追问继续携带原图，建议使用精简文字上下文。
+
+动态追问时序：主回答收到首个非空 chunk 后启动建议预取；每次最多 3 条。主回答或本轮追问完成时，已有预取结果立即展示，否则最多等待 3000 ms；超时取消并静默丢弃迟到结果，不显示固定建议。该截止仅限制前端等待时间，不保证实机模型能在 3 秒内成功生成建议。多轮追问继续保留原文、初始回答与历史；建议生成另用精简上下文（原文和初始回答各最多 800 字符，最近 6 轮每段最多 500 字符，总计最多 3000 字符，输出最多 80 tokens），普通多轮追问预算保持不变。
+
+在线使用当前配置的在线模型；本地严格使用用户手动选择且完整安装的 Qwen3.5 本地模型。后端通过 picker payload 的 `config.suggestionsAvailable` 提供能力状态；不可用时前端静默隐藏建议区与追问入口，不发起建议调用。建议生成失败或输出无效时返回空列表，不影响主结果。
+
+建议任务以 `requestId` 登记，通过 `cancel_followups` 取消；新 AI 请求等待旧建议任务取消，避免模型切换干扰。关闭、隐藏或切换会话使前端版本失效，迟到回包同时校验会话、请求版本与轮次，不覆盖新结果；同轮建议缓存，成功回答后刷新。
+
 ## 离线模型与引擎
 
 - 引擎：llama.cpp 官方 `win-cpu-x64` 发布包（约 23MB），解压到 `<data>/engine/`。
-- 模型：GGUF 放在 `<data>/models/`；内置 Hy-MT2 1.8B 翻译专用模型，以及 Qwen3.5 0.8B / 2B / 4B 的 Q4_K_M、Q3_K_M 六种通用/视觉选项，均从 ModelScope 下载（Apache-2.0），也支持手动导入 GGUF。Qwen3.5 各档搭配对应的 `mmproj-F16.gguf`，本地按模型规格区分投影器文件名，避免不同规格互相覆盖。
-- 选模：翻译自动使用 Hy-MT2；通用和视觉任务共用用户手动选择的唯一模型，持久化到 `settings.provider.local.selectedModel`（settings schema v7，JSON 中为 `provider.local.selectedModel`）。未选择时返回明确提示，不自动替选；CPU、内存和显存检测只用于推荐标签及理由。切换选择后需重启本地引擎。旧 Qwen2.5 文件保留，不再参与内置自动选择。
+- 模型：GGUF 放在 `<data>/models/`；仅内置 Qwen3.5 0.8B / 2B / 4B 的 Q4_K_M、Q3_K_M 六种翻译 / 通用 / 视觉选项，均从 ModelScope 下载（Apache-2.0），也支持手动导入 GGUF。Qwen3.5 各档搭配对应的 `mmproj-F16.gguf`，本地按模型规格区分投影器文件名，避免不同规格互相覆盖。
+- 选模：翻译、通用文本和视觉任务共用用户手动选择的唯一 Qwen3.5 模型，持久化到 `settings.provider.local.selectedModel`（settings schema v7，JSON 中为 `provider.local.selectedModel`）。未选择时返回明确提示，不自动替选；CPU、内存和显存检测只用于推荐标签及理由。切换选择后需重启本地引擎。旧 Qwen2.5 文件保留，不再参与内置自动选择。
 - 启动参数：`llama-server.exe -m <model> --host 127.0.0.1 --port <free> -c <ctx> -t <threads> -ngl <gpuLayers> --no-webui`。
 - 健康检查 `/health`，最长等待 90s；进程日志写 `logs/llama.log`；应用退出时停止子进程。
+
+本地模型迁移兼容：旧 Hy-MT2 和 Qwen2.5 文件不自动删除，仅作为「其他本地模型」显示并支持手动删除，不再提供内置下载、自动选择或推荐。所有本地 AI 任务使用 `provider.local.selectedModel` 手动选择的 Qwen3.5；未选择时本地 AI 不可用，追问建议与入口静默隐藏。
 
 ## 设置与便携
 

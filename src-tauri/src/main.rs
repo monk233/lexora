@@ -288,6 +288,8 @@ fn main() {
             commands::picker_abort_translate,
             commands::picker_assist,
             commands::picker_followup,
+            commands::generate_followups,
+            commands::cancel_followups,
             commands::picker_status,
             commands::picker_disable_in_app,
             commands::picker_disable_tool
