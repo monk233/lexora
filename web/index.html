@@ -243,6 +243,27 @@
           </div>
         </div>
 
+        <div class="field">
+          <div class="field-label">
+            <label class="field-name" for="word-lookup-mode">单词查询模式</label>
+            <p class="field-hint" id="word-lookup-hint">自动：普通自定义提示词优先，否则查询单词；关闭：始终使用普通任务；单词优先：候选单词优先查询。</p>
+          </div>
+          <div class="field-control">
+            <select class="select" id="word-lookup-mode" aria-describedby="word-lookup-hint">
+              <option value="auto">自动</option>
+              <option value="off">关闭</option>
+              <option value="prefer">单词优先</option>
+            </select>
+          </div>
+        </div>
+        <div class="field field-stack">
+          <div class="field-label">
+            <span class="field-name">单词查询提示词</span>
+            <p class="field-hint">用于翻译、解释中的单词查询。可信音标与拼音来自本地词典数据，不由模型生成；未命中时不显示读音。</p>
+          </div>
+          <div class="field-control" id="word-lookup-prompt"></div>
+        </div>
+
         <div class="field field-switch panel-mode-field">
           <div class="field-label">
             <span class="field-name">面板模式</span>

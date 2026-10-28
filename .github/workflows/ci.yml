@@ -17,6 +17,16 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  pronunciation-linux:
+    name: Linux offline pronunciation check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check and test the portable pronunciation module
+        run: bash scripts/check-pronunciation.sh
+
   windows:
     name: Windows build & test
     runs-on: windows-latest

@@ -23,6 +23,18 @@ use crate::engine::{CatalogEntry, DownloadProgress, EngineStatus, ModelInfo, Tes
 use crate::settings::Settings;
 use crate::state::{lock, AppState, TranslateTask};
 
+/// Query embedded pronunciation data without model calls or application state.
+#[tauri::command]
+pub fn lookup_pronunciation(text: String) -> Value {
+    json!({ "ok": true, "result": crate::engine::pronunciation::lookup(&text) })
+}
+
+/// Keep the original data notices accessible in the portable executable.
+#[tauri::command]
+pub fn pronunciation_licenses() -> &'static str {
+    crate::engine::pronunciation::LICENSE_NOTICES
+}
+
 // ---------------------------------------------------------------------------
 // StatePayload (§5.4)
 // ---------------------------------------------------------------------------
@@ -1703,6 +1715,21 @@ pub fn picker_disable_tool(app: AppHandle, state: State<'_, Arc<AppState>>) -> V
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pronunciation_command_is_stateless_and_preserves_result_contract() {
+        let response = super::lookup_pronunciation("crazy".to_owned());
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["result"]["status"], "Verified");
+        assert_eq!(response["result"]["notation"], "ipa");
+        assert!(super::lookup_pronunciation("carzy".to_owned())["result"]["value"].is_null());
+        let notices = super::pronunciation_licenses();
+        assert!(notices.contains("dohliam"));
+        assert!(notices.contains("Lingliang Zhang"));
+        assert!(notices.contains("Carnegie Mellon University"));
+        assert!(notices.contains("Kyle Gorman"));
+        assert!(notices.contains("Lexora contributors"));
+    }
+
     use super::{persist_panel_pinned, picker_surface_label, sync_reset_autostart};
 
     #[test]

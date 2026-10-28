@@ -238,6 +238,7 @@
     /* picker-data config.panelMode: "auto" (fixed width, screen-limited height,
      * hidden scrollbar follows new content) or "scroll" (fixed user size). */
     panelMode: "auto",
+    wordLookupMode: "auto",
     autoPanelFollow: true,
     /* Last auto-mode window size sent to the shell, to avoid redundant resizes
      * on every streamed chunk. */
@@ -266,6 +267,7 @@
 
   /* The translation currently streaming into the panel. */
   var activeRequest = null;
+  var pronunciationRequest = null;
   /* `cancelRequested` marks an intentional stop: speechSynthesis.cancel()
    * reports the cancelled utterance through `onerror`, and that must never
    * surface as a "speech failed" toast. */
@@ -1250,7 +1252,24 @@
     }
   }
 
+  function lookupRequestPronunciation(request, source) {
+    pronunciationRequest = request;
+    if (state.wordLookupMode === "off" || !API || typeof API.lookupPronunciation !== "function") return;
+    Promise.resolve().then(function () { return API.lookupPronunciation(source); }).then(function (response) {
+      var reading = response && response.ok && response.result;
+      if (pronunciationRequest !== request || !state.panelOpen || !reading ||
+          reading.status !== "Verified" || !reading.notation || !reading.value) return;
+      var line = (reading.notation === "ipa" ? "音标" : reading.notation === "pinyin" ? "拼音" : reading.notation) + "：" + reading.value;
+      var node = el("p", "pronunciation", line);
+      request.target.insertBefore(node, request.result);
+      request.pronunciationLine = line;
+      if (state.panelCopyText) setPanelCopyText(requestOutputText(request));
+      resizePanelForContent();
+    }).catch(function () { /* Optional dictionary lookup must not interrupt generation. */ });
+  }
+
   function openPanel(title) {
+    pronunciationRequest = null;
     closeMenu();
     abortActiveRequest();
     stopSpeech();
@@ -1318,6 +1337,7 @@
   }
 
   function closePanel() {
+    pronunciationRequest = null;
     if (!state.panelOpen) {
       return;
     }
@@ -1380,7 +1400,9 @@
   }
 
   function setPanelCopyText(text) {
-    state.panelCopyText = String(text == null ? "" : text);
+    var body = String(text == null ? "" : text);
+    var reading = pronunciationRequest && pronunciationRequest.pronunciationLine;
+    state.panelCopyText = body && reading ? reading + "\n\n" + body : body;
     syncPanelFoot();
   }
 
@@ -1786,12 +1808,15 @@
       target: block.block,
       result: block.answer,
       raw: "",
+      finishReason: null,
+      partial: false,
       renderPending: false,
       loading: block.loading,
       active: true,
       failed: false,
       sawContent: false,
     };
+    pronunciationRequest = null;
     activeRequest = request;
     state.translating = true;
     var source = state.text;
@@ -1823,6 +1848,8 @@
     if (!request || !request.active) {
       return;
     }
+    request.finishReason = request.finishReason || "complete";
+    request.partial = request.finishReason === "repetition";
     request.active = false;
     if (activeRequest === request) {
       activeRequest = null;
@@ -1847,7 +1874,7 @@
   /* A follow-up failure stays inside its block: the initial result and the
    * rest of the conversation are never replaced. */
   function failFollowup(request, message, hint) {
-    if (!request || request.failed) {
+    if (!request || request.failed || request.finishReason === "repetition") {
       return;
     }
     invalidateFollowupSuggestions();
@@ -1872,6 +1899,7 @@
     var retryButton = el("button", "followup-retry", "重试");
     retryButton.type = "button";
     retryButton.addEventListener("click", function () {
+      if (state.followupBusy || (activeRequest && activeRequest.active)) return;
       if (request.block && request.block.parentNode) {
         request.block.parentNode.removeChild(request.block);
       }
@@ -1965,6 +1993,8 @@
     if (!request || !request.active) {
       return;
     }
+    request.finishReason = request.finishReason || "complete";
+    request.partial = request.finishReason === "repetition";
     request.active = false;
     if (activeRequest === request) {
       activeRequest = null;
@@ -1984,7 +2014,7 @@
   }
 
   function failTranslation(request, message, hint) {
-    if (!request || request.failed) {
+    if (!request || request.failed || request.finishReason === "repetition") {
       return;
     }
     invalidateFollowupSuggestions();
@@ -2052,6 +2082,157 @@
     });
   }
 
+  /* Conservative, exact natural-language repetition only. OCR remains literal.
+   * A bounded tail keeps the periodic search independent of answer length. */
+  function guardRepetition(text, request, source) {
+    text = String(text || "");
+    var unchanged = { text: text, repeated: false };
+    if (request && request.kind === "image" && request.imageAction === "ocr") return unchanged;
+    var preserveSource = request && (request.kind === "translate" || request.kind === "polish");
+    function normalizeBlock(value) {
+      return value.replace(/^\s*(?:[-*+] |\d+[.)] )/gm, "").replace(/\s+/g, " ").trim().toLowerCase();
+    }
+    function sourceCopies(pattern) {
+      if (!preserveSource || !source) return 0;
+      var blocks = new RegExp(pattern.source, "g");
+      var previous = "", count = 0, maximum = 0, block;
+      while ((block = blocks.exec(String(source)))) {
+        var value = normalizeBlock(block[0]);
+        count = value && value === previous ? count + 1 : 1;
+        previous = value;
+        maximum = Math.max(maximum, count);
+      }
+      return maximum;
+    }
+    var regions = [];
+    var fence = null;
+    var quote = false;
+    var offset = 0;
+    var start = 0;
+    text.split("\n").forEach(function (line) {
+      var marker = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+      if (!line.trim()) quote = false;
+      if (/^ {0,3}>/.test(line)) quote = true;
+      var protectedLine = !!fence || !!marker || quote || /^(?: {4}|\t)/.test(line) || line.indexOf("|") !== -1;
+      if (marker) {
+        if (!fence) fence = marker[1];
+        else if (marker[1][0] === fence[0] && marker[1].length >= fence.length &&
+            /^\s*$/.test(line.slice(marker[0].length))) fence = null;
+      }
+      if (protectedLine) {
+        if (offset > start) regions.push({ start: start, end: offset });
+        start = offset + line.length + 1;
+      }
+      offset += line.length + 1;
+    });
+    if (start < text.length) regions.push({ start: start, end: text.length });
+    // Split around inline code without changing source offsets or the output.
+    // An unmatched delimiter protects the tail while its closing chunk is pending.
+    var proseRegions = [];
+    regions.forEach(function (region) {
+      var content = text.slice(region.start, region.end);
+      var delimiters = /`+/g;
+      var cursor = 0, opening, closing;
+      while ((opening = delimiters.exec(content))) {
+        if (opening.index > cursor) proseRegions.push({ start: region.start + cursor, end: region.start + opening.index });
+        closing = null;
+        var candidate;
+        while ((candidate = delimiters.exec(content))) {
+          if (candidate[0].length === opening[0].length) { closing = candidate; break; }
+        }
+        if (!closing) { cursor = content.length; break; }
+        cursor = delimiters.lastIndex;
+      }
+      if (cursor < content.length) proseRegions.push({ start: region.start + cursor, end: region.end });
+    });
+    regions = proseRegions;
+    for (var r = 0; r < regions.length; r++) {
+      var region = regions[r];
+      var base = Math.max(region.start, region.end - 4096);
+      // Avoid treating a truncated first line as a complete Markdown block.
+      if (base > region.start) {
+        var newline = text.indexOf("\n", base);
+        if (newline >= 0 && newline < region.end) base = newline + 1;
+      }
+      var tail = text.slice(base, region.end);
+      var regionText = text.slice(region.start, region.end);
+      var blockPatterns = [/[^\n]+(?:\n(?!\s*\n|\s*(?:[-*+] |\d+[.)] ))[^\n]+)*/g, /[^\n]+/g];
+      for (var pattern = 0; pattern < blockPatterns.length; pattern++) {
+        var blocks = blockPatterns[pattern];
+        var allowedCopies = Math.max(sourceCopies(blockPatterns[0]), sourceCopies(blockPatterns[1]));
+        var previous = "", count = 0, firstEnd = 0, block;
+        while ((block = blocks.exec(regionText))) {
+          var value = block[0].trim();
+          var prose = value.replace(/^\s*(?:[-*+] |\d+[.)] )/, "");
+          var han = prose.match(/[\u3400-\u9fff]/g) || [];
+          var words = prose.match(/[A-Za-z]+/g) || [];
+          if (han.length < 10 && (prose.length < 24 || words.length < 4)) { previous = ""; count = 0; continue; }
+          value = normalizeBlock(value);
+          if (value === previous) count++;
+          else { previous = value; count = 1; firstEnd = block.index + block[0].length; }
+          if (count >= 3 && count > allowedCopies) return { text: text.slice(0, region.start + firstEnd).trimEnd(), repeated: true };
+        }
+      }
+      var cycles = /([\s\S]{24,1024}?)\1{3,}/g;
+      var cycle;
+      while ((cycle = cycles.exec(tail))) {
+        // Repeated source paragraphs may also match the character-cycle detector.
+        if (preserveSource && cycle[0].split(cycle[1]).length - 1 <=
+            Math.max(sourceCopies(blockPatterns[0]), sourceCopies(blockPatterns[1]))) continue;
+        var unit = Array.from(cycle[1]);
+        if (unit.length < 24) continue;
+        // Repeated short terms are not a long-form generation loop.
+        var shortPeriod = false;
+        for (var size = 1; size < 24 && size < unit.length; size++) {
+          if (unit.every(function (ch, i) { return ch === unit[i % size]; })) { shortPeriod = true; break; }
+        }
+        if (!shortPeriod) {
+          var cycleStart = base + cycle.index;
+          var length = cycle[1].length;
+          while (cycleStart > region.start && text[cycleStart - 1] === text[cycleStart + length - 1]) cycleStart--;
+          return { text: text.slice(0, cycleStart + length).trimEnd(), repeated: true };
+        }
+      }
+    }
+    return unchanged;
+  }
+
+  function stopRepeatedRequest(request) {
+    request.finishReason = "repetition";
+    request.partial = true;
+    invalidateFollowupSuggestions();
+    // Mark terminal before aborting; even a synchronous late event is ignored.
+    // The existing abort path also cancels the backend model request.
+    abortActiveRequest();
+    removeLoadingRow(request);
+    renderRequestResult(request);
+    if (request.kind === "followup") {
+      state.followupHistory.push({ question: request.question, answer: request.raw });
+      setFollowupBusy(false);
+    } else {
+      enableFollowup(request);
+    }
+    var output = requestOutputText(request);
+    setPanelSpeakText(output);
+    setPanelCopyText(output);
+    appendErrorNote(request.target, "检测到重复输出，已停止");
+    if (request.kind === "followup") {
+      var retryButton = el("button", "followup-retry", "重试");
+      retryButton.type = "button";
+      retryButton.addEventListener("click", function () {
+        if (state.followupBusy || (activeRequest && activeRequest.active)) return;
+        // A retry replaces this partial turn rather than duplicating history.
+        var index = state.followupHistory.findIndex(function (turn) { return turn === request.repetitionTurn; });
+        if (index >= 0) state.followupHistory.splice(index, 1);
+        if (request.block && request.block.parentNode) request.block.parentNode.removeChild(request.block);
+        submitFollowup(request.question);
+      });
+      request.repetitionTurn = state.followupHistory[state.followupHistory.length - 1];
+      request.target.appendChild(retryButton);
+    }
+    resizePanelForContent();
+  }
+
   function handleTranslateEvent(event) {
     var request = activeRequest;
     if (!request || !request.active || !event) {
@@ -2082,6 +2263,12 @@
       request.sawContent = true;
       removeLoadingRow(request);
       request.raw += event.text || "";
+      var guarded = guardRepetition(request.raw, request, state.text);
+      if (guarded.repeated) {
+        request.raw = guarded.text;
+        stopRepeatedRequest(request);
+        return;
+      }
       renderTranslationDraft(request);
       refreshFollowupSuggestions(request);
       return;
@@ -2135,6 +2322,8 @@
       target: target,
       result: result,
       raw: "",
+      finishReason: null,
+      partial: false,
       renderPending: false,
       loading: loadingRow,
       active: true,
@@ -2142,6 +2331,7 @@
       sawContent: false,
     };
     activeRequest = request;
+    lookupRequestPronunciation(request, state.text);
     state.translating = true;
     resizePanelForContent();
 
@@ -2261,6 +2451,8 @@
       target: target,
       result: result,
       raw: "",
+      finishReason: null,
+      partial: false,
       renderPending: false,
       loading: loadingRow,
       active: true,
@@ -2416,6 +2608,8 @@
       target: target,
       result: result,
       raw: "",
+      finishReason: null,
+      partial: false,
       renderPending: false,
       loading: loadingRow,
       active: true,
@@ -2481,6 +2675,8 @@
       target: target,
       result: result,
       raw: "",
+      finishReason: null,
+      partial: false,
       renderPending: false,
       loading: loadingRow,
       active: true,
@@ -2581,6 +2777,8 @@
       target: target,
       result: result,
       raw: "",
+      finishReason: null,
+      partial: false,
       renderPending: false,
       loading: loadingRow,
       active: true,
@@ -2588,6 +2786,7 @@
       sawContent: false,
     };
     activeRequest = request;
+    if (action === "explain") lookupRequestPronunciation(request, state.text);
     state.translating = true;
     resizePanelForContent();
 
@@ -2898,6 +3097,7 @@
   /* ---- Reset / data ---------------------------------------------------- */
 
   function resetForHidden() {
+    pronunciationRequest = null;
     abortActiveRequest();
     resetFollowup();
     stopSpeech();
@@ -3077,6 +3277,9 @@
     state.defaultTargetLang = String(config.defaultTargetLang || "auto");
     state.searchEngine = normalizeSearchEngine(config.searchEngine);
     state.panelMode = normalizePanelMode(config.panelMode);
+    state.wordLookupMode = ["auto", "off", "prefer"].includes(config.wordLookupMode)
+      ? config.wordLookupMode
+      : "auto";
     state.panelPinnedPreference = config.panelPinned === true;
     state.targetLang = "";
     // Rebuild the custom-skill metadata every time: a disabled/removed skill

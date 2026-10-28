@@ -64,7 +64,7 @@ lexora/
 
 ```jsonc
 {
-  "version": 7,                              // v1→v2 补 polish/search；v2→v3 补 screenshot；v3→v4 补 capture；v4→v5 补 captureSkills/capturePrompts；v5→v6 把本地工具（pin/形状/箭头/画笔/文字/序号/马赛克/长截图）纳入 captureSkills 并移除 copy；保留 custom；v6→v7 增加 provider.local.selectedModel，旧配置迁移为空选择
+  "version": 8,                              // v1→v2 补 polish/search；v2→v3 补 screenshot；v3→v4 补 capture；v4→v5 补 captureSkills/capturePrompts；v5→v6 把本地工具（pin/形状/箭头/画笔/文字/序号/马赛克/长截图）纳入 captureSkills 并移除 copy；保留 custom；v6→v7 增加 provider.local.selectedModel，旧配置迁移为空选择；v7→v8 增加 wordLookupMode/wordLookup，保留历史非空提示词
   "picker": {
     "enabled": true,
     "skills": ["translate","summarize","explain","read","copy","search"],
@@ -80,11 +80,13 @@ lexora/
       "explain": ""
     }
     "panelPinned": false,                 // 记住「钉住到桌面」偏好：后续结果面板默认钉住
+    "wordLookupMode": "auto",              // auto | off | prefer；只影响文本翻译/解释
     "prompts": {                          // 空字符串 = 使用系统默认提示词
       "translate": "",
       "summarize": "",
       "explain": "",
-      "polish": ""
+      "polish": "",
+      "wordLookup": ""                     // 单词词条提示词，最多 4000 字符
     },
     "customSkills": [                     // 用户自定义技能；prompt 必填
       {
@@ -277,9 +279,9 @@ impl EngineService {
 - 运行状态记忆：用户点「启动」成功后持久化 provider.local.keepRunning=true；点「停止」置 false；应用退出只停 llama-server，不改 keepRunning。下次启动若为 true 且引擎/模型已安装，后台自动恢复引擎（日志 `restoring local engine`）并通过 state-changed 刷新设置页与托盘。
   - 未安装引擎 → 错误提示「下载 llama.cpp 引擎」；未安装模型 → 「下载/导入 GGUF」；启动前选空闲端口（TcpListener 127.0.0.1:0），`llama-server.exe -m <model> --host 127.0.0.1 --port <p> -c <ctxSize> -t <threads> -ngl <gpuLayers> --no-webui`，轮询 `/health` 最长 90s，stderr 写 `logs/llama.log`；进程退出/应用退出要清理；服务就绪后复用在线客户端逻辑。
 - 提示词（系统默认值为英文，用户可在设置里逐个技能自定义，空字符串表示用默认）：
-  - 翻译 system：`You are a professional translation engine. Translate the user's text into {target}. Output only the translation, without explanations, quotes, or the source text.`；`{target}`/`{language}` 替换为英文语言名（38 种翻译目标语言，如 Simplified Chinese / Traditional Chinese / Portuguese / Uyghur），自定义提示词若不含占位符则在末尾追加 `Target language: <name>.`。
-  - 总结 system：`You are a concise Chinese writing assistant. Summarize the user's text in Simplified Chinese and list the key points accurately, without adding anything that is not in the source.`
-  - 解释 system：`You are a knowledge assistant. Explain the user's text in Simplified Chinese, covering its meaning, background and key concepts, with short examples when helpful.`
+  - 翻译 system：`You are a professional translation engine. Translate the user's text into {target}. Output only the translation without explanations or added labels. Preserve paragraphs, lists, Markdown structure, code and placeholders; leave code and placeholders unchanged. Do not repeat the source text.`；`{target}`/`{language}` 替换为英文语言名（38 种翻译目标语言，如 Simplified Chinese / Traditional Chinese / Portuguese / Uyghur），自定义提示词若不含占位符则在末尾追加 `Target language: <name>.`。
+  - 总结 system：`You are a concise Chinese writing assistant. Summarize the user's text in Simplified Chinese in 3-5 key points. Preserve the central meaning without adding unsupported facts or repeating points.`
+  - 解释 system：`You are a knowledge assistant. Explain the user's text in Simplified Chinese: start with one sentence stating the core meaning, add at most 3 necessary points and optionally one short example. Usually use 150-250 Chinese characters; simple content should be shorter. Avoid excessive background, repetition and unrelated detail.`
   - 文本截断：翻译取前 `picker.maxChars`；总结/解释取前 8000 字符；自定义提示词归一化后最多 4000 字符。
   - 自定义技能：从 `picker.customSkills` 按 id 查找（不存在/未启用返回明确错误），`prompts::render_custom_prompt` 把 `{text}`（选中文本）、`{target}`/`{language}`（目标语言英文名）、`{program}`/`{app}`（当前应用名，空为「未知应用」）替换进提示词；未知 `{...}` 原样保留；system 为渲染后的提示词，user 为选中文本；本地模型角色使用 General；流式事件与翻译一致。
   - 内置润色：`prompts::polish_messages(text, custom)` 优先使用 `picker.prompts.polish`，空则用 `DEFAULT_POLISH_PROMPT`（英文）；截断 `picker.maxChars`；General 角色；流式事件与翻译一致。
@@ -385,7 +387,10 @@ pub struct SelectionService {
 - 动态追问时序：主回答收到首个非空 chunk 后启动建议预取；每次最多 3 条。主回答或本轮追问完成时，已有预取结果立即展示，否则最多等待 3000 ms；超时取消并静默丢弃迟到结果，不显示固定建议。该截止仅限制前端等待时间，不保证实机模型能在 3 秒内成功生成建议。多轮追问继续保留原文、初始回答与历史；建议生成另用精简上下文（原文和初始回答各最多 800 字符，最近 6 轮每段最多 500 字符，总计最多 3000 字符，输出最多 80 tokens），普通多轮追问预算保持不变。
 - 在线建议使用已配置的在线模型；本地仅使用手动选择且完整安装的 Qwen3.5 本地模型。`picker-data.config.suggestionsAvailable` 在线按 API 配置判断，本地按所选模型与安装完整性判断；截图入口同样提供该字段。仅当字段严格为 `true` 时展示建议区与追问入口，否则静默隐藏、无提示、不调用建议模型。建议生成失败、取消或解析失败返回空列表，前端不显示错误。
 - 建议 `requestId` 独立于主回答流，`cancel_followups` 取消对应任务；新 AI 请求等待旧建议取消。关闭、隐藏、换任务或切换语言使旧建议失效；迟到回包须同时通过会话、请求版本及轮次检查。同轮缓存建议，每轮成功回答后失效并刷新。
-- 单个单词按源语言处理：英文单词输出英语 IPA + 释义/用法；中文词语输出拼音 + 释义/用法（不输出英语音标）；其他语言只做普通翻译，不附加词典信息。词典释义语言跟随目标语言；解释技能固定中文释义。追问建议与其他 AI 技能一致，由模型动态生成，点击即发送 follow-up。
+- 文本翻译/解释单词路由：`off` 始终普通任务；`auto` 对应 translate/explain 非空覆写优先，否则候选词进入词条；`prefer` 候选词优先词条。词条使用 `picker.prompts.wordLookup`，空则新默认。普通任务自定义优先默认。截图与自定义技能不参与候选分流，截图非空提示词保留原行为。迁移只新增默认字段，不把历史提示词（包括旧默认文案）清空。
+- 候选不代表有效单词：ASCII 1–40 字母及撇号/连字符，排除代码形状；纯汉字至多 4 字且无常见句子标记才候选。中文切词仅启发式，长短句、空格、标点、URL、下划线及 camelCase 代码标识不走词条。`carzy` 仍是候选，默认提示要求先提示疑似错拼并询问，禁止编造释义。
+- 单词默认只给词头、至多 3 个常见义项、可选 1 个短例；禁止模型生成 IPA、拼音或读音章节。读音由独立离线查表提供。解释默认一句核心含义、至多 3 要点、可选 1 例，通常 150–250 中文字符，简单内容更短；总结 3–5 点，润色只给结果，OCR 完整逐字转录且无解释长度限制。长度由提示词引导，不截断正文。
+- `prompts::resolve_text_prompt(action, text, target, custom, wordLookupMode, wordLookup)` 返回 `ResolvedPrompt { system, user, mode, prompt_source, prompt_version }`；模式为 translate/explain/summarize/word_lookup，来源为 default/custom，提示词版本为 8。日志直接使用解析结果，禁止自行重新分类。`default_prompts()` 保留既有字段并新增 `wordLookup`。
   - 目标语言下拉从 `LP.LANGUAGES`（38 种翻译目标语言）动态生成，不再硬编码 option。
   - 菜单「划词设置…」→ `invoke("picker_open_settings")`；「在此应用中禁用」「禁用划词工具」→ 对应命令。
 - 初始尺寸 440×56，白色卡片边缘透明；`picker_ready` 在 DOM 就绪后调用一次。
@@ -820,3 +825,13 @@ editor.renderToPng(rectCss) -> string|null
 - **Esc 取消**：抓帧线程每轮用 `GetAsyncKeyState(VK_ESCAPE)` 轮询（低位标志保留按下事件，40~500ms 轮询不会漏），长截图期间按 **Esc 立即取消**并恢复截图 overlay（overlay 是 click-through，收不到键盘事件，必须全局轮询）。
 - **长图钉图取整修复**：`create_pin` 的窗口高度改由"窗口宽 × 图片宽高比"推导（不再两侧独立取整），消除了整图适配时底部被裁 4~5px、误判出现滚动条的问题。
 - 验收：`tests/e2e-longshot.ps1` —— 预览固定宽 560、蓝框 `rgb(79,70,229)`/2px、无任何提示 DOM；自动滚动 5 秒 `frames` 1→8 且按钮 `aria-pressed=true`/文字「停止滚动」；手动滚动继续到 19 帧；完成后 pin 图片高 = 窗口高且无滚动条；重建长截图后按 Esc 两个长截图窗口消失（`ESC_CANCEL_WORKED=True`）。
+
+
+### schema 8：独立读音与生成保护补充契约
+
+- `lookup_pronunciation({text: string}) -> {ok: true, result}` 不调用模型。`result` 含 `status`（`Verified|Unknown|Ambiguous|NotApplicable`）、可空的 `notation`（`ipa|pinyin`）、`value`、`locale`、`source`、`dataVersion`；歧义结果带 `candidates`，但 `value=null`。仅 `Verified` 展示，其余状态和失败静默省略；精确命中不等同于词典绝无错误。
+- 英文使用固定版本 IPA 词典；中文为 43 条人工核验整词词表，含银行、重庆等，不覆盖任意中文，不以单字拼音拼接未知词。`carzy` 等未知拼写不返回读音；默认单词提示词要求先确认疑似错拼，不编造定义，且禁止模型生成音标/拼音章节。数据版本、授权和来源见 `THIRD_PARTY.md`。
+- 读音与 Markdown 正文独立展示；复制包含读音，朗读只读正文。新请求、关闭或隐藏使旧读音响应失效，迟到结果不得覆盖当前会话。
+- 本地/在线默认任务有效输出预算为 `min(用户上限, 任务预算)`：`word_lookup=384`、`explain/vision_explain=512`、`summarize=768` tokens。翻译、润色、自定义提示词、自由追问和 OCR 沿用用户上限；不改写配置。日志记录 `effective_max_tokens` 及实际模式、来源、版本，不记录正文。
+- 前端累计流式正文检测跨 chunk 重复，覆盖翻译单词场景及其他 AI 技能；连续重复段落/列表项至少 3 次、周期重复至少 4 次触发，翻译/润色参考原文合法重复。行内/围栏/缩进代码、表格和引用受保护，OCR 豁免。中止时保留首份内容、取消后端请求，前端标记 `finishReason=repetition`、`partial=true`，提示“检测到重复输出，已停止”；迟到事件不得覆盖终态。此标记不代表后端事件协议新增结束原因。
+- 上述长度目标和保守循环检测不构成模型质量保证。自动化测试不能证明任意真实模型不会编造释义或循环；需另做本地、在线真实模型冒烟。

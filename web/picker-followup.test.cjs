@@ -69,7 +69,7 @@ function harness(available = true, streamOnly = false) {
     },
   });
   for (const name of ["cancelFollowupSuggestions", "runAfterSuggestions", "syncFollowupOverlay", "resetFollowup", "invalidateFollowupSuggestions",
-    "showPrefetchedSuggestions", "finishFollowupSuggestions", "handleTranslateEvent", "refreshFollowupSuggestions", "setFollowupSuggestions", "enableFollowup", "setFollowupBusy",
+    "showPrefetchedSuggestions", "finishFollowupSuggestions", "guardRepetition", "handleTranslateEvent", "refreshFollowupSuggestions", "setFollowupSuggestions", "enableFollowup", "setFollowupBusy",
     "submitFollowup", "finishFollowup", "failFollowup", "finishTranslation", "resetForHidden", "closePanel"])
     vm.runInContext(extract(name), context);
   // Legacy completion tests model an already received final chunk.
@@ -204,6 +204,26 @@ test("failed follow-up retry appends history only on success", async () => {
   assert.equal(state.followupHistory[0].question, "问题");
   assert.equal(state.initialAnswer, "初始回答");
   await flush();
+});
+
+test("old failed retry clicks preserve its block while another round is busy", async () => {
+  const { context, state, calls } = harness();
+  context.enableFollowup({ kind: "translate", raw: "初始回答" });
+  context.submitFollowup("旧问题");
+  await flush();
+  const failed = context.activeRequest;
+  context.panelBody.appendChild(failed.block);
+  context.failFollowup(failed, "offline");
+  const retry = failed.block.children[0].children.at(-1);
+  context.submitFollowup("新问题");
+  await flush();
+  const current = context.activeRequest, count = calls.length;
+  retry.click(); retry.click();
+  assert.equal(state.followupBusy, true);
+  assert.equal(context.activeRequest, current);
+  assert.equal(failed.block.parentNode, context.panelBody);
+  assert.equal(calls.length, count);
+  assert.equal(state.followupHistory.length, 0);
 });
 
 test("image follow-up preserves initial context and rejects the previous round's suggestions", async () => {

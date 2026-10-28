@@ -352,7 +352,7 @@
         license: "MIT",
       },
       settings: {
-        version: 7,
+        version: 8,
         picker: {
           enabled: true,
           skills: ["translate", "summarize", "explain", "polish", "read", "copy", "screenshot", "search"],
@@ -360,7 +360,8 @@
           defaultTargetLang: "auto",
           blacklist: ["vscode.exe"],
           maxChars: 5000,
-          prompts: { translate: "", summarize: "", explain: "", polish: "" },
+          wordLookupMode: "auto",
+          prompts: { translate: "", summarize: "", explain: "", polish: "", wordLookup: "" },
           customSkills: [],
           searchEngine: "google",
           panelMode: "auto",
@@ -424,19 +425,20 @@
       picker: { visible: false, pinned: false },
       loginItem: { supported: !portable, enabled: false },
       promptDefaults: {
+        wordLookup: "You are a careful dictionary assistant. Explain the candidate word in {target} using concise Markdown: the headword, at most 3 common meanings and optionally one short example. A candidate is not necessarily a valid word. For a suspected misspelling, first say it may be misspelled and ask whether the user meant the suggested spelling; do not present a guess as a definition or invent meanings. If uncertain, say so briefly. Do not generate IPA, pinyin, phonetic transcriptions or pronunciation sections; the application provides verified pronunciation separately. Do not add usage essays, background or repeated content.",
         translate:
-          "You are a professional translation engine. Translate the user's text into {target}. Output only the translation, without explanations, quotes, or the source text.",
+          "You are a professional translation engine. Translate the user's text into {target}. Output only the translation without explanations or added labels. Preserve paragraphs, lists, Markdown structure, code and placeholders; leave code and placeholders unchanged. Do not repeat the source text.",
         summarize:
-          "You are a concise Chinese writing assistant. Summarize the user's text in Simplified Chinese and list the key points accurately, without adding anything that is not in the source.",
+          "You are a concise Chinese writing assistant. Summarize the user's text in Simplified Chinese in 3-5 key points. Preserve the central meaning without adding unsupported facts or repeating points.",
         explain:
-          "You are a knowledge assistant. Explain the user's text in Simplified Chinese, covering its meaning, background and key concepts, with short examples when helpful.",
+          "You are a knowledge assistant. Explain the user's text in Simplified Chinese: start with one sentence stating the core meaning, add at most 3 necessary points and optionally one short example. Usually use 150-250 Chinese characters; simple content should be shorter. Avoid excessive background, repetition and unrelated detail.",
         polish:
-          "You are a professional editor. Polish the user's text so it reads naturally and fluently while keeping the original meaning. Output only the polished text, without explanations, quotes, or the source text.",
+          "You are a professional editor. Polish the user's text naturally while preserving its meaning, paragraphs, code and placeholders. Output only the polished result, without explanations, added labels or the source text.",
         // Screenshot toolbar actions (contract §4 `picker.capturePrompts`).
         captureTranslate:
-          "You are a professional translation engine. Translate the user's text into {target}. Output only the translation, without explanations, quotes, or the source text.",
+          "You are a professional translation engine. Translate the user's text into {target}. Output only the translation without explanations or added labels. Preserve paragraphs, lists, Markdown structure, code and placeholders; leave code and placeholders unchanged. Do not repeat the source text.",
         captureExplain:
-          "You are a vision assistant. Explain the content, the visible text and the key details of the image in Simplified Chinese, using Markdown. Do not invent information that is not in the image.",
+          "You are a vision assistant. Explain the image in Simplified Chinese using Markdown: one sentence for the main subject, at most 3 key points and optionally one short example. Usually use 150-250 Chinese characters; simple images need less. Distinguish visible facts from inference. Do not invent unreadable text or unseen details.",
       },
     };
     [
@@ -589,10 +591,13 @@
       searchEngines.indexOf(String(picker.searchEngine || "")) >= 0
         ? String(picker.searchEngine)
         : "google";
+    settings.version = 8;
+    picker.wordLookupMode = String(picker.wordLookupMode || "").trim().toLowerCase();
+    picker.wordLookupMode = ["off", "prefer"].indexOf(picker.wordLookupMode) >= 0 ? picker.wordLookupMode : "auto";
     var promptStore =
       picker.prompts && typeof picker.prompts === "object" ? picker.prompts : {};
     picker.prompts = {};
-    ["translate", "summarize", "explain", "polish"].forEach(function (id) {
+    ["translate", "summarize", "explain", "polish", "wordLookup"].forEach(function (id) {
       picker.prompts[id] = String(promptStore[id] || "").trim().slice(0, 4000);
     });
     if (settings.provider.mode !== "local") {
@@ -790,6 +795,7 @@
           defaultTargetLang: picker.defaultTargetLang || "auto",
           searchEngine: picker.searchEngine || "google",
           panelMode: picker.panelMode === "scroll" ? "scroll" : "auto",
+          wordLookupMode: picker.wordLookupMode || "auto",
           panelPinned: panelPinned,
           suggestionsAvailable: mockSuggestionsAvailable(),
         },
@@ -1458,6 +1464,13 @@
           width: Number(args.width) || 0,
           height: Number(args.height) || 0,
         };
+      case "lookup_pronunciation": {
+        var word = String(args.text || "").trim();
+        var entry = word.toLowerCase() === "crazy" ? ["ipa", "/kreɪzi/"] : word === "银行" ? ["pinyin", "yín háng"] : null;
+        return { ok: true, result: entry
+          ? { status: "Verified", notation: entry[0], value: entry[1], source: "Local dictionary" }
+          : { status: "Unknown", notation: null, value: null } };
+      }
       case "picker_copy":
         console.info("[mock] 复制到剪贴板：", String(args.text || "").slice(0, 80));
         return { ok: true };
@@ -1964,6 +1977,9 @@
     },
     openSettings: function () {
       return safeInvoke("picker_open_settings", {});
+    },
+    lookupPronunciation: function (text) {
+      return safeInvoke("lookup_pronunciation", { text: String(text == null ? "" : text) });
     },
     translate: function (requestId, text, targetLang) {
       return safeInvoke("picker_translate", {

@@ -578,6 +578,7 @@ pub(crate) fn picker_config(settings: &Settings) -> serde_json::Value {
         // Panel sizing mode: "auto" grows with content, "scroll" keeps a
         // fixed window and scrolls the panel body.
         "panelMode": &settings.picker.panel_mode,
+        "wordLookupMode": &settings.picker.word_lookup_mode,
         // Only enabled custom skills are sent to the picker; the full
         // definition (including the prompt) stays in settings.
         "customSkills": enabled_custom_skill_metadata(settings),

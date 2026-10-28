@@ -226,6 +226,8 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_state,
+            commands::lookup_pronunciation,
+            commands::pronunciation_licenses,
             commands::update_settings,
             commands::reset_settings,
             commands::test_online,

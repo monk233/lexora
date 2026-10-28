@@ -2036,3 +2036,8 @@ textarea {
 
 /* Keep model actions readable when deletion requires confirmation. */
 .model-card > .btn-danger { min-width: 72px; }
+
+/* Standalone dictionary editor aligns with the settings field column. */
+#word-lookup-prompt .skill-prompt {
+  margin: 0;
+}

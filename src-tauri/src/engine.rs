@@ -36,6 +36,7 @@ mod llama;
 pub(crate) mod models;
 mod openai;
 mod prompts;
+pub mod pronunciation;
 
 pub use llama::LocalState;
 pub use prompts::{
@@ -64,6 +65,57 @@ const DOWNLOAD_READ_TIMEOUT: Duration = Duration::from_secs(120);
 /// Local requests have no total timeout (model prefill can be slow on CPUs), so
 /// only the "waiting for headers" phase is bounded.
 const LOCAL_HEADER_TIMEOUT_MS: u64 = 300_000;
+
+/// Request-only limits: never raise the user's limit or persist a task budget.
+fn effective_max_tokens(user_max_tokens: u32, mode: &str, prompt_source: &str) -> u32 {
+    let budget = match (prompt_source, mode) {
+        ("default", "word_lookup") => 384,
+        ("default", "explain" | "vision_explain") => 512,
+        ("default", "summarize") => 768,
+        _ => user_max_tokens,
+    };
+    user_max_tokens.min(budget)
+}
+
+fn request_config(
+    config: &openai::OnlineConfig,
+    mode: &str,
+    prompt_source: &str,
+) -> openai::OnlineConfig {
+    let mut request = config.clone();
+    request.max_tokens = effective_max_tokens(config.max_tokens, mode, prompt_source);
+    request
+}
+
+fn prompt_log_detail(mode: &str, prompt_source: &str) -> String {
+    format!(
+        "mode={mode} prompt_source={prompt_source} prompt_version={}",
+        prompts::PROMPT_VERSION
+    )
+}
+
+fn prompt_source(custom: &str) -> &'static str {
+    if custom.trim().is_empty() {
+        "default"
+    } else {
+        "custom"
+    }
+}
+
+fn one_chunk_stream(text: String) -> BoxStream<'static, Result<String, EngineError>> {
+    Box::pin(futures_util::stream::iter(std::iter::once(Ok::<
+        String,
+        EngineError,
+    >(text))))
+}
+
+fn vision_prompt_metadata(system: &str) -> (&'static str, &'static str) {
+    match system.trim() {
+        "" | DEFAULT_EXPLAIN_IMAGE_PROMPT => ("vision_explain", "default"),
+        DEFAULT_OCR_PROMPT => ("ocr", "default"),
+        _ => ("vision", "custom"),
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -687,7 +739,7 @@ impl EngineService {
                 format!("online:{}", config.preset)
             },
             model: config.model.clone(),
-            detail,
+            detail: format!("{detail} effective_max_tokens={}", config.max_tokens),
             started: Instant::now(),
         };
         meta.logger.info(&format!(
@@ -920,7 +972,7 @@ impl EngineService {
         let id = self.model_call_seq.fetch_add(1, Ordering::Relaxed);
         let provider = if config.local { "local" } else { "online" };
         let started = Instant::now();
-        self.model_logger.info(&format!("model call start: id={id} operation=generate_followups provider={provider} model={} input_chars={input_chars} history={}", config.model, history.len()));
+        self.model_logger.info(&format!("model call start: id={id} operation=generate_followups provider={provider} model={} input_chars={input_chars} history={} effective_max_tokens=64 {}", config.model, history.len(), prompt_log_detail("generate_followups", "default")));
         let timeout = Duration::from_millis(config.timeout_ms.clamp(5_000, 300_000));
         let result = task
             .task
@@ -983,6 +1035,90 @@ impl EngineService {
 
     // -- translation -------------------------------------------------------- //
 
+    async fn structured_word_lookup_stream(
+        &self,
+        settings: &Settings,
+        role: LocalRole,
+        resolved: &prompts::ResolvedPrompt,
+        word: &str,
+        target: &str,
+        operation: &str,
+    ) -> Result<BoxStream<'static, Result<String, EngineError>>, EngineError> {
+        let pronunciation = pronunciation::lookup(word);
+        if pronunciation.status == pronunciation::PronunciationStatus::Unknown {
+            if let Some(suggestion) = pronunciation.suggestion.as_deref() {
+                return Ok(one_chunk_stream(format!(
+                    "**疑似拼写错误**\n\n是否指 **{suggestion}**？"
+                )));
+            }
+        }
+        let facts = match pronunciation.status {
+            pronunciation::PronunciationStatus::Verified => {
+                let locale = pronunciation.locale.as_deref().unwrap_or("unknown");
+                let notation = pronunciation.notation.as_deref().unwrap_or("reading");
+                let value = pronunciation.value.as_deref().unwrap_or_default();
+                if locale.starts_with("zh") {
+                    format!("APPLICATION FACTS: the input is a confirmed Chinese word; its verified pinyin is `{value}`. Do not claim it is misspelled and do not output pinyin or any pronunciation section; the application renders it separately.")
+                } else {
+                    format!("APPLICATION FACTS: the input has an exact offline dictionary entry with verified {notation} `{value}`. Do not generate or repeat pronunciation; the application renders it separately.")
+                }
+            }
+            pronunciation::PronunciationStatus::Ambiguous => "APPLICATION FACTS: multiple readings exist and none are confirmed for this context. Do not output IPA, pinyin or another pronunciation section.".into(),
+            pronunciation::PronunciationStatus::Unknown if word.chars().all(pronunciation::is_han) => "APPLICATION FACTS: no verified pronunciation is available for this Chinese candidate. Do not infer that it is misspelled and do not output pinyin or a pronunciation section.".into(),
+            _ => "APPLICATION FACTS: no verified pronunciation is available. Do not invent IPA, pinyin or a pronunciation section; if the input is not a confirmed word, use kind=uncertain rather than inventing meanings.".into(),
+        };
+        let messages = vec![
+            json!({"role": "system", "content": format!("{}\n\n{}", resolved.system, facts)}),
+            json!({"role": "user", "content": resolved.user}),
+        ];
+        let config = self.chat_config(settings, role).await?;
+        let config = request_config(&config, resolved.mode, resolved.prompt_source);
+        let timeout = Duration::from_millis(config.timeout_ms.clamp(5_000, 300_000));
+        let started = Instant::now();
+        self.model_logger.info(&format!(
+            "model call start: operation={} provider={} model={} input_chars={} target={} effective_max_tokens={} {}",
+            operation,
+            if config.local { "local" } else { "online" },
+            config.model,
+            word.chars().count(),
+            target,
+            config.max_tokens,
+            prompt_log_detail(resolved.mode, resolved.prompt_source)
+        ));
+        let result =
+            openai::chat_completion(&self.http, &config, messages, config.max_tokens, timeout)
+                .await;
+        match result {
+            Ok(raw) => {
+                let parsed = prompts::parse_word_lookup_markdown(&raw);
+                let output = parsed.unwrap_or_else(|| {
+                    "未能在本地生成可靠的词条，请检查拼写或稍后重试。".to_string()
+                });
+                self.model_logger.info(&format!(
+                    "model call done: operation={} provider={} model={} elapsed_ms={} output_chars={} status={} parse_ok={}",
+                    operation,
+                    if config.local { "local" } else { "online" },
+                    config.model,
+                    started.elapsed().as_millis(),
+                    output.chars().count(),
+                    if output.starts_with("未能") { "empty" } else { "success" },
+                    !output.starts_with("未能")
+                ));
+                Ok(one_chunk_stream(output))
+            }
+            Err(error) => {
+                self.model_logger.warn(&format!(
+                    "model call failed: operation={} provider={} model={} elapsed_ms={} status=error",
+                    operation,
+                    if config.local { "local" } else { "online" },
+                    config.model,
+                    started.elapsed().as_millis()
+                ));
+                Err(error)
+            }
+        }
+    }
+
     pub async fn translate_stream(
         &self,
         text: &str,
@@ -998,43 +1134,51 @@ impl EngineService {
         }
         let truncated = prompts::truncate_chars(cleaned, settings.picker.max_chars as usize);
         let target = prompts::resolve_target_lang(target_lang, &truncated);
-        // A single English word gets a dictionary entry instead of a plain
-        // translation; the entry is localized to the requested target language.
-        let dictionary = prompts::is_single_word(&truncated);
-        let (system, user) = prompts::translate_or_dictionary_messages(
+        let resolved = prompts::resolve_text_prompt(
+            "translate",
             &truncated,
             &target,
             &settings.picker.prompts.translate,
-        );
+            &settings.picker.word_lookup_mode,
+            &settings.picker.prompts.word_lookup,
+        )?;
+        if resolved.mode == "word_lookup" && resolved.prompt_source == "default" {
+            return self
+                .structured_word_lookup_stream(
+                    &settings,
+                    LocalRole::Translate,
+                    &resolved,
+                    &truncated,
+                    &target,
+                    "translate_word_lookup",
+                )
+                .await;
+        }
+        let (system, user) = (&resolved.system, &resolved.user);
         let messages = vec![
             json!({"role": "system", "content": system}),
             json!({"role": "user", "content": user}),
         ];
         let config = self.chat_config(&settings, LocalRole::Translate).await?;
+        let config = request_config(&config, resolved.mode, resolved.prompt_source);
         self.logger.info(&format!(
-            "translate stream start: provider={} model={} chars={} target={} mode={}",
+            "translate stream start: provider={} model={} chars={} target={} mode={} prompt_source={} prompt_version={}",
             if config.local { "local" } else { "online" },
             config.model,
             truncated.chars().count(),
             target,
-            if dictionary {
-                "dictionary"
-            } else {
-                "translate"
-            }
+            resolved.mode, resolved.prompt_source, resolved.prompt_version
         ));
         self.logged_stream(
             "translate",
             &config,
             format!(
-                "input_chars={} target={} mode={}",
+                "input_chars={} target={} mode={} prompt_source={} prompt_version={}",
                 truncated.chars().count(),
                 target,
-                if dictionary {
-                    "dictionary"
-                } else {
-                    "translate"
-                }
+                resolved.mode,
+                resolved.prompt_source,
+                resolved.prompt_version
             ),
             messages,
         )
@@ -1043,8 +1187,7 @@ impl EngineService {
 
     /// Streams the translation of a screenshot region's text with the
     /// screenshot-specific system prompt (`picker.capturePrompts.translate`).
-    /// An empty prompt falls back to the normal text translation pipeline
-    /// (single-word dictionary handling included).
+    /// An empty screenshot override uses ordinary translation, without word lookup.
     pub async fn translate_stream_with_prompt(
         &self,
         text: &str,
@@ -1052,9 +1195,6 @@ impl EngineService {
         custom_prompt: &str,
     ) -> Result<BoxStream<'static, Result<String, EngineError>>, EngineError> {
         let custom = custom_prompt.trim();
-        if custom.is_empty() {
-            return self.translate_stream(text, target_lang).await;
-        }
         let settings = self.settings.get();
         let cleaned = text.trim();
         if cleaned.is_empty() {
@@ -1072,19 +1212,21 @@ impl EngineService {
         ];
         let config = self.chat_config(&settings, LocalRole::Translate).await?;
         self.logger.info(&format!(
-            "screenshot translate stream start: provider={} model={} chars={} target={} custom_prompt=true",
+            "screenshot translate stream start: provider={} model={} chars={} target={} custom_prompt={}",
             if config.local { "local" } else { "online" },
             config.model,
             truncated.chars().count(),
-            target
+            target, !custom.is_empty()
         ));
         self.logged_stream(
             "screenshot_translate",
             &config,
             format!(
-                "input_chars={} target={} custom_prompt=true",
+                "input_chars={} target={} custom_prompt={} {}",
                 truncated.chars().count(),
-                target
+                target,
+                !custom.is_empty(),
+                prompt_log_detail("translate", prompt_source(custom))
             ),
             messages,
         )
@@ -1115,9 +1257,11 @@ impl EngineService {
             LocalRole::General
         };
         let config = self.chat_config(&settings, role).await?;
+        let (mode, source) = vision_prompt_metadata(system);
+        let config = request_config(&config, mode, source);
         let instruction = system.trim();
         let system_content = if instruction.is_empty() {
-            "请用简体中文解释这张截图的内容、文字信息和关键细节，使用 Markdown。"
+            DEFAULT_EXPLAIN_IMAGE_PROMPT
         } else {
             instruction
         };
@@ -1140,7 +1284,11 @@ impl EngineService {
         self.logged_stream(
             "vision",
             &config,
-            format!("image_bytes={}", image_data_url.len()),
+            format!(
+                "image_bytes={} {}",
+                image_data_url.len(),
+                prompt_log_detail(mode, source)
+            ),
             messages,
         )
         .await
@@ -1197,9 +1345,10 @@ impl EngineService {
             "vision_followup",
             &config,
             format!(
-                "image_bytes={} history={}",
+                "image_bytes={} history={} {}",
                 image_data_url.len(),
-                recent_count
+                recent_count,
+                prompt_log_detail("vision_followup", "default")
             ),
             messages,
         )
@@ -1236,7 +1385,11 @@ impl EngineService {
         self.logged_stream(
             "polish",
             &config,
-            format!("input_chars={}", truncated.chars().count()),
+            format!(
+                "input_chars={} {}",
+                truncated.chars().count(),
+                prompt_log_detail("polish", prompt_source(&settings.picker.prompts.polish))
+            ),
             messages,
         )
         .await
@@ -1299,9 +1452,10 @@ impl EngineService {
             "custom_skill",
             &config,
             format!(
-                "skill={} input_chars={}",
+                "skill={} input_chars={} {}",
                 skill_id,
-                truncated.chars().count()
+                truncated.chars().count(),
+                prompt_log_detail("custom_skill", "custom")
             ),
             messages,
         )
@@ -1327,28 +1481,49 @@ impl EngineService {
             "explain" | "解释" => settings.picker.prompts.explain.as_str(),
             _ => "",
         };
-        // `explain` on a single English word becomes a dictionary entry;
-        // `summarize` keeps its normal prompt.
-        let (system, user) =
-            prompts::assist_or_dictionary_messages(action, &truncated, custom_prompt)?;
+        let resolved = prompts::resolve_text_prompt(
+            action,
+            &truncated,
+            "zh",
+            custom_prompt,
+            &settings.picker.word_lookup_mode,
+            &settings.picker.prompts.word_lookup,
+        )?;
+        if resolved.mode == "word_lookup" && resolved.prompt_source == "default" {
+            return self
+                .structured_word_lookup_stream(
+                    &settings,
+                    LocalRole::General,
+                    &resolved,
+                    &truncated,
+                    "zh",
+                    "assist_word_lookup",
+                )
+                .await;
+        }
+        let (system, user) = (&resolved.system, &resolved.user);
         let messages = vec![
             json!({"role": "system", "content": system}),
             json!({"role": "user", "content": user}),
         ];
         let config = self.chat_config(&settings, LocalRole::General).await?;
+        let config = request_config(&config, resolved.mode, resolved.prompt_source);
         self.logger.info(&format!(
-            "assist stream start: action={} provider={} chars={}",
+            "assist stream start: action={} provider={} chars={} mode={} prompt_source={} prompt_version={}",
             action,
             if config.local { "local" } else { "online" },
-            truncated.chars().count()
+            truncated.chars().count(), resolved.mode, resolved.prompt_source, resolved.prompt_version
         ));
         self.logged_stream(
             "assist",
             &config,
             format!(
-                "action={} input_chars={}",
+                "action={} input_chars={} mode={} prompt_source={} prompt_version={}",
                 action,
-                truncated.chars().count()
+                truncated.chars().count(),
+                resolved.mode,
+                resolved.prompt_source,
+                resolved.prompt_version
             ),
             messages,
         )
@@ -1389,7 +1564,12 @@ impl EngineService {
         self.logged_stream(
             "followup",
             &config,
-            format!("input_chars={} history={}", user_chars, history.len()),
+            format!(
+                "input_chars={} history={} {}",
+                user_chars,
+                history.len(),
+                prompt_log_detail("followup", "default")
+            ),
             messages,
         )
         .await
@@ -1410,22 +1590,34 @@ impl EngineService {
             "explain" | "解释" => settings.picker.prompts.explain.as_str(),
             _ => "",
         };
-        let (system, user) = prompts::assist_messages(action, &truncated, custom_prompt)?;
+        let resolved = prompts::resolve_text_prompt(
+            action,
+            &truncated,
+            "zh",
+            custom_prompt,
+            &settings.picker.word_lookup_mode,
+            &settings.picker.prompts.word_lookup,
+        )?;
         let messages = vec![
-            json!({"role": "system", "content": system}),
-            json!({"role": "user", "content": user}),
+            json!({"role": "system", "content": resolved.system}),
+            json!({"role": "user", "content": resolved.user}),
         ];
         let config = self.chat_config(&settings, LocalRole::General).await?;
-        let max_tokens = settings.provider.online.max_tokens.clamp(256, 1024);
+        let config = request_config(&config, resolved.mode, resolved.prompt_source);
         let timeout = Duration::from_millis(config.timeout_ms.clamp(5_000, 300_000));
-        self.logger.info(&format!(
-            "assist start: action={} provider={} chars={}",
+        self.model_logger.info(&format!(
+            "model call start: operation=assist action={} provider={} input_chars={} effective_max_tokens={} mode={} prompt_source={} prompt_version={}",
             action,
             if config.local { "local" } else { "online" },
-            truncated.chars().count()
+            truncated.chars().count(),
+            config.max_tokens,
+            resolved.mode,
+            resolved.prompt_source,
+            resolved.prompt_version
         ));
         let result =
-            openai::chat_completion(&self.http, &config, messages, max_tokens, timeout).await;
+            openai::chat_completion(&self.http, &config, messages, config.max_tokens, timeout)
+                .await;
         match &result {
             Ok(answer) => self
                 .logger
@@ -2523,6 +2715,232 @@ fn extract_engine_zip(zip_path: &Path, engine_dir: &Path) -> Result<(), EngineEr
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn task_budgets_never_raise_user_limits_or_reduce_custom_requests() {
+        for (mode, budget) in [
+            ("word_lookup", 384),
+            ("explain", 512),
+            ("vision_explain", 512),
+            ("summarize", 768),
+        ] {
+            assert_eq!(effective_max_tokens(64, mode, "default"), 64);
+            assert_eq!(effective_max_tokens(8192, mode, "default"), budget);
+            assert_eq!(effective_max_tokens(8192, mode, "custom"), 8192);
+        }
+        for mode in [
+            "translate",
+            "polish",
+            "ocr",
+            "followup",
+            "vision_followup",
+            "custom_skill",
+        ] {
+            assert_eq!(effective_max_tokens(8192, mode, "default"), 8192);
+            assert_eq!(effective_max_tokens(64, mode, "custom"), 64);
+        }
+    }
+
+    #[test]
+    fn misspelled_english_word_returns_a_safe_hint_without_loading_a_model() {
+        let env = test_env();
+        let settings = env.store.get();
+        let resolved = prompts::ResolvedPrompt {
+            system: prompts::DEFAULT_WORD_LOOKUP_PROMPT.to_string(),
+            user: "carzy".to_string(),
+            mode: "word_lookup",
+            prompt_source: "default",
+            prompt_version: prompts::PROMPT_VERSION,
+        };
+        let mut stream = block_on(env.service.structured_word_lookup_stream(
+            &settings,
+            LocalRole::Translate,
+            &resolved,
+            "carzy",
+            "zh",
+            "test_word_lookup",
+        ))
+        .unwrap();
+        let output = block_on(stream.next()).unwrap().unwrap();
+        assert!(output.contains("疑似拼写错误"));
+        assert!(output.contains("crazy"));
+        assert!(!output.contains("汽车"));
+        assert_eq!(env.service.local.snapshot().state, LocalState::Stopped);
+    }
+
+    #[test]
+    fn resolved_prompt_budgets_use_the_selected_prompt_source() {
+        for (action, text, custom, lookup, word_custom, expected) in [
+            ("translate", "crazy", "", "auto", "", 384),
+            ("translate", "crazy", "Custom translation", "auto", "", 8192),
+            (
+                "translate",
+                "crazy",
+                "Custom translation",
+                "prefer",
+                "",
+                384,
+            ),
+            ("translate", "crazy", "", "prefer", "Custom lookup", 8192),
+            ("translate", "crazy", "", "off", "", 8192),
+            ("explain", "a full sentence", "", "auto", "", 512),
+            (
+                "explain",
+                "a full sentence",
+                "Custom explanation",
+                "auto",
+                "",
+                8192,
+            ),
+            ("summary", "a full sentence", "", "auto", "", 768),
+        ] {
+            let prompt =
+                prompts::resolve_text_prompt(action, text, "zh", custom, lookup, word_custom)
+                    .unwrap();
+            assert_eq!(
+                effective_max_tokens(8192, prompt.mode, prompt.prompt_source),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn request_budgets_are_identical_for_local_and_online_and_preserve_settings() {
+        let env = test_env();
+        env.store
+            .update_json(json!({"provider":{"online":{"maxTokens":8192}}}))
+            .unwrap();
+        let settings = env.store.get();
+        for local in [false, true] {
+            let mut config = env.service.online_config(&settings);
+            config.local = local;
+            for (mode, source, expected) in [
+                ("word_lookup", "default", 384),
+                ("explain", "default", 512),
+                ("vision_explain", "default", 512),
+                ("summarize", "default", 768),
+                ("explain", "custom", 8192),
+                ("translate", "default", 8192),
+                ("ocr", "default", 8192),
+                ("followup", "default", 8192),
+            ] {
+                let request = request_config(&config, mode, source);
+                assert_eq!(request.max_tokens, expected);
+                assert_eq!(request.local, local);
+                assert_eq!(request.base_url, config.base_url);
+                assert_eq!(request.model, config.model);
+                assert_eq!(request.temperature, config.temperature);
+                assert_eq!(request.timeout_ms, config.timeout_ms);
+                assert_eq!(config.max_tokens, 8192);
+            }
+        }
+        assert_eq!(env.store.get().provider.online.max_tokens, 8192);
+    }
+
+    #[test]
+    fn vision_budgets_distinguish_default_explanation_ocr_and_custom_prompts() {
+        for (system, expected) in [
+            ("", 512),
+            (DEFAULT_EXPLAIN_IMAGE_PROMPT, 512),
+            (DEFAULT_OCR_PROMPT, 8192),
+            ("Custom image instructions", 8192),
+        ] {
+            let (mode, source) = vision_prompt_metadata(system);
+            assert_eq!(effective_max_tokens(8192, mode, source), expected);
+        }
+    }
+
+    #[test]
+    fn assist_requests_send_effective_budget_and_log_metadata_without_content() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        for (streaming, user_limit, expected) in [(false, 64, 64), (true, 8192, 512)] {
+            let env = test_env();
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let started = Instant::now();
+                let mut socket = loop {
+                    match listener.accept() {
+                        Ok((socket, _)) => break socket,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(started.elapsed() < Duration::from_secs(10));
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("Mock request failed: {error}"),
+                    }
+                };
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut bytes = Vec::new();
+                let mut buffer = [0; 4096];
+                let payload = loop {
+                    let count = socket.read(&mut buffer).unwrap();
+                    assert!(count > 0);
+                    bytes.extend_from_slice(&buffer[..count]);
+                    if let Some(boundary) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&bytes[..boundary]).to_lowercase();
+                        let length: usize = headers
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length:"))
+                            .unwrap()
+                            .trim()
+                            .parse()
+                            .unwrap();
+                        if bytes.len() >= boundary + 4 + length {
+                            break serde_json::from_slice::<Value>(
+                                &bytes[boundary + 4..boundary + 4 + length],
+                            )
+                            .unwrap();
+                        }
+                    }
+                };
+                let (content_type, body) = if streaming {
+                    ("text/event-stream", "data: {\"choices\":[{\"delta\":{\"content\":\"私密回答\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".to_string())
+                } else {
+                    (
+                        "application/json",
+                        json!({"choices":[{"message":{"content":"私密回答"}}]}).to_string(),
+                    )
+                };
+                write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                payload
+            });
+            env.store.update_json(json!({
+                "provider":{"mode":"online","online":{"baseUrl":format!("http://{address}/v1"),"model":"budget-test","maxTokens":user_limit}},
+                "picker":{"wordLookupMode":"off"}
+            })).unwrap();
+            block_on(async {
+                if streaming {
+                    let mut stream = env
+                        .service
+                        .assist_stream("explain", "私密原文")
+                        .await
+                        .unwrap();
+                    while let Some(chunk) = stream.next().await {
+                        chunk.unwrap();
+                    }
+                } else {
+                    assert_eq!(
+                        env.service.assist("explain", "私密原文").await.unwrap(),
+                        "私密回答"
+                    );
+                }
+            });
+            let payload = server.join().unwrap();
+            assert_eq!(payload["max_tokens"], expected);
+            assert_eq!(payload["stream"], streaming);
+            assert_eq!(env.store.get().provider.online.max_tokens, user_limit);
+            let log = std::fs::read_to_string(env.service.model_logger.path()).unwrap();
+            assert!(log.contains(&format!("effective_max_tokens={expected}")));
+            assert!(log.contains("mode=explain prompt_source=default prompt_version=8"));
+            assert!(!log.contains("私密原文"));
+            assert!(!log.contains("私密回答"));
+        }
+    }
 
     #[test]
     fn suggestion_cancellation_waits_for_exit_and_deduplicates_ids() {

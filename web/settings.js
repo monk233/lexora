@@ -1294,6 +1294,8 @@
     var picker = state.settings.picker || {};
     setChecked(byId("picker-enabled"), picker.enabled !== false);
     setChecked(byId("picker-compact"), picker.compact === true);
+    setSelectValue(byId("word-lookup-mode"), normalizeWordLookupMode(picker.wordLookupMode));
+    renderWordLookupPrompt();
     renderPanelMode();
     renderHotkey();
     setSelectValue(byId("default-target-lang"), picker.defaultTargetLang || "auto");
@@ -2553,6 +2555,22 @@
 
   /* ---- Skill prompts --------------------------------------------------- */
 
+  function normalizeWordLookupMode(value) {
+    value = String(value || "").trim().toLowerCase();
+    return value === "off" || value === "prefer" ? value : "auto";
+  }
+
+  function saveWordLookupMode(value) {
+    save({ picker: { wordLookupMode: normalizeWordLookupMode(value) } });
+  }
+
+  function renderWordLookupPrompt() {
+    var container = byId("word-lookup-prompt");
+    if (!container || container.contains(document.activeElement)) return;
+    container.innerHTML = "";
+    container.appendChild(skillPromptPanel("wordLookup", { label: "单词查询" }));
+  }
+
   function promptCustomValue(id) {
     var prompts =
       (state && state.settings && state.settings.picker && state.settings.picker.prompts) ||
@@ -2610,7 +2628,7 @@
       el(
         "p",
         "skill-prompt-hint",
-        "留空或重置后使用系统默认提示词；translate 支持 {target} 占位符"
+        id === "wordLookup" ? "留空使用默认；支持 {target}；请勿要求模型生成音标或拼音。生效规则由单词查询模式决定。" : "留空或重置后使用系统默认提示词；translate 支持 {target} 占位符"
       )
     );
     var reset = el("button", "btn btn-ghost skill-prompt-reset", "重置为默认");
@@ -2664,7 +2682,7 @@
     flushPromptDraft(id);
     savePromptValue(id, "");
     var list = byId("skill-list");
-    var row = list && list.querySelector('[data-skill="' + id + '"]');
+    var row = id === "wordLookup" ? byId("word-lookup-prompt") : list && list.querySelector('[data-skill="' + id + '"]');
     var textarea = row && row.querySelector(".skill-prompt .textarea");
     if (textarea) {
       textarea.value = promptDefault(id);
@@ -4147,6 +4165,12 @@
       }
     });
 
+    byId("word-lookup-mode").addEventListener("change", function (event) {
+      saveWordLookupMode(event.target.value);
+    });
+    byId("word-lookup-prompt").addEventListener("click", function (event) {
+      if (event.target.closest("[data-prompt-reset]")) resetPromptValue("wordLookup");
+    });
     byId("picker-enabled").addEventListener("change", function (event) {
       save({ picker: { enabled: event.target.checked } });
     });
