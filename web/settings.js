@@ -39,11 +39,14 @@
   var state = null;
   var saveQueue = null;
   var saving = false;
+  var savePending = null;
   var saveStatusTimer = null;
   var textTimers = {};
   var textFields = [];
   var catalogOpen = false;
   var localBusy = false;
+  var localAction = "";
+  var removingModels = Object.create(null);
   var loginBusy = false;
 
   /* Region-screenshot shortcut recorder (contract §10.4): while recording the
@@ -392,27 +395,38 @@
   }
 
   function flushSaveQueue() {
-    if (saving || !saveQueue) {
-      return;
-    }
+    if (saving) return savePending;
+    if (!saveQueue) return Promise.resolve({ ok: true });
     var patch = saveQueue;
     saveQueue = null;
     saving = true;
     setSaveStatus("saving");
-    API.updateSettings(patch).then(function (result) {
-      saving = false;
+    savePending = Promise.resolve().then(function () {
+      return API.updateSettings(patch);
+    }).catch(function (error) {
+      return { ok: false, error: error.message || "未知错误" };
+    }).then(function (result) {
+      var refreshed = Promise.resolve();
       if (!result.ok) {
         setSaveStatus("error", "保存失败");
         toast("保存失败：" + (result.error || "未知错误"), "error");
-        refreshState();
+        refreshed = refreshState();
       } else {
         if (!saveQueue) {
           setSaveStatus("saved");
         }
         applyState(result.state);
       }
-      flushSaveQueue();
+      return refreshed.catch(function () {
+        // A failed refresh must not leave the save queue locked.
+      }).then(function () {
+        saving = false;
+        return flushSaveQueue();
+      }).then(function (nextResult) {
+        return result.ok ? nextResult : result;
+      });
     });
+    return savePending;
   }
 
   /* Optimistic update + save. `patch` is a settings fragment. */
@@ -804,10 +818,42 @@
         var running = engine.localState === "ready" || engine.localState === "starting" || engine.localState === "running";
         save({ provider: { local: { selectedModel: model.catalogId } } });
         if (running) {
-          toast("已更新模型选择；停止并重新启动本地引擎后生效", "info");
+          toast("已更新模型选择；重启本地引擎后生效", "info");
         }
       });
       row.appendChild(button);
+    }
+    if (model.catalogId === "") {
+      var deleteButton = el("button", "btn btn-danger", "删除");
+      deleteButton.type = "button";
+      deleteButton.disabled = !!removingModels[model.file];
+      deleteButton.setAttribute("aria-label", "删除模型：" + (model.name || model.file));
+      deleteButton.addEventListener("click", function () {
+        if (removingModels[model.file]) return;
+        armDanger(deleteButton, "确认删除", function () {
+          removingModels[model.file] = true;
+          deleteButton.disabled = true;
+          hideInlineError(byId("local-error"));
+          API.removeModel(model.file).then(function (result) {
+            return refreshState().then(function () {
+              if (result.ok) toast("模型已删除", "success");
+              else showInlineError(byId("local-error"), result.error || "删除模型失败", result.hint || "");
+            });
+          }).catch(function (error) {
+            showInlineError(byId("local-error"), error.message || "删除模型失败");
+          }).finally(function () {
+            delete removingModels[model.file];
+            var list = byId("local-models");
+            if (list) Array.prototype.forEach.call(list.children, function (item) {
+              if (item.getAttribute("data-file") === model.file) {
+                var button = item.querySelector(".btn-danger");
+                if (button) button.disabled = false;
+              }
+            });
+          });
+        });
+      });
+      row.appendChild(deleteButton);
     }
     return row;
   }
@@ -1012,12 +1058,13 @@
     }
   }
 
-  function renderLocalState() {
+  function renderLocalState(preserveError) {
     var engine = state.engine || {};
     var localState = engine.localState || "stopped";
     var badge = byId("local-state-badge");
     var startButton = byId("start-local");
     var stopButton = byId("stop-local");
+    var restartButton = byId("restart-local");
 
     var tone = "muted";
     var label = "未启动";
@@ -1037,7 +1084,12 @@
     }
 
     var running = localState === "ready" || localState === "starting" || localState === "running";
-    setHidden(startButton, running);
+    setHidden(startButton, running || localAction === "restart");
+    setHidden(restartButton, !running && localAction !== "restart");
+    if (restartButton) {
+      restartButton.disabled = localBusy || localState === "starting";
+      restartButton.textContent = localAction === "restart" ? "重启中…" : "重启";
+    }
     setHidden(stopButton, !running);
     if (startButton) {
       startButton.disabled = localBusy;
@@ -1050,7 +1102,7 @@
     var hintNode = byId("local-state-hint");
     if (hintNode) {
       if (localState === "ready" || localState === "running") {
-        hintNode.textContent = "模型已加载；更改模型选择后，需停止并重新启动本地引擎。";
+        hintNode.textContent = "模型已加载；更改模型选择后，需重启本地引擎。";
       } else if (localState === "starting") {
         hintNode.textContent = "正在加载模型…";
       } else {
@@ -1061,7 +1113,7 @@
     }
 
     var errorNode = byId("local-error");
-    if (errorNode) {
+    if (errorNode && !preserveError) {
       if (engine.localError) {
         showInlineError(errorNode, engine.localError);
       } else {
@@ -3853,43 +3905,44 @@
     });
   }
 
-  function startLocal() {
-    if (localBusy) {
-      return;
-    }
+  function runLocalAction(action, invoke, fallback) {
+    if (localBusy) return;
     localBusy = true;
+    localAction = action;
     hideInlineError(byId("local-error"));
     renderLocalState();
-    API.startLocal().then(function (result) {
+    return Promise.resolve().then(invoke).then(function (result) {
+      return refreshState().then(function () {
+        if (!result.ok) {
+          showInlineError(byId("local-error"), result.error || fallback, result.hint || "");
+        }
+      });
+    }).catch(function (error) {
+      showInlineError(byId("local-error"), error.message || fallback);
+    }).finally(function () {
       localBusy = false;
-      if (!result.ok) {
-        showInlineError(
-          byId("local-error"),
-          result.error || "启动本地引擎失败",
-          result.hint || ""
-        );
-        refreshState();
-        return;
-      }
-      refreshState();
+      localAction = "";
+      renderLocalState(true);
     });
   }
 
+  function startLocal() {
+    return runLocalAction("start", API.startLocal, "启动本地引擎失败");
+  }
+
   function stopLocal() {
-    if (localBusy) {
-      return;
-    }
-    localBusy = true;
-    renderLocalState();
-    API.stopLocal().then(function (result) {
-      localBusy = false;
-      if (!result.ok) {
-        showInlineError(byId("local-error"), result.error || "停止本地引擎失败");
-        return;
-      }
-      hideInlineError(byId("local-error"));
-      refreshState();
-    });
+    return runLocalAction("stop", API.stopLocal, "停止本地引擎失败");
+  }
+
+  function restartLocal() {
+    return runLocalAction("restart", function () {
+      // Model selection saves immediately. Wait for its queued write without
+      // flushing unrelated text drafts such as online API credentials.
+      return flushSaveQueue().then(function (result) {
+        if (!result.ok) return result;
+        return API.restartLocal();
+      });
+    }, "重启本地引擎失败");
   }
 
   function toggleSkill(id, enabled) {
@@ -4077,6 +4130,7 @@
     byId("import-model").addEventListener("click", importModel);
     byId("start-local").addEventListener("click", startLocal);
     byId("stop-local").addEventListener("click", stopLocal);
+    byId("restart-local").addEventListener("click", restartLocal);
     byId("catalog-list").addEventListener("click", function (event) {
       var downloadButton =
         event.target.closest && event.target.closest("[data-catalog-download]");

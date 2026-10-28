@@ -2033,3 +2033,6 @@ textarea {
 @media (max-width: 480px) {
   .model-card { flex-wrap: wrap; }
 }
+
+/* Keep model actions readable when deletion requires confirmation. */
+.model-card > .btn-danger { min-width: 72px; }

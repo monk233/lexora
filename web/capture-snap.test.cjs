@@ -9,9 +9,10 @@ function setup() {
   vm.runInNewContext(source.replace('  /* ---- Boot', '  window.run = function (code) { return eval(code); };\n  /* ---- Boot'), { window, document, console });
   const run = window.run;
   run(`state.shotReady = true; state.originX = -1200; state.imageWidth=1200; state.imageHeight=900;
-    resetAnnotations = hideHint = hideLoupe = broadcastSelectionThrottled = broadcastSelection = updateBarState = function () {};
+    window.realResetAnnotations = resetAnnotations;
+    resetAnnotations = hideHint = hideLoupe = broadcastSelectionThrottled = broadcastSelection = function () {};
     viewportSize = function () { return {width: 800, height: 600}; };
-    updateOutline = updateSizeLabel = updateCrossScreenUi = layoutPalette = layoutFloatingPanels = function () {};
+    updateOutline = updateSizeLabel = layoutBar = layoutPalette = layoutFloatingPanels = function () {};
     rawPointFromEvent = function (e) { return {x:e.clientX, y:e.clientY}; };
     state.hoverGlobal = {x:-1050,y:150,width:300,height:300};
     state.hoverLocal = {x:100,y:100,width:200,height:200};
@@ -21,6 +22,158 @@ function setup() {
   `);
   return { window, run };
 }
+
+function setupToolbar() {
+  const context = setup();
+  context.run(`
+    resetAnnotations=window.realResetAnnotations;
+    hideLegacyLongshotProgress=stopColorPicking=closeAllColorPanels=syncShapeButtons=function(){};
+    function button(title, action) {
+      return {title, dataset:{}, disabled:false, classList:{remove(){},toggle(){}},
+        setAttribute(){}, getAttribute(name){return name === 'data-action' ? action : null;}};
+    }
+    toolButtons = [button('矩形'), button('画笔')];
+    dom.longshot = button('长截图', 'longshot');
+    window.otherButton = button('其他工具', 'copy');
+    dom.bar = {querySelectorAll(){return [dom.longshot, window.otherButton];}};
+    state.layout = [{x:-1200,y:0,width:1200,height:900},{x:0,y:0,width:1600,height:900}];
+    state.phase = 'editing'; state.selection={x:-100,y:10,width:100,height:100};
+    state.hoverLocal = null; state.hoverGlobal = null;
+    window.single = function(){state.selection={x:-100,y:10,width:100,height:100};};
+    window.cross = function(){state.selection={x:-100,y:10,width:101,height:100};};
+  `);
+  return context;
+}
+
+test('cross-screen titles and disabled states restore after returning to one monitor', () => {
+  const {run} = setupToolbar();
+  run('updateCrossScreenUi(); window.cross(); updateCrossScreenUi(); updateBarState()');
+  assert.equal(run('toolButtons[0].disabled'), true);
+  assert.equal(run('toolButtons[0].title'), '跨屏选区暂不支持标注');
+  assert.equal(run('dom.longshot.disabled'), true);
+  run('window.single(); updateCrossScreenUi(); updateCrossScreenUi()');
+  assert.equal(run('toolButtons[0].disabled'), false);
+  assert.equal(run('toolButtons[0].title'), '矩形');
+  assert.equal(run('dom.longshot.disabled'), false);
+  assert.equal(run('dom.longshot.title'), '长截图');
+  assert.equal(run('toolButtons[0].dataset.originalTitle'), undefined);
+  assert.equal(run('window.otherButton.title'), '其他工具');
+});
+
+test('repeated synchronization preserves original titles and newer external titles', () => {
+  const {run} = setupToolbar();
+  run('window.cross(); updateCrossScreenUi(); updateCrossScreenUi(); updateBarState()');
+  assert.equal(run('toolButtons[0].dataset.originalTitle'), '矩形');
+  run(`toolButtons[0].title='新的标注提示'; dom.longshot.title='新的长截图提示';
+    updateCrossScreenUi(); window.single(); updateCrossScreenUi()`);
+  assert.equal(run('toolButtons[0].title'), '新的标注提示');
+  assert.equal(run('dom.longshot.title'), '新的长截图提示');
+  assert.equal(run('dom.longshot.dataset.originalTitle'), undefined);
+});
+
+test('busy, live longshot and cross-screen restrictions never enable one another', () => {
+  const {run} = setupToolbar();
+  for (const busy of [false, true]) {
+    for (const longshot of [false, true]) {
+      for (const cross of [false, true]) {
+        run(`state.busy=${busy}; state.longshotActive=${longshot};
+          window.${cross ? 'cross' : 'single'}(); updateCrossScreenUi(); updateBarState()`);
+        assert.equal(run('toolButtons[0].disabled'), busy || longshot || cross);
+        assert.equal(run('dom.longshot.disabled'), busy || longshot || cross);
+        assert.equal(run('window.otherButton.disabled'), busy);
+      }
+    }
+  }
+});
+
+test('resetAnnotations routes disabled state and titles through shared synchronization', () => {
+  const {run} = setupToolbar();
+  run('window.cross(); updateCrossScreenUi(); state.busy=true; resetAnnotations()');
+  assert.equal(run('toolButtons[0].disabled'), true);
+  run('window.single(); resetAnnotations()');
+  assert.equal(run('toolButtons[0].disabled'), true);
+  assert.equal(run('toolButtons[0].title'), '矩形');
+  run('state.busy=false; resetAnnotations()');
+  assert.equal(run('toolButtons[0].disabled'), false);
+});
+
+test('new capture restores titles even when cross-screen flag was reset first', () => {
+  const {run} = setupToolbar();
+  run(`window.cross(); updateCrossScreenUi(); dom.shot={}; API={monitor(){}};
+    hideSelectionUi=hideErrorBar=hideToast=resetShotImage=setToolbarSkillsDefault=
+      loadPickerSettings=pollMonitor=function(){};
+    renderCaptureBar=function(){updateBarState();}; beginCapture(0)`);
+  assert.equal(run('toolButtons[0].title'), '矩形');
+  assert.equal(run('dom.longshot.title'), '长截图');
+  assert.equal(run('dom.longshot.disabled'), false);
+});
+
+for (const interruption of ['onWindowBlur()', 'onPointerCancel()', 'cancelCapture()']) {
+  test(interruption + ' restores titles after interrupted cross-screen selection', () => {
+    const {run} = setupToolbar();
+    run(`window.cross(); updateCrossScreenUi();
+      state.phase='selecting'; state.drag={mode:'select'}; ${interruption}`);
+    assert.equal(run('toolButtons[0].title'), '矩形');
+    assert.equal(run('dom.longshot.title'), '长截图');
+  });
+}
+
+test('blur without an active drag clears stale hints after returning to one monitor', () => {
+  const {run} = setupToolbar();
+  run('window.cross(); updateCrossScreenUi(); window.single(); onWindowBlur()');
+  assert.equal(run('toolButtons[0].title'), '矩形');
+  assert.equal(run('dom.longshot.disabled'), false);
+});
+
+test('cancelling an editing cross-screen selection restores both temporary hints', () => {
+  const {run} = setupToolbar();
+  run('window.cross(); updateCrossScreenUi(); cancelCapture()');
+  assert.equal(run('toolButtons[0].title'), '矩形');
+  assert.equal(run('dom.longshot.title'), '长截图');
+  assert.equal(run('state.closed'), true);
+});
+
+test('cross-screen annotation cleanup runs once and keeps busy restrictions', () => {
+  const {run} = setupToolbar();
+  run(`window.resets=0; window.toasts=0; window.hasAnnotations=true;
+    editor={hasAnnotations(){return window.hasAnnotations;},
+      reset(){window.resets++; window.hasAnnotations=false;},setTool(){}};
+    toast=function(){window.toasts++;}; state.busy=true;
+    window.cross(); updateCrossScreenUi(); updateCrossScreenUi()`);
+  assert.equal(run('window.resets'), 1);
+  assert.equal(run('window.toasts'), 1);
+  assert.equal(run('toolButtons[0].disabled'), true);
+  run('window.single(); updateCrossScreenUi()');
+  assert.equal(run('toolButtons[0].disabled'), true);
+});
+
+test('remote cross-screen broadcasts and repeated echoes synchronize real toolbar state', () => {
+  const {run} = setupToolbar();
+  run(`onSelectionState({phase:'editing',rect:{x:-100,y:10,width:101,height:100},owner:1});
+    toolButtons[0].disabled=false; dom.longshot.disabled=false;
+    onSelectionState({phase:'editing',rect:{x:-100,y:10,width:101,height:100},owner:1})`);
+  assert.equal(run('dom.longshot.disabled'), true);
+  assert.equal(run('toolButtons[0].disabled'), true);
+  run(`onSelectionState({phase:'editing',rect:{x:-100,y:10,width:100,height:100},owner:1})`);
+  assert.equal(run('dom.longshot.title'), '长截图');
+  assert.equal(run('toolButtons[0].disabled'), false);
+});
+
+test('cross-screen detection requires positive intersection, including negative and vertical layouts', () => {
+  const {run} = setupToolbar();
+  assert.equal(run('isCrossScreenSelection()'), false);
+  run('window.cross()');
+  assert.equal(run('isCrossScreenSelection()'), true);
+  run('state.selection.height=0');
+  assert.equal(run('isCrossScreenSelection()'), false);
+  run(`state.layout=[{x:-200,y:-900,width:1200,height:900},{x:-200,y:0,width:1200,height:900}];
+    state.selection={x:-100,y:-100,width:100,height:100}`);
+  assert.equal(run('isCrossScreenSelection()'), false);
+  run('state.selection.height=101');
+  assert.equal(run('isCrossScreenSelection()'), true);
+  run('state.selection.width=0');
+  assert.equal(run('isCrossScreenSelection()'), false);
+});
 test('click commits a copied snap rectangle and keeps preview until dragging', () => {
   const {window,run} = setup();
   run('startSelecting({x:120,y:120})');

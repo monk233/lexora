@@ -173,13 +173,21 @@ impl LocalServer {
     }
 
     /// `true` when `file` is the weights **or** the projector of the running
-    /// server. Used before deleting a model so the locked file can be released.
+    /// server. Deletion must reject these files without stopping the server.
     pub fn is_running_file(&self, file: &str) -> bool {
         let runtime = self.lock();
         let file = file.trim();
         (runtime.state == LocalState::Ready || runtime.state == LocalState::Starting)
             && (runtime.model_file.eq_ignore_ascii_case(file)
                 || runtime.mmproj_file.eq_ignore_ascii_case(file))
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_test_loading_files(&self, weights: &str, projector: &str) {
+        let mut runtime = self.lock();
+        runtime.state = LocalState::Starting;
+        runtime.model_file = weights.to_string();
+        runtime.mmproj_file = projector.to_string();
     }
 
     /// Starts (or reuses) the server for `model_file` + optional `mmproj_file`

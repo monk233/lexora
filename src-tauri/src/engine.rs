@@ -1921,49 +1921,45 @@ impl EngineService {
         Ok(self.model_info_for(&target))
     }
 
-    pub fn remove_model(&self, file: &str) -> Result<(), EngineError> {
+    /// Delete only unselected residual/imported weights, without stopping the engine.
+    pub async fn remove_model_file(&self, file: &str) -> Result<(), EngineError> {
+        let _lifecycle = self.local_lifecycle.lock().await;
         let file = models::clean_model_file_name(file)?;
-        if self.local.is_running_file(&file) {
-            self.local.stop(Some(&self.logger));
+        let selected = self.settings.get().provider.local.selected_model;
+        if file.to_ascii_lowercase().starts_with("mmproj")
+            || models::CATALOG
+                .iter()
+                .any(|spec| spec.filename.eq_ignore_ascii_case(&file))
+            || selected.eq_ignore_ascii_case(&file)
+            || models::spec_by_id(&selected)
+                .is_some_and(|spec| spec.filename.eq_ignore_ascii_case(&file))
+            || self.local.is_running_file(&file)
+        {
+            return Err(EngineError::new(
+                "该模型文件受保护，不能删除。",
+                "仅可删除未选中、未运行或加载的残留或导入 GGUF；目录模型和视觉投影器不可删除。",
+            ));
         }
         let path = self.paths.models_dir.join(&file);
-        if !path.is_file() {
+        let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
+            EngineError::new(
+                format!("模型文件不存在或无法访问：{file}。"),
+                format!("请刷新列表重试；系统错误：{error}"),
+            )
+        })?;
+        if !metadata.file_type().is_file() {
             return Err(EngineError::new(
-                format!("模型文件不存在：{file}。"),
-                "请刷新模型列表后重试。",
+                "模型文件类型无效。",
+                "只能删除模型目录内的普通 GGUF 文件。",
             ));
         }
         std::fs::remove_file(&path).map_err(|error| {
             EngineError::new(
                 format!("删除模型文件失败：{file}。"),
-                format!("请确认文件未被占用（可先停止本地模型）；系统错误：{error}"),
+                format!("请检查文件占用与权限；系统错误：{error}"),
             )
         })?;
         self.logger.info(&format!("model removed: {file}"));
-
-        // A vision model consists of the weights + a projector; remove the
-        // projector only when no installed quantization still shares it.
-        if let Some(mmproj) = models::spec_by_filename(&file).and_then(|spec| spec.mmproj) {
-            let mmproj_path = self.paths.models_dir.join(mmproj.filename);
-            let shared = models::CATALOG.iter().any(|other| {
-                other.filename != file
-                    && self.paths.models_dir.join(other.filename).is_file()
-                    && other
-                        .mmproj
-                        .is_some_and(|projector| projector.filename == mmproj.filename)
-            });
-            if !shared && mmproj_path.is_file() {
-                match std::fs::remove_file(&mmproj_path) {
-                    Ok(()) => self
-                        .logger
-                        .info(&format!("vision projector removed: {}", mmproj.filename)),
-                    Err(error) => self.logger.warn(&format!(
-                        "failed to remove vision projector {}: {error}",
-                        mmproj.filename
-                    )),
-                }
-            }
-        }
         Ok(())
     }
 
@@ -1971,6 +1967,11 @@ impl EngineService {
 
     pub async fn start_local(&self) -> Result<(), EngineError> {
         let _lifecycle = self.local_lifecycle.lock().await;
+        self.start_local_locked().await
+    }
+
+    /// Caller must hold local_lifecycle throughout startup.
+    async fn start_local_locked(&self) -> Result<(), EngineError> {
         if self.local_desired.load(Ordering::Acquire) {
             return Ok(());
         }
@@ -2012,7 +2013,9 @@ impl EngineService {
             return Err(EngineError::new("本地引擎启动已取消。", "请重新点击启动。"));
         }
         if result.is_err() {
+            self.local.stop(Some(&self.logger));
             self.clear_local_selection();
+            self.set_keep_running(false);
         } else {
             // Remember the user's explicit start so the next launch can restore
             // the engine (see `main::restore_local_engine`).
@@ -2027,6 +2030,15 @@ impl EngineService {
         self.local.stop(Some(&self.logger));
         self.set_keep_running(false);
         Ok(())
+    }
+
+    /// Restart atomically using the latest explicit selection.
+    pub async fn restart_local(&self) -> Result<(), EngineError> {
+        let _lifecycle = self.local_lifecycle.lock().await;
+        self.clear_local_selection();
+        self.local.stop(Some(&self.logger));
+        self.set_keep_running(false);
+        self.start_local_locked().await
     }
 
     /// App shutdown: kill llama-server without forgetting that the user had
@@ -3244,73 +3256,122 @@ mod tests {
     }
 
     #[test]
-    fn model_removal_is_sandboxed_to_models_dir() {
-        let env = test_env();
-        for bad in [
-            "../evil.gguf",
-            "sub/model.gguf",
-            "C:\\evil.gguf",
-            "",
-            "notes.txt",
-        ] {
-            assert!(
-                env.service.remove_model(bad).is_err(),
-                "expected rejection for {bad:?}"
+    fn model_removal_only_deletes_unselected_residual_weights() {
+        block_on(async {
+            let env = test_env();
+            for bad in [
+                "../evil.gguf",
+                "sub/model.gguf",
+                "C:\\evil.gguf",
+                "",
+                "notes.txt",
+            ] {
+                assert!(env.service.remove_model_file(bad).await.is_err());
+            }
+            assert!(env.service.remove_model_file("missing.gguf").await.is_err());
+            for file in [
+                models::CATALOG[0].filename,
+                "mmproj-old.gguf",
+                models::CATALOG[1].filename,
+            ] {
+                let path = env.paths.models_dir.join(file);
+                std::fs::write(&path, b"fake").unwrap();
+                env.store
+                    .update_json(
+                        json!({"provider":{"local":{"selectedModel":models::CATALOG[1].id}}}),
+                    )
+                    .unwrap();
+                assert!(env.service.remove_model_file(file).await.is_err());
+                assert!(path.is_file());
+            }
+            let path = env.paths.models_dir.join("legacy.gguf");
+            std::fs::write(&path, b"fake").unwrap();
+            env.service.remove_model_file("legacy.gguf").await.unwrap();
+            assert!(!path.exists());
+            assert_eq!(
+                env.store.get().provider.local.selected_model,
+                models::CATALOG[1].id
             );
-        }
-        let error = env
-            .service
-            .remove_model("missing.gguf")
-            .err()
-            .expect("expected engine error");
-        assert!(error.message.contains("不存在"));
-
-        let path = env.paths.models_dir.join(models::CATALOG[0].filename);
-        std::fs::write(&path, b"x").unwrap();
-        env.service
-            .remove_model(models::CATALOG[0].filename)
-            .unwrap();
-        assert!(!path.exists());
+        });
     }
 
     #[test]
-    fn removing_vision_model_also_removes_projector() {
-        let env = test_env();
-        let spec = &models::CATALOG[2];
-        let mmproj = spec.mmproj.expect("vision model must ship a projector");
-        let weights = env.paths.models_dir.join(spec.filename);
-        let projector = env.paths.models_dir.join(mmproj.filename);
-        std::fs::write(&weights, b"x").unwrap();
-        std::fs::write(&projector, b"x").unwrap();
-        env.store
-            .update_json(json!({"provider":{"local":{"selectedModel":spec.id}}}))
-            .unwrap();
-        assert!(env.service.has_local_vision());
-
-        env.service.remove_model(spec.filename).unwrap();
-        assert!(!weights.exists());
-        // An unshared projector is removed with the last weights file.
-        assert!(!projector.exists());
-        assert!(!env.service.has_local_vision());
+    fn removal_rejects_loading_weights_and_projector_without_stopping() {
+        block_on(async {
+            let env = test_env();
+            env.service
+                .local
+                .set_test_loading_files("legacy.gguf", "projection.gguf");
+            for file in ["legacy.gguf", "projection.gguf"] {
+                let path = env.paths.models_dir.join(file);
+                std::fs::write(&path, b"fake").unwrap();
+                assert!(env.service.remove_model_file(file).await.is_err());
+                assert!(path.is_file());
+                assert!(env.service.local.is_running_file(file));
+            }
+        });
     }
 
     #[test]
-    fn removing_one_quantization_preserves_shared_projector() {
-        let env = test_env();
-        let first = &models::CATALOG[1];
-        let second = &models::CATALOG[2];
-        let projector = first.mmproj.unwrap().filename;
-        std::fs::write(env.paths.models_dir.join(first.filename), b"weights").unwrap();
-        std::fs::write(env.paths.models_dir.join(second.filename), b"weights").unwrap();
-        std::fs::write(env.paths.models_dir.join(projector), b"projector").unwrap();
-        env.store
-            .update_json(json!({"provider":{"local":{"selectedModel":second.id}}}))
+    fn removal_and_restart_wait_for_lifecycle_lock() {
+        block_on(async {
+            let env = test_env();
+            let path = env.paths.models_dir.join("legacy.gguf");
+            std::fs::write(&path, b"fake").unwrap();
+            let guard = env.service.local_lifecycle.lock().await;
+            assert!(tokio::time::timeout(
+                Duration::from_millis(20),
+                env.service.remove_model_file("legacy.gguf")
+            )
+            .await
+            .is_err());
+            assert!(
+                tokio::time::timeout(Duration::from_millis(20), env.service.restart_local())
+                    .await
+                    .is_err()
+            );
+            assert!(path.exists());
+            drop(guard);
+            env.service.remove_model_file("legacy.gguf").await.unwrap();
+            assert!(!path.exists());
+        });
+    }
+
+    #[test]
+    fn restart_failure_clears_previous_lifecycle_and_uses_latest_selection() {
+        block_on(async {
+            let env = test_env();
+            *env.service.active_selection.lock().unwrap() = Some(models::CATALOG[1].id.into());
+            env.service.local_desired.store(true, Ordering::Release);
+            env.store
+                .update_json(json!({"provider":{"local":{"keepRunning":true,"selectedModel":""}}}))
+                .unwrap();
+            let error = tokio::time::timeout(Duration::from_secs(2), env.service.restart_local())
+                .await
+                .unwrap()
+                .unwrap_err();
+            assert!(error.message.contains("尚未选择"));
+            assert!(!error.hint.is_empty());
+            assert!(!env.service.local_desired.load(Ordering::Acquire));
+            assert!(env.service.active_selection.lock().unwrap().is_none());
+            assert!(!env.store.get().provider.local.keep_running);
+            assert_eq!(env.service.local.snapshot().state, LocalState::Stopped);
+            let spec = &models::CATALOG[3];
+            std::fs::write(env.paths.models_dir.join(spec.filename), b"fake").unwrap();
+            std::fs::write(
+                env.paths.models_dir.join(spec.mmproj.unwrap().filename),
+                b"fake",
+            )
             .unwrap();
-        env.service.remove_model(first.filename).unwrap();
-        assert!(env.paths.models_dir.join(projector).is_file());
-        assert!(env.service.has_local_vision());
-        env.service.remove_model(second.filename).unwrap();
-        assert!(!env.paths.models_dir.join(projector).exists());
+            env.store
+                .update_json(json!({"provider":{"local":{"selectedModel":spec.id}}}))
+                .unwrap();
+            let error = env.service.restart_local().await.unwrap_err();
+            assert!(!error.hint.is_empty());
+            assert!(!env.service.local_desired.load(Ordering::Acquire));
+            assert!(!env.store.get().provider.local.keep_running);
+            assert_eq!(env.service.local.snapshot().state, LocalState::Stopped);
+        });
     }
 
     #[test]

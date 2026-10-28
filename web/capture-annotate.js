@@ -429,8 +429,8 @@
     /* QQ-style arrow (fifteenth round): a solid triangular head plus a tapered
      * cone-shaped tail. The shaft widens from a near-point at the start to a
      * narrow base at the head, and the head triangle is wider than that base, so
-     * the silhouette has the two barbs of the reference screenshot. Both parts
-     * are filled with the annotation colour (no stroke). */
+     * the silhouette has the two barbs of the reference screenshot. Fill one
+     * continuous outline so antialiasing cannot expose a seam at the neck. */
     function drawArrow(targetContext, annotation) {
       var dx = annotation.x2 - annotation.x1;
       var dy = annotation.y2 - annotation.y1;
@@ -460,6 +460,9 @@
         annotation.y1 + py * shaftHalfAtTail
       );
       targetContext.lineTo(baseX + px * shaftHalfAtHead, baseY + py * shaftHalfAtHead);
+      targetContext.lineTo(baseX + px * headHalf, baseY + py * headHalf);
+      targetContext.lineTo(annotation.x2, annotation.y2);
+      targetContext.lineTo(baseX - px * headHalf, baseY - py * headHalf);
       targetContext.lineTo(baseX - px * shaftHalfAtHead, baseY - py * shaftHalfAtHead);
       targetContext.lineTo(
         annotation.x1 - px * shaftHalfAtTail,
@@ -468,12 +471,6 @@
       targetContext.closePath();
       targetContext.fill();
 
-      targetContext.beginPath();
-      targetContext.moveTo(annotation.x2, annotation.y2);
-      targetContext.lineTo(baseX + px * headHalf, baseY + py * headHalf);
-      targetContext.lineTo(baseX - px * headHalf, baseY - py * headHalf);
-      targetContext.closePath();
-      targetContext.fill();
       targetContext.restore();
     }
 

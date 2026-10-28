@@ -69,10 +69,32 @@ const NEW_CAPTURE_SKILLS_V6: [&str; 8] = [
 ];
 /// Schema version that introduced the local/AI screenshot-toolbar entries.
 const CAPTURE_SKILLS_V6_VERSION: u32 = 6;
-/// Default screenshot toolbar actions (all of them, canonical order).
+/// Legacy deserialization defaults preserve the enabled tools of older files.
+fn legacy_skills() -> Vec<String> {
+    SKILLS.iter().map(|skill| skill.to_string()).collect()
+}
+
+fn legacy_capture_skills() -> Vec<String> {
+    CAPTURE_SKILLS
+        .iter()
+        .map(|skill| skill.to_string())
+        .collect()
+}
+
+/// Default enabled text skills, in canonical toolbar order.
+pub fn default_skills() -> Vec<String> {
+    SKILLS
+        .iter()
+        .filter(|skill| !matches!(**skill, "polish" | "screenshot"))
+        .map(|skill| skill.to_string())
+        .collect()
+}
+
+/// Default screenshot toolbar actions, in canonical order.
 pub fn default_capture_skills() -> Vec<String> {
     CAPTURE_SKILLS
         .iter()
+        .filter(|skill| !matches!(**skill, "number" | "longshot"))
         .map(|skill| skill.to_string())
         .collect()
 }
@@ -173,7 +195,9 @@ impl Default for CaptureSettings {
 #[serde(default, rename_all = "camelCase")]
 pub struct PickerSettings {
     pub enabled: bool,
+    #[serde(default = "legacy_skills")]
     pub skills: Vec<String>,
+    #[serde(default)]
     pub compact: bool,
     pub default_target_lang: String,
     pub blacklist: Vec<String>,
@@ -192,7 +216,7 @@ pub struct PickerSettings {
     /// toolbar entry anymore. The screenshot entry skill itself stays in
     /// `skills` (text toolbar). An explicit empty list means "fixed buttons
     /// only" (undo/redo/cancel/confirm).
-    #[serde(default = "default_capture_skills")]
+    #[serde(default = "legacy_capture_skills")]
     pub capture_skills: Vec<String>,
     /// System prompt overrides for the two built-in screenshot actions that use
     /// a model directly. Empty = built-in default. `translate` supports the
@@ -313,6 +337,7 @@ pub struct LocalSettings {
 #[serde(default, rename_all = "camelCase")]
 pub struct AppSettings {
     pub close_to_tray: bool,
+    #[serde(default)]
     pub start_at_login: bool,
     pub theme: String,
 }
@@ -333,8 +358,8 @@ impl Default for PickerSettings {
     fn default() -> Self {
         Self {
             enabled: true,
-            skills: SKILLS.iter().map(|skill| skill.to_string()).collect(),
-            compact: false,
+            skills: default_skills(),
+            compact: true,
             default_target_lang: "auto".to_string(),
             blacklist: Vec::new(),
             max_chars: MAX_SELECTION_CHARS,
@@ -402,7 +427,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             close_to_tray: true,
-            start_at_login: false,
+            start_at_login: true,
             theme: "system".to_string(),
         }
     }
@@ -515,7 +540,7 @@ impl Settings {
             }
         }
         self.picker.skills = if skills.is_empty() {
-            SKILLS.iter().map(|skill| skill.to_string()).collect()
+            default_skills()
         } else {
             skills
         };
@@ -932,6 +957,16 @@ impl SettingsStore {
                 next.picker.skills.push(id);
             }
         }
+        for skill in &old.picker.capture_skills {
+            if next
+                .picker
+                .custom_skills
+                .iter()
+                .any(|custom| custom.id == *skill && custom.kind == "image")
+            {
+                next.picker.capture_skills.push(skill.clone());
+            }
+        }
         let _ = self.persist(&next);
         if let Ok(mut guard) = self.inner.write() {
             *guard = next.clone();
@@ -1080,10 +1115,19 @@ mod tests {
         let settings = Settings::default().normalize();
         assert_eq!(settings.version, SETTINGS_VERSION);
         assert_eq!(settings.version, 7);
-        let expected: Vec<String> = SKILLS.iter().map(|skill| skill.to_string()).collect();
+        let expected = vec![
+            "translate",
+            "summarize",
+            "explain",
+            "read",
+            "copy",
+            "search",
+        ];
         assert_eq!(settings.picker.skills, expected);
-        assert_eq!(settings.picker.skills.len(), 8);
-        // The v6 screenshot toolbar defaults to all local/AI tools, no `copy`.
+        assert!(settings.picker.enabled);
+        assert!(settings.picker.compact);
+        assert!(settings.app.start_at_login);
+        // New configurations omit number/longshot and the removed copy entry.
         assert_eq!(
             settings.picker.capture_skills,
             vec![
@@ -1092,12 +1136,10 @@ mod tests {
                 "arrow",
                 "pen",
                 "text",
-                "number",
                 "mosaic",
                 "ocr",
                 "translate",
-                "explain",
-                "longshot"
+                "explain"
             ]
         );
         assert!(!settings.picker.capture_skills.contains(&"copy".to_string()));
@@ -1106,6 +1148,57 @@ mod tests {
         assert_eq!(settings.picker.panel_mode, "auto");
         assert_eq!(settings.provider.mode, "online");
         assert!(settings.app.close_to_tray);
+    }
+
+    #[test]
+    fn new_store_and_reset_use_current_defaults() {
+        let (store, dir) = store();
+        assert_eq!(store.get(), Settings::default().normalize());
+        store
+            .update_json(json!({
+                "picker": {"enabled": false, "compact": false, "panelMode": "scroll",
+                    "skills": ["polish", "screenshot"], "captureSkills": ["number", "longshot"]},
+                "app": {"startAtLogin": false, "closeToTray": false}
+            }))
+            .unwrap();
+        let reloaded = SettingsStore::load(dir.path().join("settings.json"));
+        assert!(!reloaded.get().picker.enabled);
+        assert!(!reloaded.get().picker.compact);
+        assert!(!reloaded.get().app.start_at_login);
+        assert!(!reloaded.get().app.close_to_tray);
+        assert_eq!(reloaded.get().picker.panel_mode, "scroll");
+        assert_eq!(reloaded.get().picker.skills, vec!["polish", "screenshot"]);
+        assert_eq!(
+            reloaded.get().picker.capture_skills,
+            vec!["number", "longshot"]
+        );
+        assert_eq!(reloaded.reset(), Settings::default().normalize());
+    }
+
+    #[test]
+    fn legacy_missing_fields_keep_compatibility_defaults() {
+        let legacy: Settings = serde_json::from_value(json!({
+            "version": 5, "picker": {}, "app": {}
+        }))
+        .unwrap();
+        let normalized = legacy.normalize();
+        assert!(normalized.picker.enabled);
+        assert!(!normalized.picker.compact);
+        assert_eq!(normalized.picker.panel_mode, "auto");
+        assert!(!normalized.app.start_at_login);
+        assert!(normalized.app.close_to_tray);
+        assert_eq!(normalized.picker.skills, legacy_skills());
+        assert_eq!(normalized.picker.capture_skills, legacy_capture_skills());
+        assert_eq!(normalized.clone().normalize(), normalized);
+    }
+
+    #[test]
+    fn default_skill_subsets_do_not_rebound_during_normalization() {
+        for version in [6, SETTINGS_VERSION] {
+            let mut settings = Settings::default();
+            settings.version = version;
+            assert_eq!(settings.normalize(), Settings::default());
+        }
     }
 
     #[test]
@@ -1394,7 +1487,7 @@ mod tests {
         assert_eq!(skills[2].icon, "wand");
         assert_eq!(skills[2].prompt.chars().count(), PROMPT_MAX_CHARS);
         // Custom ids are not enabled by default; the built-in list is kept.
-        assert_eq!(normalized.picker.skills.len(), SKILLS.len());
+        assert_eq!(normalized.picker.skills, default_skills());
     }
 
     #[test]
@@ -1782,12 +1875,17 @@ mod tests {
         assert_eq!(reset.picker.custom_skills[0].id, "custom-keep");
         assert_eq!(reset.picker.custom_skills[1].id, "custom-off");
         // ...and so does the enabled state, appended after the built-ins.
-        let mut expected: Vec<String> = SKILLS.iter().map(|skill| skill.to_string()).collect();
+        let mut expected = default_skills();
         expected.push("custom-keep".to_string());
         assert_eq!(reset.picker.skills, expected);
         assert!(!reset.picker.skills.contains(&"custom-off".to_string()));
         // Everything else goes back to defaults.
-        assert!(!reset.picker.compact);
+        assert!(reset.picker.compact);
+        assert!(reset.picker.enabled);
+        assert_eq!(reset.picker.panel_mode, "auto");
+        assert!(reset.app.start_at_login);
+        assert!(reset.app.close_to_tray);
+        assert_eq!(reset.picker.capture_skills, default_capture_skills());
         assert!(reset.picker.blacklist.is_empty());
         assert_eq!(reset.picker.search_engine, DEFAULT_SEARCH_ENGINE);
         assert_eq!(reset.picker.prompts.polish, "");
@@ -1795,6 +1893,31 @@ mod tests {
         // The reset state is persisted, not only kept in memory.
         let reloaded = SettingsStore::load(dir.path().join("settings.json"));
         assert_eq!(reloaded.get(), reset);
+    }
+
+    #[test]
+    fn reset_keeps_image_custom_skill_enabled_state_and_order() {
+        let (store, dir) = store();
+        store
+            .update_json(json!({"picker": {
+                "customSkills": [
+                    {"id": "custom-image-a", "kind": "image", "prompt": "Describe A"},
+                    {"id": "custom-image-b", "kind": "image", "prompt": "Describe B"},
+                    {"id": "custom-image-off", "kind": "image", "prompt": "Disabled"}
+                ],
+                "captureSkills": ["custom-image-b", "number", "custom-image-a"]
+            }}))
+            .unwrap();
+        let reset = store.reset();
+        let mut expected = default_capture_skills();
+        expected.extend(["custom-image-b".to_string(), "custom-image-a".to_string()]);
+        assert_eq!(reset.picker.capture_skills, expected);
+        assert_eq!(reset.picker.custom_skills.len(), 3);
+        assert_eq!(reset.clone().normalize(), reset);
+        assert_eq!(
+            SettingsStore::load(dir.path().join("settings.json")).get(),
+            reset
+        );
     }
 
     #[test]
@@ -1852,7 +1975,7 @@ mod tests {
     fn capture_skills_are_normalized_and_keep_their_order() {
         let settings = Settings::default().normalize();
         assert_eq!(settings.picker.capture_skills, default_capture_skills());
-        assert_eq!(settings.picker.capture_skills.len(), 11);
+        assert_eq!(settings.picker.capture_skills.len(), 9);
 
         let (store, dir) = store();
         // Unknown ids and the removed `copy` entry are dropped; duplicates
@@ -1883,7 +2006,7 @@ mod tests {
         let parsed: Settings = serde_json::from_value(json!({ "version": 4 })).unwrap();
         assert_eq!(
             parsed.normalize().picker.capture_skills,
-            default_capture_skills()
+            legacy_capture_skills()
         );
     }
 

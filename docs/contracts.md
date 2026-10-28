@@ -67,14 +67,14 @@ lexora/
   "version": 7,                              // v1→v2 补 polish/search；v2→v3 补 screenshot；v3→v4 补 capture；v4→v5 补 captureSkills/capturePrompts；v5→v6 把本地工具（pin/形状/箭头/画笔/文字/序号/马赛克/长截图）纳入 captureSkills 并移除 copy；保留 custom；v6→v7 增加 provider.local.selectedModel，旧配置迁移为空选择
   "picker": {
     "enabled": true,
-    "skills": ["translate","summarize","explain","polish","read","copy","screenshot","search","custom-mvmei8cru1n5"],
-    "compact": false,
+    "skills": ["translate","summarize","explain","read","copy","search"],
+    "compact": true,
     "defaultTargetLang": "auto",          // auto + Hy-MT2 支持的 38 种语言（zh/en/zh-hant/yue/ja/…/ug）；auto 显示为「自动识别」
     "blacklist": [],                      // 进程名，可含 .exe
     "maxChars": 5000,
     "searchEngine": "google",             // google | baidu | bing（搜索技能）
     "panelMode": "auto",                  // auto = 无滚动条、窗口随内容变高；scroll = 固定窗口、面板内滚动
-    "captureSkills": ["pin","shape","arrow","pen","text","number","mosaic","ocr","translate","explain","longshot"], // 截图工具条有序条目（放在工具条上的全部按钮，可任意开关/排序）：本地工具 pin/shape/arrow/pen/text/number/mosaic/longshot + AI/动作 ocr/translate/explain + 已启用自定义图片技能 id（custom-*）；copy 不再是工具条条目（确认=复制并退出）；显式 [] = 只保留撤销/重做/取消/确认
+    "captureSkills": ["pin","shape","arrow","pen","text","mosaic","ocr","translate","explain"], // 截图工具条有序条目（放在工具条上的全部按钮，可任意开关/排序）：本地工具 pin/shape/arrow/pen/text/number/mosaic/longshot + AI/动作 ocr/translate/explain + 已启用自定义图片技能 id（custom-*）；copy 不再是工具条条目（确认=复制并退出）；显式 [] = 只保留撤销/重做/取消/确认
     "capturePrompts": {                    // 截图「翻译」「解释图片」的系统提示词覆写；空=系统默认
       "translate": "",                     // 支持 {target} / {language}
       "explain": ""
@@ -102,7 +102,7 @@ lexora/
                 "timeoutMs": 60000, "temperature": 0.2, "maxTokens": 1024 },
     "local": { "selectedModel": "", "contextSize": 4096, "threads": 0, "gpuLayers": 0, "autoStart": true, "keepRunning": false }
   },
-  "app": { "closeToTray": true, "startAtLogin": false, "theme": "system" },
+  "app": { "closeToTray": true, "startAtLogin": true, "theme": "system" },
   "capture": {
     "regionShortcut": "Win+Shift+X"       // 截图快捷键（可改）；规范格式见 §10.3，非法值回退默认
   }
@@ -110,6 +110,8 @@ lexora/
 ```
 
 本地模型选择字段：`settings.provider.local.selectedModel`（序列化路径为 `provider.local.selectedModel`）保存唯一通用/视觉模型选择；默认空字符串，v6→v7 迁移不自动填入模型。硬件检测只提供推荐标签和理由，不自动选择。
+
+新配置和恢复默认采用上述开关与内置技能默认值（自定义技能仍保留定义与启用状态）；已保存的显式选择及顺序不变。旧配置缺失 skills/captureSkills 时沿用历史完整技能集合，缺失 compact/startAtLogin 时仍为 false；历史版本迁移保持原策略，不因新默认重新开启已关闭技能。
 
 规则：归一化永不失败；非法值回退默认。运行时环境变量覆盖：`LEXORA_API_KEY`（覆盖 apiKey）、`LEXORA_LLAMA_URL`（引擎下载地址覆盖）、`LEXORA_UPDATE_API`（自更新 Release API 覆盖，仅测试用；覆盖时允许本地 http）。
 
@@ -270,7 +272,7 @@ impl EngineService {
   - `LocalRole::Translate` 自动使用 Hy-MT2 1.8B；`General` / `Vision` 共用 `settings.provider.local.selectedModel` 的手动选择。未选择时返回明确提示；缺少文件时提示安装对应模型，不回退到旧 Qwen2.5 或其他已安装 GGUF。
   - 用户手动选择唯一通用/视觉模型并持久化；硬件检测仅显示推荐标签和理由，不替用户选择。切换选择后需重启本地引擎。
   - 「停止」后 `local_desired=false`，后续请求**绝不自动启动**引擎，只返回「本地模型未启动」错误提示。运行中在翻译模型与所选通用/视觉模型之间按任务加载，日志记录 switching，期间请求等待；这不改变用户保存的选择。
-- 运行状态记忆：用户点「启动」成功后持久化 provider.local.keepRunning=true；点「停止」置 false；应用退出只停 llama-server，不改 keepRunning。下次启动若为 true 且引擎/模型已安装，后台自动恢复引擎（日志 estoring local engine）并通过 state-changed 刷新设置页与托盘。
+- 运行状态记忆：用户点「启动」成功后持久化 provider.local.keepRunning=true；点「停止」置 false；应用退出只停 llama-server，不改 keepRunning。下次启动若为 true 且引擎/模型已安装，后台自动恢复引擎（日志 estoring local engine）并通过 state-changed 刷新设置页与托盘。
   - 未安装引擎 → 错误提示「下载 llama.cpp 引擎」；未安装模型 → 「下载/导入 GGUF」；启动前选空闲端口（TcpListener 127.0.0.1:0），`llama-server.exe -m <model> --host 127.0.0.1 --port <p> -c <ctxSize> -t <threads> -ngl <gpuLayers> --no-webui`，轮询 `/health` 最长 90s，stderr 写 `logs/llama.log`；进程退出/应用退出要清理；服务就绪后复用在线客户端逻辑。
 - 提示词（系统默认值为英文，用户可在设置里逐个技能自定义，空字符串表示用默认）：
   - 翻译 system：`You are a professional translation engine. Translate the user's text into {target}. Output only the translation, without explanations, quotes, or the source text.`；`{target}`/`{language}` 替换为英文语言名（38 种 Hy-MT2 语言，如 Simplified Chinese / Traditional Chinese / Portuguese / Uyghur），自定义提示词若不含占位符则在末尾追加 `Target language: <name>.`。

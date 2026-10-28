@@ -1639,6 +1639,7 @@
       rect = null;
     }
     if (phase === state.phase && sameGlobalRect(rect, state.selection)) {
+      updateCrossScreenUi();
       return;
     }
     if (state.drag && phase !== "editing") {
@@ -2299,17 +2300,7 @@
    * disabled while the selection spans monitors (the crop itself is stitched by
    * the shell, see capture_global). */
   function updateCrossScreenUi() {
-    var cross = state.phase === "editing" && isCrossScreenSelection();
-    var applied = true;
-    for (var index = 0; index < toolButtons.length; index += 1) {
-      if (toolButtons[index].disabled !== cross) {
-        applied = false;
-        break;
-      }
-    }
-    if (cross === state.crossScreen && applied) {
-      return;
-    }
+    var cross = !state.closed && state.phase === "editing" && isCrossScreenSelection();
     state.crossScreen = cross;
     if (cross && state.tool) {
       setTool(null);
@@ -2326,36 +2317,21 @@
       resetAnnotations();
       toast("跨屏选区暂不支持标注，已清除标注", "info", TOAST_MS);
     }
-    var toolTitle = "跨屏选区暂不支持标注";
-    each(toolButtons, function (button) {
-      if (cross) {
-        if (button.dataset.originalTitle === undefined) {
-          button.dataset.originalTitle = button.title || "";
-        }
-        button.disabled = true;
-        button.title = toolTitle;
-      } else {
-        button.disabled = false;
-        if (button.dataset.originalTitle !== undefined) {
-          button.title = button.dataset.originalTitle;
-          delete button.dataset.originalTitle;
-        }
+    updateBarState();
+  }
+
+  function syncCrossScreenTitle(button, cross, temporaryTitle) {
+    if (cross) {
+      if (button.dataset.originalTitle === undefined) {
+        button.dataset.originalTitle = button.title || "";
+        button.title = temporaryTitle;
       }
-    });
-    if (dom.longshot) {
-      if (cross) {
-        if (dom.longshot.dataset.originalTitle === undefined) {
-          dom.longshot.dataset.originalTitle = dom.longshot.title || "";
-        }
-        dom.longshot.disabled = true;
-        dom.longshot.title = "跨屏选区暂不支持长截图";
-      } else {
-        dom.longshot.disabled = false;
-        if (dom.longshot.dataset.originalTitle !== undefined) {
-          dom.longshot.title = dom.longshot.dataset.originalTitle;
-          delete dom.longshot.dataset.originalTitle;
-        }
+    } else if (button.dataset.originalTitle !== undefined) {
+      /* Another feature may have replaced the temporary hint in the meantime. */
+      if (button.title === temporaryTitle) {
+        button.title = button.dataset.originalTitle;
       }
+      delete button.dataset.originalTitle;
     }
   }
 
@@ -2803,6 +2779,7 @@
     hideLoupe();
     clearHover();
     if (!state.drag) {
+      updateCrossScreenUi();
       return;
     }
     if (state.drag.mode === "select") {
@@ -2962,6 +2939,8 @@
   }
 
   function updateBarState() {
+    var cross = !state.closed && state.phase === "editing" && isCrossScreenSelection();
+    var toolsDisabled = state.busy || state.longshotActive || cross;
     if (dom.bar) {
       /* Every action button (including 确认) is disabled while a command is in
        * flight; 取消 stays available so the user can always bail out. */
@@ -2971,8 +2950,13 @@
       });
     }
     each(toolButtons, function (button) {
-      button.disabled = state.busy || state.longshotActive;
+      button.disabled = toolsDisabled;
+      syncCrossScreenTitle(button, cross, "跨屏选区暂不支持标注");
     });
+    if (dom.longshot) {
+      dom.longshot.disabled = toolsDisabled;
+      syncCrossScreenTitle(dom.longshot, cross, "跨屏选区暂不支持长截图");
+    }
     if (dom.preset) {
       dom.preset.disabled = state.busy || state.longshotActive;
     }
@@ -2984,6 +2968,7 @@
       return;
     }
     state.closed = true;
+    updateCrossScreenUi();
     state.drag = null;
     window.clearTimeout(state.pollTimer);
     state.pollTimer = 0;
@@ -3192,7 +3177,6 @@
     each(toolButtons, function (button) {
       button.classList.remove("is-active");
       button.setAttribute("aria-pressed", "false");
-      button.disabled = false;
     });
     document.body.classList.remove("annotating", "is-longshot", "is-longshot-live");
     if (dom.canvas) {
@@ -3203,6 +3187,7 @@
     stopColorPicking();
     closeAllColorPanels();
     syncShapeButtons();
+    updateBarState();
   }
 
   function setTool(id) {

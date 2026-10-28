@@ -232,6 +232,7 @@ fn main() {
             commands::import_model,
             commands::remove_model,
             commands::start_local,
+            commands::restart_local,
             commands::stop_local,
             commands::open_dir,
             commands::open_external,

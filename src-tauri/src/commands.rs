@@ -185,13 +185,30 @@ pub fn update_settings(
 pub fn reset_settings(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<Value, String> {
     let previous_shortcut = state.settings.get().capture.region_shortcut;
     let settings = state.settings.reset();
+    let autostart_result = sync_reset_autostart(
+        portable_mode(),
+        settings.app.start_at_login,
+        crate::autostart::set_enabled,
+    );
     state.selection.apply_settings(&settings);
     if settings.capture.region_shortcut != previous_shortcut {
         sync_capture_hotkey(&app, &state, &settings);
     }
     crate::tray::refresh(&app);
     broadcast_state(&app, &state);
+    autostart_result?;
     Ok(json!({ "state": build_state(&app, &state) }))
+}
+
+fn sync_reset_autostart(
+    portable: bool,
+    enabled: bool,
+    set_enabled: impl FnOnce(bool) -> Result<(), String>,
+) -> Result<(), String> {
+    if portable {
+        return Ok(());
+    }
+    set_enabled(enabled).map_err(|error| format!("默认设置已重置，但开机自启同步失败：{error}"))
 }
 
 /// Keeps the registered screenshot hotkey in sync when a generic settings patch
@@ -382,18 +399,17 @@ pub async fn import_model(
 }
 
 #[tauri::command]
-pub fn remove_model(app: AppHandle, state: State<'_, Arc<AppState>>, file: String) -> Value {
-    match state.engine.remove_model(&file) {
-        Ok(()) => {
-            notify_changed(&app);
-            json!({ "ok": true })
-        }
-        Err(error) => json!({
-            "ok": false,
-            "error": error.message,
-            "hint": error.hint,
-        }),
-    }
+pub async fn remove_model(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    file: String,
+) -> Result<Value, String> {
+    let result = state.engine.remove_model_file(&file).await;
+    notify_changed(&app);
+    Ok(match result {
+        Ok(()) => json!({ "ok": true }),
+        Err(error) => json!({ "ok": false, "error": error.message, "hint": error.hint }),
+    })
 }
 
 #[tauri::command]
@@ -412,6 +428,19 @@ pub async fn start_local(app: AppHandle, state: State<'_, Arc<AppState>>) -> Res
             }))
         }
     }
+}
+
+#[tauri::command]
+pub async fn restart_local(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<Value, String> {
+    let result = state.engine.restart_local().await;
+    notify_changed(&app);
+    Ok(match result {
+        Ok(()) => json!({ "ok": true }),
+        Err(error) => json!({ "ok": false, "error": error.message, "hint": error.hint }),
+    })
 }
 
 #[tauri::command]
@@ -1641,7 +1670,35 @@ pub fn picker_disable_tool(app: AppHandle, state: State<'_, Arc<AppState>>) -> V
 
 #[cfg(test)]
 mod tests {
-    use super::{persist_panel_pinned, picker_surface_label};
+    use super::{persist_panel_pinned, picker_surface_label, sync_reset_autostart};
+
+    #[test]
+    fn reset_syncs_the_requested_autostart_value() {
+        for enabled in [true, false] {
+            let mut called = false;
+            let result = sync_reset_autostart(false, enabled, |actual| {
+                called = true;
+                assert_eq!(actual, enabled);
+                Ok(())
+            });
+            assert_eq!(result, Ok(()));
+            assert!(called);
+        }
+    }
+
+    #[test]
+    fn portable_reset_does_not_touch_system_autostart() {
+        assert_eq!(
+            sync_reset_autostart(true, true, |_| panic!("must not touch registry")),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn reset_reports_autostart_failure_after_settings_reset() {
+        let error = sync_reset_autostart(false, true, |_| Err("access denied".into())).unwrap_err();
+        assert_eq!(error, "默认设置已重置，但开机自启同步失败：access denied");
+    }
 
     #[test]
     fn picker_surface_routes_resize_and_close_to_the_right_window() {

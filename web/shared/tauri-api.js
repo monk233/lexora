@@ -1699,19 +1699,22 @@
         });
       case "remove_model": {
         var file = String(args.file || "");
+        var target = mockStore.models.filter(function (model) { return model.file === file; })[0];
+        if (!target) return { ok: false, error: "模型文件不存在" };
+        if (target.catalogId !== "" || /^mmproj/i.test(file)) {
+          return { ok: false, error: "仅允许删除残留或导入的模型" };
+        }
+        if (mockStore.engine.localModelFile === file) {
+          return { ok: false, error: "不能删除正在使用的模型" };
+        }
         mockStore.models = mockStore.models.filter(function (model) {
           return model.file !== file;
         });
         mockStore.catalog.forEach(function (item) {
-          if (item.filename === file) {
-            item.installed = false;
-          }
+          item.installed = mockStore.models.some(function (model) {
+            return model.catalogId === item.id && model.file === item.filename;
+          }) && item.installed;
         });
-        if (mockStore.engine.localModelFile === file) {
-          mockStore.engine.localState = "stopped";
-          mockStore.engine.localModelFile = "";
-          mockStore.engine.localModelName = "";
-        }
         mockPublishState();
         return { ok: true };
       }
@@ -1719,6 +1722,9 @@
         return mockStartLocal();
       case "stop_local":
         return mockStopLocal();
+      case "restart_local":
+        mockStopLocal();
+        return mockStartLocal();
 
       /* ---- settings: app ---- */
       case "open_dir":
@@ -2101,6 +2107,9 @@
     },
     startLocal: function () {
       return safeInvoke("start_local", {});
+    },
+    restartLocal: function () {
+      return safeInvoke("restart_local", {});
     },
     stopLocal: function () {
       return safeInvoke("stop_local", {});
