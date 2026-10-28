@@ -109,7 +109,7 @@ lexora/
 }
 ```
 
-本地模型选择字段：`settings.provider.local.selectedModel`（序列化路径为 `provider.local.selectedModel`）保存唯一本地模型选择；默认空字符串，v6→v7 迁移不自动填入模型。硬件检测只提供推荐标签和理由，不自动选择。
+本地模型选择字段：`settings.provider.local.selectedModel`（序列化路径为 `provider.local.selectedModel`）保存唯一本地模型选择；默认空字符串，v6→v7 迁移不自动填入模型。硬件检测只提供推荐标签和理由，不自动选择。推荐梯度：显存 ≥10GB 且内存 ≥16GB、线程 ≥8，或内存 ≥32GB 且线程 ≥12 时为 4B Q4；内存 ≥24GB、线程 ≥8 为 4B Q3；内存 ≥16GB 按线程为 2B Q4（≥8）/Q3（≥6）；内存 ≥8GB、线程 ≥6 为 0.8B Q4；其余为 0.8B Q3。显存只作展示与升档参考，内置引擎为 CPU 版。
 
 新配置和恢复默认采用上述开关与内置技能默认值（自定义技能仍保留定义与启用状态）；已保存的显式选择及顺序不变。旧配置缺失 skills/captureSkills 时沿用历史完整技能集合，缺失 compact/startAtLogin 时仍为 false；历史版本迁移保持原策略，不因新默认重新开启已关闭技能。
 
@@ -386,7 +386,7 @@ pub struct SelectionService {
 - 在线建议使用已配置的在线模型；本地仅使用手动选择且完整安装的 Qwen3.5 本地模型。`picker-data.config.suggestionsAvailable` 在线按 API 配置判断，本地按所选模型与安装完整性判断；截图入口同样提供该字段。仅当字段严格为 `true` 时展示建议区与追问入口，否则静默隐藏、无提示、不调用建议模型。建议生成失败、取消或解析失败返回空列表，前端不显示错误。
 - 建议 `requestId` 独立于主回答流，`cancel_followups` 取消对应任务；新 AI 请求等待旧建议取消。关闭、隐藏、换任务或切换语言使旧建议失效；迟到回包须同时通过会话、请求版本及轮次检查。同轮缓存建议，每轮成功回答后失效并刷新。
 - 翻译与单词查询共用同一套提示词：`picker.prompts.translate`（空则内置默认）同时处理整段翻译和单个单词/短语，由模型根据输入自行判断输出译文还是词典词条。不再有单词查询模式或独立词条提示词；解释技能使用 `picker.prompts.explain`，同样由模型自行判断。截图与自定义技能使用各自提示词，不参与该判断。
-- 默认翻译提示词要求：整段输入只输出译文；单词/短语输出词头、读音（英文 IPA、中文带声调拼音）、词性与至多 3 个常见义项、可选 1 个短例；`carzy` 等疑似错拼先提示可能拼错，不编造释义或读音。音标与拼音由模型生成，可能不准确。
+- 默认翻译提示词要求：整句、从句和段落必须翻译，只有单个词或不超过 3 个词的固定短语（无句末标点）才输出词典词条；回答正文使用目标语言，仅词头、读音与代码保留原文。词条含词头、读音（英文 IPA、中文带声调拼音）、词性与至多 3 个常见义项、可选 1 个短例；`carzy` 等疑似错拼先提示可能拼错，不编造释义或读音。音标与拼音由模型生成，可能不准确。
 - 解释默认一句核心含义、至多 3 要点、可选 1 例，通常 150–250 中文字符，简单内容更短；总结 3–5 点，润色只给结果，OCR 完整逐字转录且无解释长度限制。长度由提示词引导，不截断正文。
 - `prompts::resolve_text_prompt(action, text, target, custom)` 返回 `ResolvedPrompt { system, user, mode, prompt_source, prompt_version }`；模式为 translate/explain/summarize，来源为 default/custom，提示词版本为 9。日志直接使用解析结果，禁止自行重新分类。`default_prompts()` 暴露 translate/summarize/explain/polish 与截图动作默认提示词，不含单词词条字段。
   - 目标语言下拉从 `LP.LANGUAGES`（38 种翻译目标语言）动态生成，不再硬编码 option。

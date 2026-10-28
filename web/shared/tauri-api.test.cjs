@@ -19,7 +19,7 @@ async function checkSettingsMerge(withSharedHelpers) {
   let result = await api.getState();
   assert.equal(result.ok, true);
   assert.equal(result.state.settings.version, 7);
-  assert.ok(result.state.promptDefaults.translate.includes("dictionary assistant"));
+  assert.ok(result.state.promptDefaults.translate.includes("Follow these rules exactly"));
   assert.equal(Object.hasOwn(result.state.promptDefaults, "wordLookup"), false);
   assert.equal(Object.hasOwn(result.state.settings.picker, "wordLookupMode"), false);
   result = await api.updateSettings({ picker: { prompts: { translate: "  custom override  " } } });

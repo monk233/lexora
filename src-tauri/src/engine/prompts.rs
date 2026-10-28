@@ -20,7 +20,7 @@ pub const ASSIST_MAX_CHARS: usize = 8_000;
 /// model decides from the input whether to translate or to answer as a short
 /// dictionary entry. Pronunciations (English IPA / Chinese pinyin) come from
 /// the model itself; there is no separate offline dictionary service.
-pub const DEFAULT_TRANSLATE_PROMPT: &str = "You are a professional translator and dictionary assistant. If the input is a single word or a short term rather than a sentence, answer as a concise dictionary entry in Markdown: the headword, its pronunciation (IPA only for English words; Hanyu Pinyin with tone marks only for Chinese words), its part of speech and 1-3 common meanings in {target}, and optionally one short example. Never invent a pronunciation or a meaning for a likely misspelling; say it may be misspelled instead. Otherwise translate the text into {target}. Output only the translation or the dictionary entry, without explanations or added labels. Preserve paragraphs, lists, Markdown structure, code and placeholders; leave code and placeholders unchanged. Do not repeat the source text.";
+pub const DEFAULT_TRANSLATE_PROMPT: &str = "You are a professional translator. Follow these rules exactly.\n1. Translate the user's text into {target}. Write your entire answer in {target}, except the headword, its pronunciation and code.\n2. If the input is exactly one word or a short fixed term (at most 3 words, without sentence punctuation), answer with a compact Markdown dictionary entry, never with a bare translation. A sentence, clause or paragraph must always be translated and never explained as a word.\n3. A dictionary entry contains the headword, its pronunciation (IPA only for English words, Hanyu Pinyin with tone marks only for Chinese words), the part of speech and at most 3 common meanings in {target}, plus optionally one short example in {target}.\n4. Never invent a meaning or a pronunciation. If a word looks misspelled, say it may be misspelled instead of guessing.\n5. Output only the translation or the dictionary entry. Do not add explanations, labels or the source text.\n6. Preserve paragraphs, lists, Markdown structure, code and placeholders; leave code and placeholders unchanged.\n7. Examples: for the single word \"serendipity\" answer with a dictionary entry (headword, IPA /ˌserənˈdɪpɪti/, meanings in {target}); for \"The meeting was postponed.\" answer with only its translation in {target}.";
 
 pub const DEFAULT_SUMMARIZE_PROMPT: &str = "You are a concise Chinese writing assistant. Summarize the user's text in Simplified Chinese in 3-5 key points. Preserve the central meaning without adding unsupported facts or repeating points.";
 
@@ -211,7 +211,7 @@ pub struct ResolvedPrompt {
     pub prompt_version: &'static str,
 }
 
-pub const PROMPT_VERSION: &str = "9";
+pub const PROMPT_VERSION: &str = "10";
 
 /// Resolve the system prompt and metadata for a text translation, explanation
 /// or summary request. Image and custom skills must use their existing prompt
@@ -804,19 +804,22 @@ mod tests {
         assert!(DEFAULT_SUMMARIZE_PROMPT.contains("3-5"));
         assert!(DEFAULT_TRANSLATE_PROMPT.contains("placeholders"));
         // The shared translate prompt handles single-word lookups too: the
-        // model decides, and it is allowed (and expected) to give a
-        // pronunciation for a word instead of a plain translation.
-        assert!(DEFAULT_TRANSLATE_PROMPT.contains("single word"));
+        // model decides, but sentences must always be translated and the whole
+        // answer has to be written in the target language.
+        assert!(DEFAULT_TRANSLATE_PROMPT.contains("Write your entire answer in"));
+        assert!(DEFAULT_TRANSLATE_PROMPT.contains("exactly one word"));
+        assert!(DEFAULT_TRANSLATE_PROMPT.contains("never with a bare translation"));
+        assert!(DEFAULT_TRANSLATE_PROMPT.contains("must always be translated"));
         assert!(DEFAULT_TRANSLATE_PROMPT.contains("IPA only for English"));
         assert!(DEFAULT_TRANSLATE_PROMPT.contains("Hanyu Pinyin"));
-        assert!(DEFAULT_TRANSLATE_PROMPT.contains("likely misspelling"));
+        assert!(DEFAULT_TRANSLATE_PROMPT.contains("looks misspelled"));
         assert!(DEFAULT_OCR_PROMPT.contains("every visible character"));
         assert!(!DEFAULT_OCR_PROMPT.contains("150-250"));
     }
 
     #[test]
     fn translation_uses_one_prompt_for_words_and_sentences() {
-        assert_eq!(PROMPT_VERSION, "9");
+        assert_eq!(PROMPT_VERSION, "10");
         for text in [
             "crazy",
             "carzy",

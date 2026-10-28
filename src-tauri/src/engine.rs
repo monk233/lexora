@@ -2762,7 +2762,7 @@ mod tests {
             assert_eq!(env.store.get().provider.online.max_tokens, user_limit);
             let log = std::fs::read_to_string(env.service.model_logger.path()).unwrap();
             assert!(log.contains(&format!("effective_max_tokens={expected}")));
-            assert!(log.contains("mode=explain prompt_source=default prompt_version=9"));
+            assert!(log.contains("mode=explain prompt_source=default prompt_version=10"));
             assert!(!log.contains("私密原文"));
             assert!(!log.contains("私密回答"));
         }

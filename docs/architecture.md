@@ -109,7 +109,7 @@ picker.js → invoke("picker_translate", {requestId,text,targetLang})
 
 - 引擎：llama.cpp 官方 `win-cpu-x64` 发布包（约 23MB），解压到 `<data>/engine/`。
 - 模型：GGUF 放在 `<data>/models/`；仅内置 Qwen3.5 0.8B / 2B / 4B 的 Q4_K_M、Q3_K_M 六种翻译 / 通用 / 视觉选项，均从 ModelScope 下载（Apache-2.0），也支持手动导入 GGUF。Qwen3.5 各档搭配对应的 `mmproj-F16.gguf`，本地按模型规格区分投影器文件名，避免不同规格互相覆盖。
-- 选模：翻译、通用文本和视觉任务共用用户手动选择的唯一 Qwen3.5 模型，持久化到 `settings.provider.local.selectedModel`（settings schema v7，JSON 中为 `provider.local.selectedModel`）。未选择时返回明确提示，不自动替选；CPU、内存和显存检测只用于推荐标签及理由。切换选择后需重启本地引擎。旧 Qwen2.5 文件保留，不再参与内置自动选择。
+- 选模：翻译、通用文本和视觉任务共用用户手动选择的唯一 Qwen3.5 模型，持久化到 `settings.provider.local.selectedModel`（settings schema v7，JSON 中为 `provider.local.selectedModel`）。未选择时返回明确提示，不自动替选；CPU、内存和显存检测只用于推荐标签及理由。推荐梯度以内存与线程为主、显存可升档：显存 ≥10GB 且内存 ≥16GB、线程 ≥8，或内存 ≥32GB 且线程 ≥12 时为 4B Q4；内存 ≥24GB 且线程 ≥8 为 4B Q3；内存 ≥16GB 按线程为 2B Q4/Q3；内存 ≥8GB、线程 ≥6 为 0.8B Q4；其余为 0.8B Q3。内置引擎为 CPU 版，显存不影响实际推理速度。切换选择后需重启本地引擎。旧 Qwen2.5 文件保留，不再参与内置自动选择。
 - 启动参数：`llama-server.exe -m <model> --host 127.0.0.1 --port <free> -c <ctx> -t <threads> -ngl <gpuLayers> --no-webui`。
 - 健康检查 `/health`，最长等待 90s；进程日志写 `logs/llama.log`；应用退出时停止子进程。
 
@@ -139,7 +139,7 @@ picker.js → invoke("picker_translate", {requestId,text,targetLang})
 
 `engine/prompts.rs` 的 `resolve_text_prompt()` 统一解析文本翻译/解释的提示词来源和版本，日志直接使用解析结果。翻译与单词查询共用 `picker.prompts.translate`（空值回退内置默认），由模型根据输入自行判断输出译文还是词典词条；没有单词查询模式、独立词条提示词或离线读音模块。`default_prompts()` 暴露 translate/summarize/explain/polish 及截图动作默认提示词。
 
-默认翻译提示词同时覆盖整段翻译和单个单词/短语：整段只给译文；单词/短语给词头、读音（英文 IPA、中文带声调拼音）、词性、至多 3 个常见义项与可选 1 个短例，疑似错拼不得编造释义或读音。音标与拼音由模型生成，可能不准确。解释先给核心含义，最多 3 个必要要点，通常 150–250 字；总结 3–5 点，润色只给结果，图片解释聚焦关键可见信息，OCR 只逐字转录。长度是提示词目标，并非字符级硬截断。
+默认翻译提示词用编号规则强约束：整句、从句和段落必须翻译，只有单个词或不超过 3 个词的固定短语（无句末标点）才输出词典词条；回答正文使用目标语言，仅词头、读音与代码保留原文。词条含词头、读音（英文 IPA、中文带声调拼音）、词性与至多 3 个常见义项、可选 1 个短例，疑似错拼不得编造释义或读音。音标与拼音由模型生成，可能不准确。解释先给核心含义，最多 3 个必要要点，通常 150–250 字；总结 3–5 点，润色只给结果，图片解释聚焦关键可见信息，OCR 只逐字转录。长度是提示词目标，并非字符级硬截断。
 
 `engine.rs` 对本地和在线调用统一计算有效输出预算：默认解释/图片解释 512、总结 768 tokens，均与用户配置上限取较小值；翻译（含单词/短语）、润色、自定义提示词、自由追问、OCR 沿用用户上限，不修改持久化配置。日志增加 `effective_max_tokens`、模式、来源和提示词版本，不记录提示词或回答正文。
 
