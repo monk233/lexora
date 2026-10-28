@@ -22,7 +22,7 @@ function harness() {
   const cancelled = [], frames = [], rendered = [];
   const context = vm.createContext({
     state: { followupHistory: [], initialAnswer: "", suggestionsAvailable: false },
-    activeRequest: null, pronunciationRequest: null,
+    activeRequest: null,
     panelFollowup: node(), panelFollowupInput: node(), panelFollowupSend: node(), panelBody: node(),
     window: { requestAnimationFrame(callback) { frames.push(callback); } },
     API: { abortTranslate(id) { cancelled.push(id); return Promise.resolve(); } },

@@ -18,26 +18,13 @@ async function checkSettingsMerge(withSharedHelpers) {
   const api = window.settingsAPI;
   let result = await api.getState();
   assert.equal(result.ok, true);
-  assert.equal(result.state.settings.version, 8);
-  assert.ok(result.state.promptDefaults.wordLookup.includes("Do not generate IPA"));
-  for (const mode of ["off", "prefer", "auto", "invalid", " PREFER ", " OFF "]) {
-    result = await api.updateSettings({ picker: { wordLookupMode: mode, prompts: { wordLookup: "  dictionary override  " } } });
-    assert.equal(result.state.settings.picker.wordLookupMode, mode === "invalid" ? "auto" : mode.trim().toLowerCase());
-    assert.equal(result.state.settings.picker.prompts.wordLookup, "dictionary override");
-    assert.equal(result.state.settings.picker.prompts.translate, "");
-  }
-  for (const [word, status, notation, value] of [
-    ["crazy", "Verified", "ipa", "/kreɪzi/"],
-    ["银行", "Verified", "pinyin", "yín háng"],
-    ["carzy", "Unknown", null, null],
-    ["crazy word", "Unknown", null, null],
-  ]) {
-    const response = await window.pickerAPI.lookupPronunciation(word);
-    assert.equal(response.ok, true);
-    assert.equal(response.result.status, status);
-    assert.equal(response.result.notation, notation);
-    assert.equal(response.result.value, value);
-  }
+  assert.equal(result.state.settings.version, 7);
+  assert.ok(result.state.promptDefaults.translate.includes("dictionary assistant"));
+  assert.equal(Object.hasOwn(result.state.promptDefaults, "wordLookup"), false);
+  assert.equal(Object.hasOwn(result.state.settings.picker, "wordLookupMode"), false);
+  result = await api.updateSettings({ picker: { prompts: { translate: "  custom override  " } } });
+  assert.equal(result.state.settings.picker.prompts.translate, "custom override");
+  assert.equal(result.state.settings.picker.prompts.summarize, "");
   assert.equal(result.state.settings.provider.local.selectedModel, "");
   assert.equal(Object.hasOwn(result.state.settings, "local"), false);
   result = await api.startLocal();

@@ -1175,12 +1175,3 @@ body.is-resizing-panel * {
     animation-duration: 2s;
   }
 }
-
-/* Verified offline pronunciation is separate from model Markdown. */
-.pronunciation {
-  margin: 0 0 8px;
-  color: var(--text-muted, #777);
-  font-size: 12px;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}

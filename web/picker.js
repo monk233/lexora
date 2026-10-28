@@ -238,7 +238,6 @@
     /* picker-data config.panelMode: "auto" (fixed width, screen-limited height,
      * hidden scrollbar follows new content) or "scroll" (fixed user size). */
     panelMode: "auto",
-    wordLookupMode: "auto",
     autoPanelFollow: true,
     /* Last auto-mode window size sent to the shell, to avoid redundant resizes
      * on every streamed chunk. */
@@ -267,7 +266,6 @@
 
   /* The translation currently streaming into the panel. */
   var activeRequest = null;
-  var pronunciationRequest = null;
   /* `cancelRequested` marks an intentional stop: speechSynthesis.cancel()
    * reports the cancelled utterance through `onerror`, and that must never
    * surface as a "speech failed" toast. */
@@ -1252,24 +1250,7 @@
     }
   }
 
-  function lookupRequestPronunciation(request, source) {
-    pronunciationRequest = request;
-    if (state.wordLookupMode === "off" || !API || typeof API.lookupPronunciation !== "function") return;
-    Promise.resolve().then(function () { return API.lookupPronunciation(source); }).then(function (response) {
-      var reading = response && response.ok && response.result;
-      if (pronunciationRequest !== request || !state.panelOpen || !reading ||
-          reading.status !== "Verified" || !reading.notation || !reading.value) return;
-      var line = (reading.notation === "ipa" ? "音标" : reading.notation === "pinyin" ? "拼音" : reading.notation) + "：" + reading.value;
-      var node = el("p", "pronunciation", line);
-      request.target.insertBefore(node, request.result);
-      request.pronunciationLine = line;
-      if (state.panelCopyText) setPanelCopyText(requestOutputText(request));
-      resizePanelForContent();
-    }).catch(function () { /* Optional dictionary lookup must not interrupt generation. */ });
-  }
-
   function openPanel(title) {
-    pronunciationRequest = null;
     closeMenu();
     abortActiveRequest();
     stopSpeech();
@@ -1337,7 +1318,6 @@
   }
 
   function closePanel() {
-    pronunciationRequest = null;
     if (!state.panelOpen) {
       return;
     }
@@ -1400,9 +1380,7 @@
   }
 
   function setPanelCopyText(text) {
-    var body = String(text == null ? "" : text);
-    var reading = pronunciationRequest && pronunciationRequest.pronunciationLine;
-    state.panelCopyText = body && reading ? reading + "\n\n" + body : body;
+    state.panelCopyText = String(text == null ? "" : text);
     syncPanelFoot();
   }
 
@@ -1816,7 +1794,6 @@
       failed: false,
       sawContent: false,
     };
-    pronunciationRequest = null;
     activeRequest = request;
     state.translating = true;
     var source = state.text;
@@ -2331,7 +2308,6 @@
       sawContent: false,
     };
     activeRequest = request;
-    lookupRequestPronunciation(request, state.text);
     state.translating = true;
     resizePanelForContent();
 
@@ -2786,7 +2762,6 @@
       sawContent: false,
     };
     activeRequest = request;
-    if (action === "explain") lookupRequestPronunciation(request, state.text);
     state.translating = true;
     resizePanelForContent();
 
@@ -3097,7 +3072,6 @@
   /* ---- Reset / data ---------------------------------------------------- */
 
   function resetForHidden() {
-    pronunciationRequest = null;
     abortActiveRequest();
     resetFollowup();
     stopSpeech();
@@ -3277,9 +3251,6 @@
     state.defaultTargetLang = String(config.defaultTargetLang || "auto");
     state.searchEngine = normalizeSearchEngine(config.searchEngine);
     state.panelMode = normalizePanelMode(config.panelMode);
-    state.wordLookupMode = ["auto", "off", "prefer"].includes(config.wordLookupMode)
-      ? config.wordLookupMode
-      : "auto";
     state.panelPinnedPreference = config.panelPinned === true;
     state.targetLang = "";
     // Rebuild the custom-skill metadata every time: a disabled/removed skill
