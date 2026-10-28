@@ -901,12 +901,22 @@ pub struct SettingsStore {
 impl SettingsStore {
     pub fn load(file: PathBuf) -> Self {
         let settings = load_settings(&file).normalize();
-        let store = Self {
+        Self {
             file: Arc::new(file),
             inner: Arc::new(RwLock::new(settings)),
-        };
-        let _ = store.persist(&store.get());
-        store
+        }
+    }
+
+    /// Persists normalized startup settings only after the single-instance gate.
+    pub fn persist_initial_settings(&self) -> Result<(), String> {
+        // Preserve malformed input without mutating it during load.
+        if let Ok(text) = fs::read_to_string(self.file.as_path()) {
+            if serde_json::from_str::<Settings>(&text).is_err() {
+                fs::copy(self.file.as_path(), self.file.with_extension("json.broken"))
+                    .map_err(|error| format!("备份损坏设置失败：{error}"))?;
+            }
+        }
+        self.persist(&self.get())
     }
 
     pub fn get(&self) -> Settings {
@@ -1002,9 +1012,8 @@ fn load_settings(file: &Path) -> Settings {
     match serde_json::from_str::<Settings>(&text) {
         Ok(settings) => settings,
         Err(error) => {
-            // Keep the broken file for debugging, then fall back to defaults.
-            let _ = fs::rename(file, file.with_extension("json.broken"));
-            eprintln!("settings.json 解析失败，已重置：{error}");
+            // Loading must remain read-only, including malformed files.
+            eprintln!("settings.json 解析失败，使用内存默认设置：{error}");
             Settings::default()
         }
     }

@@ -37,6 +37,7 @@
   var CUSTOM_MODEL_VALUE = "__custom__";
 
   var state = null;
+  var initialStateSettled = false;
   var saveQueue = null;
   var saving = false;
   var savePending = null;
@@ -500,6 +501,7 @@
     if (!payload || !payload.settings) {
       return;
     }
+    initialStateSettled = true;
     state = payload;
     renderAll();
   }
@@ -4443,6 +4445,31 @@
 
   /* ---- Boot ------------------------------------------------------------ */
 
+  // Only retry Tauri's transient startup registration error. Other failures
+  // retain the existing error handling and produce a single toast in boot.
+  function getInitialState() {
+    var delays = [100, 250, 500];
+    function attempt(index) {
+      if (initialStateSettled) {
+        return Promise.resolve(null);
+      }
+      return API.getState().then(function (result) {
+        if (initialStateSettled) {
+          return null;
+        }
+        if (result.ok || !/state not managed/i.test(String(result.error || "")) || index >= delays.length) {
+          return result;
+        }
+        return new Promise(function (resolve) {
+          window.setTimeout(resolve, delays[index]);
+        }).then(function () {
+          return attempt(index + 1);
+        });
+      });
+    }
+    return attempt(0);
+  }
+
   function boot() {
     fillSelect(
       byId("online-preset"),
@@ -4475,7 +4502,11 @@
     }
     renderUpdate();
 
-    API.getState().then(function (result) {
+    getInitialState().then(function (result) {
+      if (initialStateSettled || !result) {
+        return;
+      }
+      initialStateSettled = true;
       if (!result.ok) {
         toast("读取设置失败：" + (result.error || "未知错误"), "error");
         return;

@@ -40,7 +40,20 @@ fn main() {
     // Establish the Shell identity before Tauri creates any windows.
     let notification_process_identity = notification::set_process_identity();
     ensure_webview2_scheduling_args();
+    let paths = paths::AppPaths::resolve();
+    let log = logger::Logger::new(&paths.logs_dir, "main");
+    log.info(&format!(
+        "=== Lexora {} starting (os={}, exe={:?}, args={:?}) ===",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::current_exe().ok(),
+        std::env::args().collect::<Vec<_>>()
+    ));
+    log.info(&format!("data dir: {}", paths.data_dir.display()));
+    let state = AppState::new(paths, log);
     let app = tauri::Builder::default()
+        // Register command state before Tauri creates configured webviews.
+        .manage(state)
         // The single-instance plugin must be registered before any other plugin.
         // A second launch never opens a window on its own (a plain double-click
         // stays silent); pass `--show` to explicitly bring settings up.
@@ -62,16 +75,10 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .setup(move |app| {
-            let paths = paths::AppPaths::resolve();
-            let log = logger::Logger::new(&paths.logs_dir, "main");
-            log.info(&format!(
-                "=== Lexora {} starting (os={}, exe={:?}, args={:?}) ===",
-                env!("CARGO_PKG_VERSION"),
-                std::env::consts::OS,
-                std::env::current_exe().ok(),
-                std::env::args().collect::<Vec<_>>()
-            ));
-            log.info(&format!("data dir: {}", paths.data_dir.display()));
+            let state = app.state::<Arc<AppState>>().inner().clone();
+            let log = state.log.clone();
+            // Only the primary instance reaches setup; failed saves are logged.
+            let _ = state.persist_initial_settings();
             if let Err(error) =
                 notification_process_identity.and_then(|_| notification::initialize())
             {
@@ -84,9 +91,6 @@ fn main() {
             std::panic::set_hook(Box::new(move |info| {
                 panic_log.error(&format!("panic: {info}"));
             }));
-
-            let state = AppState::new(paths, log.clone());
-            app.manage(state.clone());
 
             if let Err(error) = tray::setup(app) {
                 log.warn(&format!("tray setup failed: {error}"));
