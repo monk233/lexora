@@ -22,6 +22,15 @@ function node(tag, className, text) {
     set innerHTML(value) { this.children = []; },
   };
 }
+/* Extracted picker functions call LP.t; load the real zh runtime so behavior
+ * is exercised with the shipped copy. */
+function loadMessages(context) {
+  for (const file of ["messages.zh.js", "i18n.js"]) {
+    vm.runInContext(fs.readFileSync(path.join(__dirname, "shared", file), "utf8"), context);
+  }
+  context.LP = context.window.LP;
+  context.LP.i18n.init("zh");
+}
 function harness(available = true, streamOnly = false) {
   let sequence = 0;
   const calls = [];
@@ -68,6 +77,7 @@ function harness(available = true, streamOnly = false) {
       captureFollowup(...args) { calls.push(["capture", ...args]); return Promise.resolve({ ok: true }); },
     },
   });
+  loadMessages(context);
   for (const name of ["cancelFollowupSuggestions", "runAfterSuggestions", "syncFollowupOverlay", "resetFollowup", "invalidateFollowupSuggestions",
     "showPrefetchedSuggestions", "finishFollowupSuggestions", "guardRepetition", "handleTranslateEvent", "refreshFollowupSuggestions", "setFollowupSuggestions", "enableFollowup", "setFollowupBusy",
     "submitFollowup", "finishFollowup", "failFollowup", "finishTranslation", "resetForHidden", "closePanel"])

@@ -42,8 +42,6 @@
     LP && Array.isArray(LP.DEFAULT_SKILLS) && LP.DEFAULT_SKILLS.length
       ? LP.DEFAULT_SKILLS.slice()
       : FALLBACK_SKILLS.slice();
-  var NO_VOICE_MESSAGE =
-    "系统未安装可用的语音包：可在 Windows 设置 → 时间和语言 → 语音 中添加";
 
   /* Toolbar overflow budget (CSS/logical px). Skills that no longer fit are
    * moved into the "more" menu instead of widening (and clipping) the window.
@@ -73,13 +71,14 @@
   /* Screenshot skills (picker-image, see contracts §10.5). They reuse the text
    * skill result panel: only the loading wording, the source row and the
    * renderer (OCR is literal text, everything else Markdown) differ. */
+  /* Screenshot action labels are language-pack keys; the payload label wins
+   * when set, these keys are the fallback. */
   var IMAGE_ACTION_LABELS = {
-    ocr: "提取文字",
-    translate: "翻译",
-    explain: "解释图片",
-    custom: "图片技能",
+    ocr: "capture.ocr",
+    translate: "capture.translate",
+    explain: "capture.explain",
+    custom: "picker.image.custom",
   };
-  var IMAGE_CLIPBOARD_HINT = "截图已复制到剪贴板";
 
   /* Panel title keys for the screenshot actions; "" means the displayed label
    * comes from the payload (custom image skills) and stays untranslated. */
@@ -1201,15 +1200,19 @@
 
   function disableInApp() {
     if (!state.programName) {
-      showToast("未识别当前应用，无法快速禁用");
+      showToast(LP.t("picker.toast.noProgram"));
       return;
     }
     API.disableInApp(state.programName).then(function (result) {
       if (!result || !result.ok) {
-        showToast("禁用失败：" + ((result && result.error) || "未知错误"));
+        showToast(
+          LP.t("picker.toast.disableFailed", {
+            error: (result && result.error) || LP.t("common.unknownError"),
+          })
+        );
         return;
       }
-      showToast("已在 " + state.programName + " 中禁用划词工具");
+      showToast(LP.t("picker.toast.disabledInApp", { name: state.programName }));
       window.setTimeout(function () {
         API.close();
       }, 850);
@@ -1219,10 +1222,14 @@
   function disableTool() {
     API.disableTool().then(function (result) {
       if (!result || !result.ok) {
-        showToast("禁用失败：" + ((result && result.error) || "未知错误"));
+        showToast(
+          LP.t("picker.toast.disableFailed", {
+            error: (result && result.error) || LP.t("common.unknownError"),
+          })
+        );
         return;
       }
-      showToast("已禁用划词工具，可在设置中重新启用");
+      showToast(LP.t("picker.toast.disabled"));
       window.setTimeout(function () {
         API.close();
       }, 900);
@@ -1263,7 +1270,7 @@
         state.panelPinned = !next;
         syncPanelPin();
         if (!silent) {
-          showToast("无法固定面板，请重试");
+          showToast(LP.t("picker.toast.pinFailed"));
         }
         return;
       }
@@ -1273,7 +1280,7 @@
         state.panelPinnedPreference = state.panelPinned;
       }
       if (!silent) {
-        showToast(next ? "面板已固定到桌面" : "已取消固定");
+        showToast(next ? LP.t("picker.toast.pinned") : LP.t("picker.toast.unpinned"));
       }
     });
   }
@@ -1472,7 +1479,7 @@
 
   function sourceNode() {
     var wrap = el("div");
-    wrap.appendChild(el("p", "source-label", "原文"));
+    wrap.appendChild(el("p", "source-label", LP.t("picker.label.source")));
     wrap.appendChild(el("p", "source-text", state.text));
     return wrap;
   }
@@ -1480,27 +1487,27 @@
   function hintForError(message, kind) {
     var text = String(message || "");
     if (/API Key|apiKey|401|403|429|Unauthorized|认证|服务地址|baseUrl|超时|timeout/i.test(text)) {
-      return "打开设置 → 翻译服务，检查在线 API 的服务地址、API Key 与模型名。";
+      return LP.t("picker.hint.checkOnlineApi");
     }
     if (/引擎|GGUF|llama|本地模型|模型|未安装|未配置|未选择/i.test(text)) {
-      return "打开设置 → 翻译服务，下载并启动本地引擎与模型，或切换到在线 API。";
+      return LP.t("picker.hint.checkLocalModel");
     }
     if (kind === "custom") {
-      return "自定义技能与翻译使用同一服务，请检查 API/本地模型状态后重试。";
+      return LP.t("picker.hint.customService");
     }
     if (kind === "polish") {
-      return "润色与翻译使用相同的服务，请检查在线 API 或本地模型状态后重试。";
+      return LP.t("picker.hint.polishService");
     }
     if (kind === "assist") {
-      return "总结与解释使用与翻译相同的服务，请检查在线 API 或本地模型状态。";
+      return LP.t("picker.hint.assistService");
     }
-    return "打开设置检查翻译服务状态，或重启应用后重试。";
+    return LP.t("picker.hint.translateService");
   }
 
   function friendlyError(message) {
     var text = String(message == null ? "" : message).trim();
     if (!text || text === "undefined" || text === "null") {
-      return "未知错误";
+      return LP.t("common.unknownError");
     }
     return text;
   }
@@ -1514,12 +1521,12 @@
     }
     var actions = el("div", "error-actions");
     if (typeof retry === "function") {
-      var retryButton = el("button", "panel-action", "重试");
+      var retryButton = el("button", "panel-action", LP.t("picker.action.retry"));
       retryButton.type = "button";
       retryButton.addEventListener("click", retry);
       actions.appendChild(retryButton);
     }
-    var settingsButton = el("button", "panel-action", "打开设置");
+    var settingsButton = el("button", "panel-action", LP.t("picker.action.openSettings"));
     settingsButton.type = "button";
     settingsButton.addEventListener("click", function () {
       API.openSettings();
@@ -1786,8 +1793,10 @@
 
   function appendFollowupBlock(question) {
     var block = el("div", "followup-block");
-    block.appendChild(el("p", "followup-question", "追问：" + question));
-    var loadingRow = loadingNode("正在回答…");
+    block.appendChild(
+      el("p", "followup-question", LP.t("picker.followup.question", { question: question }))
+    );
+    var loadingRow = loadingNode(LP.t("picker.loading.followup"));
     block.appendChild(loadingRow);
     var answer = el("div", "result-text markdown followup-answer");
     block.appendChild(answer);
@@ -1815,11 +1824,11 @@
     var imageMode = !!state.image;
     if (imageMode) {
       if (!API || typeof API.captureFollowup !== "function") {
-        showToast("当前版本不支持继续提问");
+        showToast(LP.t("picker.error.followupUnsupported"));
         return;
       }
     } else if (!API || typeof API.followup !== "function") {
-      showToast("当前版本不支持继续提问");
+      showToast(LP.t("picker.error.followupUnsupported"));
       return;
     }
     invalidateFollowupSuggestions();
@@ -1862,7 +1871,7 @@
         if (!response || !response.ok) {
           failFollowup(
             request,
-            (response && response.error) || "回答失败",
+            (response && response.error) || LP.t("picker.error.followupFailed"),
             (response && response.hint) || ""
           );
         }
@@ -1887,7 +1896,7 @@
     removeLoadingRow(request);
     var answer = String(request.raw || "").trim();
     if (!answer) {
-      failFollowup(request, "没有返回内容，请重试。");
+      failFollowup(request, LP.t("picker.error.followupEmpty"));
       return;
     }
     renderMarkdownInto(request.result, request.raw);
@@ -1914,7 +1923,7 @@
     }
     state.translating = false;
     removeLoadingRow(request);
-    var text = friendlyError(message || "回答失败");
+    var text = friendlyError(message || LP.t("picker.error.followupFailed"));
     if (String(request.raw || "").trim()) {
       renderMarkdownInto(request.result, request.raw);
     } else if (request.result && request.result.parentNode) {
@@ -1925,7 +1934,7 @@
     if (hint) {
       error.appendChild(el("p", "followup-error-hint", hint));
     }
-    var retryButton = el("button", "followup-retry", "重试");
+    var retryButton = el("button", "followup-retry", LP.t("picker.action.retry"));
     retryButton.type = "button";
     retryButton.addEventListener("click", function () {
       if (state.followupBusy || (activeRequest && activeRequest.active)) return;
@@ -1967,15 +1976,19 @@
       return imageFailureTitle(request.imageAction, request.label);
     }
     if (request.kind === "custom") {
-      return (request.label || "自定义技能") + "失败";
+      return LP.t("picker.error.titleCustom", {
+        label: request.label || LP.t("picker.label.customSkill"),
+      });
     }
     if (request.kind === "polish") {
-      return "润色失败";
+      return LP.t("picker.error.titlePolish");
     }
     if (request.kind === "assist") {
-      return (request.label || "处理") + "失败";
+      return LP.t("picker.error.titleAssist", {
+        label: request.label || LP.t("picker.label.generic"),
+      });
     }
-    return "翻译失败";
+    return LP.t("picker.error.titleTranslate");
   }
 
   function emptyResultMessage(request) {
@@ -1983,15 +1996,17 @@
       return imageEmptyMessage(request.imageAction, request.label);
     }
     if (request.kind === "custom") {
-      return "自定义技能没有返回结果（可能正在启动或服务不可用）。";
+      return LP.t("picker.empty.custom");
     }
     if (request.kind === "polish") {
-      return "润色服务没有返回结果（可能正在启动或引擎不可用）。";
+      return LP.t("picker.empty.polish");
     }
     if (request.kind === "assist") {
-      return (request.label || "处理") + "服务没有返回结果（可能正在启动或引擎不可用）。";
+      return LP.t("picker.empty.assist", {
+        label: request.label || LP.t("picker.label.generic"),
+      });
     }
-    return "翻译服务没有返回结果（可能正在启动或引擎不可用）。";
+    return LP.t("picker.empty.translate");
   }
 
   function retryRequest(request) {
@@ -2244,9 +2259,9 @@
     var output = requestOutputText(request);
     setPanelSpeakText(output);
     setPanelCopyText(output);
-    appendErrorNote(request.target, "检测到重复输出，已停止");
+    appendErrorNote(request.target, LP.t("picker.error.repetitionStopped"));
     if (request.kind === "followup") {
-      var retryButton = el("button", "followup-retry", "重试");
+      var retryButton = el("button", "followup-retry", LP.t("picker.action.retry"));
       retryButton.type = "button";
       retryButton.addEventListener("click", function () {
         if (state.followupBusy || (activeRequest && activeRequest.active)) return;
@@ -2312,7 +2327,7 @@
     }
     if (event.type === "error") {
       if (request.kind === "followup") {
-        failFollowup(request, event.message || "回答失败", event.hint || "");
+        failFollowup(request, event.message || LP.t("picker.error.followupFailed"), event.hint || "");
       } else {
         failTranslation(request, event.message || requestFailureTitle(request), event.hint || "");
       }
@@ -2371,7 +2386,7 @@
         if (!response || !response.ok) {
           failTranslation(
             request,
-            (response && response.error) || "翻译服务没有响应",
+            (response && response.error) || LP.t("picker.error.translateNoResponse"),
             (response && response.hint) || ""
           );
         }
@@ -2391,40 +2406,44 @@
 
   function imageFailureTitle(action, label) {
     if (action === "ocr") {
-      return "提取文字失败";
+      return LP.t("picker.error.titleOcr");
     }
     if (action === "translate") {
-      return "翻译失败";
+      return LP.t("picker.error.titleTranslate");
     }
     if (action === "explain") {
-      return "解释失败";
+      return LP.t("picker.error.titleExplain");
     }
-    return (label || IMAGE_ACTION_LABELS.custom) + "失败";
+    return LP.t("picker.error.titleCustom", {
+      label: label || LP.t(IMAGE_ACTION_LABELS.custom),
+    });
   }
 
   function imageEmptyMessage(action, label) {
     if (action === "ocr") {
-      return "没有识别到文字，请重新截图并框选包含文字的区域。";
+      return LP.t("picker.empty.ocr");
     }
     if (action === "translate") {
-      return "截图翻译没有返回结果（可能正在启动或服务不可用）。";
+      return LP.t("picker.empty.imageTranslate");
     }
     if (action === "explain") {
-      return "图片解释没有返回结果（可能正在启动或视觉模型不可用）。";
+      return LP.t("picker.empty.imageExplain");
     }
-    return (label || IMAGE_ACTION_LABELS.custom) + "没有返回结果（可能正在启动或视觉模型不可用）。";
+    return LP.t("picker.empty.imageCustom", {
+      label: label || LP.t(IMAGE_ACTION_LABELS.custom),
+    });
   }
 
   /* Hint shown with a failed screenshot skill (the event hint wins when set). */
   function imageErrorHint(request, message) {
     var text = String(message || "");
     if (/API Key|apiKey|401|403|429|Unauthorized|认证|服务地址|baseUrl|超时|timeout|未安装|未配置|模型|视觉/i.test(text)) {
-      return "请检查「设置 → 翻译服务」中的在线 API 或本地视觉模型（Qwen2.5-VL 3B）后重试。";
+      return LP.t("picker.hint.imageService");
     }
     if (request.imageAction === "ocr") {
-      return "可重新截图并框选包含文字的清晰区域后重试。";
+      return LP.t("picker.hint.imageOcrRetry");
     }
-    return "可点「重试」重新识别这张截图，或检查设置中的在线 API / 本地视觉模型。";
+    return LP.t("picker.hint.imageRetry");
   }
 
   /* Builds the result panel for one screenshot request. Returns the active
@@ -2432,7 +2451,8 @@
    * (chunk/error/done) exactly like a text skill. */
   function beginImageRequest(image, requestId) {
     var action = image.action;
-    var label = image.label || IMAGE_ACTION_LABELS[action] || LP.t("picker.image.result");
+    var label =
+      image.label || LP.t(IMAGE_ACTION_LABELS[action] || "picker.image.result");
     // Custom image skills keep their user-defined label; built-in screenshot
     // actions are titled from the capture.* keys.
     var titleKey = action === "custom" && image.label ? "" : imageTitleKey(action);
@@ -2457,7 +2477,7 @@
 
     var target = el("div");
     if (image.hint || image.clipboard) {
-      var note = imageNoteNode(image.hint || IMAGE_CLIPBOARD_HINT);
+      var note = imageNoteNode(image.hint || LP.t("picker.image.clipboard"));
       // The shell still streams when the clipboard write failed; the note keeps
       // the failure visible without blocking the result panel.
       if (image.clipboard === false) {
@@ -2519,7 +2539,11 @@
     var requestId = makeCaptureRequestId();
     var request = beginImageRequest(image, requestId);
     if (!API || typeof API.captureRetry !== "function") {
-      failTranslation(request, "当前版本不支持重试截图结果", "请更新应用后再试。");
+      failTranslation(
+        request,
+        LP.t("picker.error.retryImageUnsupported"),
+        LP.t("picker.hint.updateApp")
+      );
       return;
     }
     var response;
@@ -2534,7 +2558,7 @@
       if (!response || response.ok === false) {
         failTranslation(
           request,
-          (response && response.error) || "重试失败",
+          (response && response.error) || LP.t("picker.error.retryFailed"),
           (response && response.hint) || ""
         );
       }
@@ -2548,7 +2572,7 @@
         if (!result || !result.ok) {
           failTranslation(
             request,
-            (result && result.error) || "重试失败",
+            (result && result.error) || LP.t("picker.error.retryFailed"),
             (result && result.hint) || ""
           );
         }
@@ -2608,7 +2632,7 @@
       action: action,
       skillId: String(event.skillId || ""),
       label:
-        String(event.label || "").trim() || IMAGE_ACTION_LABELS[action] || "截图结果",
+        String(event.label || "").trim() || LP.t(IMAGE_ACTION_LABELS[action]),
       targetLang: String(event.targetLang || ""),
       clipboard: event.clipboard === true,
       hint: String(event.hint || "").trim(),
@@ -2654,7 +2678,11 @@
     resizePanelForContent();
 
     if (!API || typeof API.polish !== "function") {
-      failTranslation(request, "当前版本不支持润色", "请更新应用后再试。");
+      failTranslation(
+        request,
+        LP.t("picker.error.polishUnsupported"),
+        LP.t("picker.hint.updateApp")
+      );
       return;
     }
 
@@ -2666,7 +2694,7 @@
         if (!response || !response.ok) {
           failTranslation(
             request,
-            (response && response.error) || "润色服务没有响应",
+            (response && response.error) || LP.t("picker.error.polishNoResponse"),
             (response && response.hint) || ""
           );
         }
@@ -2721,7 +2749,11 @@
     resizePanelForContent();
 
     if (!API || typeof API.customSkill !== "function") {
-      failTranslation(request, "当前版本不支持自定义技能", "请更新应用后再试。");
+      failTranslation(
+        request,
+        LP.t("picker.error.customUnsupported"),
+        LP.t("picker.hint.updateApp")
+      );
       return;
     }
 
@@ -2733,7 +2765,7 @@
         if (!response || !response.ok) {
           failTranslation(
             request,
-            (response && response.error) || "自定义技能没有响应",
+            (response && response.error) || LP.t("picker.error.customNoResponse"),
             (response && response.hint) || ""
           );
         }
@@ -2752,30 +2784,36 @@
   function searchSkill() {
     var text = String(state.text || "").trim();
     if (!text) {
-      showToast("没有可搜索的文本");
+      showToast(LP.t("picker.toast.noSearchText"));
       return;
     }
     var engines = LP.SEARCH_ENGINE_MAP || {};
     var engine = hasOwn(engines, state.searchEngine) ? engines[state.searchEngine] : null;
     var prefix = engine && engine.url ? String(engine.url) : "";
     if (!/^https?:\/\//i.test(prefix)) {
-      showToast("搜索失败：未配置搜索引擎");
+      showToast(LP.t("picker.toast.searchNoEngine"));
       return;
     }
     if (!API || typeof API.openExternal !== "function") {
-      showToast("搜索失败：当前版本不支持打开链接");
+      showToast(LP.t("picker.toast.searchUnsupported"));
       return;
     }
     API.openExternal(prefix + encodeURIComponent(text)).then(
       function (response) {
         if (response && response.ok === false) {
-          showToast("打开搜索失败：" + friendlyError(response.error || "未知错误"));
+          showToast(
+            LP.t("picker.toast.searchFailed", {
+              error: friendlyError(response.error || LP.t("common.unknownError")),
+            })
+          );
           return;
         }
         API.close();
       },
       function (error) {
-        showToast("打开搜索失败：" + friendlyError(String(error)));
+        showToast(
+          LP.t("picker.toast.searchFailed", { error: friendlyError(String(error)) })
+        );
       }
     );
   }
@@ -2786,7 +2824,8 @@
    * Same translate-event channel as translation/polish → Markdown, retry,
    * copy/speak and the error panel are shared. */
   function assistSkill(action) {
-    var label = action === "summarize" ? "总结" : "解释";
+    var label =
+      action === "summarize" ? LP.t("picker.label.summarize") : LP.t("picker.label.explain");
     var loadingText =
       action === "summarize" ? LP.t("picker.loading.summarize") : LP.t("picker.loading.explain");
     openPanel("skill." + action);
@@ -2824,7 +2863,11 @@
     resizePanelForContent();
 
     if (!API || typeof API.assist !== "function") {
-      failTranslation(request, "当前版本不支持" + label, "请更新应用后再试。");
+      failTranslation(
+        request,
+        LP.t("picker.error.assistUnsupported", { label: label }),
+        LP.t("picker.hint.updateApp")
+      );
       return;
     }
 
@@ -2836,7 +2879,8 @@
         if (!response || !response.ok) {
           failTranslation(
             request,
-            (response && response.error) || label + "服务没有响应",
+            (response && response.error) ||
+              LP.t("picker.error.assistNoResponse", { label: label }),
             (response && response.hint) || ""
           );
         }
@@ -2945,7 +2989,7 @@
   function speak(text) {
     var value = String(text || "").trim();
     if (!value) {
-      showToast("没有可朗读的文本");
+      showToast(LP.t("picker.toast.noSpeechText"));
       return;
     }
     if (state.speaking) {
@@ -2954,7 +2998,7 @@
     }
     var synth = window.speechSynthesis;
     if (!synth || typeof window.SpeechSynthesisUtterance !== "function") {
-      showToast(NO_VOICE_MESSAGE);
+      showToast(LP.t("picker.toast.noVoice"));
       return;
     }
     if (speech.loading) {
@@ -2964,7 +3008,7 @@
     getVoices().then(function (voices) {
       speech.loading = false;
       if (!voices || !voices.length) {
-        showToast(NO_VOICE_MESSAGE);
+        showToast(LP.t("picker.toast.noVoice"));
         return;
       }
       var voice = pickVoice(voices, value);
@@ -2990,7 +3034,7 @@
         // A user stop or a replaced utterance ends silently; only a genuine
         // failure of the utterance we started is worth reporting.
         if (wasCurrent && !cancelled) {
-          showToast("朗读失败，请检查 Windows 的语音设置");
+          showToast(LP.t("picker.toast.speechFailed"));
         }
       };
       speech.cancelRequested = false;
@@ -3002,7 +3046,7 @@
         synth.speak(utterance);
       } catch (error) {
         clearSpeechState(utterance);
-        showToast("朗读失败，请检查 Windows 的语音设置");
+        showToast(LP.t("picker.toast.speechFailed"));
       }
     });
   }
@@ -3012,7 +3056,11 @@
   function copyToClipboard(text, successMessage, closeAfter) {
     API.copy(text).then(function (result) {
       if (result && result.ok === false) {
-        showToast("复制失败：" + (result.error || "请检查剪贴板权限"));
+        showToast(
+          LP.t("picker.toast.copyFailed", {
+            error: result.error || LP.t("picker.error.clipboardPermission"),
+          })
+        );
         return;
       }
       showToast(successMessage);
@@ -3032,7 +3080,7 @@
   function startImageCapture(presetSkillId, hidePicker) {
     var captureAPI = window.captureAPI;
     if (!captureAPI || typeof captureAPI.start !== "function") {
-      showToast("当前版本不支持截图");
+      showToast(LP.t("picker.toast.captureUnsupported"));
       return;
     }
     var result;
@@ -3040,7 +3088,7 @@
       invalidateFollowupSuggestions();
       result = runAfterSuggestions(null, function () { return captureAPI.start(String(presetSkillId || "")); });
     } catch (error) {
-      showToast("截图失败：" + friendlyError(String(error)));
+      showToast(LP.t("picker.toast.captureFailed", { error: friendlyError(String(error)) }));
       return;
     }
     /* Keep the picker window open while the capture overlay is active: the
@@ -3063,13 +3111,17 @@
     result.then(
       function (response) {
         if (response && response.ok === false) {
-          showToast("截图失败：" + friendlyError(response.error || "未知错误"));
+          showToast(
+            LP.t("picker.toast.captureFailed", {
+              error: friendlyError(response.error || LP.t("common.unknownError")),
+            })
+          );
           return;
         }
         stopPickerWorkForCapture();
       },
       function (error) {
-        showToast("截图失败：" + friendlyError(String(error)));
+        showToast(LP.t("picker.toast.captureFailed", { error: friendlyError(String(error)) }));
       }
     );
   }
@@ -3090,11 +3142,17 @@
       API.runToolbarSkill(skill).then(
         function (result) {
           if (result && result.ok === false) {
-            showToast("无法打开工具面板：" + friendlyError(result.error || "未知错误"));
+            showToast(
+              LP.t("picker.toast.openPanelFailed", {
+                error: friendlyError(result.error || LP.t("common.unknownError")),
+              })
+            );
           }
         },
         function (error) {
-          showToast("无法打开工具面板：" + friendlyError(String(error)));
+          showToast(
+            LP.t("picker.toast.openPanelFailed", { error: friendlyError(String(error)) })
+          );
         }
       );
       return;
@@ -3108,7 +3166,7 @@
     } else if (skill === "read") {
       speak(state.text);
     } else if (skill === "copy") {
-      copyToClipboard(state.text, "已复制选中文本", true);
+      copyToClipboard(state.text, LP.t("picker.toast.copiedSelection"), true);
     } else if (skill === "search") {
       searchSkill();
     } else if (skill === "screenshot") {
@@ -3210,7 +3268,7 @@
   });
   panelCopy.addEventListener("click", function () {
     var text = state.panelCopyText || state.panelSpeakText || panelBody.textContent || "";
-    copyToClipboard(text, "已复制结果", false);
+    copyToClipboard(text, LP.t("picker.toast.copiedResult"), false);
   });
   // Markdown links are opened through the shell (https only), never navigated in
   // the transparent webview.

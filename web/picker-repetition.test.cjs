@@ -9,6 +9,15 @@ function extract(name) {
   assert.notEqual(start, -1, name);
   return source.slice(start, source.indexOf("\n  }", start) + 4);
 }
+/* Extracted picker functions call LP.t; load the real zh runtime so the
+ * assertions below keep checking the shipped Chinese copy. */
+function loadMessages(context) {
+  for (const file of ["messages.zh.js", "i18n.js"]) {
+    vm.runInContext(fs.readFileSync(path.join(__dirname, "shared", file), "utf8"), context);
+  }
+  context.LP = context.window.LP;
+  context.LP.i18n.init("zh");
+}
 function node() {
   return { children: [], classList: { remove() {}, toggle() {} },
     appendChild(child) { this.children.push(child); child.parentNode = this; },
@@ -40,6 +49,7 @@ function harness() {
     submitFollowup(question) { context.retried = question; },
     friendlyError(text) { return text; },
   });
+  loadMessages(context);
   for (const name of ["guardRepetition", "stopRepeatedRequest", "handleTranslateEvent", "abortActiveRequest",
     "removeLoadingRow", "renderRequestResult", "appendErrorNote", "enableFollowup", "setFollowupBusy",
     "finishTranslation", "finishFollowup", "failFollowup", "failTranslation"])
