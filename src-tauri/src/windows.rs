@@ -491,10 +491,18 @@ pub fn create_capture_window(
     geometry: CaptureGeometry,
 ) -> tauri::Result<()> {
     let label = geometry.label();
+    // The overlay window is reused across captures; the URL carries the
+    // effective UI language so the first paint already uses the right locale
+    // (the page still re-reads it from the backend state on every capture).
+    let language = state(app)
+        .map(|app_state| app_state.settings.get().effective_language())
+        .unwrap_or("zh");
     let window = WebviewWindowBuilder::new(
         app,
         label.as_str(),
-        WebviewUrl::App(format!("capture.html?monitor={}", geometry.index).into()),
+        WebviewUrl::App(
+            format!("capture.html?monitor={}&lang={}", geometry.index, language).into(),
+        ),
     )
     .title("Lexora 截图")
     .decorations(false)

@@ -1128,10 +1128,13 @@ fn start_impl(app: &AppHandle, index: u32, rect: &HitRect) -> Result<Value, Engi
             return Err(error);
         }
     };
+    // The control bar has no backend state query: pass the effective UI
+    // language through the URL, like the capture overlays.
+    let language = state.settings.get().effective_language();
     let bar = match create_longshot_window(
         app,
         LONG_SHOT_BAR_LABEL,
-        "longshot-bar.html",
+        &format!("longshot-bar.html?lang={language}"),
         "Lexora 长截图控制",
         bar_logical,
         bar_physical,

@@ -56,37 +56,48 @@
     <div class="capture-loupe" id="capture-loupe" hidden aria-hidden="true">
       <canvas class="loupe-canvas" id="loupe-canvas" width="120" height="120"></canvas>
       <div class="loupe-meta">
-        <span class="loupe-line" id="loupe-coords">坐标: (0, 0)</span>
-        <span class="loupe-line" id="loupe-color">色值: #000000</span>
-        <span class="loupe-hint" id="loupe-hint">按 C 复制色号</span>
+        <span class="loupe-line" id="loupe-coords"
+              data-i18n="capture.loupe.coordsIdle">坐标: (0, 0)</span>
+        <span class="loupe-line" id="loupe-color"
+              data-i18n="capture.loupe.colorIdle">色值: #000000</span>
+        <span class="loupe-hint" id="loupe-hint"
+              data-i18n="capture.loupe.hint">按 C 复制色号</span>
       </div>
     </div>
 
-    <div class="capture-hint" id="capture-hint" hidden>拖动选区移动 · 拖动边角调整 · Esc 取消</div>
+    <div class="capture-hint" id="capture-hint" data-i18n="capture.editHint"
+         hidden>拖动选区移动 · 拖动边角调整 · Esc 取消</div>
 
     <!-- Annotation properties (QQ-style, contract §11.10). Hidden until a
          drawing tool is active; capture.js positions it and shows only the
          groups whose `data-tools` includes the active tool. -->
     <div class="capture-palette" id="capture-palette" role="toolbar"
-         aria-label="标注属性" hidden>
+         aria-label="标注属性" data-i18n-aria-label="capture.palette.aria" hidden>
       <div class="palette-group palette-shapes-group" id="palette-shapes"
-           data-tools="shape" role="group" aria-label="形状">
+           data-tools="shape" role="group" aria-label="形状"
+           data-i18n-aria-label="capture.shape">
         <button type="button" class="palette-shape is-active" data-shape="rect"
-                title="矩形" aria-label="矩形" aria-pressed="true">
+                title="矩形" aria-label="矩形" aria-pressed="true"
+                data-i18n-title="capture.shape.rect"
+                data-i18n-aria-label="capture.shape.rect">
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <rect x="4" y="4" width="16" height="16" rx="2"></rect>
           </svg>
         </button>
         <button type="button" class="palette-shape" data-shape="circle"
-                title="圆形" aria-label="圆形" aria-pressed="false">
+                title="圆形" aria-label="圆形" aria-pressed="false"
+                data-i18n-title="capture.shape.circle"
+                data-i18n-aria-label="capture.shape.circle">
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <circle cx="12" cy="12" r="8"></circle>
           </svg>
         </button>
         <button type="button" class="palette-shape" data-shape="line"
-                title="直线" aria-label="直线" aria-pressed="false">
+                title="直线" aria-label="直线" aria-pressed="false"
+                data-i18n-title="capture.shape.line"
+                data-i18n-aria-label="capture.shape.line">
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M5 19 19 5"></path>
@@ -95,50 +106,62 @@
       </div>
 
       <div class="palette-group palette-segmented" id="palette-fill" data-tools="shape"
-           role="group" aria-label="填充模式">
+           role="group" aria-label="填充模式"
+           data-i18n-aria-label="capture.fillMode">
         <button type="button" class="palette-seg is-active" data-fill="outline"
-                aria-pressed="true">描边</button>
+                aria-pressed="true" data-i18n="capture.fill.outline">描边</button>
         <button type="button" class="palette-seg" data-fill="fill"
-                aria-pressed="false">填充</button>
+                aria-pressed="false" data-i18n="capture.fill.fill">填充</button>
       </div>
 
       <div class="palette-group palette-field" id="palette-width-group"
-           data-tools="shape arrow pen" role="group" aria-label="粗细">
-        <span class="palette-label">粗细</span>
+           data-tools="shape arrow pen" role="group" aria-label="粗细"
+           data-i18n-aria-label="capture.width">
+        <span class="palette-label" data-i18n="capture.width">粗细</span>
         <input type="range" id="palette-width" min="1" max="20" step="1" value="4"
-               aria-label="线条粗细">
+               aria-label="线条粗细" data-i18n-aria-label="capture.widthAria">
         <span class="palette-value" id="palette-width-value">4</span>
       </div>
 
       <div class="palette-group palette-field" id="palette-font-size-group"
-           data-tools="text number" role="group" aria-label="字号">
-        <span class="palette-label">字号</span>
+           data-tools="text number" role="group" aria-label="字号"
+           data-i18n-aria-label="capture.fontSize">
+        <span class="palette-label" data-i18n="capture.fontSize">字号</span>
         <input type="range" id="palette-font-size" min="12" max="72" step="1" value="24"
-               aria-label="字号">
+               aria-label="字号" data-i18n-aria-label="capture.fontSize">
         <span class="palette-value" id="palette-font-size-value">24</span>
       </div>
 
-      <div class="palette-group" data-tools="text number" role="group" aria-label="粗体">
+      <div class="palette-group" data-tools="text number" role="group" aria-label="粗体"
+           data-i18n-aria-label="capture.bold">
         <button type="button" class="palette-toggle" id="palette-bold" data-tools="text number"
-                aria-pressed="false" title="粗体">粗体</button>
+                aria-pressed="false" title="粗体" data-i18n="capture.bold"
+                data-i18n-title="capture.bold">粗体</button>
       </div>
 
       <div class="palette-group palette-bg-group" id="palette-text-bg" data-tools="text"
-           role="group" aria-label="文字背景">
-        <span class="palette-label">背景</span>
+           role="group" aria-label="文字背景"
+           data-i18n-aria-label="capture.textBackground">
+        <span class="palette-label" data-i18n="capture.background">背景</span>
         <button type="button" class="palette-bg" data-bg-color="#ffffff"
-                aria-pressed="false" title="白色背景"></button>
+                aria-pressed="false" title="白色背景"
+                data-i18n-title="capture.bg.white"></button>
         <button type="button" class="palette-bg" data-bg-color="#fef3c7"
-                aria-pressed="false" title="黄色背景"></button>
+                aria-pressed="false" title="黄色背景"
+                data-i18n-title="capture.bg.yellow"></button>
         <button type="button" class="palette-bg" data-bg-color="#111827"
-                aria-pressed="false" title="黑色背景"></button>
+                aria-pressed="false" title="黑色背景"
+                data-i18n-title="capture.bg.black"></button>
       </div>
 
       <!-- Colour control is last for every drawing tool (contract §11.10.5). -->
       <div class="palette-group" id="palette-color-group"
-           data-tools="shape arrow pen text number" role="group" aria-label="颜色">
+           data-tools="shape arrow pen text number" role="group" aria-label="颜色"
+           data-i18n-aria-label="capture.color">
         <button type="button" class="palette-color-button" id="palette-color-button"
-                title="颜色" aria-label="颜色" aria-haspopup="dialog">
+                title="颜色" aria-label="颜色" aria-haspopup="dialog"
+                data-i18n-title="capture.color"
+                data-i18n-aria-label="capture.color">
           <span class="palette-color-swatch" id="palette-color-swatch"></span>
           <svg class="palette-color-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -148,10 +171,11 @@
       </div>
 
       <div class="palette-group palette-field" id="palette-mosaic-size-group"
-           data-tools="mosaic" role="group" aria-label="马赛克块大小">
-        <span class="palette-label">马赛克</span>
+           data-tools="mosaic" role="group" aria-label="马赛克块大小"
+           data-i18n-aria-label="capture.mosaicSize">
+        <span class="palette-label" data-i18n="capture.mosaic">马赛克</span>
         <input type="range" id="palette-mosaic-size" min="2" max="30" step="1" value="8"
-               aria-label="马赛克块大小">
+               aria-label="马赛克块大小" data-i18n-aria-label="capture.mosaicSize">
         <span class="palette-value" id="palette-mosaic-size-value">8</span>
       </div>
     </div>
@@ -160,63 +184,80 @@
          Both are fixed-positioned (capture.js computes left/top) and hidden by
          default. -->
     <div class="palette-color-popover" id="palette-color-popover" role="dialog"
-         aria-label="预设颜色" hidden>
-      <div class="palette-color-grid" role="group" aria-label="预设颜色">
+         aria-label="预设颜色" data-i18n-aria-label="capture.presetColors" hidden>
+      <div class="palette-color-grid" role="group" aria-label="预设颜色"
+           data-i18n-aria-label="capture.presetColors">
         <button type="button" class="palette-color" data-color="#f44336"
-                title="红色" aria-label="红色"></button>
+                title="红色" aria-label="红色" data-i18n-title="capture.color.red"
+                data-i18n-aria-label="capture.color.red"></button>
         <button type="button" class="palette-color" data-color="#ff9800"
-                title="橙色" aria-label="橙色"></button>
+                title="橙色" aria-label="橙色" data-i18n-title="capture.color.orange"
+                data-i18n-aria-label="capture.color.orange"></button>
         <button type="button" class="palette-color" data-color="#ffeb3b"
-                title="黄色" aria-label="黄色"></button>
+                title="黄色" aria-label="黄色" data-i18n-title="capture.color.yellow"
+                data-i18n-aria-label="capture.color.yellow"></button>
         <button type="button" class="palette-color" data-color="#8bc34a"
-                title="绿色" aria-label="绿色"></button>
+                title="绿色" aria-label="绿色" data-i18n-title="capture.color.green"
+                data-i18n-aria-label="capture.color.green"></button>
         <button type="button" class="palette-color" data-color="#00bcd4"
-                title="青色" aria-label="青色"></button>
+                title="青色" aria-label="青色" data-i18n-title="capture.color.cyan"
+                data-i18n-aria-label="capture.color.cyan"></button>
         <button type="button" class="palette-color" data-color="#2196f3"
-                title="蓝色" aria-label="蓝色"></button>
+                title="蓝色" aria-label="蓝色" data-i18n-title="capture.color.blue"
+                data-i18n-aria-label="capture.color.blue"></button>
         <button type="button" class="palette-color" data-color="#9c27b0"
-                title="紫色" aria-label="紫色"></button>
+                title="紫色" aria-label="紫色" data-i18n-title="capture.color.purple"
+                data-i18n-aria-label="capture.color.purple"></button>
         <button type="button" class="palette-color" data-color="#ffffff"
-                title="白色" aria-label="白色"></button>
+                title="白色" aria-label="白色" data-i18n-title="capture.color.white"
+                data-i18n-aria-label="capture.color.white"></button>
         <button type="button" class="palette-color" data-color="#9e9e9e"
-                title="灰色" aria-label="灰色"></button>
+                title="灰色" aria-label="灰色" data-i18n-title="capture.color.gray"
+                data-i18n-aria-label="capture.color.gray"></button>
         <button type="button" class="palette-color" data-color="#000000"
-                title="黑色" aria-label="黑色"></button>
+                title="黑色" aria-label="黑色" data-i18n-title="capture.color.black"
+                data-i18n-aria-label="capture.color.black"></button>
       </div>
       <button type="button" class="palette-color-custom" id="palette-color-custom"
-              title="自定义颜色">
+              title="自定义颜色" data-i18n-title="capture.customColor">
         <span class="palette-color-custom-rainbow" aria-hidden="true"></span>
-        <span class="palette-color-custom-label">自定义</span>
+        <span class="palette-color-custom-label" data-i18n="capture.custom">自定义</span>
       </button>
     </div>
 
     <div class="palette-custom-color" id="palette-custom-color" role="dialog"
-         aria-label="自定义颜色" hidden>
-      <div class="palette-hsv" id="palette-hsv" aria-label="饱和度与明度">
+         aria-label="自定义颜色" data-i18n-aria-label="capture.customColor" hidden>
+      <div class="palette-hsv" id="palette-hsv" aria-label="饱和度与明度"
+           data-i18n-aria-label="capture.saturationValue">
         <span class="palette-hsv-cursor" id="palette-hsv-cursor"></span>
       </div>
-      <div class="palette-hue" id="palette-hue" aria-label="色相">
+      <div class="palette-hue" id="palette-hue" aria-label="色相"
+           data-i18n-aria-label="capture.hue">
         <span class="palette-hue-thumb" id="palette-hue-thumb"></span>
       </div>
       <div class="palette-rgb-row">
         <label class="palette-rgb-field">R
           <input type="number" id="palette-rgb-r" min="0" max="255" step="1" value="244"
-                 aria-label="红色通道">
+                 aria-label="红色通道" data-i18n-aria-label="capture.rgb.red">
         </label>
         <label class="palette-rgb-field">G
           <input type="number" id="palette-rgb-g" min="0" max="255" step="1" value="67"
-                 aria-label="绿色通道">
+                 aria-label="绿色通道" data-i18n-aria-label="capture.rgb.green">
         </label>
         <label class="palette-rgb-field">B
           <input type="number" id="palette-rgb-b" min="0" max="255" step="1" value="54"
-                 aria-label="蓝色通道">
+                 aria-label="蓝色通道" data-i18n-aria-label="capture.rgb.blue">
         </label>
       </div>
       <div class="palette-custom-footer">
         <span class="palette-custom-preview" id="palette-custom-preview"
-              title="当前颜色" aria-label="当前颜色"></span>
+              title="当前颜色" aria-label="当前颜色"
+              data-i18n-title="capture.currentColor"
+              data-i18n-aria-label="capture.currentColor"></span>
         <button type="button" class="palette-eyedropper" id="palette-eyedropper"
-                title="吸色器" aria-label="吸色器">
+                title="吸色器" aria-label="吸色器"
+                data-i18n-title="capture.eyedropper"
+                data-i18n-aria-label="capture.eyedropper">
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="m2 22 1-1h3l9-9"></path>
@@ -232,68 +273,71 @@
          picker.captureSkills; undo/redo/cancel/confirm stay outside it. The
          preset image-skill button stays first (hidden unless the shell started
          a preset capture). -->
-    <div class="capture-bar" id="capture-bar" role="toolbar" aria-label="截图操作" hidden>
+    <div class="capture-bar" id="capture-bar" role="toolbar" aria-label="截图操作"
+         data-i18n-aria-label="capture.toolbar.aria" hidden>
       <button type="button" class="tool-btn tool-btn-preset" id="capture-preset" hidden>
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"></path>
         </svg>
-        <span class="label" id="capture-preset-label">识别图片</span>
+        <span class="label" id="capture-preset-label"
+              data-i18n="capture.preset">识别图片</span>
       </button>
       <span class="bar-sep capture-bar-sep" id="capture-preset-sep" hidden></span>
 
       <div class="capture-bar-items" id="capture-bar-items">
         <button type="button" class="tool-btn" id="capture-pin" data-action="pin"
-                title="钉在桌面">
+                title="钉在桌面" data-i18n-title="capture.pin">
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M12 17v5"></path>
             <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"></path>
           </svg>
-          <span class="label">钉在桌面</span>
+          <span class="label" data-i18n="capture.pin">钉在桌面</span>
         </button>
 
         <span class="capture-tool-split" data-tool-split="shape">
           <button type="button" class="tool-btn capture-tool" data-tool="shape"
-                  title="形状" aria-pressed="false">
+                  title="形状" aria-pressed="false"
+                  data-i18n-title="capture.shape">
             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
                  stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <rect x="3" y="3" width="18" height="18" rx="2"></rect>
             </svg>
-            <span class="label">形状</span>
+            <span class="label" data-i18n="capture.shape">形状</span>
           </button>
         </span>
 
         <button type="button" class="tool-btn capture-tool" data-tool="arrow"
-                title="箭头" aria-pressed="false">
+                title="箭头" aria-pressed="false" data-i18n-title="capture.arrow">
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M7 7h10v10"></path>
             <path d="M7 17 17 7"></path>
           </svg>
-          <span class="label">箭头</span>
+          <span class="label" data-i18n="capture.arrow">箭头</span>
         </button>
         <button type="button" class="tool-btn capture-tool" data-tool="pen"
-                title="画笔" aria-pressed="false">
+                title="画笔" aria-pressed="false" data-i18n-title="capture.pen">
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"></path>
             <path d="m15 5 4 4"></path>
           </svg>
-          <span class="label">画笔</span>
+          <span class="label" data-i18n="capture.pen">画笔</span>
         </button>
         <button type="button" class="tool-btn capture-tool" data-tool="text"
-                title="文字" aria-pressed="false">
+                title="文字" aria-pressed="false" data-i18n-title="capture.text">
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M12 4v16"></path>
             <path d="M4 7V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2"></path>
             <path d="M9 20h6"></path>
           </svg>
-          <span class="label">文字</span>
+          <span class="label" data-i18n="capture.text">文字</span>
         </button>
         <button type="button" class="tool-btn capture-tool" data-tool="number"
-                title="序号" aria-pressed="false">
+                title="序号" aria-pressed="false" data-i18n-title="capture.number">
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <line x1="4" x2="20" y1="9" y2="9"></line>
@@ -301,10 +345,10 @@
             <line x1="10" x2="8" y1="3" y2="21"></line>
             <line x1="16" x2="14" y1="3" y2="21"></line>
           </svg>
-          <span class="label">序号</span>
+          <span class="label" data-i18n="capture.number">序号</span>
         </button>
         <button type="button" class="tool-btn capture-tool" data-tool="mosaic"
-                title="马赛克" aria-pressed="false">
+                title="马赛克" aria-pressed="false" data-i18n-title="capture.mosaic">
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <rect width="18" height="18" x="3" y="3" rx="2"></rect>
@@ -313,10 +357,11 @@
             <path d="M9 3v18"></path>
             <path d="M15 3v18"></path>
           </svg>
-          <span class="label">马赛克</span>
+          <span class="label" data-i18n="capture.mosaic">马赛克</span>
         </button>
 
-        <button type="button" class="tool-btn" data-action="ocr" title="提取文字">
+        <button type="button" class="tool-btn" data-action="ocr" title="提取文字"
+                data-i18n-title="capture.ocr">
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M3 7V5a2 2 0 0 1 2-2h2"></path>
@@ -327,9 +372,10 @@
             <path d="M7 12h10"></path>
             <path d="M7 16h6"></path>
           </svg>
-          <span class="label">提取文字</span>
+          <span class="label" data-i18n="capture.ocr">提取文字</span>
         </button>
-        <button type="button" class="tool-btn" data-action="translate" title="翻译">
+        <button type="button" class="tool-btn" data-action="translate" title="翻译"
+                data-i18n-title="capture.translate">
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="m5 8 6 6"></path>
@@ -339,28 +385,31 @@
             <path d="m22 22-5-10-5 10"></path>
             <path d="M14 18h6"></path>
           </svg>
-          <span class="label">翻译</span>
+          <span class="label" data-i18n="capture.translate">翻译</span>
         </button>
-        <button type="button" class="tool-btn" data-action="explain" title="解释图片">
+        <button type="button" class="tool-btn" data-action="explain" title="解释图片"
+                data-i18n-title="capture.explain">
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"></path>
             <path d="M9 18h6"></path>
             <path d="M10 22h4"></path>
           </svg>
-          <span class="label">解释图片</span>
+          <span class="label" data-i18n="capture.explain">解释图片</span>
         </button>
 
         <button type="button" class="tool-btn" id="capture-longshot" data-action="longshot"
-                title="长截图">
-          <span class="label">长截图</span>
+                title="长截图" data-i18n-title="capture.longshot">
+          <span class="label" data-i18n="capture.longshot">长截图</span>
         </button>
       </div>
 
       <span class="bar-sep capture-bar-sep"></span>
 
       <button type="button" class="tool-btn tool-btn-icon" id="capture-undo"
-              data-action="undo" title="撤回（Ctrl+Z）" aria-label="撤回" disabled>
+              data-action="undo" title="撤回（Ctrl+Z）" aria-label="撤回" disabled
+              data-i18n-title="capture.undoHint"
+              data-i18n-aria-label="capture.undo">
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M3 7v6h6"></path>
@@ -368,7 +417,9 @@
         </svg>
       </button>
       <button type="button" class="tool-btn tool-btn-icon" id="capture-redo"
-              data-action="redo" title="重做（Ctrl+Y）" aria-label="重做" disabled>
+              data-action="redo" title="重做（Ctrl+Y）" aria-label="重做" disabled
+              data-i18n-title="capture.redoHint"
+              data-i18n-aria-label="capture.redo">
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M21 7v6h-6"></path>
@@ -378,22 +429,23 @@
 
       <span class="bar-sep capture-bar-sep"></span>
 
-      <button type="button" class="tool-btn tool-btn-danger" data-action="cancel" title="取消截图（Esc）">
+      <button type="button" class="tool-btn tool-btn-danger" data-action="cancel"
+              title="取消截图（Esc）" data-i18n-title="capture.cancelHint">
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M18 6 6 18"></path>
           <path d="m6 6 12 12"></path>
         </svg>
-        <span class="label">取消</span>
+        <span class="label" data-i18n="common.cancel">取消</span>
       </button>
 
       <button type="button" class="tool-btn tool-btn-confirm" data-action="confirm"
-              title="确认截图">
+              title="确认截图" data-i18n-title="capture.confirmHint">
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M20 6 9 17l-5-5"></path>
         </svg>
-        <span class="label">确认</span>
+        <span class="label" data-i18n="capture.confirm">确认</span>
       </button>
     </div>
 
@@ -402,21 +454,28 @@
     <div class="capture-longshot-progress" id="capture-longshot-progress"
          role="status" aria-live="polite" hidden>
       <span class="capture-spinner" aria-hidden="true"></span>
-      <span class="capture-longshot-text">正在长截图…</span>
-      <span class="capture-longshot-frame" id="capture-longshot-frame">第 0 帧</span>
+      <span class="capture-longshot-text"
+            data-i18n="capture.longshotProgress">正在长截图…</span>
+      <span class="capture-longshot-frame" id="capture-longshot-frame"
+            data-i18n="capture.longshotFrame">第 0 帧</span>
     </div>
 
     <div class="capture-error-bar" id="capture-error" role="alert" hidden>
-      <span class="capture-error-text" id="capture-error-text">截图加载失败</span>
+      <span class="capture-error-text" id="capture-error-text"
+            data-i18n="capture.loadFailed">截图加载失败</span>
       <button type="button" class="capture-error-btn capture-error-btn-primary"
-              id="capture-error-retry">重试</button>
-      <button type="button" class="capture-error-btn" id="capture-error-close">关闭</button>
+              id="capture-error-retry" data-i18n="common.retry">重试</button>
+      <button type="button" class="capture-error-btn" id="capture-error-close"
+              data-i18n="common.close">关闭</button>
     </div>
 
     <div class="capture-toast" id="capture-toast" role="status" aria-live="polite" hidden></div>
   </div>
 
   <script src="shared/constants.js"></script>
+  <script src="shared/messages.zh.js"></script>
+  <script src="shared/messages.en.js"></script>
+  <script src="shared/i18n.js"></script>
   <script src="shared/skill-icons.js"></script>
   <script src="shared/tauri-api.js"></script>
   <script src="capture-annotate.js"></script>

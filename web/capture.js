@@ -20,6 +20,53 @@
 
   var API = window.captureAPI;
   var LP = window.LP || {};
+  /* Node-based unit tests load this file without the i18n runtime; keep LP.t
+   * callable so the fallback is the key itself, like LP.t for a missing key. */
+  if (typeof LP.t !== "function") {
+    LP.t = function (key) {
+      return String(key);
+    };
+  }
+
+  /* Applies the UI language and reports whether it changed. The shell appends
+   * `lang=` to this window's URL, so the first paint already uses the right
+   * locale; `getState().app.locale` stays authoritative because the overlay
+   * window is reused while the user may change the setting. */
+  function applyLocale(locale) {
+    if (!LP.i18n || typeof LP.i18n.init !== "function") {
+      return false;
+    }
+    var value = String(locale == null ? "" : locale).trim();
+    if (!value) {
+      return false;
+    }
+    var previous =
+      typeof LP.i18n.currentLocale === "function" ? LP.i18n.currentLocale() : "";
+    LP.i18n.init(value);
+    var next =
+      typeof LP.i18n.currentLocale === "function" ? LP.i18n.currentLocale() : previous;
+    if (previous !== next && typeof document !== "undefined" && document) {
+      document.title = LP.t("capture.windowTitle");
+    }
+    return previous !== next;
+  }
+
+  /* Language used before the backend responds: the URL query wins, then the
+   * `<html lang>` guess made by shared/i18n.js. */
+  function initialLocale() {
+    var lang = "";
+    try {
+      lang = new URLSearchParams(window.location.search).get("lang") || "";
+    } catch (error) {
+      /* Old webviews without URLSearchParams: keep the <html lang> guess. */
+    }
+    if (lang) {
+      return lang;
+    }
+    return document.documentElement ? document.documentElement.lang : "";
+  }
+
+  applyLocale(initialLocale());
 
   var MIN_SIZE = 8;
   /* Every configurable screenshot-toolbar entry (contract §4/§11.2). Their
@@ -47,7 +94,11 @@
   /* AI/action buttons that exist as static elements in `#capture-bar-items`. */
   var STATIC_ACTIONS = ["ocr", "translate", "explain"];
   var CUSTOM_SKILL_PREFIX = "custom-";
-  var DEFAULT_CUSTOM_SKILL_LABEL = "图片技能";
+  /* Fallback label for a custom image skill without a name (backend labels are
+   * used as-is, only this built-in fallback is localized). */
+  function defaultCustomSkillLabel() {
+    return LP.t("capture.imageSkill");
+  }
   /* Fallback glyph for custom skills whose icon key is unknown. */
   var FALLBACK_TOOL_ICON =
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" ' +
@@ -92,8 +143,6 @@
   /* Window-snapping IPC throttle: mousemove fires far more often than the
    * snapped window can change. */
   var HOVER_THROTTLE_MS = 40;
-  var SELECT_HINT = "点击窗口选择 · 拖动框选 · Esc 取消";
-  var EDIT_HINT = "拖动选区移动 · 拖动边角调整 · Esc 取消";
   var EDGE_PAD = 10;
   var BAR_GAP = 8;
   var HINT_VISIBLE_MS = 3200;
@@ -252,7 +301,7 @@
 
   function errorText(error) {
     if (!error) {
-      return "未知错误";
+      return LP.t("common.unknownError");
     }
     if (typeof error === "string") {
       return error;
@@ -587,6 +636,10 @@
           return;
         }
         var payload = result && (result.state || result);
+        if (payload && payload.app) {
+          /* A changed UI language also retranslates the static page copy. */
+          applyLocale(payload.app.locale);
+        }
         var picker = payload && payload.settings && payload.settings.picker;
         if (!picker) {
           return;
@@ -627,7 +680,7 @@
       var label = String(entry.label == null ? "" : entry.label).trim();
       result[id] = {
         id: id,
-        label: label.slice(0, 20) || DEFAULT_CUSTOM_SKILL_LABEL,
+        label: label.slice(0, 20) || defaultCustomSkillLabel(),
         icon: String(entry.icon == null ? "" : entry.icon).trim()
       };
     });
@@ -744,7 +797,7 @@
     container.className = "capture-bar-items";
     container.id = "capture-bar-items";
     container.setAttribute("role", "group");
-    container.setAttribute("aria-label", "截图工具");
+    container.setAttribute("aria-label", LP.t("capture.toolbar.toolsAria"));
     /* The shipped CSS styles `#capture-bar-items`; inline fallbacks keep an
      * older page usable. */
     container.style.display = "flex";
@@ -1003,7 +1056,7 @@
     loadPickerSettings(generation);
 
     if (!API || typeof API.monitor !== "function") {
-      showLoadError(generation, { error: "截图服务不可用，请重启 Lexora 后再试。" });
+      showLoadError(generation, { error: LP.t("capture.serviceUnavailable") });
       return;
     }
     pollMonitor(generation, 0);
@@ -1059,7 +1112,7 @@
     }
     if (attempt >= MONITOR_POLL_ATTEMPTS) {
       var detail = lastResult && (lastResult.error || lastResult.hint);
-      showLoadError(generation, detail ? lastResult : { error: "等待截图超时" });
+      showLoadError(generation, detail ? lastResult : { error: LP.t("capture.waitTimeout") });
       return;
     }
     state.pollTimer = window.setTimeout(function () {
@@ -1093,7 +1146,7 @@
       if (generation !== state.captureGeneration || state.shotReady || state.closed) {
         return;
       }
-      showLoadError(generation, { error: "截图加载失败" });
+      showLoadError(generation, { error: LP.t("capture.loadFailed") });
     };
     dom.shot.removeAttribute("src");
     dom.shot.src = String(result.dataUrl);
@@ -1159,7 +1212,7 @@
     renderCaptureBar();
     render();
     loadLayout(generation);
-    showHint(SELECT_HINT);
+    showHint(LP.t("capture.selectHint"));
     requestInitialHover();
     afterPaint(function () {
       signalReady(generation);
@@ -1172,7 +1225,9 @@
     setHidden(dom.preset, !visible);
     setHidden(dom.presetSep, !visible);
     if (visible && dom.presetLabel) {
-      dom.presetLabel.textContent = String(preset.label || "图片技能");
+      dom.presetLabel.textContent = String(
+        preset.label || LP.t("capture.imageSkill")
+      );
     }
   }
 
@@ -1264,10 +1319,13 @@
     document.body.classList.remove("is-dragging", "is-over-selection");
 
     var detail = result && (result.error || result.hint);
-    if (detail && String(detail) !== "截图加载失败") {
-      dom.errorText.textContent = "截图加载失败：" + String(detail);
+    var loadFailed = LP.t("capture.loadFailed");
+    if (detail && String(detail) !== loadFailed) {
+      dom.errorText.textContent = LP.t("capture.loadFailedDetail", {
+        error: String(detail)
+      });
     } else {
-      dom.errorText.textContent = "截图加载失败";
+      dom.errorText.textContent = loadFailed;
     }
 
     if (!API || typeof API.ready !== "function") {
@@ -2207,11 +2265,15 @@
     state.loupeColor = samplePixel(centerX, centerY);
     var physical = localToPhysicalPoint(point);
     if (dom.loupeCoords) {
-      dom.loupeCoords.textContent =
-        "坐标: (" + Math.round(physical.x) + ", " + Math.round(physical.y) + ")";
+      dom.loupeCoords.textContent = LP.t("capture.loupe.coords", {
+        x: Math.round(physical.x),
+        y: Math.round(physical.y)
+      });
     }
     if (dom.loupeColor) {
-      dom.loupeColor.textContent = "色值: " + state.loupeColor;
+      dom.loupeColor.textContent = LP.t("capture.loupe.color", {
+        color: state.loupeColor
+      });
     }
     dom.loupe.hidden = false;
     state.loupeVisible = true;
@@ -2277,7 +2339,9 @@
       }
     }
     if (dom.loupeHint) {
-      dom.loupeHint.textContent = "已复制 " + state.loupeColor;
+      dom.loupeHint.textContent = LP.t("capture.loupe.copied", {
+        color: state.loupeColor
+      });
     }
     if (dom.loupe) {
       dom.loupe.classList.add("is-copied");
@@ -2285,7 +2349,7 @@
     window.clearTimeout(state.loupeCopyTimer);
     state.loupeCopyTimer = window.setTimeout(function () {
       if (dom.loupeHint) {
-        dom.loupeHint.textContent = "按 C 复制色号";
+        dom.loupeHint.textContent = LP.t("capture.loupe.hint");
       }
       if (dom.loupe) {
         dom.loupe.classList.remove("is-copied");
@@ -2315,7 +2379,7 @@
       editor.hasAnnotations()
     ) {
       resetAnnotations();
-      toast("跨屏选区暂不支持标注，已清除标注", "info", TOAST_MS);
+      toast(LP.t("capture.toast.crossScreenAnnotations"), "info", TOAST_MS);
     }
     updateBarState();
   }
@@ -2742,7 +2806,7 @@
     render();
     broadcastSelection();
     if (state.selectionOwner === state.monitor) {
-      showHint(EDIT_HINT);
+      showHint(LP.t("capture.editHint"));
     }
   }
 
@@ -2951,11 +3015,11 @@
     }
     each(toolButtons, function (button) {
       button.disabled = toolsDisabled;
-      syncCrossScreenTitle(button, cross, "跨屏选区暂不支持标注");
+      syncCrossScreenTitle(button, cross, LP.t("capture.crossScreenAnnotate"));
     });
     if (dom.longshot) {
       dom.longshot.disabled = toolsDisabled;
-      syncCrossScreenTitle(dom.longshot, cross, "跨屏选区暂不支持长截图");
+      syncCrossScreenTitle(dom.longshot, cross, LP.t("capture.crossScreenLongshot"));
     }
     if (dom.preset) {
       dom.preset.disabled = state.busy || state.longshotActive;
@@ -3001,7 +3065,7 @@
   function failureText(result, fallback) {
     var message = (result && result.error) || fallback;
     var hint = (result && result.hint) || "";
-    return hint ? message + "：" + hint : message;
+    return hint ? message + LP.t("common.detailSeparator") + hint : message;
   }
 
   function copyImage() {
@@ -3009,7 +3073,7 @@
       return;
     }
     if (!API || typeof API.copy !== "function") {
-      toast("截图服务不可用，请重启 Lexora 后再试", "error", TOAST_MS);
+      toast(LP.t("capture.serviceUnavailable"), "error", TOAST_MS);
       return;
     }
     state.busy = true;
@@ -3033,7 +3097,13 @@
           /* The shell copies the crop and closes every overlay; no toast. */
           return;
         }
-        toast("复制失败：" + failureText(result, "未知错误"), "error", TOAST_MS);
+        toast(
+          LP.t("capture.toast.copyFailed", {
+            error: failureText(result, LP.t("common.unknownError"))
+          }),
+          "error",
+          TOAST_MS
+        );
       },
       function (error) {
         if (state.closed || generation !== state.captureGeneration) {
@@ -3041,7 +3111,11 @@
         }
         state.busy = false;
         updateBarState();
-        toast("复制失败：" + errorText(error), "error", TOAST_MS);
+        toast(
+          LP.t("capture.toast.copyFailed", { error: errorText(error) }),
+          "error",
+          TOAST_MS
+        );
       }
     );
   }
@@ -3051,7 +3125,7 @@
       return;
     }
     if (!API || typeof API.skill !== "function") {
-      toast("截图服务不可用，请重启 Lexora 后再试", "error", TOAST_MS);
+      toast(LP.t("capture.serviceUnavailable"), "error", TOAST_MS);
       return;
     }
     state.busy = true;
@@ -3084,7 +3158,13 @@
           /* The shell closed the overlay and opened the picker result panel. */
           return;
         }
-        toast("处理失败：" + failureText(result, "请求失败"), "error", TOAST_MS);
+        toast(
+          LP.t("capture.toast.processFailed", {
+            error: failureText(result, LP.t("capture.toast.requestFailed"))
+          }),
+          "error",
+          TOAST_MS
+        );
       },
       function (error) {
         if (state.closed || generation !== state.captureGeneration) {
@@ -3092,7 +3172,11 @@
         }
         state.busy = false;
         updateBarState();
-        toast("处理失败：" + errorText(error), "error", TOAST_MS);
+        toast(
+          LP.t("capture.toast.processFailed", { error: errorText(error) }),
+          "error",
+          TOAST_MS
+        );
       }
     );
   }
@@ -3642,8 +3726,9 @@
       dom.customPreview.style.background = color;
     }
     if (dom.colorButton) {
-      dom.colorButton.title = "颜色 " + color;
-      dom.colorButton.setAttribute("aria-label", "颜色 " + color);
+      var colorLabel = LP.t("capture.colorWithValue", { color: color });
+      dom.colorButton.title = colorLabel;
+      dom.colorButton.setAttribute("aria-label", colorLabel);
     }
     each(document.querySelectorAll(".palette-color[data-color]"), function (node) {
       var value = String(node.getAttribute("data-color") || "").toLowerCase();
@@ -3989,7 +4074,7 @@
       return;
     }
     if (!editor || typeof editor.sampleColor !== "function") {
-      toast("当前无法取色，请重试", "error", 2200);
+      toast(LP.t("capture.toast.pickColorUnavailable"), "error", 2200);
       return;
     }
     state.pickingColor = true;
@@ -4031,9 +4116,9 @@
     if (color) {
       pushColor(color);
       syncHsvFromColor();
-      toast("已吸取颜色 " + color, "success", 1600);
+      toast(LP.t("capture.toast.colorPicked", { color: color }), "success", 1600);
     } else {
-      toast("此处无法取色", "error", 2200);
+      toast(LP.t("capture.toast.colorUnavailable"), "error", 2200);
     }
   }
 
@@ -4061,7 +4146,7 @@
       return;
     }
     if (!API || typeof API.pin !== "function") {
-      toast("截图服务不可用，请重启 Lexora 后再试", "error", TOAST_MS);
+      toast(LP.t("capture.serviceUnavailable"), "error", TOAST_MS);
       return;
     }
     state.busy = true;
@@ -4082,11 +4167,17 @@
         state.busy = false;
         updateBarState();
         if (result && result.ok) {
-          toast("已钉在桌面", "success", 1600);
+          toast(LP.t("capture.toast.pinned"), "success", 1600);
           closeOverlay();
           return;
         }
-        toast("钉在桌面失败：" + failureText(result, "未知错误"), "error", TOAST_MS);
+        toast(
+          LP.t("capture.toast.pinFailed", {
+            error: failureText(result, LP.t("common.unknownError"))
+          }),
+          "error",
+          TOAST_MS
+        );
       },
       function (error) {
         if (state.closed || generation !== state.captureGeneration) {
@@ -4094,7 +4185,11 @@
         }
         state.busy = false;
         updateBarState();
-        toast("钉在桌面失败：" + errorText(error), "error", TOAST_MS);
+        toast(
+          LP.t("capture.toast.pinFailed", { error: errorText(error) }),
+          "error",
+          TOAST_MS
+        );
       }
     );
   }
@@ -4183,7 +4278,7 @@
       return;
     }
     restoreAfterLongshot();
-    toast("已取消长截图", "info", 1800);
+    toast(LP.t("capture.toast.longshotCancelled"), "info", 1800);
   }
 
   /* §11.14/§11.14.1: the longshot button starts the shell's manual-scroll
@@ -4199,12 +4294,12 @@
     /* Long screenshots scroll a single monitor window: a cross-monitor
      * selection has no well-defined scroll target. */
     if (isCrossScreenSelection()) {
-      toast("跨屏选区暂不支持长截图", "info", 1800);
+      toast(LP.t("capture.crossScreenLongshot"), "info", 1800);
       return;
     }
     var api = getLongshotApi();
     if (!api || typeof api.start !== "function") {
-      toast("长截图功能不可用，请重启 Lexora 后再试", "error", TOAST_MS);
+      toast(LP.t("capture.toast.longshotUnavailable"), "error", TOAST_MS);
       return;
     }
     state.busy = true;
@@ -4225,7 +4320,9 @@
         if (result && result.ok === false) {
           updateBarState();
           toast(
-            "长截图启动失败：" + failureText(result, "未知错误"),
+            LP.t("capture.toast.longshotStartFailed", {
+              error: failureText(result, LP.t("common.unknownError"))
+            }),
             "error",
             TOAST_MS
           );
@@ -4241,7 +4338,11 @@
         }
         state.busy = false;
         updateBarState();
-        toast("长截图启动失败：" + errorText(error), "error", TOAST_MS);
+        toast(
+          LP.t("capture.toast.longshotStartFailed", { error: errorText(error) }),
+          "error",
+          TOAST_MS
+        );
       }
     );
   }

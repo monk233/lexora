@@ -49,7 +49,8 @@ test('cross-screen titles and disabled states restore after returning to one mon
   const {run} = setupToolbar();
   run('updateCrossScreenUi(); window.cross(); updateCrossScreenUi(); updateBarState()');
   assert.equal(run('toolButtons[0].disabled'), true);
-  assert.equal(run('toolButtons[0].title'), '跨屏选区暂不支持标注');
+  // The test harness has no i18n pack, so LP.t falls back to the key.
+  assert.equal(run('toolButtons[0].title'), 'capture.crossScreenAnnotate');
   assert.equal(run('dom.longshot.disabled'), true);
   run('window.single(); updateCrossScreenUi(); updateCrossScreenUi()');
   assert.equal(run('toolButtons[0].disabled'), false);

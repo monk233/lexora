@@ -13,6 +13,29 @@
 
   var API = window.longshotAPI;
   var TOAST_MS = 2600;
+  var LP = window.LP || {};
+  /* Node-based checks may load this file without the i18n runtime. */
+  if (typeof LP.t !== "function") {
+    LP.t = function (key) {
+      return String(key);
+    };
+  }
+
+  /* The control bar has no backend state query: the shell appends `lang=` to
+   * this window's URL. Fall back to the `<html lang>` guess made by i18n.js. */
+  var initialLang = "";
+  try {
+    initialLang = new URLSearchParams(window.location.search).get("lang") || "";
+  } catch (error) {
+    /* Old webviews without URLSearchParams keep the <html lang> guess. */
+  }
+  if (!initialLang && document.documentElement) {
+    initialLang = document.documentElement.lang || "";
+  }
+  if (initialLang && LP.i18n && typeof LP.i18n.init === "function") {
+    LP.i18n.init(initialLang);
+    document.title = LP.t("longshot.windowTitle");
+  }
 
   var state = {
     direction: "vertical",
@@ -48,7 +71,7 @@
 
   function errorText(error) {
     if (!error) {
-      return "未知错误";
+      return LP.t("common.unknownError");
     }
     if (typeof error === "string") {
       return error;
@@ -62,14 +85,14 @@
   function failureText(result, fallback) {
     var message = (result && result.error) || fallback;
     var hint = (result && result.hint) || "";
-    return hint ? message + "：" + hint : message;
+    return hint ? message + LP.t("common.detailSeparator") + hint : message;
   }
 
   function apiCall(name) {
     if (!API || typeof API[name] !== "function") {
       return Promise.resolve({
         ok: false,
-        error: "长截图服务不可用，请重启 Lexora 后再试。"
+        error: LP.t("longshot.serviceUnavailable")
       });
     }
     try {
@@ -172,7 +195,10 @@
       .then(function (result) {
         state.ready = true;
         if (!result || result.ok === false) {
-          setStatus(failureText(result, "读取长截图状态失败"), "error");
+          setStatus(
+            failureText(result, LP.t("longshot.status.readFailed")),
+            "error"
+          );
           updateUi();
           return;
         }
@@ -180,7 +206,12 @@
       })
       .catch(function (error) {
         state.ready = true;
-        setStatus("读取长截图状态失败：" + errorText(error), "error");
+        setStatus(
+          LP.t("longshot.status.readFailed") +
+            LP.t("common.detailSeparator") +
+            errorText(error),
+          "error"
+        );
         updateUi();
       });
   }
@@ -213,22 +244,24 @@
       );
       dom.autoscroll.disabled = locked || !state.ready;
       if (dom.autoscrollLabel) {
-        dom.autoscrollLabel.textContent = autoscrollActive ? "停止滚动" : "自动滚动";
+        dom.autoscrollLabel.textContent = autoscrollActive
+          ? LP.t("longshot.stopAutoscroll")
+          : LP.t("longshot.autoscroll");
       }
       dom.autoscroll.title = autoscrollActive
-        ? "停止自动滚动"
-        : "自动滚动：程序按稳定步长滚动页面并拼接（推荐）";
+        ? LP.t("longshot.stopAutoscrollHint")
+        : LP.t("longshot.autoscrollHint");
     }
     if (!state.lastError && !state.done) {
-      var prefix = state.autoscroll ? "自动滚动中 · " : "";
+      var params = {
+        frame: state.frames || 1,
+        width: state.width,
+        height: state.height
+      };
       setStatus(
-        prefix +
-          "第 " +
-          (state.frames || 1) +
-          " 帧 · " +
-          state.width +
-          " × " +
-          state.height,
+        state.autoscroll
+          ? LP.t("longshot.statusAuto", params)
+          : LP.t("longshot.status", params),
         ""
       );
     }
@@ -282,12 +315,20 @@
       .then(function (result) {
         if (!result || result.ok === false) {
           state.direction = next === "horizontal" ? "vertical" : "horizontal";
-          flashStatus(failureText(result, "切换拼接方向失败"), "error");
+          flashStatus(
+            failureText(result, LP.t("longshot.toast.directionFailed")),
+            "error"
+          );
         }
       })
       .catch(function (error) {
         state.direction = next === "horizontal" ? "vertical" : "horizontal";
-        flashStatus("切换拼接方向失败：" + errorText(error), "error");
+        flashStatus(
+          LP.t("longshot.toast.directionFailed") +
+            LP.t("common.detailSeparator") +
+            errorText(error),
+          "error"
+        );
       })
       .then(function () {
         state.busy = false;
@@ -311,7 +352,7 @@
       request =
         API && typeof API.autoscroll === "function"
           ? API.autoscroll(next)
-          : Promise.reject(new Error("长截图服务不可用"));
+          : Promise.reject(new Error(LP.t("longshot.serviceUnavailable")));
     } catch (error) {
       request = Promise.reject(error);
     }
@@ -319,14 +360,22 @@
       .then(function (result) {
         if (!result || result.ok === false) {
           state.autoscroll = !next;
-          flashStatus(failureText(result, "切换自动滚动失败"), "error");
+          flashStatus(
+            failureText(result, LP.t("longshot.toast.autoscrollFailed")),
+            "error"
+          );
           return;
         }
         state.autoscroll = result.autoscroll === true;
       })
       .catch(function (error) {
         state.autoscroll = !next;
-        flashStatus("切换自动滚动失败：" + errorText(error), "error");
+        flashStatus(
+          LP.t("longshot.toast.autoscrollFailed") +
+            LP.t("common.detailSeparator") +
+            errorText(error),
+          "error"
+        );
       })
       .then(function () {
         state.busy = false;
@@ -345,17 +394,25 @@
       .then(function (result) {
         if (!result || result.ok === false) {
           state.busy = false;
-          flashStatus(failureText(result, "完成长截图失败"), "error");
+          flashStatus(
+            failureText(result, LP.t("longshot.toast.finishFailed")),
+            "error"
+          );
           return;
         }
         state.done = true;
         state.busy = false;
-        setStatus("已完成，正在钉在桌面…", "");
+        setStatus(LP.t("longshot.status.done"), "");
         updateUi();
       })
       .catch(function (error) {
         state.busy = false;
-        flashStatus("完成长截图失败：" + errorText(error), "error");
+        flashStatus(
+          LP.t("longshot.toast.finishFailed") +
+            LP.t("common.detailSeparator") +
+            errorText(error),
+          "error"
+        );
         updateUi();
       });
   }
@@ -371,17 +428,25 @@
       .then(function (result) {
         if (!result || result.ok === false) {
           state.busy = false;
-          flashStatus(failureText(result, "取消长截图失败"), "error");
+          flashStatus(
+            failureText(result, LP.t("longshot.toast.cancelFailed")),
+            "error"
+          );
           return;
         }
         state.done = true;
         state.busy = false;
-        setStatus("已取消长截图", "");
+        setStatus(LP.t("longshot.status.cancelled"), "");
         updateUi();
       })
       .catch(function (error) {
         state.busy = false;
-        flashStatus("取消长截图失败：" + errorText(error), "error");
+        flashStatus(
+          LP.t("longshot.toast.cancelFailed") +
+            LP.t("common.detailSeparator") +
+            errorText(error),
+          "error"
+        );
         updateUi();
       });
   }

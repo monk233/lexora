@@ -11,5 +11,5 @@ const button = read("capture.html").match(/<button[^>]*id="capture-longshot"[\s\
 assert.ok(!button.includes("<svg"), "Long screenshot must use the shared icon");
 assert.match(button, /data-action="longshot"/);
 assert.match(button, /title="长截图"/);
-assert.match(button, /<span class="label">长截图<\/span>/);
+assert.match(button, /<span class="label"[^>]*>长截图<\/span>/);
 console.log("Capture and settings longshot icons share the scroll key.");

@@ -16,51 +16,65 @@
        them instead of on top of the preview. The capture overlays themselves are
        click-through (the wheel must reach the target app), which is why this is
        a separate clickable window. -->
-  <div class="ls-bar" id="ls-bar" role="toolbar" aria-label="长截图操作">
-    <span class="ls-label">选择方向</span>
-    <div class="ls-segmented" id="ls-directions" role="group" aria-label="滚动方向">
+  <div class="ls-bar" id="ls-bar" role="toolbar" aria-label="长截图操作"
+       data-i18n-aria-label="longshot.bar.aria">
+    <span class="ls-label" data-i18n="longshot.direction">选择方向</span>
+    <div class="ls-segmented" id="ls-directions" role="group" aria-label="滚动方向"
+         data-i18n-aria-label="longshot.direction.aria">
       <button type="button" class="ls-seg is-active" data-direction="vertical"
-              aria-pressed="true" title="竖向滚动拼接">竖向</button>
+              aria-pressed="true" title="竖向滚动拼接"
+              data-i18n-title="longshot.verticalHint"
+              data-i18n="longshot.vertical">竖向</button>
       <button type="button" class="ls-seg" data-direction="horizontal"
-              aria-pressed="false" title="横向滚动拼接">横向</button>
+              aria-pressed="false" title="横向滚动拼接"
+              data-i18n-title="longshot.horizontalHint"
+              data-i18n="longshot.horizontal">横向</button>
     </div>
 
     <span class="ls-sep" aria-hidden="true"></span>
     <button type="button" class="ls-btn ls-btn-autoscroll" id="ls-autoscroll"
             title="自动滚动：程序按稳定步长滚动页面并拼接（推荐）"
+            data-i18n-title="longshot.autoscrollHint"
             aria-pressed="false">
       <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M12 5v14"></path>
         <path d="m19 12-7 7-7-7"></path>
       </svg>
-      <span class="label" id="ls-autoscroll-label">自动滚动</span>
+      <span class="label" id="ls-autoscroll-label"
+            data-i18n="longshot.autoscroll">自动滚动</span>
     </button>
 
     <span class="ls-sep" aria-hidden="true"></span>
-    <span class="ls-status" id="ls-status">第 1 帧 · 0 × 0</span>
+    <span class="ls-status" id="ls-status"
+          data-i18n="longshot.statusIdle">第 1 帧 · 0 × 0</span>
     <span class="ls-spacer" aria-hidden="true"></span>
 
     <button type="button" class="ls-btn ls-btn-danger" id="ls-cancel"
-            title="取消长截图（恢复截图界面）">
+            title="取消长截图（恢复截图界面）"
+            data-i18n-title="longshot.cancelHint">
       <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M18 6 6 18"></path>
         <path d="m6 6 12 12"></path>
       </svg>
-      <span class="label">取消</span>
+      <span class="label" data-i18n="common.cancel">取消</span>
     </button>
     <button type="button" class="ls-btn ls-btn-confirm" id="ls-finish"
-            title="完成（复制到剪贴板并钉在桌面）">
+            title="完成（复制到剪贴板并钉在桌面）"
+            data-i18n-title="longshot.finishHint">
       <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M20 6 9 17l-5-5"></path>
       </svg>
-      <span class="label">完成</span>
+      <span class="label" data-i18n="longshot.finish">完成</span>
     </button>
   </div>
 
   <script src="shared/tauri-api.js"></script>
+  <script src="shared/messages.zh.js"></script>
+  <script src="shared/messages.en.js"></script>
+  <script src="shared/i18n.js"></script>
   <script src="longshot-bar.js"></script>
 </body>
 </html>

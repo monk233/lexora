@@ -119,6 +119,45 @@ test("every picker.html data-i18n key exists in both packs", () => {
   }
 });
 
+test("capture, longshot, longshot-bar and pin pages load the shared i18n runtime", () => {
+  for (const page of ["capture.html", "longshot.html", "longshot-bar.html", "pin.html"]) {
+    const source = fs.readFileSync(path.join(__dirname, page), "utf8");
+    for (const file of ["messages.zh.js", "messages.en.js", "i18n.js"]) {
+      assert.ok(
+        source.includes(`src="shared/${file}"`),
+        `${page} must load shared/${file}`
+      );
+    }
+  }
+});
+
+test("every capture.js and longshot-bar.js literal lookup exists in both packs", () => {
+  const LP = loadI18n();
+  for (const file of ["capture.js", "longshot-bar.js"]) {
+    const source = fs.readFileSync(path.join(__dirname, file), "utf8");
+    const keys = Array.from(source.matchAll(/LP\.t\("([^"]+)"(?!\s*\+)/g)).map((match) => match[1]);
+    const scoped = keys.filter((key) => /^(?:capture|longshot|common)\./.test(key));
+    assert.ok(scoped.length > 15, `expected ${file} to use LP.t`);
+    for (const key of new Set(scoped)) {
+      assert.ok(LP.messages.zh[key] !== undefined, `missing zh key ${key} (${file})`);
+      assert.ok(LP.messages.en[key] !== undefined, `missing en key ${key} (${file})`);
+    }
+  }
+});
+
+test("every capture.html and longshot-bar.html data-i18n key exists in both packs", () => {
+  const LP = loadI18n();
+  for (const page of ["capture.html", "longshot-bar.html"]) {
+    const source = fs.readFileSync(path.join(__dirname, page), "utf8");
+    const keys = Array.from(source.matchAll(/data-i18n(?:-[a-z-]+)?="([^"]+)"/g)).map((match) => match[1]);
+    assert.ok(keys.length > 10, `expected ${page} to tag its static copy`);
+    for (const key of new Set(keys)) {
+      assert.ok(LP.messages.zh[key] !== undefined, `missing zh key ${key} (${page})`);
+      assert.ok(LP.messages.en[key] !== undefined, `missing en key ${key} (${page})`);
+    }
+  }
+});
+
 test("auto target stays language-complementary regardless of UI language", () => {
   const LP = loadI18n();
   // loadI18n() returns the LP runtime itself, so expose it as window.LP for
