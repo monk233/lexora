@@ -350,6 +350,8 @@
         logsDir: "C:\\Users\\Preview\\AppData\\Roaming\\Lexora\\logs",
         repoUrl: "https://github.com/monk233/lexora",
         license: "MIT",
+        locale: "zh",
+        languageSetting: "system",
       },
       settings: {
         version: 8,
@@ -391,6 +393,7 @@
           closeToTray: true,
           startAtLogin: false,
           theme: "system",
+          language: "system",
         },
         capture: {
           regionShortcut: "Win+Shift+X",
@@ -501,6 +504,9 @@
       settings.app.startAtLogin = false;
       mockStore.loginItem.enabled = false;
     }
+    mockStore.app.locale =
+      settings.app.language === "system" ? "zh" : settings.app.language;
+    mockStore.app.languageSetting = settings.app.language;
     mockStore.download = null;
     mockStore.downloads = Object.keys(mockDownloads).map(function (key) {
       return clone(mockDownloads[key].progress);
@@ -669,6 +675,8 @@
       wordLookup: String(capturePrompts.wordLookup || "").trim().slice(0, 4000),
       explain: String(capturePrompts.explain || "").trim().slice(0, 4000),
     };
+    var appLanguage = String((settings.app && settings.app.language) || "").trim().toLowerCase();
+    settings.app.language = appLanguage === "zh" || appLanguage === "en" ? appLanguage : "system";
     mockStore.picker.pinned = false;
   }
 

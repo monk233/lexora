@@ -40,6 +40,10 @@ pub struct AppInfo {
     pub logs_dir: String,
     pub repo_url: String,
     pub license: String,
+    /// Effective UI language after resolving `settings.app.language`.
+    pub locale: String,
+    /// Raw language setting (`system` / `zh` / `en`) for the settings page.
+    pub language_setting: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -99,6 +103,8 @@ pub fn build_state(app: &AppHandle, state: &AppState) -> StatePayload {
             logs_dir: state.paths.logs_dir.to_string_lossy().to_string(),
             repo_url: "https://github.com/monk233/lexora".to_string(),
             license: "MIT".to_string(),
+            locale: settings.effective_language().to_string(),
+            language_setting: settings.app.language.clone(),
         },
         settings,
         prompt_defaults: crate::engine::default_prompts(),

@@ -23,6 +23,12 @@ async function checkSettingsMerge(withSharedHelpers) {
   assert.ok(result.state.promptDefaults.wordLookup.includes("dictionary assistant"));
   assert.equal(Object.hasOwn(result.state.settings.picker, "wordLookupMode"), false);
   assert.equal(result.state.settings.picker.prompts.wordLookup, "");
+  assert.equal(result.state.app.locale, "zh");
+  assert.equal(result.state.app.languageSetting, "system");
+  result = await api.updateSettings({ app: { language: "en" } });
+  assert.equal(result.state.settings.app.language, "en");
+  assert.equal(result.state.app.languageSetting, "en");
+  assert.equal(result.state.app.locale, "en");
   result = await api.updateSettings({
     picker: { prompts: { translate: "  custom override  ", wordLookup: "  word override  " } },
   });
