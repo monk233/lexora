@@ -33,8 +33,8 @@
     initialLang = document.documentElement.lang || "";
   }
   if (initialLang && LP.i18n && typeof LP.i18n.init === "function") {
+    /* The <title> is tagged with data-i18n, so the static pass sets it too. */
     LP.i18n.init(initialLang);
-    document.title = LP.t("longshot.windowTitle");
   }
 
   var state = {

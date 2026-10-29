@@ -152,29 +152,39 @@ test("renderAll re-applies the localized save status after a language switch", (
     en: { idle: "All changes are saved automatically", saved: "Saved" },
   };
   let locale = "zh";
+  let updateRenders = 0;
   const context = vm.createContext({
     Object, Promise,
     state: {},
     saveStatus: { kind: "idle", message: "" },
     saveStatusTimer: null,
+    renderedLocale: "",
     window: { setTimeout: () => 1, clearTimeout() {} },
     byId: (id) => nodes[id],
-    LP: { t: (key) => locales[locale][key.split(".").pop()] },
+    LP: { t: (key) => locales[locale][key.split(".").pop()], i18n: { currentLocale: () => locale } },
   });
-  for (const name of ["saveStatusText", "renderSaveStatus", "setSaveStatus", "renderAll"]) {
+  for (const name of ["saveStatusText", "renderSaveStatus", "setSaveStatus", "renderLocale", "renderAll"]) {
     vm.runInContext(extract(name), context);
   }
   // applyStatic is not involved here: renderAll must re-apply the tracked state.
   for (const name of ["renderMode", "renderProviderBadge", "renderOnline", "renderLocal", "renderPicker", "renderApp", "renderAbout", "renderApiKeyVisibility", "renderUpdateNotesToggle"]) {
     context[name] = () => {};
   }
+  // The update card has no static fallback for its message, so renderAll must
+  // re-render it exactly when the locale changed.
+  context.renderUpdate = () => { updateRenders += 1; };
   context.setSaveStatus("saved");
   assert.equal(nodes["save-status-text"].textContent, "已保存");
   assert.equal(nodes["save-status"].getAttribute("data-state"), "saved");
+  context.renderAll();
+  assert.equal(updateRenders, 1, "renderAll renders the update card on the first pass");
   locale = "en";
   context.renderAll();
   assert.equal(nodes["save-status-text"].textContent, "Saved");
   assert.equal(nodes["save-status"].getAttribute("data-state"), "saved");
+  assert.equal(updateRenders, 2, "renderAll refreshes the update card on each locale change");
+  context.renderAll();
+  assert.equal(updateRenders, 2, "an unchanged locale leaves the update card alone");
 });
 test("the API key toggle label follows its expanded state across a language switch", () => {
   const nodes = {
@@ -202,6 +212,100 @@ test("the API key toggle label follows its expanded state across a language swit
   context.renderApiKeyVisibility();
   assert.equal(nodes["api-key-toggle"].title, "Show API key");
   assert.equal(nodes["api-key-toggle"].getAttribute("aria-pressed"), "false");
+});
+test("blacklist chip aria labels follow a language switch", () => {
+  const nodes = { "blacklist-chips": element("div", "") };
+  Object.defineProperty(nodes["blacklist-chips"], "innerHTML", {
+    get() { return ""; },
+    set() { nodes["blacklist-chips"].children.length = 0; },
+  });
+  const labels = { zh: "移除 {name}", en: "Remove {name}" };
+  let locale = "zh";
+  const context = vm.createContext({
+    Object,
+    state: { settings: { picker: { blacklist: ["example.com"] } } },
+    byId: (id) => nodes[id],
+    el: element,
+    LP: {
+      t: (key, params) => (labels[locale] || key).replace("{name}", params && params.name),
+      i18n: { currentLocale: () => locale },
+    },
+  });
+  for (const name of ["renderLocale", "renderBlacklist"]) vm.runInContext(extract(name), context);
+  context.renderBlacklist();
+  assert.equal(nodes["blacklist-chips"].children.length, 1);
+  assert.equal(
+    nodes["blacklist-chips"].children[0].children[1].getAttribute("aria-label"),
+    "移除 example.com"
+  );
+  locale = "en";
+  context.renderBlacklist();
+  assert.equal(nodes["blacklist-chips"].children.length, 1);
+  assert.equal(
+    nodes["blacklist-chips"].children[0].children[1].getAttribute("aria-label"),
+    "Remove example.com"
+  );
+});
+test("update card copy is localized at render time after a language switch", () => {
+  const nodes = {};
+  for (const id of ["update-status", "update-message", "check-update", "update-notes", "update-meta", "update-actions", "update-progress", "update-error"]) {
+    nodes[id] = element("div", "");
+  }
+  const pack = {
+    zh: {
+      "settings.update.latest": "已是最新版本 v{version}",
+      "settings.action.recheck": "重新检查",
+      "settings.error.checkUpdate": "无法检查更新",
+    },
+    en: {
+      "settings.update.latest": "Already on the latest version v{version}",
+      "settings.action.recheck": "Check again",
+      "settings.error.checkUpdate": "Could not check for updates",
+    },
+  };
+  let locale = "zh";
+  const context = vm.createContext({
+    Object,
+    updateState: "latest",
+    updateInfo: { latestVersion: "9.9.9" },
+    updateErrorKey: "",
+    updateErrorText: "",
+    updateErrorHint: "",
+    updateProgressPercent: 0,
+    updateNotesExpanded: false,
+    updateCurrentVersion: () => "1.0.0",
+    byId: (id) => nodes[id],
+    setHidden(node, hidden) { if (node) node.hidden = hidden; },
+    hideInlineError(node) { if (node) { node.hidden = true; node.textContent = ""; } },
+    showInlineError(node, error, hint) { if (node) { node.hidden = false; node.textContent = error + (hint || ""); } },
+    renderUpdateNotes() {},
+    renderUpdateProgress() {},
+    LP: {
+      t: (key, params) => String((pack[locale] && pack[locale][key]) || key)
+        .replace("{version}", (params && params.version) || ""),
+      formatBytes: () => "1 MB",
+    },
+  });
+  vm.runInContext(extract("renderUpdate"), context);
+  context.renderUpdate();
+  assert.equal(nodes["update-message"].textContent, "已是最新版本 v9.9.9");
+  assert.equal(nodes["check-update"].textContent, "重新检查");
+  locale = "en";
+  context.renderUpdate();
+  assert.equal(nodes["update-message"].textContent, "Already on the latest version v9.9.9");
+  assert.equal(nodes["check-update"].textContent, "Check again");
+  // Error title is a key kept in state: switching language must retranslate it
+  // instead of replaying the string captured in the previous language.
+  locale = "zh";
+  context.updateState = "error";
+  context.updateErrorKey = "settings.error.checkUpdate";
+  context.updateErrorText = "boom";
+  context.renderUpdate();
+  assert.equal(nodes["update-message"].textContent, "无法检查更新");
+  locale = "en";
+  context.renderUpdate();
+  assert.equal(nodes["update-message"].textContent, "Could not check for updates");
+  assert.equal(nodes["update-error"].textContent, "boom");
 });
 test("restart waits for in-flight and queued selection saves before invoking engine", async () => {
   const h = savingHarness();

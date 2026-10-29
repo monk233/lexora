@@ -3,8 +3,8 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const test = require('node:test');
 const source = fs.readFileSync(__dirname + '/capture.js', 'utf8');
-function setup() {
-  const window = { location: {search: ""}, devicePixelRatio: 1.5, setTimeout: () => 1, clearTimeout() {} };
+function setup(options) {
+  const window = { location: {search: ""}, devicePixelRatio: 1.5, setTimeout: () => 1, clearTimeout() {}, LP: options && options.LP };
   const document = { readyState: 'loading', addEventListener() {}, body: { classList: { add() {}, remove() {}, toggle() {} } } };
   vm.runInNewContext(source.replace('  /* ---- Boot', '  window.run = function (code) { return eval(code); };\n  /* ---- Boot'), { window, document, console });
   const run = window.run;
@@ -96,6 +96,50 @@ test('resetAnnotations routes disabled state and titles through shared synchroni
   assert.equal(run('toolButtons[0].title'), '矩形');
   run('state.busy=false; resetAnnotations()');
   assert.equal(run('toolButtons[0].disabled'), false);
+});
+
+test('locale reads reuse setLocale so the static pass cannot reset rendered nodes', () => {
+  const calls = { init: 0, setLocale: 0 };
+  const i18n = {
+    current: 'zh',
+    currentLocale() { return this.current; },
+    init(value) { calls.init += 1; this.current = value; },
+    setLocale(value) {
+      calls.setLocale += 1;
+      if (value === this.current) return false;
+      this.current = value;
+      return true;
+    },
+  };
+  const context = setup({ LP: { t: (key) => key, i18n } });
+  const hint = { hidden: false, textContent: 'rendered-by-app', classList: { add() {}, remove() {} } };
+  context.window.__testHint = hint;
+  const { run } = context;
+  run('dom.hint = window.__testHint; state.phase = "selecting"');
+  assert.equal(run('applyLocale("en")'), true);
+  assert.equal(calls.init, 1, 'the first read applies the static pass');
+  // A stale/unchanged getState locale must not re-run init: that static pass
+  // would overwrite the hint/preset text rendered from state.
+  assert.equal(run('applyLocale("en")'), false);
+  assert.equal(calls.init, 1);
+  assert.equal(run('dom.hint.textContent'), 'capture.selectHint', 'the visible hint is retranslated');
+  run('dom.hint.textContent = "rendered-by-app"');
+  run('applyLocale("en")');
+  assert.equal(run('dom.hint.textContent'), 'rendered-by-app', 'an unchanged locale leaves the rendered node alone');
+  assert.equal(run('applyLocale("zh")'), true);
+  assert.equal(calls.init, 1);
+  assert.equal(run('dom.hint.textContent'), 'capture.selectHint', 'a real switch refreshes the rendered node');
+});
+
+test('load-error copy is re-localized from its key and keeps the raw backend detail', () => {
+  const context = setup({ LP: { t: (key, params) => key + (params && params.error ? ':' + params.error : '') } });
+  const node = { textContent: '' };
+  context.window.__testError = node;
+  const { run } = context;
+  run('dom.errorText = window.__testError; state.loadErrorKey = "capture.loadFailed"; state.loadErrorText = ""; renderLoadErrorText()');
+  assert.equal(run('dom.errorText.textContent'), 'capture.loadFailed');
+  run('state.loadErrorKey = ""; state.loadErrorText = "截图失败"; renderLoadErrorText()');
+  assert.equal(run('dom.errorText.textContent'), 'capture.loadFailedDetail:截图失败');
 });
 
 test('new capture restores titles even when cross-screen flag was reset first', () => {

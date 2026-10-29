@@ -107,6 +107,11 @@
 
   /* ---- UI language ----------------------------------------------------- */
 
+  /* Set once the shared runtime has applied its static pass. A later locale
+   * read must not run `init` again: the static pass would replace the visible
+   * `#pin-error-text` with the generic fallback. */
+  var localeInitialized = false;
+
   /* Applies the UI language and reports whether it changed. The shell appends
    * `lang=` to this window's URL, so the first paint already uses the right
    * locale; `getState().app.locale` stays authoritative because the settings
@@ -121,13 +126,30 @@
     }
     var previous =
       typeof LP.i18n.currentLocale === "function" ? LP.i18n.currentLocale() : "";
-    LP.i18n.init(value);
+    if (!localeInitialized) {
+      LP.i18n.init(value);
+      localeInitialized = true;
+    } else if (!LP.i18n.setLocale(value)) {
+      /* Same locale: no static pass, so the rendered error text stays. */
+      return false;
+    }
     var next =
       typeof LP.i18n.currentLocale === "function" ? LP.i18n.currentLocale() : previous;
-    if (previous !== next) {
-      document.title = LP.t("pin.windowTitle");
+    if (previous === next) {
+      return false;
     }
-    return previous !== next;
+    refreshLocaleText();
+    return true;
+  }
+
+  /* Re-applies copy rendered from state after a real language switch (the
+   * static pass only knows the generic fallback). */
+  function refreshLocaleText() {
+    if (!dom.errorText) {
+      return;
+    }
+    dom.errorText.textContent =
+      localizedMessage(state.errorMessage) || LP.t("pin.loadFailed");
   }
 
   /* Language used before the backend responds: the URL query wins, then the
@@ -193,6 +215,19 @@
       return error.message;
     }
     return String(error);
+  }
+
+  /* Error copy may be a message-key descriptor ({ key, params }) or a raw
+   * backend string; localize descriptors only when they are rendered so a
+   * language switch never replays the previous language. */
+  function localizedMessage(message) {
+    if (!message) {
+      return "";
+    }
+    if (typeof message === "string") {
+      return message;
+    }
+    return LP.t(message.key, message.params);
   }
 
   function failureText(result, fallback) {
@@ -360,7 +395,7 @@
   function load() {
     state.readyCalls += 1;
     if (!API || typeof API.ready !== "function") {
-      showError(LP.t("pin.serviceUnavailable"));
+      showError({ key: "pin.serviceUnavailable" });
       return;
     }
     var request;
@@ -396,7 +431,7 @@
           showImage(previewPlaceholder());
           return;
         }
-        showError(LP.t("pin.loadFailedDetail", { error: errorText(error) }));
+        showError({ key: "pin.loadFailedDetail", params: { error: errorText(error) } });
       }
     );
   }
@@ -419,6 +454,7 @@
       state.maxZoom = Number(payload.maxZoom);
     }
     state.error = "";
+    state.errorMessage = null;
     hideError();
 
     dom.image.onload = onImageLoaded;
@@ -426,7 +462,7 @@
       if (state.loaded) {
         return;
       }
-      showError(LP.t("pin.loadFailed"));
+      showError({ key: "pin.loadFailed" });
     };
     dom.image.removeAttribute("src");
     dom.image.src = String(payload.dataUrl);
@@ -469,7 +505,10 @@
 
   function showError(message) {
     state.loaded = false;
-    state.error = String(message || LP.t("pin.loadFailed"));
+    /* Keep the descriptor (not the translated copy) so a later language switch
+     * can re-render it; `error` stays the display text for QA/debug hooks. */
+    state.errorMessage = message || null;
+    state.error = localizedMessage(state.errorMessage) || LP.t("pin.loadFailed");
     state.scrollable = false;
     document.body.classList.remove("is-scrollable");
     if (dom.image) {

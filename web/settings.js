@@ -45,6 +45,9 @@
   /* Last save-status kind/message: a language switch overwrites the pill text
    * through applyStatic, so renderAll re-applies the localized copy from here. */
   var saveStatus = { kind: "idle", message: "" };
+  /* Locale the last renderAll() ran with; the update card is re-rendered when
+   * it changes so its copy does not keep the previous language. */
+  var renderedLocale = "";
   var textTimers = {};
   var textFields = [];
   var catalogOpen = false;
@@ -62,8 +65,11 @@
   /* Online models fetched from /models, cached per baseUrl + apiKey. */
   var onlineModelCache = {};
   var customModelMode = false;
-  var onlineModelHint = "";
-  var onlineModelError = "";
+  /* Localized at render time: a message key descriptor ({ key, params }) or
+   * raw backend text. Storing the translated string would survive a language
+   * switch in the previous language. */
+  var onlineModelHint = null;
+  var onlineModelError = null;
   var fetchModelsBusy = false;
 
   /* Skill prompt editors: expansion, pending drafts and debounce timers. */
@@ -106,7 +112,10 @@
   /* About-page updater: idle|checking|latest|available|downloading|ready|error. */
   var updateState = "idle";
   var updateInfo = null;
-  var updateErrorTitle = "";
+  /* Error card state: the title keeps the message key (not the translated
+   * copy) and the text/hint keep the backend's raw wording, so renderUpdate()
+   * can localize in the current language. */
+  var updateErrorKey = "";
   var updateErrorText = "";
   var updateErrorHint = "";
   var updateProgressPercent = 0;
@@ -334,6 +343,27 @@
     text.textContent = saveStatusText(saveStatus.kind, saveStatus.message);
   }
 
+  /* Active UI locale, folded into the render signatures that short-circuit so
+   * a language switch rebuilds the already-built rows. */
+  function renderLocale() {
+    return LP.i18n && typeof LP.i18n.currentLocale === "function"
+      ? LP.i18n.currentLocale()
+      : "";
+  }
+
+  /* Inline copy kept in state (a message key descriptor or raw backend text)
+   * is localized only when it is rendered, so a later language switch picks up
+   * the new pack instead of replaying the old string. */
+  function inlineMessage(message) {
+    if (!message) {
+      return "";
+    }
+    if (typeof message === "string") {
+      return message;
+    }
+    return LP.t(message.key, message.params);
+  }
+
   function setSaveStatus(kind, message) {
     saveStatus = { kind: kind || "idle", message: String(message || "") };
     renderSaveStatus();
@@ -494,6 +524,15 @@
      * a language switch; re-apply them here from their current state. */
     renderApiKeyVisibility();
     renderUpdateNotesToggle();
+    /* Update-card copy (message, check button, error title) is localized at
+     * render time and has no static fallback in index.html; refresh it when the
+     * language changed. Skipping it otherwise keeps the release-notes DOM
+     * untouched on every autosave. */
+    var locale = renderLocale();
+    if (locale !== renderedLocale) {
+      renderedLocale = locale;
+      renderUpdate();
+    }
   }
 
   function setSegmentSelected(button, selected) {
@@ -668,19 +707,21 @@
   function renderOnlineModelFeedback() {
     var hint = byId("online-model-hint");
     var error = byId("online-model-error");
+    var hintText = inlineMessage(onlineModelHint);
+    var errorText = inlineMessage(onlineModelError);
     if (hint) {
-      hint.textContent = onlineModelHint;
-      hint.hidden = !onlineModelHint;
+      hint.textContent = hintText;
+      hint.hidden = !hintText;
     }
     if (error) {
-      error.textContent = onlineModelError;
-      error.hidden = !onlineModelError;
+      error.textContent = errorText;
+      error.hidden = !errorText;
     }
   }
 
   function showOnlineModelError(message) {
-    onlineModelHint = "";
-    onlineModelError = String(message || "");
+    onlineModelHint = null;
+    onlineModelError = message || null;
     renderOnlineModelFeedback();
   }
 
@@ -688,7 +729,7 @@
     var online = state.settings.provider.online || {};
     var custom = byId("online-model-custom");
     customModelMode = true;
-    onlineModelError = "";
+    onlineModelError = null;
     if (custom) {
       custom.value = String(online.model || "");
       setHidden(custom, false);
@@ -704,7 +745,7 @@
       return;
     }
     customModelMode = false;
-    onlineModelError = "";
+    onlineModelError = null;
     renderOnline();
     save(onlinePatch({ model: value }));
   }
@@ -717,16 +758,16 @@
     var baseUrl = byId("online-base-url").value.trim();
     var apiKey = byId("online-api-key").value;
     if (!baseUrl) {
-      showOnlineModelError(LP.t("settings.error.baseUrlRequired"));
+      showOnlineModelError({ key: "settings.error.baseUrlRequired" });
       return;
     }
     if (!/^https?:\/\//i.test(baseUrl)) {
-      showOnlineModelError(LP.t("settings.error.baseUrlScheme"));
+      showOnlineModelError({ key: "settings.error.baseUrlScheme" });
       return;
     }
     fetchModelsBusy = true;
-    onlineModelHint = "";
-    onlineModelError = "";
+    onlineModelHint = null;
+    onlineModelError = null;
     renderOnlineModelFeedback();
     if (button) {
       button.disabled = true;
@@ -741,15 +782,20 @@
       var online = (state && state.settings.provider.online) || {};
       if (result && result.ok) {
         var models = cacheOnlineModels(online, result.models);
-        onlineModelError = "";
+        onlineModelError = null;
         if (models.length) {
-          onlineModelHint = LP.t("settings.hint.modelsLoaded", { count: models.length });
+          onlineModelHint = {
+            key: "settings.hint.modelsLoaded",
+            params: { count: models.length }
+          };
         } else {
-          onlineModelHint = LP.t("settings.hint.modelsEmpty");
+          onlineModelHint = { key: "settings.hint.modelsEmpty" };
         }
       } else {
-        onlineModelError = (result && result.error) || LP.t("settings.error.fetchModels");
-        onlineModelHint = (result && result.hint) || LP.t("settings.hint.fetchModelsFallback");
+        onlineModelError =
+          (result && result.error) || { key: "settings.error.fetchModels" };
+        onlineModelHint =
+          (result && result.hint) || { key: "settings.hint.fetchModelsFallback" };
       }
       renderOnlineModelOptions(online);
     });
@@ -1877,23 +1923,26 @@
     var textOrder = order.filter(function (id) {
       return skillCategory(id, customMap) === "text";
     });
-    var signature = textOrder
-      .map(function (id) {
-        var custom = customMap[id];
-        var detail = custom
-          ? custom.label +
-            "\u0003" +
-            custom.icon +
-            "\u0003" +
-            custom.prompt +
-            "\u0003" +
-            custom.kind
-          : id === "search"
-            ? "search:" + currentSearchEngine()
-            : "";
-        return id + ":" + (enabled.indexOf(id) >= 0 ? 1 : 0) + ":" + detail;
-      })
-      .join("\u0001");
+    var signature =
+      renderLocale() +
+      "\u0000" +
+      textOrder
+        .map(function (id) {
+          var custom = customMap[id];
+          var detail = custom
+            ? custom.label +
+              "\u0003" +
+              custom.icon +
+              "\u0003" +
+              custom.prompt +
+              "\u0003" +
+              custom.kind
+            : id === "search"
+              ? "search:" + currentSearchEngine()
+              : "";
+          return id + ":" + (enabled.indexOf(id) >= 0 ? 1 : 0) + ":" + detail;
+        })
+        .join("\u0001");
     /* Tab chrome, counters and section visibility also depend on the
      * screenshot-toolbar actions (not part of this signature), so refresh them
      * before the skill-list short-circuit. */
@@ -2031,17 +2080,20 @@
     var customMap = captureSkillMap();
     var enabled = enabledCaptureSkills();
     var order = captureSkillOrder();
-    var signature = order
-      .map(function (id) {
-        var custom = customMap[id];
-        var detail = custom
-          ? custom.label + "\u0003" + custom.icon + "\u0003" + custom.prompt
-          : CAPTURE_ACTION_META[id]
-            ? id
-            : "";
-        return id + ":" + (enabled.indexOf(id) >= 0 ? 1 : 0) + ":" + detail;
-      })
-      .join("\u0001");
+    var signature =
+      renderLocale() +
+      "\u0000" +
+      order
+        .map(function (id) {
+          var custom = customMap[id];
+          var detail = custom
+            ? custom.label + "\u0003" + custom.icon + "\u0003" + custom.prompt
+            : CAPTURE_ACTION_META[id]
+              ? id
+              : "";
+          return id + ":" + (enabled.indexOf(id) >= 0 ? 1 : 0) + ":" + detail;
+        })
+        .join("\u0001");
     if (!force && signature === list.getAttribute("data-signature")) {
       return;
     }
@@ -3429,7 +3481,7 @@
     var list = Array.isArray(state.settings.picker.blacklist)
       ? state.settings.picker.blacklist
       : [];
-    var signature = list.join("\u0001");
+    var signature = renderLocale() + "\u0001" + list.join("\u0001");
     if (signature === wrap.getAttribute("data-signature")) {
       return;
     }
@@ -3756,7 +3808,7 @@
     }
 
     /* error */
-    message.textContent = updateErrorTitle || LP.t("settings.error.checkUpdate");
+    message.textContent = LP.t(updateErrorKey || "settings.error.checkUpdate");
     showInlineError(
       byId("update-error"),
       updateErrorText || LP.t("settings.error.unknown"),
@@ -3833,7 +3885,7 @@
     }
     updateChecking = true;
     updateInfo = null;
-    updateErrorTitle = "";
+    updateErrorKey = "";
     updateErrorText = "";
     updateErrorHint = "";
     updateNotesExpanded = false;
@@ -3847,8 +3899,8 @@
             updateState = "idle";
           } else {
             updateState = "error";
-            updateErrorTitle = LP.t("settings.error.checkUpdate");
-            updateErrorText = (result && result.error) || LP.t("settings.error.unknown");
+            updateErrorKey = "settings.error.checkUpdate";
+            updateErrorText = (result && result.error) || "";
             updateErrorHint = (result && result.hint) || "";
           }
           renderUpdate();
@@ -3866,8 +3918,8 @@
           updateState = "idle";
         } else {
           updateState = "error";
-          updateErrorTitle = LP.t("settings.error.checkUpdate");
-          updateErrorText = String(error || LP.t("settings.error.unknown"));
+          updateErrorKey = "settings.error.checkUpdate";
+          updateErrorText = String(error || "");
           updateErrorHint = "";
         }
         renderUpdate();
@@ -3885,7 +3937,7 @@
     }
     updateInstalling = true;
     updateProgressPercent = 0;
-    updateErrorTitle = "";
+    updateErrorKey = "";
     updateErrorText = "";
     updateErrorHint = "";
     updateState = "downloading";
@@ -3895,8 +3947,8 @@
         updateInstalling = false;
         if (!result || result.ok === false) {
           updateState = "error";
-          updateErrorTitle = LP.t("settings.error.updateDownload");
-          updateErrorText = (result && result.error) || LP.t("settings.error.unknown");
+          updateErrorKey = "settings.error.updateDownload";
+          updateErrorText = (result && result.error) || "";
           updateErrorHint = (result && result.hint) || "";
           renderUpdate();
           return;
@@ -3909,8 +3961,8 @@
       function (error) {
         updateInstalling = false;
         updateState = "error";
-        updateErrorTitle = LP.t("settings.error.updateDownload");
-        updateErrorText = String(error || LP.t("settings.error.unknown"));
+        updateErrorKey = "settings.error.updateDownload";
+        updateErrorText = String(error || "");
         updateErrorHint = "";
         renderUpdate();
       }
@@ -3958,8 +4010,8 @@
     // clear the API key / model and the cached model list, and do not pre-fill
     // a model name (the user pulls /models and picks one explicitly).
     customModelMode = false;
-    onlineModelHint = "";
-    onlineModelError = "";
+    onlineModelHint = null;
+    onlineModelError = null;
     onlineModelCache = {};
     save({
       provider: {
@@ -4024,8 +4076,11 @@
           if (result.models && result.models.length) {
             var online = (state && state.settings.provider.online) || {};
             var models = cacheOnlineModels(online, result.models);
-            onlineModelError = "";
-            onlineModelHint = LP.t("settings.hint.modelsLoaded", { count: models.length });
+            onlineModelError = null;
+            onlineModelHint = {
+              key: "settings.hint.modelsLoaded",
+              params: { count: models.length }
+            };
             renderOnlineModelOptions(online);
           }
           if (
@@ -4293,13 +4348,13 @@
     });
 
     bindTextField(byId("online-base-url"), function () {
-      onlineModelHint = "";
-      onlineModelError = "";
+      onlineModelHint = null;
+      onlineModelError = null;
       return onlinePatch({ baseUrl: byId("online-base-url").value.trim() });
     });
     bindTextField(byId("online-api-key"), function () {
-      onlineModelHint = "";
-      onlineModelError = "";
+      onlineModelHint = null;
+      onlineModelError = null;
       return onlinePatch({ apiKey: byId("online-api-key").value });
     });
     byId("online-model").addEventListener("change", function () {

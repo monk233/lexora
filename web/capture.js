@@ -28,6 +28,11 @@
     };
   }
 
+  /* Set once the shared runtime has applied its static pass. A later locale
+   * read must not run `init` again: the static pass would overwrite the hint
+   * and preset label this page renders dynamically. */
+  var localeInitialized = false;
+
   /* Applies the UI language and reports whether it changed. The shell appends
    * `lang=` to this window's URL, so the first paint already uses the right
    * locale; `getState().app.locale` stays authoritative because the overlay
@@ -42,13 +47,54 @@
     }
     var previous =
       typeof LP.i18n.currentLocale === "function" ? LP.i18n.currentLocale() : "";
-    LP.i18n.init(value);
+    if (!localeInitialized) {
+      LP.i18n.init(value);
+      localeInitialized = true;
+    } else if (!LP.i18n.setLocale(value)) {
+      /* Same locale: setLocale() returns false without re-applying the static
+       * copy, so visible dynamic nodes keep their rendered text. */
+      return false;
+    }
     var next =
       typeof LP.i18n.currentLocale === "function" ? LP.i18n.currentLocale() : previous;
-    if (previous !== next && typeof document !== "undefined" && document) {
-      document.title = LP.t("capture.windowTitle");
+    if (previous === next) {
+      return false;
     }
-    return previous !== next;
+    refreshLocaleText();
+    return true;
+  }
+
+  /* The load-error text is rendered from a message key plus the backend's raw
+   * detail, so both a real language switch and a repeated render agree. */
+  function renderLoadErrorText() {
+    if (!dom.errorText) {
+      return;
+    }
+    if (state.loadErrorText) {
+      dom.errorText.textContent = LP.t("capture.loadFailedDetail", {
+        error: state.loadErrorText
+      });
+      return;
+    }
+    dom.errorText.textContent = LP.t(state.loadErrorKey || "capture.loadFailed");
+  }
+
+  /* Re-applies the copy rendered from state after a language switch; the static
+   * `data-i18n` pass only knows the generic fallbacks. */
+  function refreshLocaleText() {
+    /* Called from the URL bootstrap before `state`/`dom` exist. */
+    if (!state) {
+      return;
+    }
+    renderPresetButton();
+    renderLoadErrorText();
+    if (dom.hint && !dom.hint.hidden) {
+      showHint(
+        state.phase === "editing"
+          ? LP.t("capture.editHint")
+          : LP.t("capture.selectHint")
+      );
+    }
   }
 
   /* Language used before the backend responds: the URL query wins, then the
@@ -148,6 +194,9 @@
   var HINT_VISIBLE_MS = 3200;
   var HINT_FADE_MS = 420;
   var TOAST_MS = 4200;
+  /* Backend wording of the generic screenshot load failure (the shell is not
+   * localized); the error bar dedupes it before wrapping the detail. */
+  var GENERIC_LOAD_ERROR = "截图加载失败";
 
   var state = {
     monitor: readMonitorIndex(),
@@ -219,6 +268,10 @@
     colorPopoverOpen: false,
     customColorOpen: false,
     targetLang: "auto",
+    /* Last load failure: message key (localized at render time) plus the
+     * backend's raw detail, kept across locale switches. */
+    loadErrorKey: "",
+    loadErrorText: "",
     hintTimer: 0,
     hintFadeTimer: 0,
     toastTimer: 0,
@@ -1056,7 +1109,7 @@
     loadPickerSettings(generation);
 
     if (!API || typeof API.monitor !== "function") {
-      showLoadError(generation, { error: LP.t("capture.serviceUnavailable") });
+      showLoadError(generation, { key: "capture.serviceUnavailable" });
       return;
     }
     pollMonitor(generation, 0);
@@ -1112,7 +1165,7 @@
     }
     if (attempt >= MONITOR_POLL_ATTEMPTS) {
       var detail = lastResult && (lastResult.error || lastResult.hint);
-      showLoadError(generation, detail ? lastResult : { error: LP.t("capture.waitTimeout") });
+      showLoadError(generation, detail ? lastResult : { key: "capture.waitTimeout" });
       return;
     }
     state.pollTimer = window.setTimeout(function () {
@@ -1146,7 +1199,7 @@
       if (generation !== state.captureGeneration || state.shotReady || state.closed) {
         return;
       }
-      showLoadError(generation, { error: LP.t("capture.loadFailed") });
+      showLoadError(generation, { generic: true });
     };
     dom.shot.removeAttribute("src");
     dom.shot.src = String(result.dataUrl);
@@ -1318,15 +1371,22 @@
     state.busy = false;
     document.body.classList.remove("is-dragging", "is-over-selection");
 
+    /* The shell's generic load failure keeps its original wording; compare
+     * against that (or the explicit `generic` flag / message key our own
+     * fallback call sites pass) instead of the localized copy, so a
+     * non-Chinese UI never nests the backend's Chinese sentence inside the
+     * translated one. The key and raw detail stay in state so the error bar can
+     * be re-localized after a language switch. */
+    var key = result && result.key;
     var detail = result && (result.error || result.hint);
-    var loadFailed = LP.t("capture.loadFailed");
-    if (detail && String(detail) !== loadFailed) {
-      dom.errorText.textContent = LP.t("capture.loadFailedDetail", {
-        error: String(detail)
-      });
-    } else {
-      dom.errorText.textContent = loadFailed;
-    }
+    var generic =
+      !key &&
+      (!detail ||
+        (result && result.generic === true) ||
+        String(detail) === GENERIC_LOAD_ERROR);
+    state.loadErrorKey = key || "capture.loadFailed";
+    state.loadErrorText = !key && !generic ? String(detail) : "";
+    renderLoadErrorText();
 
     if (!API || typeof API.ready !== "function") {
       setHidden(dom.error, false);
