@@ -3362,6 +3362,11 @@
     if (!(window.LP && LP.i18n)) {
       return false;
     }
+    // A payload without a locale must not reset the runtime to its default;
+    // only an actual locale may initialise/switch the UI language.
+    if (String(locale == null ? "" : locale).trim() === "") {
+      return false;
+    }
     var previous = typeof LP.i18n.currentLocale === "function" ? LP.i18n.currentLocale() : "";
     LP.i18n.init(locale);
     var next = typeof LP.i18n.currentLocale === "function" ? LP.i18n.currentLocale() : previous;

@@ -118,3 +118,18 @@ test("every picker.html data-i18n key exists in both packs", () => {
     assert.ok(LP.messages.en[key] !== undefined, `missing en key ${key}`);
   }
 });
+
+test("auto target stays language-complementary regardless of UI language", () => {
+  const LP = loadI18n();
+  // loadI18n() returns the LP runtime itself, so expose it as window.LP for
+  // lang.js instead of treating it as the whole window object.
+  const context = vm.createContext({ window: { LP }, console });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "shared", "lang.js"), "utf8"), context);
+  LP.i18n.init("zh");
+  assert.equal(LP.resolveTargetLang("hello world", "auto"), "zh");
+  assert.equal(LP.resolveTargetLang("这是中文", "auto"), "en");
+  LP.i18n.init("en");
+  assert.equal(LP.resolveTargetLang("这是中文", "auto"), "en");
+  assert.equal(LP.resolveTargetLang("hello world", "auto"), "zh");
+  assert.equal(LP.resolveTargetLang("hello", "ja"), "ja");
+});
