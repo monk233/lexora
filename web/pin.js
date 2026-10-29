@@ -4,8 +4,8 @@
  * (`pin.html?id=<pinId>`). The renderer asks the shell for the image, then:
  *   - drag anywhere on the image to move the window (`pin_drag` deltas, one IPC
  *     call per animation frame),
- *   - double click / Esc / the hover "关闭" button -> `pin_close`,
- *   - the hover "复制" button and the right-click menu -> `pin_copy`,
+ *   - double click / Esc / the hover "close" button -> `pin_close`,
+ *   - the hover "copy" button and the right-click menu -> `pin_copy`,
  *   - `pin-close {id}` events from the shell collapse the window.
  *
  * Browser preview: `pinAPI.ready` falls back to a placeholder preview image, so
@@ -15,6 +15,13 @@
   "use strict";
 
   var API = window.pinAPI;
+  var LP = window.LP || {};
+  /* Node-based checks may load this file without the i18n runtime. */
+  if (typeof LP.t !== "function") {
+    LP.t = function (key) {
+      return String(key);
+    };
+  }
   var PREVIEW = !(window.__TAURI__ && window.__TAURI__.core);
   var TOAST_MS = 2600;
   var CLOSE_ANIMATION_MS = 140;
@@ -57,7 +64,7 @@
     /* Edit mode: annotation canvas + image-skill toolbar (Esc leaves it). */
     editing: false,
     editBusy: false,
-    /* Shape used by the 形状 tool (chosen from the shape picker). */
+    /* Shape used by the shape tool (chosen from the shape picker). */
     editShape: "rect",
     /* picker.compact: edit toolbar shows icons only (like the screenshot bar). */
     compact: false,
@@ -98,6 +105,48 @@
   var hsvDragging = false;
   var hueDragging = false;
 
+  /* ---- UI language ----------------------------------------------------- */
+
+  /* Applies the UI language and reports whether it changed. The shell appends
+   * `lang=` to this window's URL, so the first paint already uses the right
+   * locale; `getState().app.locale` stays authoritative because the settings
+   * can change while the pin window is open. */
+  function applyLocale(locale) {
+    if (!LP.i18n || typeof LP.i18n.init !== "function") {
+      return false;
+    }
+    var value = String(locale == null ? "" : locale).trim();
+    if (!value) {
+      return false;
+    }
+    var previous =
+      typeof LP.i18n.currentLocale === "function" ? LP.i18n.currentLocale() : "";
+    LP.i18n.init(value);
+    var next =
+      typeof LP.i18n.currentLocale === "function" ? LP.i18n.currentLocale() : previous;
+    if (previous !== next) {
+      document.title = LP.t("pin.windowTitle");
+    }
+    return previous !== next;
+  }
+
+  /* Language used before the backend responds: the URL query wins, then the
+   * `<html lang>` guess made by shared/i18n.js. */
+  function initialLocale() {
+    var lang = "";
+    try {
+      lang = new URLSearchParams(window.location.search).get("lang") || "";
+    } catch (error) {
+      /* Old webviews without URLSearchParams: keep the <html lang> guess. */
+    }
+    if (lang) {
+      return lang;
+    }
+    return document.documentElement ? document.documentElement.lang : "";
+  }
+
+  applyLocale(initialLocale());
+
   /* ---- Small helpers --------------------------------------------------- */
 
   function byId(id) {
@@ -135,7 +184,7 @@
 
   function errorText(error) {
     if (!error) {
-      return "未知错误";
+      return LP.t("common.unknownError");
     }
     if (typeof error === "string") {
       return error;
@@ -149,7 +198,7 @@
   function failureText(result, fallback) {
     var message = (result && result.error) || fallback;
     var hint = (result && result.hint) || "";
-    return hint ? message + "：" + hint : message;
+    return hint ? message + LP.t("common.detailSeparator") + hint : message;
   }
 
   function isUiTarget(target) {
@@ -297,7 +346,9 @@
       '<text x="50%" y="44%" text-anchor="middle" fill="#475569" ' +
       'font-family="Segoe UI, sans-serif" font-size="26">Lexora pin preview</text>' +
       '<text x="50%" y="54%" text-anchor="middle" fill="#94a3b8" ' +
-      'font-family="Segoe UI, sans-serif" font-size="16">钉图预览（浏览器模式）</text></svg>';
+      'font-family="Segoe UI, sans-serif" font-size="16">' +
+      LP.t("pin.previewPlaceholder") +
+      "</text></svg>";
     return {
       ok: true,
       width: width,
@@ -309,7 +360,7 @@
   function load() {
     state.readyCalls += 1;
     if (!API || typeof API.ready !== "function") {
-      showError("钉图服务不可用，请重启 Lexora 后再试。");
+      showError(LP.t("pin.serviceUnavailable"));
       return;
     }
     var request;
@@ -334,7 +385,7 @@
           showImage(previewPlaceholder());
           return;
         }
-        showError(failureText(result, "钉图加载失败"));
+        showError(failureText(result, LP.t("pin.loadFailed")));
       },
       function (error) {
         if (state.closed) {
@@ -345,7 +396,7 @@
           showImage(previewPlaceholder());
           return;
         }
-        showError("钉图加载失败：" + errorText(error));
+        showError(LP.t("pin.loadFailedDetail", { error: errorText(error) }));
       }
     );
   }
@@ -375,7 +426,7 @@
       if (state.loaded) {
         return;
       }
-      showError("钉图加载失败");
+      showError(LP.t("pin.loadFailed"));
     };
     dom.image.removeAttribute("src");
     dom.image.src = String(payload.dataUrl);
@@ -418,7 +469,7 @@
 
   function showError(message) {
     state.loaded = false;
-    state.error = String(message || "钉图加载失败");
+    state.error = String(message || LP.t("pin.loadFailed"));
     state.scrollable = false;
     document.body.classList.remove("is-scrollable");
     if (dom.image) {
@@ -549,7 +600,8 @@
   /* The edit button opens the annotation surface + image-skill toolbar on top
    * of the pinned image (contract §11.5). Window dragging, wheel zoom and the
    * right-click menu are disabled while editing; Esc leaves the mode and
-   * discards the annotations, "完成" applies them to the pin and copies it. */
+   * discards the annotations, the confirm button applies them and copies the
+   * pin. */
   function enterEdit() {
     if (state.editing || state.closed || !state.loaded) {
       return;
@@ -1391,8 +1443,9 @@
       dom.customPreview.style.background = color;
     }
     if (dom.colorButton) {
-      dom.colorButton.title = "颜色 " + color;
-      dom.colorButton.setAttribute("aria-label", "颜色 " + color);
+      var colorLabel = LP.t("pin.colorWithValue", { color: color });
+      dom.colorButton.title = colorLabel;
+      dom.colorButton.setAttribute("aria-label", colorLabel);
     }
     each(document.querySelectorAll(".palette-color[data-color]"), function (node) {
       var value = String(node.getAttribute("data-color") || "").toLowerCase();
@@ -1724,7 +1777,7 @@
       return;
     }
     if (!editor || typeof editor.sampleColor !== "function") {
-      toast("当前无法取色，请重试", "error");
+      toast(LP.t("pin.toast.pickColorUnavailable"), "error");
       return;
     }
     state.pickingColor = true;
@@ -1769,9 +1822,9 @@
     if (color) {
       pushColor(color);
       syncHsvFromColor();
-      toast("已吸取颜色 " + color, "success");
+      toast(LP.t("pin.toast.colorPicked", { color: color }), "success");
     } else {
-      toast("此处无法取色", "error");
+      toast(LP.t("pin.toast.colorUnavailable"), "error");
     }
   }
 
@@ -1815,6 +1868,11 @@
           return;
         }
         var payload = result && (result.state || result);
+        /* The state is authoritative: it also covers a pin that is open
+         * while the user changes the UI language in Settings. */
+        if (payload && payload.app) {
+          applyLocale(payload.app.locale);
+        }
         var picker = payload && payload.settings && payload.settings.picker;
         if (!picker) {
           return;
@@ -1922,7 +1980,7 @@
       return;
     }
     if (!API || typeof API.skill !== "function") {
-      toast("图片技能不可用，请重启 Lexora 后再试", "error");
+      toast(LP.t("pin.imageSkillUnavailable"), "error");
       return;
     }
     state.editBusy = true;
@@ -1946,27 +2004,32 @@
         state.editBusy = false;
         updateEditBar();
         if (result && result.ok === false) {
-          toast("操作失败：" + failureText(result, "未知错误"), "error");
+          toast(
+            LP.t("pin.toast.actionFailed", {
+              error: failureText(result, LP.t("common.unknownError")),
+            }),
+            "error"
+          );
           return;
         }
-        toast("结果已发送到面板", "info");
+        toast(LP.t("pin.toast.resultSent"), "info");
       },
       function (error) {
         state.editBusy = false;
         updateEditBar();
-        toast("操作失败：" + errorText(error), "error");
+        toast(LP.t("pin.toast.actionFailed", { error: errorText(error) }), "error");
       }
     );
   }
 
-  /* `apply` = the "完成" button: replace the pinned image with the annotated
+  /* `apply` = the confirm button: replace the pinned image with the annotated
    * one (and copy it); otherwise only copy. */
   function exportEditAnnotations(apply) {
     if (!state.editing || state.editBusy) {
       return;
     }
     if (!API || typeof API.exportAnnotations !== "function") {
-      toast("图片编辑服务不可用，请重启 Lexora 后再试", "error");
+      toast(LP.t("pin.editServiceUnavailable"), "error");
       return;
     }
     state.editBusy = true;
@@ -1983,7 +2046,12 @@
         state.editBusy = false;
         updateEditBar();
         if (result && result.ok === false) {
-          toast("操作失败：" + failureText(result, "未知错误"), "error");
+          toast(
+            LP.t("pin.toast.actionFailed", {
+              error: failureText(result, LP.t("common.unknownError")),
+            }),
+            "error"
+          );
           return;
         }
         var copied = !result || result.clipboard !== false;
@@ -1993,15 +2061,21 @@
             dom.image.src = String(result.dataUrl);
           }
           exitEdit();
-          toast(copied ? "已保存并复制" : "已保存（复制失败）", copied ? "success" : "error");
+          toast(
+            copied ? LP.t("pin.toast.savedAndCopied") : LP.t("pin.toast.savedCopyFailed"),
+            copied ? "success" : "error"
+          );
           return;
         }
-        toast(copied ? "已复制到剪贴板" : "复制失败", copied ? "success" : "error");
+        toast(
+          copied ? LP.t("pin.toast.copied") : LP.t("pin.toast.copyFailed"),
+          copied ? "success" : "error"
+        );
       },
       function (error) {
         state.editBusy = false;
         updateEditBar();
-        toast("操作失败：" + errorText(error), "error");
+        toast(LP.t("pin.toast.actionFailed", { error: errorText(error) }), "error");
       }
     );
   }
@@ -2014,7 +2088,7 @@
     }
     state.copyCalls += 1;
     if (!API || typeof API.copy !== "function") {
-      toast("钉图服务不可用，请重启 Lexora 后再试", "error");
+      toast(LP.t("pin.serviceUnavailable"), "error");
       return;
     }
     var request;
@@ -2026,13 +2100,18 @@
     Promise.resolve(request).then(
       function (result) {
         if (result && result.ok) {
-          toast("已复制到剪贴板", "success");
+          toast(LP.t("pin.toast.copied"), "success");
           return;
         }
-        toast("复制失败：" + failureText(result, "未知错误"), "error");
+        toast(
+          LP.t("pin.toast.copyFailedDetail", {
+            error: failureText(result, LP.t("common.unknownError")),
+          }),
+          "error"
+        );
       },
       function (error) {
-        toast("复制失败：" + errorText(error), "error");
+        toast(LP.t("pin.toast.copyFailedDetail", { error: errorText(error) }), "error");
       }
     );
   }

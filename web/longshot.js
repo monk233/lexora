@@ -13,6 +13,21 @@
   "use strict";
 
   var API = window.longshotAPI;
+  var LP = window.LP || {};
+
+  /* The preview page has no backend state query: the shell appends `lang=` to
+   * this window's URL. Without it, keep the `<html lang>` / navigator guess made
+   * by shared/i18n.js. */
+  var initialLang = "";
+  try {
+    initialLang = new URLSearchParams(window.location.search).get("lang") || "";
+  } catch (error) {
+    /* Old webviews without URLSearchParams keep the <html lang> guess. */
+  }
+  if (initialLang && LP.i18n && typeof LP.i18n.init === "function") {
+    LP.i18n.init(initialLang);
+  }
+
   var PREVIEW_MODE = !(window.__TAURI__ && window.__TAURI__.core);
   var PREVIEW_THROTTLE = 80;
   var STATE_FALLBACK = 1000;

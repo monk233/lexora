@@ -1112,10 +1112,13 @@ fn start_impl(app: &AppHandle, index: u32, rect: &HitRect) -> Result<Value, Engi
     // application: make every capture window click-through (contract §11.14.1).
     // The control bar is a separate, clickable window below the selection.
     set_overlay_click_through(app, true);
+    // Neither long-shot window has a backend state query: pass the effective UI
+    // language through the URL, like the capture overlays.
+    let language = state.settings.get().effective_language();
     let preview = match create_longshot_window(
         app,
         LONG_SHOT_LABEL,
-        "longshot.html",
+        &format!("longshot.html?lang={language}"),
         "Lexora 长截图",
         logical_size,
         physical_size,
@@ -1128,9 +1131,6 @@ fn start_impl(app: &AppHandle, index: u32, rect: &HitRect) -> Result<Value, Engi
             return Err(error);
         }
     };
-    // The control bar has no backend state query: pass the effective UI
-    // language through the URL, like the capture overlays.
-    let language = state.settings.get().effective_language();
     let bar = match create_longshot_window(
         app,
         LONG_SHOT_BAR_LABEL,

@@ -3,8 +3,9 @@
 //! Every pin lives in an in-memory registry (the image is kept so `pin_ready`
 //! can hand it to the renderer and `pin_copy` can write it to the clipboard)
 //! plus one transparent, borderless, always-on-top `pin-<id>` window hosting
-//! `pin.html?id=<id>`. Closing a pin destroys its window and forgets the image;
-//! the id counter only moves forward, so ids are never reused while running.
+//! `pin.html?id=<id>&lang=<zh|en>`. Closing a pin destroys its window and forgets
+//! the image; the id counter only moves forward, so ids are never reused while
+//! running.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -368,11 +369,17 @@ pub fn create_pin(
     let initial_zoom = (logical_w / base_logical_w).max(PIN_ZOOM_MIN);
 
     let id = lock_registry().insert(image, scrollable, initial_zoom);
+    // The pin window has no backend state query: pass the effective UI language
+    // through the URL, like the capture and long-shot windows.
+    let language = app
+        .try_state::<Arc<AppState>>()
+        .map(|app_state| app_state.settings.get().effective_language())
+        .unwrap_or("zh");
     let label = label_for(id);
     let window = match WebviewWindowBuilder::new(
         app,
         label.as_str(),
-        WebviewUrl::App(format!("pin.html?id={id}").into()),
+        WebviewUrl::App(format!("pin.html?id={id}&lang={language}").into()),
     )
     .title("Lexora 钉图")
     .decorations(false)

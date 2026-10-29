@@ -5,7 +5,7 @@
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src ipc: http://ipc.localhost">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Lexora 长截图</title>
+  <title data-i18n="longshot.previewTitle">Lexora 长截图</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="longshot.css">
 </head>
@@ -21,7 +21,7 @@
       <img class="longshot-image" id="longshot-image-buffer" alt="" draggable="false"
            aria-hidden="true" hidden>
     </div>
-    <div class="longshot-empty" id="longshot-empty">正在拼接…</div>
+    <div class="longshot-empty" id="longshot-empty" data-i18n="longshot.stitching">正在拼接…</div>
   </div>
 
   <script src="shared/constants.js"></script>

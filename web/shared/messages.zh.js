@@ -167,6 +167,37 @@
     "longshot.toast.cancelFailed": "取消长截图失败",
     "longshot.serviceUnavailable": "长截图服务不可用，请重启 Lexora 后再试。",
 
+    /* Long screenshot preview (web/longshot.html + .js). */
+    "longshot.previewTitle": "Lexora 长截图",
+    "longshot.stitching": "正在拼接…",
+
+    /* Pinned-to-desktop window (web/pin.html + .js). */
+    "pin.windowTitle": "Lexora 钉图",
+    "pin.edit": "编辑",
+    "pin.copyImage": "复制图片",
+    "pin.closeHint": "关闭（Esc）",
+    "pin.editBarAria": "图片编辑",
+    "pin.cancelEditHint": "取消编辑",
+    "pin.confirmHint": "确认",
+    "pin.menuCopy": "复制",
+    "pin.loadFailed": "钉图加载失败",
+    "pin.loadFailedDetail": "钉图加载失败：{error}",
+    "pin.serviceUnavailable": "钉图服务不可用，请重启 Lexora 后再试",
+    "pin.imageSkillUnavailable": "图片技能不可用，请重启 Lexora 后再试",
+    "pin.editServiceUnavailable": "图片编辑服务不可用，请重启 Lexora 后再试",
+    "pin.previewPlaceholder": "钉图预览（浏览器模式）",
+    "pin.colorWithValue": "颜色 {color}",
+    "pin.toast.pickColorUnavailable": "当前无法取色，请重试",
+    "pin.toast.colorPicked": "已吸取颜色 {color}",
+    "pin.toast.colorUnavailable": "此处无法取色",
+    "pin.toast.actionFailed": "操作失败：{error}",
+    "pin.toast.resultSent": "结果已发送到面板",
+    "pin.toast.savedAndCopied": "已保存并复制",
+    "pin.toast.savedCopyFailed": "已保存（复制失败）",
+    "pin.toast.copied": "已复制到剪贴板",
+    "pin.toast.copyFailed": "复制失败",
+    "pin.toast.copyFailedDetail": "复制失败：{error}",
+
     /* Picker window shell (web/picker.html + toolbar/menu/panel). */
     "picker.aria.toolbar": "划词工具",
     "picker.toolbar.more": "更多",

@@ -166,6 +166,37 @@
     "longshot.toast.cancelFailed": "Failed to cancel the long screenshot",
     "longshot.serviceUnavailable": "Long screenshot service unavailable. Restart Lexora and try again.",
 
+    /* Long screenshot preview (web/longshot.html + .js). */
+    "longshot.previewTitle": "Lexora Long Screenshot",
+    "longshot.stitching": "Stitching…",
+
+    /* Pinned-to-desktop window (web/pin.html + .js). */
+    "pin.windowTitle": "Lexora Pin",
+    "pin.edit": "Edit",
+    "pin.copyImage": "Copy image",
+    "pin.closeHint": "Close (Esc)",
+    "pin.editBarAria": "Image editing",
+    "pin.cancelEditHint": "Cancel editing",
+    "pin.confirmHint": "Confirm",
+    "pin.menuCopy": "Copy",
+    "pin.loadFailed": "Failed to load the pin",
+    "pin.loadFailedDetail": "Failed to load the pin: {error}",
+    "pin.serviceUnavailable": "Pin service unavailable. Restart Lexora and try again",
+    "pin.imageSkillUnavailable": "Image skills are unavailable. Restart Lexora and try again",
+    "pin.editServiceUnavailable": "The image editing service is unavailable. Restart Lexora and try again",
+    "pin.previewPlaceholder": "Pin preview (browser mode)",
+    "pin.colorWithValue": "Color {color}",
+    "pin.toast.pickColorUnavailable": "Color picking is unavailable right now. Try again",
+    "pin.toast.colorPicked": "Picked color {color}",
+    "pin.toast.colorUnavailable": "Cannot pick a color here",
+    "pin.toast.actionFailed": "Action failed: {error}",
+    "pin.toast.resultSent": "Result sent to the panel",
+    "pin.toast.savedAndCopied": "Saved and copied",
+    "pin.toast.savedCopyFailed": "Saved (copy failed)",
+    "pin.toast.copied": "Copied to the clipboard",
+    "pin.toast.copyFailed": "Copy failed",
+    "pin.toast.copyFailedDetail": "Copy failed: {error}",
+
     /* Picker window shell (web/picker.html + toolbar/menu/panel). */
     "picker.aria.toolbar": "Selection toolbar",
     "picker.toolbar.more": "More",

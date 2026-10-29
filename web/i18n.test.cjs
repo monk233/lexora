@@ -158,6 +158,37 @@ test("every capture.html and longshot-bar.html data-i18n key exists in both pack
   }
 });
 
+test("every pin.js literal lookup exists in both packs", () => {
+  const LP = loadI18n();
+  const source = fs.readFileSync(path.join(__dirname, "pin.js"), "utf8");
+  // Same negative lookahead as the other windows: concatenated keys are built
+  // at runtime and are only guarded by the pack-parity test.
+  const keys = Array.from(source.matchAll(/LP\.t\("([^"]+)"(?!\s*\+)/g)).map((match) => match[1]);
+  const scoped = keys.filter((key) => /^(?:pin|longshot|common)\./.test(key));
+  assert.ok(scoped.length > 15, "expected the pin window to use LP.t");
+  for (const key of new Set(scoped)) {
+    assert.ok(LP.messages.zh[key] !== undefined, `missing zh key ${key} (pin.js)`);
+    assert.ok(LP.messages.en[key] !== undefined, `missing en key ${key} (pin.js)`);
+  }
+});
+
+test("every pin.html and longshot.html data-i18n key exists in both packs", () => {
+  const LP = loadI18n();
+  const minimumKeys = { "pin.html": 40, "longshot.html": 2 };
+  for (const page of ["pin.html", "longshot.html"]) {
+    const source = fs.readFileSync(path.join(__dirname, page), "utf8");
+    const keys = Array.from(source.matchAll(/data-i18n(?:-[a-z-]+)?="([^"]+)"/g)).map((match) => match[1]);
+    assert.ok(
+      keys.length >= minimumKeys[page],
+      `expected ${page} to tag its static copy (found ${keys.length})`
+    );
+    for (const key of new Set(keys)) {
+      assert.ok(LP.messages.zh[key] !== undefined, `missing zh key ${key} (${page})`);
+      assert.ok(LP.messages.en[key] !== undefined, `missing en key ${key} (${page})`);
+    }
+  }
+});
+
 test("auto target stays language-complementary regardless of UI language", () => {
   const LP = loadI18n();
   // loadI18n() returns the LP runtime itself, so expose it as window.LP for
