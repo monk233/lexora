@@ -39,7 +39,8 @@ lexora.exe
 | `updater.rs` | 检查 GitHub Release、下载并替换 exe、助手脚本重启（自更新） |
 | `tray.rs` | 托盘图标与菜单（显示设置、启用划词、本地引擎启停、退出） |
 | `state.rs` | `AppState`：paths、logger、settings store、engine、selection、翻译任务句柄 |
-| `settings.rs` | 设置 schema、归一化、原子持久化（`settings.json`） |
+| `settings.rs` | 设置 schema（v9）、归一化、原子持久化（`settings.json`）、`effective_language()` |
+| `locale.rs` | 界面语言检测：Windows 区域（`GetUserDefaultLocaleName`）→ 时区键（`GetDynamicTimeZoneInformation`）→ 英文兜底 |
 | `paths.rs` | 便携数据目录解析（exe 同级 `data/` 优先，回退 `%APPDATA%`） |
 | `logger.rs` | 10MB 滚动文件日志，保留一个历史分卷，API Key 脱敏 |
 | `win32.rs` | Win32 FFI：光标、显示器工作区、DPI、透明窗口/捕获排除、焦点移交、DWM 过渡禁用 |
@@ -120,7 +121,16 @@ picker.js → invoke("picker_translate", {requestId,text,targetLang})
 
 ## 设置与便携
 
-`settings.json` 与模型/引擎都放在数据目录（默认 exe 同级 `data/`），解压到 U 盘或任意目录都能独立使用。数据目录不可写时回退 `%APPDATA%\Lexora`。
+`settings.json` 与模型/引擎都放在数据目录（默认 exe 同级 `data/`），解压到 U 盘或任意目录都能独立使用。数据目录不可写时回退 `%APPDATA%\Lexora`。设置 schema 为 **9**，`app.language`（`system|zh|en`，默认 `system`）保存界面语言原始设置。
+
+## 界面语言与 i18n
+
+界面语言的解析与注入分为检测、下发、渲染与提示词四层，全程不引入前端构建步骤：
+
+1. **检测（Rust `locale.rs`）**：`settings.app.language` 为 `system` 时，先读 Windows 用户区域（`GetUserDefaultLocaleName`，`zh*`→`zh`、`en*`→`en`，`zh-Hant`/`zh-TW` 等一律归 `zh`），区域不支持再读时区键（`GetDynamicTimeZoneInformation`：China/Taipei/Hong Kong/Singapore Standard Time→`zh`；GMT/UTC/W. Europe/Eastern/Central/Mountain/Pacific/Tokyo/Korea Standard Time→`en`），仍无法判断回退 `en`。`Settings::effective_language()` 把 `system` 解析为 `zh|en`，显式 `zh`/`en` 直接生效；归一化接受 `zh`/`zh-CN`、`en`/`en-US`/`en-GB`，其他值回退 `system`（迁移不丢历史设置，v8→v9 只补默认值）。
+2. **下发（Rust → 前端）**：`StatePayload.app.locale` 为生效语言，`app.languageSetting` 为原始设置（设置页下拉回显）。picker 从 `picker-data.config.locale` 初始化（截图结果面板同源）；`capture-*`、`pin-*`、`longshot`、`longshot-bar` 窗口在 URL 追加 `lang=<zh|en>`，首帧即用正确语言，避免闪一下错误语言。
+3. **渲染（`web/shared/i18n.js`，无构建步骤）**：纯静态 JS，在 `shared/constants.js` 与语言包之后、页面脚本之前以普通 `<script>` 加载；`LP.t(key, params)` 依次查当前包、`en` 包、key 本身，`LP.i18n.init/setLocale/applyStatic` 替换 `data-i18n*` 标记的静态文案；语言包 `messages.zh.js` / `messages.en.js` key 集合一致（645 个）。切换语言后各窗口重渲染依赖语言的动态内容（面板标题、目标语言下拉、toast 等），无需重启。所有窗口仍是无 bundler 的静态资源。
+4. **提示词的语言**：`engine/prompts.rs` 的默认总结/解释/图片解释/追问提示词用 `{answer}` 占位符，渲染为 `effective_language()` 对应的英文语言名（`zh`→`Simplified Chinese`、`en`→`English`）；自定义提示词含 `{answer}` 时替换，否则末尾追加 `Answer language: <name>.`。解释模式的单词查询释义使用本地语言，翻译目标仍由下拉/`auto` 决定（中文→英文、其他→中文，与界面语言无关）。`PROMPT_VERSION` 为 `12`，模型日志按解析结果记录模式/来源/版本，不记录正文。
 
 ## 安全与隐私
 
@@ -138,9 +148,11 @@ picker.js → invoke("picker_translate", {requestId,text,targetLang})
 - 混合 DPI 多屏等场景见 `docs/spike-report.md` 的遗留风险。
 
 
-## 提示词、读音与生成边界（schema 8）
+## 提示词、读音与生成边界（schema 9）
 
-`engine/prompts.rs` 的 `resolve_text_prompt()` 统一解析文本翻译/解释的提示词来源、模式和版本，日志直接使用解析结果。翻译使用两套提示词、由算法按输入形态自动切换：`picker.prompts.translate` 处理普通翻译，`picker.prompts.wordLookup` 处理被 `single_word_kind()` 判定为单个词或短语的输入（空值各自回退内置默认）。解释技能同样对候选词使用单词提示词（目标语言固定为简体中文），其余走 `picker.prompts.explain`。没有单词查询模式字段，也没有离线读音模块。`default_prompts()` 暴露 translate/wordLookup/summarize/explain/polish 及截图动作默认提示词。
+`engine/prompts.rs` 的 `resolve_text_prompt()` 统一解析文本翻译/解释的提示词来源、模式和版本（`PROMPT_VERSION` = 12），日志直接使用解析结果。翻译使用两套提示词、由算法按输入形态自动切换：`picker.prompts.translate` 处理普通翻译，`picker.prompts.wordLookup` 处理被 `single_word_kind()` 判定为单个词或短语的输入（空值各自回退内置默认）。解释技能同样对候选词使用单词提示词，但词条释义语言取本地语言（`effective_language()`），而不是固定简体中文；其余解释走 `picker.prompts.explain`。没有单词查询模式字段，也没有离线读音模块。`default_prompts()` 暴露 translate/wordLookup/summarize/explain/polish 及截图动作默认提示词。
+
+回答类技能统一用 `{answer}` 表示「本地语言」：默认总结、解释、图片解释与追问系统提示词都含该占位符，渲染时替换为语言英文名；自定义提示词含 `{answer}` 时同样替换，否则在末尾追加 `Answer language: <name>.`（`answer_language_prompt`）。模板本身保持英文以稳定模型遵循。`auto` 翻译目标仍按原文语言互补解析（中文→英文、其他→中文），界面语言不改变该规则。
 
 候选判定保守且不验证拼写：ASCII 1–40 字母（可含撇号/连字符）的单词，或 1–4 个汉字且不含常见句子标记的短词；带空格、标点、URL、下划线、camelCase 代码标识及更长文本走普通任务。普通翻译提示词要求整段译入目标语言、只输出译文并保留 Markdown/代码结构；单词提示词要求 Markdown 词条（词头、读音、词性、至多 3 个义项、可选例句），释义使用目标语言，音标与拼音由模型生成，可能不准确；疑似错拼不得编造释义或读音。解释先给核心含义，最多 3 个必要要点，通常 150–250 字；总结 3–5 点，润色只给结果，图片解释聚焦关键可见信息，OCR 只逐字转录。长度是提示词目标，并非字符级硬截断。
 

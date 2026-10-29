@@ -8,7 +8,7 @@
 
 | 编号 | 方向 | 状态 | 依赖 |
 | --- | --- | --- | --- |
-| R1 | 多语言支持、时区自动识别与本地语言输出 | 开发中（`feature/r1-localization`，[实施计划](docs/superpowers/plans/2026-10-29-r1-localization.md)） | — |
+| R1 | 多语言支持、时区自动识别与本地语言输出 | 已实现（`feature/r1-localization`，[实施计划](docs/superpowers/plans/2026-10-29-r1-localization.md)） | — |
 | R2 | 使用 Rare UI 重新设计工具面板 | 评估中 | 前端构建链选型 |
 | R3 | 历史记录 | 计划中 | R1（多语言文案）可并行 |
 | R4 | 快速聊天（快捷键呼出） | 计划中 | R1、R3 |
@@ -23,6 +23,13 @@
 ### 目标
 
 界面与 AI 输出都跟随用户本地语言，而不是固定简体中文。
+
+### 已实现范围（`feature/r1-localization`）
+
+- **界面语言**：`zh` / `en` 两套语言包（`web/shared/messages.zh.js` / `messages.en.js`），设置 → 应用与启动 → 界面语言（跟随系统 / 简体中文 / English），切换立即生效、无需重启；settings schema 9 新增 `app.language`（`system|zh|en`）。
+- **自动识别**：`src-tauri/src/locale.rs` 先读 Windows 区域（`GetUserDefaultLocaleName`），区域不支持时按系统时区键推断，最后回退英文；`zh-Hant` / `zh-TW` 暂映射到简体中文。
+- **AI 输出语言**：解释、总结、图片解释、追问回答与解释模式的词条释义使用本地语言；默认提示词用 `{answer}` 占位符（`PROMPT_VERSION` 12），自定义提示词无占位符时追加 `Answer language: <name>.`。
+- **与原计划的差异**：`auto` 翻译目标保持「中文→英文、其他→中文」的互补规则，不随界面语言变化（避免英文界面把英文原文译成英文）；提示词模板保留英文、未按语言各出一套默认值；日期/数字格式化沿用现状；界面首批不含繁体与日语。
 
 ### 范围
 

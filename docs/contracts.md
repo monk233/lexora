@@ -41,7 +41,7 @@ lexora/
 ├─ web/                         [T3]     静态前端（无打包器）
 │  ├─ index.html settings.css settings.js
 │  ├─ picker.html picker.css picker.js
-│  └─ shared/{constants.js,skill-icons.js,lang.js,markdown.js,tauri-api.js}
+│  └─ shared/{constants.js,i18n.js,messages.zh.js,messages.en.js,skill-icons.js,lang.js,markdown.js,tauri-api.js}
 ├─ scripts/                     [T4]     fetch-llama.ps1 / build-portable.ps1（make_icons.py 归 Lead）
 ├─ .github/workflows/           [T4]     ci.yml / release.yml
 ├─ docs/                         [Lead]   契约、spike 报告、架构、用户/构建文档
@@ -64,7 +64,7 @@ lexora/
 
 ```jsonc
 {
-  "version": 8,                              // v1→v2 补 polish/search；v2→v3 补 screenshot；v3→v4 补 capture；v4→v5 补 captureSkills/capturePrompts；v5→v6 把本地工具（pin/形状/箭头/画笔/文字/序号/马赛克/长截图）纳入 captureSkills 并移除 copy；保留 custom；v6→v7 增加 provider.local.selectedModel，旧配置迁移为空选择；v7→v8 增加单词查询提示词 picker.prompts.wordLookup
+  "version": 9,                              // v1→v2 补 polish/search；v2→v3 补 screenshot；v3→v4 补 capture；v4→v5 补 captureSkills/capturePrompts；v5→v6 把本地工具（pin/形状/箭头/画笔/文字/序号/马赛克/长截图）纳入 captureSkills 并移除 copy；保留 custom；v6→v7 增加 provider.local.selectedModel，旧配置迁移为空选择；v7→v8 增加单词查询提示词 picker.prompts.wordLookup；v8→v9 增加 app.language（system|zh|en，默认 system）
   "picker": {
     "enabled": true,
     "skills": ["translate","summarize","explain","read","copy","search"],
@@ -104,7 +104,8 @@ lexora/
                 "timeoutMs": 60000, "temperature": 0.2, "maxTokens": 1024 },
     "local": { "selectedModel": "", "contextSize": 4096, "threads": 0, "gpuLayers": 0, "autoStart": true, "keepRunning": false }
   },
-  "app": { "closeToTray": true, "startAtLogin": true, "theme": "system" },
+  "app": { "closeToTray": true, "startAtLogin": true, "theme": "system",
+           "language": "system" },        // 界面语言：system | zh | en；system 启动时按 Windows 区域/时区解析
   "capture": {
     "regionShortcut": "Win+Shift+X"       // 截图快捷键（可改）；规范格式见 §10.3，非法值回退默认
   }
@@ -114,6 +115,8 @@ lexora/
 本地模型选择字段：`settings.provider.local.selectedModel`（序列化路径为 `provider.local.selectedModel`）保存唯一本地模型选择；默认空字符串，v6→v7 迁移不自动填入模型。切换选择时，运行中的引擎自动重启加载新模型（capture 下拉选择后立即生效）。空闲自动停止固定为 10 分钟，不提供配置字段：超过 10 分钟无请求时停止 llama-server 释放内存，保留 `keepRunning` 记忆与「启动」状态，下次请求或点「启动」重新加载。硬件检测只提供推荐标签和理由，不自动选择。推荐梯度：显存 ≥10GB 且内存 ≥16GB、线程 ≥8，或内存 ≥32GB 且线程 ≥12 时为 4B Q4；内存 ≥24GB、线程 ≥8 为 4B Q3；内存 ≥16GB 按线程为 2B Q4（≥8）/Q3（≥6）；内存 ≥8GB、线程 ≥6 为 0.8B Q4；其余为 0.8B Q3。显存只作展示与升档参考，内置引擎为 CPU 版。
 
 新配置和恢复默认采用上述开关与内置技能默认值（自定义技能仍保留定义与启用状态）；已保存的显式选择及顺序不变。旧配置缺失 skills/captureSkills 时沿用历史完整技能集合，缺失 compact/startAtLogin 时仍为 false；历史版本迁移保持原策略，不因新默认重新开启已关闭技能。
+
+界面语言字段：`app.language` 取 `system|zh|en`，默认 `system`。归一化接受 `zh`/`zh-CN`、`en`/`en-US`/`en-GB`（大小写与空格容错），其他值（含空字符串）回退 `system`；归一化永不失败。生效语言由 `Settings::effective_language()` 解析：显式 `zh`/`en` 直接返回；`system` 先按 Windows 用户区域（`GetUserDefaultLocaleName`，`zh*`→`zh`、`en*`→`en`，`zh-Hant`/`zh-TW` 等一律归 `zh`），区域不支持时再按时区键（`GetDynamicTimeZoneInformation`：China/Taipei/Hong Kong/Singapore Standard Time→`zh`；GMT/UTC/W. Europe/Eastern/Central/Mountain/Pacific/Tokyo/Korea Standard Time→`en`），最后回退 `en`。首批仅提供简体中文与英文两种界面，不提供繁体或日语。`system` 只在运行时解析，配置文件里始终保存原始设置值。
 
 规则：归一化永不失败；非法值回退默认。运行时环境变量覆盖：`LEXORA_API_KEY`（覆盖 apiKey）、`LEXORA_LLAMA_URL`（引擎下载地址覆盖）、`LEXORA_UPDATE_API`（自更新 Release API 覆盖，仅测试用；覆盖时允许本地 http）。
 
@@ -197,7 +200,9 @@ lexora/
 {
   "app": { "name":"Lexora", "version":"0.1.0", "platform":"windows", "packaged":true, "portable":false,
            "dataDir":"...", "modelsDir":"...", "logsDir":"...",
-           "repoUrl":"https://github.com/monk233/lexora", "license":"MIT" },
+           "repoUrl":"https://github.com/monk233/lexora", "license":"MIT",
+           "locale":"zh",                 // 生效界面语言（zh|en，已解析 system）
+           "languageSetting":"system" },  // 原始设置（system|zh|en），设置页回显
   "settings": { /* §4 */ },
   "engine": {
     "mode":"online", "ready":true, "hint":"", "providerLabel":"在线 · deepseek-chat",
@@ -224,7 +229,7 @@ lexora/
 
 ### 5.5 PickerData.config
 
-`{"skills":["translate","summarize","explain","polish","read","copy","search","custom-xxx"],"customSkills":[{"id":"custom-xxx","label":"提取关键词","icon":"sparkles"}],"compact":false,"defaultTargetLang":"auto","searchEngine":"google"}`。customSkills 只下发已启用技能的元数据（不含 prompt）。
+`{"skills":["translate","summarize","explain","polish","read","copy","search","custom-xxx"],"customSkills":[{"id":"custom-xxx","label":"提取关键词","icon":"sparkles"}],"compact":false,"defaultTargetLang":"auto","searchEngine":"google","locale":"zh"}`。customSkills 只下发已启用技能的元数据（不含 prompt）。`locale` 为生效界面语言（`zh|en`），picker 用它初始化 `shared/i18n.js`；空值不得把运行时重置为默认语言（§7.3）。
 
 ## 6. Rust 模块接口（已存骨架，按此实现）
 
@@ -282,9 +287,12 @@ impl EngineService {
   - 模型切换：`provider.local.selectedModel` 改变后，若本地引擎处于运行/加载状态（`keepRunning` 且 state 为 starting/ready），后台自动 restart_local 加载新模型并广播 state-changed；引擎已空闲停止或未启动时只清除已捕获的模型选择，下次请求用新模型加载。设置页提示「已切换模型，正在重启本地引擎」。
   - 孤儿进程与句柄：spawn 后把 PID 写入 `<data>/llama-server.pid`，并把子进程加入 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的 Job Object，应用崩溃/被强杀时由系统回收；下次启动读取 PID 文件，仅当进程镜像路径与本应用 `engine/llama-server.exe` 一致才 TerminateProcess，之后删除文件。正常停止、启动失败与超时路径都会 kill + wait 回收句柄并删除 PID 文件。
 - 提示词（系统默认值为英文，用户可在设置里逐个技能自定义，空字符串表示用默认）：
-  - 翻译 system（普通任务）：`You are a professional translator. Translate the user's text into {target}. Write the entire translation in {target}. Output only the translation: no explanations, labels, notes or source text. Preserve paragraphs, lists, Markdown structure, code and placeholders; leave code and placeholders unchanged.`；单词/短语使用 `picker.prompts.wordLookup`，默认 `You are a careful dictionary assistant. ...`（词头、英文 IPA / 中文拼音、词性、至多 3 个义项、可选例句，释义使用目标语言）；算法按输入形态自动切换。`{target}`/`{language}` 替换为英文语言名（38 种翻译目标语言，如 Simplified Chinese / Traditional Chinese / Portuguese / Uyghur），自定义提示词若不含占位符则在末尾追加 `Target language: <name>.`。
-  - 总结 system：`You are a concise Chinese writing assistant. Summarize the user's text in Simplified Chinese in 3-5 key points. Preserve the central meaning without adding unsupported facts or repeating points.`
-  - 解释 system：`You are a knowledge assistant. Explain the user's text in Simplified Chinese: start with one sentence stating the core meaning, add at most 3 necessary points and optionally one short example. Usually use 150-250 Chinese characters; simple content should be shorter. Avoid excessive background, repetition and unrelated detail.`
+  - 翻译 system（普通任务）：`You are a professional translator. Translate the user's text into {target}. Write the entire translation in {target}. Output only the translation: no explanations, labels, notes or source text. Preserve paragraphs, lists, Markdown structure, code and placeholders; leave code and placeholders unchanged.`；单词/短语使用 `picker.prompts.wordLookup`，默认 `You are a careful dictionary assistant. ...`（词头、英文 IPA / 中文拼音、词性、至多 3 个义项、可选例句，释义使用目标语言）；算法按输入形态自动切换。`{target}`/`{language}` 替换为英文语言名（38 种翻译目标语言，如 Simplified Chinese / Traditional Chinese / Portuguese / Uyghur），自定义提示词若不含占位符则在末尾追加 `Target language: <name>.`。目标语言为 `auto` 时按原文语言互补解析（中文→英文、其他→中文），**与界面语言无关**（英文界面下英文原文仍译为中文）。
+  - 总结 system：`You are a concise writing assistant. Summarize the user's text in {answer} in 3-5 key points. Preserve the central meaning without adding unsupported facts or repeating points.`
+  - 解释 system：`You are a knowledge assistant. Explain the user's text in {answer}: start with one sentence stating the core meaning, add at most 3 necessary points and optionally one short example. Usually use 150-250 characters; simple content should be shorter. Avoid excessive background, repetition and unrelated detail.`
+  - 图片解释 system：`You are a vision assistant. Explain the image in {answer} using Markdown: ...`（同样使用 `{answer}`；OCR 提示词无语言占位符，只逐字转录）。
+  - `{answer}` 占位符：取值为本地语言的英文名（`settings.effective_language()`：`zh`→`Simplified Chinese`、`en`→`English`）。默认总结/解释/图片解释/追问系统提示词都用 `{answer}`；自定义提示词含 `{answer}` 时替换（`prompts::render_answer_language`），**不含时在末尾追加 `Answer language: <name>.`**（`prompts::answer_language_prompt`）。提示词模板本身保持英文，模型遵循更稳定。
+  - 解释模式的单词/短语（候选词）走单词提示词，但词条释义语言取本地语言，而不是目标语言下拉；翻译模式的单词查询仍使用目标语言。`auto` 目标语言规则不受界面语言影响。
   - 文本截断：翻译取前 `picker.maxChars`；总结/解释取前 8000 字符；自定义提示词归一化后最多 4000 字符。
   - 自定义技能：从 `picker.customSkills` 按 id 查找（不存在/未启用返回明确错误），`prompts::render_custom_prompt` 把 `{text}`（选中文本）、`{target}`/`{language}`（目标语言英文名）、`{program}`/`{app}`（当前应用名，空为「未知应用」）替换进提示词；未知 `{...}` 原样保留；system 为渲染后的提示词，user 为选中文本；本地模型角色使用 General；流式事件与翻译一致。
   - 内置润色：`prompts::polish_messages(text, custom)` 优先使用 `picker.prompts.polish`，空则用 `DEFAULT_POLISH_PROMPT`（英文）；截断 `picker.maxChars`；General 角色；流式事件与翻译一致。
@@ -393,8 +401,8 @@ pub struct SelectionService {
 - 翻译使用两套提示词，由算法按输入形态自动切换，设置页都放在「翻译」技能下：`picker.prompts.translate` 处理整句/段落，`picker.prompts.wordLookup` 处理被判定为单个词或短语的输入；空值回退各自内置默认。解释技能同样按候选词切换（候选词使用单词提示词，其余用 `picker.prompts.explain`）。不用用户手动选模式，也没有独立的单词查询模式字段。截图与自定义技能使用各自提示词，不参与该切换。
 - 候选判定是保守启发式：ASCII 1–40 字母（可含撇号/连字符）的单词，或 1–4 个汉字且不含常见句子标记（的/了/吗/呢/吧/我/你/他/她/它/是/在/把/被）的短词；带空格、标点、URL、下划线、camelCase 代码标识及更长文本走普通任务。候选不验证单词是否存在。
 - 默认翻译提示词要求整段译入目标语言、只输出译文并保留 Markdown/代码结构；默认单词提示词要求 Markdown 词条：词头、读音（英文 IPA、中文带声调拼音）、词性与至多 3 个常见义项、可选 1 个短例，释义使用目标语言；`carzy` 等疑似错拼先提示可能拼错，不编造释义或读音。音标与拼音由模型生成，可能不准确。
-- 解释默认一句核心含义、至多 3 要点、可选 1 例，通常 150–250 中文字符，简单内容更短；总结 3–5 点，润色只给结果，OCR 完整逐字转录且无解释长度限制。长度由提示词引导，不截断正文。
-- `prompts::resolve_text_prompt(action, text, target, custom, word_lookup_prompt)` 返回 `ResolvedPrompt { system, user, mode, prompt_source, prompt_version }`；模式为 translate/explain/summarize/word_lookup，来源为 default/custom，提示词版本为 11。日志直接使用解析结果，禁止自行重新分类。`default_prompts()` 暴露 translate/wordLookup/summarize/explain/polish 与截图动作默认提示词。
+- 解释默认一句核心含义、至多 3 要点、可选 1 例，通常 150–250 字（按本地语言计），简单内容更短；总结 3–5 点，润色只给结果，OCR 完整逐字转录且无解释长度限制。长度由提示词引导，不截断正文。解释/总结/图片解释与追问回答的语言由界面语言决定（§7.3）。
+- `prompts::resolve_text_prompt(action, text, target, custom, word_lookup_prompt, answer_language)` 返回 `ResolvedPrompt { system, user, mode, prompt_source, prompt_version }`；`answer_language` 为生效界面语言代码（`zh`/`en`），模式为 translate/explain/summarize/word_lookup，来源为 default/custom，提示词版本为 **12**。日志直接使用解析结果，禁止自行重新分类。`default_prompts()` 暴露 translate/wordLookup/summarize/explain/polish 与截图动作默认提示词。
   - 目标语言下拉从 `LP.LANGUAGES`（38 种翻译目标语言）动态生成，不再硬编码 option。
   - 菜单「划词设置…」→ `invoke("picker_open_settings")`；「在此应用中禁用」「禁用划词工具」→ 对应命令。
 - 初始尺寸 440×56，白色卡片边缘透明；`picker_ready` 在 DOM 就绪后调用一次。
@@ -408,12 +416,22 @@ pub struct SelectionService {
   - 本地：引擎下载、进度/取消与状态；已安装模型列表；唯一本地模型手动选择并保存；硬件推荐标签和理由；模型目录仅提供六种 Qwen3.5，支持并行下载及分别取消，视觉投影器随主模型下载；[导入 GGUF]、[启动]/[停止]、错误提示。未选择时所有本地 AI 任务不可用，不自动替选；切换选择需重启本地引擎。所有本地 AI 任务共用所选 Qwen3.5。停止后请求不自动启动；应用重启按 keepRunning 恢复运行状态。
 - 划词行为：启用开关、紧凑模式开关（紧跟启用开关、右对齐）、面板模式（紧跟紧凑模式：滚动/自适应，保存 `picker.panelMode`）、技能开关 + 拖拽排序（无上下箭头）…（其余同前）。**技能按「文字技能 / 图片技能」两个 Tab 分类展示（第四轮修正）：文字技能 Tab = 内置文字技能 + 「截图」入口技能 + 自定义文字技能；图片技能 Tab = 单一列表（截图工具条全部有序条目：钉在桌面 / 形状 / 箭头 / 画笔 / 文字 / 序号 / 马赛克 / 提取文字 / 翻译 / 解释图片 / 长截图 + 自定义图片技能，顺序与开关保存 `picker.captureSkills`，可全部关闭；“翻译/解释图片”可编辑系统提示词 `picker.capturePrompts`，其余条目无提示词按钮；不再有「复制」条目）；文字技能 Tab 的「截图」行不带「图片」徽标**；两个分类各自独立开关与排序，Tab 内拖动只重排该分类并保留另一分类相对顺序）、每行显示技能图标（内置用 `LP.SKILL_MAP[id].icon`，自定义用自定义图标）、技能提示词编辑（行内展开 textarea，默认填充系统默认英文提示词，支持重置默认；translate 支持 `{target}` 占位符；支持 translate/summarize/explain/polish）、自定义技能管理（[添加技能] 打开内联表单：**图标选择器默认紧凑显示当前图标预览 +「更换图标」，点击展开 200 个 Lucide 图标 + 名称搜索过滤**；名称 ≤20、提示词必填 ≤4000、变量提示 `{text}/{target}/{language}/{program}/{app}`；支持编辑、删除二次确认）、搜索配置（搜索行「配置」按钮展开 Google/百度/Bing，保存 `picker.searchEngine`）、默认目标语言（auto 显示「自动识别」，共 38 种语言）、黑名单 chip 输入（回车添加/可删除）。截图快捷键可配置（见 §10.4）。恢复默认设置保留自定义技能与已下载模型/引擎。「开机自启」「关闭窗口后驻留托盘」两个开关行与划词开关一致：标签/开关垂直居中、开关靠右。
 - 快捷键（第二轮反馈起独立成卡片，不再放在「划词行为」内）：卡片头「快捷键」+ 说明「配置 Lexora 的全局快捷键。」；内含「截图快捷键」录制器——显示当前组合（如「Win + Shift + X」），点击后提示「请按下新的快捷键…（Esc 取消）」，按下「修饰键 + 主键」即调用 `capture_set_hotkey` 保存并立即生效；Esc 取消；冲突时内联提示并保留旧值；「恢复默认」还原 `Win+Shift+X`；保存 `capture.regionShortcut`。
-- 应用与启动：开机自启（portable 不支持时置灰说明）、关闭窗口后驻留托盘、打开数据/模型/日志/引擎目录、退出程序。
+- 应用与启动：开机自启（portable 不支持时置灰说明）、关闭窗口后驻留托盘、界面语言（跟随系统 / 简体中文 / English，保存 `app.language`，选择后立即重新渲染各窗口文案，不重启）、打开数据/模型/日志/引擎目录、退出程序。
 - 关于：版本、Tauri/Rust 版本、MIT、GitHub 链接、引擎与模型状态。
 - 关于 → 检查更新：按钮调用 `check_update`；有新版本时展示版本号/更新说明（截断）/大小/发布时间，并提供「下载并更新」「稍后」；下载中显示进度条（`update-progress`），完成后提示「应用即将重启」；失败展示可操作错误与 hint。更新过程替换当前 exe 并自动重启（`--show` 打开设置）。
 - 交互：改动即自动保存（文本 500ms 防抖），顶部短暂「已保存」；错误内联不弹模态；下载进度实时更新。
 - 视觉：系统字体栈 `Segoe UI`/`Microsoft YaHei UI`；背景 `#f6f7f9`，卡片白 + 1px `#e5e7eb` 边框 + 12px 圆角；主色 `#4f46e5`；支持 `prefers-color-scheme: dark`；控件高 32–36px；不用渐变/大阴影。
 - 安全：HTML 带 CSP（`default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'`），无内联脚本；外链经 `open_external`。
+
+### 7.3 界面多语言（i18n，无构建步骤）
+
+- 运行时 `web/shared/i18n.js`：在 `shared/constants.js` 与语言包之后、页面脚本之前加载（普通 `<script>`，不引入打包器）。暴露 `LP.t(key, params)`（当前包 → `en` 包 → key，`{name}` 插值）、`LP.i18n.init(locale)`、`LP.i18n.setLocale(locale) -> bool`（未知值返回 `false` 且不切换）、`LP.i18n.currentLocale()`、`LP.i18n.applyStatic(root)`。所有 DOM 访问都有 `typeof document` 守卫，Node 单测可直接 `vm` 加载。
+- 语言包 `web/shared/messages.zh.js` / `web/shared/messages.en.js` 挂到 `LP.messages.zh|en`；两包 key 集合必须完全一致（645 个），新增文案必须同时加入两个包；缺失 key 回退英文包再回退 key 本身。
+- 静态文案用 `data-i18n`、`data-i18n-html`、`data-i18n-title`、`data-i18n-aria-label`、`data-i18n-placeholder` 标记，由 `init()` / `applyStatic()` 统一替换。HTML 里写死的英文文案只是初始化前的占位符（pre-init placeholder），运行期以语言包为准。
+- 动态/格式化文案（状态、错误、toast、带变量的标题）调用 `LP.t(key, params)`；语言变化后页面必须重新渲染依赖语言的动态内容（如结果面板标题、目标语言下拉选项、技能名回退文案），不能只靠首次 `applyStatic`。
+- 语言注入：设置页读 `StatePayload.app.locale`（生效语言）与 `app.languageSetting`（下拉回显）；划词/截图结果 picker 读 `picker-data.config.locale`（`picker-image` 路径回退 `data.app.locale`）；`capture-*`、`pin-*`、`longshot`、`longshot-bar` 窗口由 Rust 在 URL 追加 `lang=<zh|en>`，页面从 `<html lang>` / `location.search` 取首帧语言；语言变化时重建/刷新这些窗口或重新应用 `setLocale`。
+- 首帧猜测仅用于避免错误语言闪一下：`<html lang>` 优先于 `navigator.language`，后端语言到达后以 `init()` 覆盖。
+- 切换语言立即生效、无需重启；`system` 只在后端解析，前端只接收 `zh|en`。
 
 ## 8. 验收
 
@@ -437,6 +455,8 @@ pub struct SelectionService {
 - 截图（§10）：快捷键开图无黑屏 loading；选区内拖动可平移、手柄可缩放；工具条与划词工具条同为白色主题；点击提取文字/翻译/解释图片/图片技能后截图关闭、图片入剪贴板、picker 结果面板流式输出且具备朗读/复制/重试/继续提问；本地安装完整并手动选择 Qwen3.5 后可解释图片；设置页可录制截图快捷键并立即生效、冲突时提示。
 - 截图第二轮（§10.7/§10.8）：连续截图复用 overlay 窗口、无重建延迟与闪烁；提取文字默认走视觉模型（日志路径可见），视觉不可用才回退 Windows OCR；设置页快捷键为独立卡片；全屏选区内拖拽直接开始新框选。
 - 构建 release：`scripts/build-portable.ps1` 产出单个 `dist/Lexora-<version>-win-x64.exe`；双击运行后静默驻留托盘，数据写入 exe 同级 data/；Release 正文由 `scripts/release-notes.ps1` 生成排版化 changelog。
+- 界面语言（schema 9）：设置 → 应用与启动切换 English / 简体中文后，设置页、工具栏、结果面板、截图工具条、长截图与钉图文案立即更新且无残留旧语言；`system` 在中文区域显示简体中文、英文区域显示英文，无法判断回退英文；`settings.json` 中 `version` 为 9、`app.language` 保存原始设置值，v8 旧配置升级不丢提示词与技能。
+- AI 语言：界面为英文时解释/总结/图片解释/追问回答与解释模式词条释义为英文，界面为中文时为简体中文；自定义提示词不含 `{answer}` 时末尾追加 `Answer language: <name>.`；`auto` 翻译目标仍为中文→英文、其他→中文，不受界面语言影响。
 
 
 ## 10. 截图（v0.2.3 第三轮反馈，权威契约）
