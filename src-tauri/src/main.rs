@@ -15,6 +15,7 @@ mod capture;
 mod capture_hover;
 mod commands;
 mod engine;
+mod locale;
 mod logger;
 mod longshot;
 mod notification;

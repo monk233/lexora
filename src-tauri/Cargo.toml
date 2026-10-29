@@ -54,7 +54,9 @@ windows = { version = "0.62", features = [
   "Win32_Graphics_Dxgi_Common",
   "Win32_System_SystemInformation",
   "Win32_System_JobObjects",
-  "Win32_Security"
+  "Win32_Security",
+  "Win32_Globalization",
+  "Win32_System_Time"
 ] }
 
 [target.'cfg(windows)'.dependencies]
