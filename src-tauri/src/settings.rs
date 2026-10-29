@@ -12,7 +12,7 @@ use std::sync::{Arc, RwLock};
 
 /// Version of the on-disk settings schema. Bumped whenever defaults or fields
 /// change so [`Settings::normalize`] can migrate an older file in place.
-pub const SETTINGS_VERSION: u32 = 8;
+pub const SETTINGS_VERSION: u32 = 9;
 /// Default global shortcut that starts a region screenshot.
 pub const DEFAULT_REGION_SHORTCUT: &str = "Win+Shift+X";
 /// Built-in picker skills, in their canonical toolbar order.
@@ -346,6 +346,8 @@ pub struct AppSettings {
     #[serde(default)]
     pub start_at_login: bool,
     pub theme: String,
+    /// UI language: "system" (detect at startup), or a supported code (`zh`/`en`).
+    pub language: String,
 }
 
 impl Default for Settings {
@@ -436,6 +438,7 @@ impl Default for AppSettings {
             close_to_tray: true,
             start_at_login: true,
             theme: "system".to_string(),
+            language: "system".to_string(),
         }
     }
 }
@@ -448,6 +451,15 @@ impl Settings {
     pub fn online_configured(&self) -> bool {
         !self.provider.online.base_url.trim().is_empty()
             && !self.provider.online.model.trim().is_empty()
+    }
+
+    /// Effective UI language (`zh`/`en`) for the current `app.language` value.
+    pub fn effective_language(&self) -> &'static str {
+        match self.app.language.as_str() {
+            "zh" => "zh",
+            "en" => "en",
+            _ => crate::locale::detect_language(),
+        }
     }
 
     /// Clamps every field into a sane range and drops unknown skills/languages.
@@ -682,6 +694,11 @@ impl Settings {
         if !["system", "light", "dark"].contains(&self.app.theme.as_str()) {
             self.app.theme = "system".to_string();
         }
+        self.app.language = match self.app.language.trim().to_ascii_lowercase().as_str() {
+            "zh" | "zh-cn" => "zh".to_string(),
+            "en" | "en-us" | "en-gb" => "en".to_string(),
+            _ => "system".to_string(),
+        };
         // Screenshot shortcut: any unsupported/empty value falls back to the
         // default so a hand-edited file can never leave the hotkey thread with
         // an unparseable combination.
@@ -1141,7 +1158,7 @@ mod tests {
     fn defaults_are_normalized() {
         let settings = Settings::default().normalize();
         assert_eq!(settings.version, SETTINGS_VERSION);
-        assert_eq!(SETTINGS_VERSION, 8);
+        assert_eq!(SETTINGS_VERSION, 9);
         let expected = vec![
             "translate",
             "summarize",
@@ -1355,7 +1372,7 @@ mod tests {
         }))
         .unwrap();
         let migrated = legacy.normalize();
-        assert_eq!(migrated.version, 8);
+        assert_eq!(migrated.version, 9);
         assert_eq!(migrated.picker.prompts.word_lookup, "Look it up.");
         assert_eq!(
             migrated.picker.prompts.translate,
@@ -1372,6 +1389,41 @@ mod tests {
             serde_json::from_value::<Settings>(serde_json::to_value(&migrated).unwrap()).unwrap(),
             migrated
         );
+    }
+
+    #[test]
+    fn app_language_defaults_to_system_and_normalizes() {
+        let settings = Settings::default().normalize();
+        assert_eq!(settings.app.language, "system");
+        assert!(crate::locale::SUPPORTED_LANGUAGES.contains(&settings.effective_language()));
+        for (raw, expected) in [
+            ("zh", "zh"),
+            (" zh-CN ", "zh"),
+            ("en-US", "en"),
+            ("EN", "en"),
+            ("system", "system"),
+            ("nonsense", "system"),
+            ("", "system"),
+        ] {
+            let mut candidate = Settings::default();
+            candidate.app.language = raw.into();
+            assert_eq!(candidate.normalize().app.language, expected, "{raw}");
+        }
+        let value = serde_json::to_value(Settings::default().normalize()).unwrap();
+        assert_eq!(value["app"]["language"], "system");
+    }
+
+    #[test]
+    fn schema_nine_adds_app_language_without_touching_history() {
+        let legacy: Settings = serde_json::from_value(json!({
+            "version": 8,
+            "picker": { "prompts": { "translate": "Keep me." } }
+        }))
+        .unwrap();
+        let migrated = legacy.normalize();
+        assert_eq!(migrated.version, 9);
+        assert_eq!(migrated.app.language, "system");
+        assert_eq!(migrated.picker.prompts.translate, "Keep me.");
     }
 
     #[test]
