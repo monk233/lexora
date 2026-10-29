@@ -39,8 +39,8 @@ mod prompts;
 
 pub use llama::LocalState;
 pub use prompts::{
-    default_prompts, render_image_prompt, resolve_target_lang, DEFAULT_EXPLAIN_IMAGE_PROMPT,
-    DEFAULT_OCR_PROMPT,
+    answer_language_prompt, default_prompts, language_name, render_answer_language,
+    render_image_prompt, resolve_target_lang, DEFAULT_EXPLAIN_IMAGE_PROMPT, DEFAULT_OCR_PROMPT,
 };
 
 /// Pinned llama.cpp Windows CPU release used when the user installs the engine.
@@ -110,11 +110,32 @@ fn one_chunk_stream(text: String) -> BoxStream<'static, Result<String, EngineErr
     >(text))))
 }
 
-fn vision_prompt_metadata(system: &str) -> (&'static str, &'static str) {
-    match system.trim() {
-        "" | DEFAULT_EXPLAIN_IMAGE_PROMPT => ("vision_explain", "default"),
-        DEFAULT_OCR_PROMPT => ("ocr", "default"),
-        _ => ("vision", "custom"),
+/// Classifies a vision system prompt. The built-in explanation template is
+/// recognized both raw (the settings/default value) and rendered with the
+/// current answer language, so the default token budget survives localization.
+fn vision_prompt_metadata(system: &str, answer_language: &str) -> (&'static str, &'static str) {
+    let system = system.trim();
+    if system.is_empty()
+        || system == DEFAULT_EXPLAIN_IMAGE_PROMPT
+        || system == prompts::render_answer_language(DEFAULT_EXPLAIN_IMAGE_PROMPT, answer_language)
+    {
+        ("vision_explain", "default")
+    } else if system == DEFAULT_OCR_PROMPT {
+        ("ocr", "default")
+    } else {
+        ("vision", "custom")
+    }
+}
+
+/// Renders the outgoing vision system prompt with the user's local answer
+/// language. An empty instruction falls back to the built-in explanation
+/// template; custom prompts are passed through `{answer}` substitution.
+fn vision_system_content(system: &str, answer_language: &str) -> String {
+    let instruction = system.trim();
+    if instruction.is_empty() {
+        prompts::render_answer_language(DEFAULT_EXPLAIN_IMAGE_PROMPT, answer_language)
+    } else {
+        prompts::render_answer_language(instruction, answer_language)
     }
 }
 
@@ -993,7 +1014,9 @@ impl EngineService {
             return Vec::new();
         };
         config.temperature = 0.2;
-        let (system, user) = prompts::suggestion_messages(skill, source, initial_answer, history);
+        let answer_language = prompts::language_name(settings.effective_language());
+        let (system, user) =
+            prompts::suggestion_messages(skill, source, initial_answer, history, &answer_language);
         let input_chars = system.chars().count() + user.chars().count();
         let messages = vec![
             json!({"role":"system", "content":system}),
@@ -1086,6 +1109,7 @@ impl EngineService {
             &target,
             &settings.picker.prompts.translate,
             &settings.picker.prompts.word_lookup,
+            settings.effective_language(),
         )?;
         let (system, user) = (&resolved.system, &resolved.user);
         let messages = vec![
@@ -1146,6 +1170,7 @@ impl EngineService {
             &target,
             custom_prompt,
             word_lookup_prompt,
+            settings.effective_language(),
         )?;
         let messages = vec![
             json!({"role": "system", "content": &resolved.system}),
@@ -1199,14 +1224,10 @@ impl EngineService {
             LocalRole::General
         };
         let config = self.chat_config(&settings, role).await?;
-        let (mode, source) = vision_prompt_metadata(system);
+        let answer_language = prompts::language_name(settings.effective_language());
+        let (mode, source) = vision_prompt_metadata(system, &answer_language);
         let config = request_config(&config, mode, source);
-        let instruction = system.trim();
-        let system_content = if instruction.is_empty() {
-            DEFAULT_EXPLAIN_IMAGE_PROMPT
-        } else {
-            instruction
-        };
+        let system_content = vision_system_content(system, &answer_language);
         let messages = vec![
             json!({"role": "system", "content": system_content}),
             json!({
@@ -1270,8 +1291,13 @@ impl EngineService {
         };
         let config = self.chat_config(&settings, role).await?;
 
-        let messages =
-            prompts::vision_followup_messages(image_data_url, previous_answer, question, history);
+        let messages = prompts::vision_followup_messages(
+            image_data_url,
+            previous_answer,
+            question,
+            history,
+            &prompts::language_name(settings.effective_language()),
+        );
         let recent_count = messages
             .len()
             .saturating_sub(3 + usize::from(!previous_answer.trim().is_empty()))
@@ -1429,6 +1455,7 @@ impl EngineService {
             "zh",
             custom_prompt,
             &settings.picker.prompts.word_lookup,
+            settings.effective_language(),
         )?;
         let (system, user) = (&resolved.system, &resolved.user);
         let messages = vec![
@@ -1477,7 +1504,13 @@ impl EngineService {
                 "请在结果下方的输入框中输入要继续提问的问题后再提交。",
             ));
         }
-        let (system, user) = prompts::followup_messages(text, previous_answer, question, history);
+        let (system, user) = prompts::followup_messages(
+            text,
+            previous_answer,
+            question,
+            history,
+            &prompts::language_name(settings.effective_language()),
+        );
         let user_chars = user.chars().count();
         let messages = vec![
             json!({"role": "system", "content": system}),
@@ -1525,6 +1558,7 @@ impl EngineService {
             "zh",
             custom_prompt,
             &settings.picker.prompts.word_lookup,
+            settings.effective_language(),
         )?;
         let messages = vec![
             json!({"role": "system", "content": resolved.system}),
@@ -2784,14 +2818,15 @@ mod tests {
             ("explain", "a full sentence", "Custom explanation", 8192),
             ("summary", "a full sentence", "", 768),
         ] {
-            let prompt = prompts::resolve_text_prompt(action, text, "zh", custom, "").unwrap();
+            let prompt =
+                prompts::resolve_text_prompt(action, text, "zh", custom, "", "zh").unwrap();
             assert_eq!(
                 effective_max_tokens(8192, prompt.mode, prompt.prompt_source),
                 expected
             );
         }
         // A word routed to the dictionary prompt still honours the user limit.
-        let word = prompts::resolve_text_prompt("translate", "crazy", "zh", "", "").unwrap();
+        let word = prompts::resolve_text_prompt("translate", "crazy", "zh", "", "", "zh").unwrap();
         assert_eq!(word.mode, "word_lookup");
         assert_eq!(
             effective_max_tokens(8192, word.mode, word.prompt_source),
@@ -2833,15 +2868,49 @@ mod tests {
 
     #[test]
     fn vision_budgets_distinguish_default_explanation_ocr_and_custom_prompts() {
+        let language = "English";
+        let rendered_default =
+            prompts::render_answer_language(DEFAULT_EXPLAIN_IMAGE_PROMPT, language);
         for (system, expected) in [
             ("", 512),
             (DEFAULT_EXPLAIN_IMAGE_PROMPT, 512),
+            (rendered_default.as_str(), 512),
             (DEFAULT_OCR_PROMPT, 8192),
             ("Custom image instructions", 8192),
         ] {
-            let (mode, source) = vision_prompt_metadata(system);
+            let (mode, source) = vision_prompt_metadata(system, language);
             assert_eq!(effective_max_tokens(8192, mode, source), expected);
         }
+        // The OCR and custom prompts stay independent of the answer language.
+        let (mode, source) = vision_prompt_metadata(
+            &prompts::render_answer_language(DEFAULT_OCR_PROMPT, "English"),
+            "English",
+        );
+        assert_eq!((mode, source), ("ocr", "default"));
+    }
+
+    #[test]
+    fn vision_system_prompt_renders_the_answer_language() {
+        let default_english =
+            prompts::render_answer_language(DEFAULT_EXPLAIN_IMAGE_PROMPT, "English");
+        assert_eq!(vision_system_content("", "English"), default_english);
+        assert_eq!(
+            vision_system_content(DEFAULT_EXPLAIN_IMAGE_PROMPT, "English"),
+            default_english
+        );
+        assert!(default_english.contains("Explain the image in English"));
+        assert!(!default_english.contains("{answer}"));
+
+        let chinese = vision_system_content(DEFAULT_EXPLAIN_IMAGE_PROMPT, "Simplified Chinese");
+        assert!(chinese.contains("Explain the image in Simplified Chinese"));
+        assert!(!chinese.contains("{answer}"));
+
+        // Custom vision prompts are only changed when they opt into `{answer}`.
+        assert_eq!(vision_system_content("解释这张图", "English"), "解释这张图");
+        assert_eq!(
+            vision_system_content("Describe in {answer}.", "English"),
+            "Describe in English."
+        );
     }
 
     #[test]
@@ -2938,7 +3007,7 @@ mod tests {
             assert_eq!(env.store.get().provider.online.max_tokens, user_limit);
             let log = std::fs::read_to_string(env.service.model_logger.path()).unwrap();
             assert!(log.contains(&format!("effective_max_tokens={expected}")));
-            assert!(log.contains("mode=explain prompt_source=default prompt_version=11"));
+            assert!(log.contains("mode=explain prompt_source=default prompt_version=12"));
             assert!(!log.contains("这是一段用于测试的普通文本内容"));
             assert!(!log.contains("私密回答"));
         }

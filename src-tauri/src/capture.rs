@@ -2618,13 +2618,17 @@ fn resolve_skill_meta(
         }),
         SkillAction::Explain => {
             let custom = settings.picker.capture_prompts.explain.trim();
+            let answer_language = crate::engine::language_name(settings.effective_language());
             Ok(SkillMeta {
                 label: "解释图片".to_string(),
                 skill_id: String::new(),
                 system_prompt: if custom.is_empty() {
-                    crate::engine::DEFAULT_EXPLAIN_IMAGE_PROMPT.to_string()
+                    crate::engine::render_answer_language(
+                        crate::engine::DEFAULT_EXPLAIN_IMAGE_PROMPT,
+                        &answer_language,
+                    )
                 } else {
-                    custom.to_string()
+                    crate::engine::answer_language_prompt(custom, &answer_language)
                 },
                 word_lookup_prompt: String::new(),
             })
@@ -4120,6 +4124,8 @@ mod tests {
     #[test]
     fn capture_prompts_override_the_builtin_action_prompts() {
         let mut settings = Settings::default();
+        // Pin the local language so the answer-language rendering is deterministic.
+        settings.app.language = "en".to_string();
         settings.picker.capture_prompts.translate = "Translate into {target}.".to_string();
         settings.picker.capture_prompts.word_lookup = "Word {target}.".to_string();
         settings.picker.capture_prompts.explain = "Describe the UI text.".to_string();
@@ -4128,16 +4134,34 @@ mod tests {
         assert_eq!(translate.system_prompt, "Translate into {target}.");
         assert_eq!(translate.word_lookup_prompt, "Word {target}.");
         let explain = resolve_skill_meta(&settings, SkillAction::Explain, None, "auto").unwrap();
-        assert_eq!(explain.system_prompt, "Describe the UI text.");
+        assert_eq!(
+            explain.system_prompt,
+            "Describe the UI text.\n\nAnswer language: English."
+        );
         assert!(explain.word_lookup_prompt.is_empty());
 
-        // Empty overrides fall back to the built-in defaults.
-        let defaults = Settings::default();
+        // A custom explain prompt with `{answer}` is substituted without suffix.
+        settings.picker.capture_prompts.explain = "Describe the UI text in {answer}.".to_string();
+        let explain = resolve_skill_meta(&settings, SkillAction::Explain, None, "auto").unwrap();
+        assert_eq!(explain.system_prompt, "Describe the UI text in English.");
+
+        // Empty overrides fall back to the built-in default, rendered with the
+        // local answer language (the engine still treats it as the default
+        // prompt for budgeting).
+        let mut defaults = Settings::default();
+        defaults.app.language = "en".to_string();
         let explain = resolve_skill_meta(&defaults, SkillAction::Explain, None, "auto").unwrap();
         assert_eq!(
             explain.system_prompt,
-            crate::engine::DEFAULT_EXPLAIN_IMAGE_PROMPT
+            crate::engine::render_answer_language(
+                crate::engine::DEFAULT_EXPLAIN_IMAGE_PROMPT,
+                "English"
+            )
         );
+        assert!(explain
+            .system_prompt
+            .contains("Explain the image in English"));
+        assert!(!explain.system_prompt.contains("{answer}"));
         let translate =
             resolve_skill_meta(&defaults, SkillAction::Translate, None, "auto").unwrap();
         assert!(translate.system_prompt.is_empty());
