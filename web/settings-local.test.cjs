@@ -35,7 +35,7 @@ async function main() {
     window: { setTimeout(fn) { timer = fn; return 1; }, clearTimeout() {} },
     el: element, byId: (id) => nodes[id],
     isQwen35: (id) => String(id || "").startsWith("qwen3.5-"),
-    selectedLocalModel: () => "", recommendedModelId: () => "", LP: { formatBytes: () => "1 GB" },
+    selectedLocalModel: () => "", recommendedModelId: () => "", LP: { formatBytes: () => "1 GB", t: (key) => key },
     setHidden(node, hidden) { node.hidden = hidden; }, setTone() {}, toast() {},
     hideInlineError(node) { node.hidden = true; node.textContent = ""; },
     showInlineError(node, error, hint) { node.hidden = false; node.textContent = error + (hint || ""); },
@@ -51,16 +51,16 @@ async function main() {
     const row = context.localModelRow({ catalogId, file: "builtin.gguf" });
     assert.equal(row.children.some((child) => child.className.includes("btn-danger")), false);
   }
-  assert.equal(context.modelRole("hy-mt2-1.8b").label, "其他本地模型");
+  assert.equal(context.modelRole("hy-mt2-1.8b").label, "settings.modelRole.other");
   assert.equal(context.modelRole("").builtin, false);
   const row = context.localModelRow({ catalogId: "", file: "Hy-MT2-1.8B-Q4_K_M.gguf" });
   nodes["local-models"].appendChild(row);
   const button = row.querySelector(".btn-danger");
   button.click();
-  assert.equal(button.textContent, "确认删除");
+  assert.equal(button.textContent, "settings.action.confirmDelete");
   assert.equal(deletes, 0);
   timer();
-  assert.equal(button.textContent, "删除");
+  assert.equal(button.textContent, "settings.action.delete");
   button.click(); button.click(); button.click();
   assert.equal(deletes, 1);
   assert.equal(button.disabled, true);
@@ -77,13 +77,13 @@ async function main() {
   context.state.engine.localState = "ready";
   const pending = context.restartLocal();
   await new Promise(setImmediate);
-  assert.equal(nodes["restart-local"].textContent, "重启中…");
+  assert.equal(nodes["restart-local"].textContent, "settings.status.restarting");
   assert.equal(nodes["restart-local"].disabled, true);
   assert.equal(nodes["stop-local"].disabled, true);
   assert.equal(context.restartLocal(), undefined, "Repeated actions are ignored while busy");
   releaseRestart({ ok: false, error: "重启失败", hint: "请检查模型" });
   await pending;
-  assert.equal(nodes["restart-local"].textContent, "重启");
+  assert.equal(nodes["restart-local"].textContent, "settings.action.restart");
   assert.equal(nodes["stop-local"].disabled, false);
   assert.equal(nodes["local-error"].hidden, false);
   assert.equal(nodes["local-error"].textContent, "重启失败请检查模型");
@@ -111,7 +111,7 @@ function savingHarness() {
     saveQueue: null, saving: false, savePending: null, localBusy: false, localAction: "",
     // Restart must not flush unrelated text drafts, including online API credentials.
     flushAllTextFields() { throw new Error("Unexpected text debounce flush"); },
-    LP: { deepMerge: merge }, byId: (id) => nodes[id],
+    LP: { deepMerge: merge, t: (key) => key }, byId: (id) => nodes[id],
     setSaveStatus() {}, toast() {}, setTone() {},
     setHidden(node, hidden) { node.hidden = hidden; },
     hideInlineError(node) { node.hidden = true; node.textContent = ""; },

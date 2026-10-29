@@ -365,13 +365,13 @@
     if (message) {
       text.textContent = message;
     } else if (kind === "saving") {
-      text.textContent = "保存中…";
+      text.textContent = LP.t("settings.saveStatus.saving");
     } else if (kind === "saved") {
-      text.textContent = "已保存";
+      text.textContent = LP.t("settings.saveStatus.saved");
     } else if (kind === "error") {
-      text.textContent = "保存失败";
+      text.textContent = LP.t("settings.saveStatus.error");
     } else {
-      text.textContent = "所有更改自动保存";
+      text.textContent = LP.t("settings.saveStatus.idle");
     }
     window.clearTimeout(saveStatusTimer);
     if (kind === "saved") {
@@ -405,12 +405,12 @@
     savePending = Promise.resolve().then(function () {
       return API.updateSettings(patch);
     }).catch(function (error) {
-      return { ok: false, error: error.message || "未知错误" };
+      return { ok: false, error: error.message || LP.t("settings.error.unknown") };
     }).then(function (result) {
       var refreshed = Promise.resolve();
       if (!result.ok) {
-        setSaveStatus("error", "保存失败");
-        toast("保存失败：" + (result.error || "未知错误"), "error");
+        setSaveStatus("error", LP.t("settings.saveStatus.error"));
+        toast(LP.t("settings.error.saveFailed", { error: result.error || LP.t("settings.error.unknown") }), "error");
         refreshed = refreshState();
       } else {
         if (!saveQueue) {
@@ -546,33 +546,33 @@
     var engine = state.engine || {};
     var badge = byId("provider-badge");
     var tone = "muted";
-    var text = "未配置";
+    var text = LP.t("settings.provider.unconfigured");
     if (engine.mode === "local") {
       if (engine.localState === "ready") {
         tone = "ok";
-        text = "本地模型 · 运行中";
+        text = LP.t("settings.provider.localRunning");
       } else if (engine.localState === "starting") {
         tone = "warn";
-        text = "本地模型 · 启动中";
+        text = LP.t("settings.provider.localStarting");
       } else if (engine.localState === "error") {
         tone = "error";
-        text = "本地模型 · 异常";
+        text = LP.t("settings.provider.localError");
       } else if (engine.engineAvailable) {
         tone = "muted";
-        text = "本地模型 · 未启动";
+        text = LP.t("settings.provider.localStopped");
       } else {
         tone = "warn";
-        text = "本地模型 · 缺少引擎";
+        text = LP.t("settings.provider.localNoEngine");
       }
     } else if (engine.ready) {
       tone = "ok";
-      text = "在线 API · 就绪";
+      text = LP.t("settings.provider.onlineReady");
     } else if (engine.onlineConfigured) {
       tone = "warn";
-      text = "在线 API · 待验证";
+      text = LP.t("settings.provider.onlineUnverified");
     } else {
       tone = "warn";
-      text = "在线 API · 未配置";
+      text = LP.t("settings.provider.onlineUnconfigured");
     }
     if (badge) {
       badge.textContent = text;
@@ -589,7 +589,7 @@
     }
     var hint = byId("online-preset-hint");
     if (hint) {
-      hint.textContent = preset && preset.hint ? preset.hint : "任意 OpenAI 兼容服务地址";
+      hint.textContent = preset && preset.hint ? preset.hint : LP.t("settings.hint.customBaseUrl");
     }
     setInputValue(byId("online-base-url"), online.baseUrl || "");
     setInputValue(byId("online-api-key"), online.apiKey || "");
@@ -637,16 +637,16 @@
     var seen = {};
     var options = [];
     if (!saved && !customModelMode) {
-      options.push({ value: "", label: "（未选择模型）" });
+      options.push({ value: "", label: LP.t("settings.onlineModel.none") });
     }
     models.forEach(function (model) {
       seen[model] = true;
       options.push({ value: model, label: model });
     });
     if (!customModelMode && saved && !seen[saved]) {
-      options.push({ value: saved, label: saved + "（当前）" });
+      options.push({ value: saved, label: LP.t("settings.onlineModel.current", { model: saved }) });
     }
-    options.push({ value: CUSTOM_MODEL_VALUE, label: "自定义模型…" });
+    options.push({ value: CUSTOM_MODEL_VALUE, label: LP.t("settings.action.customModel") });
     return options;
   }
 
@@ -731,11 +731,11 @@
     var baseUrl = byId("online-base-url").value.trim();
     var apiKey = byId("online-api-key").value;
     if (!baseUrl) {
-      showOnlineModelError("请先填写服务地址");
+      showOnlineModelError(LP.t("settings.error.baseUrlRequired"));
       return;
     }
     if (!/^https?:\/\//i.test(baseUrl)) {
-      showOnlineModelError("服务地址必须以 http:// 或 https:// 开头");
+      showOnlineModelError(LP.t("settings.error.baseUrlScheme"));
       return;
     }
     fetchModelsBusy = true;
@@ -744,27 +744,26 @@
     renderOnlineModelFeedback();
     if (button) {
       button.disabled = true;
-      button.textContent = "拉取中…";
+      button.textContent = LP.t("settings.status.fetching");
     }
     API.listOnlineModels({ baseUrl: baseUrl, apiKey: apiKey }).then(function (result) {
       fetchModelsBusy = false;
       if (button) {
         button.disabled = false;
-        button.textContent = "拉取模型";
+        button.textContent = LP.t("settings.action.fetchModels");
       }
       var online = (state && state.settings.provider.online) || {};
       if (result && result.ok) {
         var models = cacheOnlineModels(online, result.models);
         onlineModelError = "";
         if (models.length) {
-          onlineModelHint = "已加载 " + models.length + " 个模型";
+          onlineModelHint = LP.t("settings.hint.modelsLoaded", { count: models.length });
         } else {
-          onlineModelHint = "服务端未返回模型，可选「自定义模型…」";
+          onlineModelHint = LP.t("settings.hint.modelsEmpty");
         }
       } else {
-        onlineModelError = (result && result.error) || "拉取模型失败";
-        onlineModelHint =
-          (result && result.hint) || "可改用「自定义模型…」手动填写模型名";
+        onlineModelError = (result && result.error) || LP.t("settings.error.fetchModels");
+        onlineModelHint = (result && result.hint) || LP.t("settings.hint.fetchModelsFallback");
       }
       renderOnlineModelOptions(online);
     });
@@ -784,9 +783,9 @@
 
   function modelRole(catalogId) {
     if (isQwen35(catalogId)) {
-      return { label: "翻译 / 通用 / 视觉", builtin: true };
+      return { label: LP.t("settings.modelRole.builtin"), builtin: true };
     }
-    return { label: "其他本地模型", builtin: false };
+    return { label: LP.t("settings.modelRole.other"), builtin: false };
   }
 
   function localModelRow(model) {
@@ -799,22 +798,26 @@
     var row = el("div", "model-card" + (selected ? " is-selected" : ""));
     row.setAttribute("data-file", model.file || "");
     var main = el("div", "model-card-main");
-    main.appendChild(el("span", "model-card-name", model.name || model.file || "未命名模型"));
+    main.appendChild(el("span", "model-card-name", model.name || model.file || LP.t("settings.model.unnamed")));
     var meta = el("div", "model-card-meta");
     meta.appendChild(el("span", "meta-pill" + (role.builtin ? " is-accent" : ""), role.label));
     meta.appendChild(el("span", "meta-pill", LP.formatBytes(model.sizeBytes)));
     if (model.catalogId === recommendedModelId()) {
-      meta.appendChild(el("span", "meta-pill is-accent", "推荐"));
+      meta.appendChild(el("span", "meta-pill is-accent", LP.t("settings.badge.recommended")));
     }
     main.appendChild(meta);
     row.appendChild(main);
     if (isQwen35(model.catalogId)) {
       var button = el("button", "btn" + (selected ? " btn-primary" : ""),
-        selected ? "已选择" : selectable ? "选择" : "请补全下载");
+        selected
+          ? LP.t("settings.action.selected")
+          : selectable
+            ? LP.t("settings.action.select")
+            : LP.t("settings.action.completeDownload"));
       button.type = "button";
       button.disabled = !selectable;
       button.setAttribute("aria-pressed", selected ? "true" : "false");
-      button.setAttribute("aria-label", (selected ? "当前模型：" : "选择模型：") + (model.name || model.file));
+      button.setAttribute("aria-label", LP.t(selected ? "settings.aria.currentModel" : "settings.aria.selectModel", { name: model.name || model.file }));
       button.addEventListener("click", function () {
         if (selectedLocalModel() === model.catalogId) {
           return;
@@ -823,29 +826,29 @@
         var running = engine.localState === "ready" || engine.localState === "starting" || engine.localState === "running";
         save({ provider: { local: { selectedModel: model.catalogId } } });
         if (running) {
-          toast("已切换模型，正在重启本地引擎…", "info");
+          toast(LP.t("settings.toast.modelSwitched"), "info");
         }
       });
       row.appendChild(button);
     }
     if (model.catalogId === "") {
-      var deleteButton = el("button", "btn btn-danger", "删除");
+      var deleteButton = el("button", "btn btn-danger", LP.t("settings.action.delete"));
       deleteButton.type = "button";
       deleteButton.disabled = !!removingModels[model.file];
-      deleteButton.setAttribute("aria-label", "删除模型：" + (model.name || model.file));
+      deleteButton.setAttribute("aria-label", LP.t("settings.aria.deleteModel", { name: model.name || model.file }));
       deleteButton.addEventListener("click", function () {
         if (removingModels[model.file]) return;
-        armDanger(deleteButton, "确认删除", function () {
+        armDanger(deleteButton, LP.t("settings.action.confirmDelete"), function () {
           removingModels[model.file] = true;
           deleteButton.disabled = true;
           hideInlineError(byId("local-error"));
           API.removeModel(model.file).then(function (result) {
             return refreshState().then(function () {
-              if (result.ok) toast("模型已删除", "success");
-              else showInlineError(byId("local-error"), result.error || "删除模型失败", result.hint || "");
+              if (result.ok) toast(LP.t("settings.toast.modelDeleted"), "success");
+              else showInlineError(byId("local-error"), result.error || LP.t("settings.error.modelDelete"), result.hint || "");
             });
           }).catch(function (error) {
-            showInlineError(byId("local-error"), error.message || "删除模型失败");
+            showInlineError(byId("local-error"), error.message || LP.t("settings.error.modelDelete"));
           }).finally(function () {
             delete removingModels[model.file];
             var list = byId("local-models");
@@ -869,22 +872,22 @@
     if (summary) {
       var parts = [];
       if (hardware.totalMemoryBytes) {
-        parts.push("内存 " + LP.formatBytes(hardware.totalMemoryBytes));
+        parts.push(LP.t("settings.hardware.memory", { size: LP.formatBytes(hardware.totalMemoryBytes) }));
       }
       if (hardware.cpuThreads) {
-        parts.push("CPU " + hardware.cpuThreads + " 线程");
+        parts.push(LP.t("settings.hardware.cpuThreads", { count: hardware.cpuThreads }));
       }
       if (hardware.gpuName) {
         parts.push(String(hardware.gpuName));
       }
       if (hardware.gpuVramBytes) {
-        parts.push("显存 " + LP.formatBytes(hardware.gpuVramBytes));
+        parts.push(LP.t("settings.hardware.vram", { size: LP.formatBytes(hardware.gpuVramBytes) }));
       }
-      summary.textContent = parts.length ? parts.join(" · ") : "暂未获取硬件信息";
+      summary.textContent = parts.length ? parts.join(" · ") : LP.t("settings.hardware.none");
     }
     var reason = byId("local-hardware-reason");
     if (reason) {
-      reason.textContent = hardware.reason ? "推荐参考：" + hardware.reason : "硬件推荐仅供参考，请手动选择模型。";
+      reason.textContent = hardware.reason ? LP.t("settings.hardware.recommendation", { reason: hardware.reason }) : LP.t("settings.hardware.recommendationFallback");
     }
   }
 
@@ -980,14 +983,14 @@
     var sub = byId("engine-sub");
     setTone(dot, engineAvailable ? "ok" : "warn");
     if (engineDownload) {
-      title.textContent = "正在下载 llama.cpp 引擎…";
+      title.textContent = LP.t("settings.engine.downloading");
       sub.textContent = engineDownload.filename || "";
     } else if (engineAvailable) {
-      title.textContent = "llama.cpp 引擎已安装";
-      sub.textContent = "无需安装 Python，可直接运行本地 GGUF 模型";
+      title.textContent = LP.t("settings.engine.installed");
+      sub.textContent = LP.t("settings.engine.installedSub");
     } else {
-      title.textContent = "未安装 llama.cpp 引擎";
-      sub.textContent = "本地翻译需要先下载引擎（约 23 MB，解压到数据目录）";
+      title.textContent = LP.t("settings.engine.missing");
+      sub.textContent = LP.t("settings.engine.missingSub");
     }
     setHidden(byId("download-engine"), engineAvailable || !!engineDownload);
     setHidden(byId("cancel-engine-download"), !engineDownload);
@@ -1026,8 +1029,8 @@
       });
       modelHint.hidden = false;
       modelHint.textContent = installedSelection
-        ? "所有本地 AI 任务共用手动选择的 Qwen3.5，包括翻译、通用文本与截图理解。切换模型后，运行中的引擎会自动重启。"
-        : "请先下载完整的 Qwen3.5 模型（含视觉投影器），再手动选择翻译 / 通用 / 视觉模型。未选择时所有本地 AI 任务不可用。";
+        ? LP.t("settings.hint.modelSelectionReady")
+        : LP.t("settings.hint.modelSelectionMissing");
     }
 
     renderCatalog();
@@ -1051,7 +1054,7 @@
     var percent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
     fill.style.width = percent + "%";
     if (progress.status === "verifying") {
-      text.textContent = "校验中…";
+      text.textContent = LP.t("settings.status.verifying");
     } else {
       text.textContent =
         LP.formatBytes(progress.received) +
@@ -1074,16 +1077,16 @@
     var restartButton = byId("restart-local");
 
     var tone = "muted";
-    var label = "未启动";
+    var label = LP.t("settings.engine.notStarted");
     if (localState === "starting") {
       tone = "warn";
-      label = "启动中…";
+      label = LP.t("settings.status.starting");
     } else if (localState === "ready" || localState === "running") {
       tone = "ok";
-      label = "运行中";
+      label = LP.t("settings.status.running");
     } else if (localState === "error") {
       tone = "error";
-      label = "启动失败";
+      label = LP.t("settings.status.startFailed");
     }
     if (badge) {
       badge.textContent = label;
@@ -1095,12 +1098,12 @@
     setHidden(restartButton, !running && localAction !== "restart");
     if (restartButton) {
       restartButton.disabled = localBusy || localState === "starting";
-      restartButton.textContent = localAction === "restart" ? "重启中…" : "重启";
+      restartButton.textContent = localAction === "restart" ? LP.t("settings.status.restarting") : LP.t("settings.action.restart");
     }
     setHidden(stopButton, !running);
     if (startButton) {
       startButton.disabled = localBusy;
-      startButton.textContent = localState === "starting" ? "启动中…" : "启动";
+      startButton.textContent = localState === "starting" ? LP.t("settings.status.starting") : LP.t("settings.action.start");
     }
     if (stopButton) {
       stopButton.disabled = localBusy;
@@ -1109,15 +1112,13 @@
     var hintNode = byId("local-state-hint");
     if (hintNode) {
       if (localState === "ready" || localState === "running") {
-        hintNode.textContent = "模型已加载；切换模型后会自动重启本地引擎。";
+        hintNode.textContent = LP.t("settings.hint.modelReady");
       } else if (localState === "starting") {
-        hintNode.textContent = "正在加载模型…";
+        hintNode.textContent = LP.t("settings.hint.modelLoading");
       } else if (localSettings.keepRunning === true) {
-        hintNode.textContent =
-          "已因空闲自动停止以释放内存；下次请求或点「启动」会重新加载。";
+        hintNode.textContent = LP.t("settings.hint.idleStopped");
       } else {
-        hintNode.textContent =
-          "本地模型未启动时翻译/总结不会自动启动，请点击「启动」";
+        hintNode.textContent = LP.t("settings.hint.notStartedAuto");
       }
       hintNode.hidden = false;
     }
@@ -1144,10 +1145,10 @@
     var name = el("div", "catalog-name");
     name.appendChild(el("span", null, entry.name || entry.id));
     if (entry.vision === true) {
-      name.appendChild(el("span", "badge-vision", "翻译 / 通用 / 视觉"));
+      name.appendChild(el("span", "badge-vision", LP.t("settings.modelRole.builtin")));
     }
     if (entry.id === recommendedModelId()) {
-      name.appendChild(el("span", "meta-pill is-accent", "推荐"));
+      name.appendChild(el("span", "meta-pill is-accent", LP.t("settings.badge.recommended")));
     }
     main.appendChild(name);
     if (entry.description) {
@@ -1180,19 +1181,19 @@
     progress.appendChild(progressText);
     action.appendChild(progress);
 
-    var downloadButton = el("button", "btn", "下载");
+    var downloadButton = el("button", "btn", LP.t("settings.action.download"));
     downloadButton.type = "button";
     downloadButton.setAttribute("data-catalog-download", entry.id);
     downloadButton.hidden = !!entry.installed;
     action.appendChild(downloadButton);
 
-    var cancelButton = el("button", "btn btn-ghost", "取消");
+    var cancelButton = el("button", "btn btn-ghost", LP.t("common.cancel"));
     cancelButton.type = "button";
     cancelButton.setAttribute("data-catalog-cancel", entry.id);
     cancelButton.hidden = true;
     action.appendChild(cancelButton);
 
-    var installedBadge = el("span", "badge", "已安装");
+    var installedBadge = el("span", "badge", LP.t("settings.badge.installed"));
     installedBadge.setAttribute("data-tone", "ok");
     installedBadge.setAttribute("data-catalog-installed", entry.id);
     installedBadge.hidden = !entry.installed;
@@ -1211,7 +1212,7 @@
     }
     section.hidden = !catalogOpen;
     toggle.setAttribute("aria-expanded", catalogOpen ? "true" : "false");
-    toggle.textContent = catalogOpen ? "收起目录" : "下载模型";
+    toggle.textContent = catalogOpen ? LP.t("settings.action.collapseCatalog") : LP.t("settings.action.downloadModel");
     if (!catalogOpen) {
       return;
     }
@@ -1243,11 +1244,11 @@
       return "";
     }
     if (progress.status === "verifying") {
-      return "校验中…";
+      return LP.t("settings.status.verifying");
     }
     var percent = Math.round(Math.max(0, Math.min(100, Number(progress.percent) || 0)));
     if (/^mmproj-/i.test(String(progress.filename || ""))) {
-      return "视觉投影器 · " + percent + "%";
+      return LP.t("settings.catalog.mmproj", { percent: percent });
     }
     return percent + "%";
   }
@@ -3413,22 +3414,25 @@
     byId("about-data-dir").title = app.dataDir || "";
 
     var engineParts = [];
-    engineParts.push(engine.engineAvailable ? "llama.cpp 已安装" : "llama.cpp 未安装");
+    engineParts.push(engine.engineAvailable ? LP.t("settings.about.engineInstalled") : LP.t("settings.about.engineMissing"));
     if (engine.mode === "local") {
       engineParts.push(
         engine.localState === "ready"
-          ? "本地模型运行中"
+          ? LP.t("settings.about.localRunning")
           : engine.localState === "starting"
-            ? "本地模型启动中"
-            : "本地模型未启动"
+            ? LP.t("settings.about.localStarting")
+            : LP.t("settings.about.localStopped")
       );
     } else {
-      engineParts.push(engine.ready ? "在线 API 就绪" : "在线 API 未就绪");
+      engineParts.push(engine.ready ? LP.t("settings.about.onlineReady") : LP.t("settings.about.onlineNotReady"));
     }
     byId("about-engine").textContent = engineParts.join(" · ");
     byId("about-models").textContent = models.length
-      ? models.length + " 个本地模型 · " + (engine.localModelName || models[0].name)
-      : "未安装本地模型";
+      ? LP.t("settings.about.modelsCount", {
+          count: models.length,
+          name: engine.localModelName || models[0].name,
+        })
+      : LP.t("settings.about.modelsNone");
     renderUpdateVersionHint();
   }
 
@@ -3444,9 +3448,9 @@
       return;
     }
     var version = updateCurrentVersion();
-    hint.textContent =
-      (version ? "当前版本 v" + version : "当前版本 —") +
-      " · 启动时自动检查，下载后替换当前 exe 并重启";
+    hint.textContent = version
+      ? LP.t("settings.update.versionHint", { version: version })
+      : LP.t("settings.update.versionHintUnknown");
   }
 
   function formatUpdateTime(value) {
@@ -3509,7 +3513,7 @@
     }
     textNode.classList.toggle("is-clamped", !updateNotesExpanded);
     if (toggle) {
-      toggle.textContent = updateNotesExpanded ? "收起" : "展开全部";
+      toggle.textContent = updateNotesExpanded ? LP.t("settings.action.collapse") : LP.t("settings.action.expandNotes");
       toggle.setAttribute("aria-expanded", updateNotesExpanded ? "true" : "false");
       setHidden(toggle, !(updateNotesExpanded || notes.length > 240));
     }
@@ -3553,25 +3557,25 @@
     hideInlineError(byId("update-error"));
     if (checkButton) {
       checkButton.disabled = false;
-      checkButton.textContent = "检查更新";
+      checkButton.textContent = LP.t("settings.action.checkUpdate");
     }
     if (stateName === "idle") {
       return;
     }
 
     if (stateName === "checking") {
-      message.textContent = "正在检查更新…";
+      message.textContent = LP.t("settings.status.checkingUpdate");
       if (checkButton) {
         checkButton.disabled = true;
-        checkButton.textContent = "检查中…";
+        checkButton.textContent = LP.t("settings.action.checking");
       }
       return;
     }
     if (stateName === "latest") {
       var latest = (updateInfo && updateInfo.latestVersion) || updateCurrentVersion();
-      message.textContent = latest ? "已是最新版本 v" + latest : "已是最新版本";
+      message.textContent = latest ? LP.t("settings.update.latest", { version: latest }) : LP.t("settings.update.latestNoVersion");
       if (checkButton) {
-        checkButton.textContent = "重新检查";
+        checkButton.textContent = LP.t("settings.action.recheck");
       }
       return;
     }
@@ -3579,10 +3583,15 @@
       var info = updateInfo || {};
       var targetVersion = info.latestVersion || "";
       var currentVersion = info.currentVersion || updateCurrentVersion();
-      message.textContent =
-        "发现新版本" +
-        (targetVersion ? " v" + targetVersion : "") +
-        (currentVersion ? "（当前 v" + currentVersion + "）" : "");
+      var versionKey = targetVersion
+        ? currentVersion
+          ? "settings.update.available"
+          : "settings.update.availableNoCurrent"
+        : "settings.update.availableNoVersion";
+      message.textContent = LP.t(versionKey, {
+        version: targetVersion,
+        current: currentVersion,
+      });
       renderUpdateNotes();
       var timeNode = byId("update-time");
       var sizeNode = byId("update-size");
@@ -3603,40 +3612,40 @@
       }
       setHidden(byId("update-actions"), false);
       if (checkButton) {
-        checkButton.textContent = "重新检查";
+        checkButton.textContent = LP.t("settings.action.recheck");
       }
       return;
     }
     if (stateName === "downloading") {
-      message.textContent = "正在下载更新…";
+      message.textContent = LP.t("settings.update.downloading");
       setHidden(byId("update-progress"), false);
       renderUpdateProgress();
       if (checkButton) {
         checkButton.disabled = true;
-        checkButton.textContent = "更新中…";
+        checkButton.textContent = LP.t("settings.action.updating");
       }
       return;
     }
     if (stateName === "ready") {
-      message.textContent = "更新已就绪，应用即将重启…";
+      message.textContent = LP.t("settings.update.ready");
       setHidden(byId("update-progress"), false);
       renderUpdateProgress();
       if (checkButton) {
         checkButton.disabled = true;
-        checkButton.textContent = "即将重启…";
+        checkButton.textContent = LP.t("settings.action.restartingSoon");
       }
       return;
     }
 
     /* error */
-    message.textContent = updateErrorTitle || "检查更新失败";
+    message.textContent = updateErrorTitle || LP.t("settings.error.checkUpdate");
     showInlineError(
       byId("update-error"),
-      updateErrorText || "未知错误",
+      updateErrorText || LP.t("settings.error.unknown"),
       updateErrorHint || ""
     );
     if (checkButton) {
-      checkButton.textContent = "重新检查";
+      checkButton.textContent = LP.t("settings.action.recheck");
     }
   }
 
@@ -3691,7 +3700,7 @@
     var automatic = opts.automatic === true;
     if (!API || typeof API.checkUpdate !== "function") {
       if (!automatic) {
-        toast("当前版本不支持检查更新", "error");
+        toast(LP.t("settings.toast.checkUnsupported"), "error");
       }
       return;
     }
@@ -3720,8 +3729,8 @@
             updateState = "idle";
           } else {
             updateState = "error";
-            updateErrorTitle = "检查更新失败";
-            updateErrorText = (result && result.error) || "未知错误";
+            updateErrorTitle = LP.t("settings.error.checkUpdate");
+            updateErrorText = (result && result.error) || LP.t("settings.error.unknown");
             updateErrorHint = (result && result.hint) || "";
           }
           renderUpdate();
@@ -3739,8 +3748,8 @@
           updateState = "idle";
         } else {
           updateState = "error";
-          updateErrorTitle = "检查更新失败";
-          updateErrorText = String(error || "未知错误");
+          updateErrorTitle = LP.t("settings.error.checkUpdate");
+          updateErrorText = String(error || LP.t("settings.error.unknown"));
           updateErrorHint = "";
         }
         renderUpdate();
@@ -3750,7 +3759,7 @@
 
   function installAppUpdate() {
     if (!API || typeof API.installUpdate !== "function") {
-      toast("当前版本不支持安装更新", "error");
+      toast(LP.t("settings.toast.installUnsupported"), "error");
       return;
     }
     if (updateInstalling || updateState === "downloading" || updateState === "ready") {
@@ -3768,8 +3777,8 @@
         updateInstalling = false;
         if (!result || result.ok === false) {
           updateState = "error";
-          updateErrorTitle = "下载更新失败";
-          updateErrorText = (result && result.error) || "未知错误";
+          updateErrorTitle = LP.t("settings.error.updateDownload");
+          updateErrorText = (result && result.error) || LP.t("settings.error.unknown");
           updateErrorHint = (result && result.hint) || "";
           renderUpdate();
           return;
@@ -3777,13 +3786,13 @@
         updateProgressPercent = 100;
         updateState = "ready";
         renderUpdate();
-        toast("更新已就绪，应用即将重启", "success");
+        toast(LP.t("settings.toast.updateReady"), "success");
       },
       function (error) {
         updateInstalling = false;
         updateState = "error";
-        updateErrorTitle = "下载更新失败";
-        updateErrorText = String(error || "未知错误");
+        updateErrorTitle = LP.t("settings.error.updateDownload");
+        updateErrorText = String(error || LP.t("settings.error.unknown"));
         updateErrorHint = "";
         renderUpdate();
       }
@@ -3862,18 +3871,18 @@
       if (badge) {
         badge.hidden = true;
       }
-      showInlineError(errorNode, "请先填写服务地址");
+      showInlineError(errorNode, LP.t("settings.error.baseUrlRequired"));
       return;
     }
     if (!/^https?:\/\//i.test(baseUrl)) {
       if (badge) {
         badge.hidden = true;
       }
-      showInlineError(errorNode, "服务地址必须以 http:// 或 https:// 开头");
+      showInlineError(errorNode, LP.t("settings.error.baseUrlScheme"));
       return;
     }
     button.disabled = true;
-    button.textContent = "测试中…";
+    button.textContent = LP.t("settings.status.testing");
     if (badge) {
       badge.hidden = true;
     }
@@ -3883,11 +3892,11 @@
     API.testOnline({ baseUrl: baseUrl, apiKey: apiKey, model: model, timeoutMs: timeoutMs }).then(
       function (result) {
         button.disabled = false;
-        button.textContent = "测试连接";
+        button.textContent = LP.t("settings.action.testConnection");
         if (result && result.ok) {
-          var parts = ["连接成功", LP.formatMs(result.latencyMs)];
+          var parts = [LP.t("settings.status.connected"), LP.formatMs(result.latencyMs)];
           if (result.models && result.models.length) {
-            parts.push(result.models.length + " 个模型可用");
+            parts.push(LP.t("settings.hint.modelsAvailable", { count: result.models.length }));
           }
           if (badge) {
             badge.hidden = false;
@@ -3898,7 +3907,7 @@
             var online = (state && state.settings.provider.online) || {};
             var models = cacheOnlineModels(online, result.models);
             onlineModelError = "";
-            onlineModelHint = "已加载 " + models.length + " 个模型";
+            onlineModelHint = LP.t("settings.hint.modelsLoaded", { count: models.length });
             renderOnlineModelOptions(online);
           }
           if (
@@ -3909,20 +3918,18 @@
           ) {
             showInlineError(
               errorNode,
-              "连接成功，但模型列表中没有「" +
-                model +
-                "」。可从模型下拉列表选择其他模型，或继续使用自定义模型。"
+              LP.t("settings.error.modelMissing", { model: model })
             );
           }
         } else {
           if (badge) {
             badge.hidden = false;
-            badge.textContent = "连接失败";
+            badge.textContent = LP.t("settings.badge.connectionFailed");
             setTone(badge, "error");
           }
           showInlineError(
             errorNode,
-            (result && result.error) || "测试连接失败",
+            (result && result.error) || LP.t("settings.error.testConnection"),
             (result && result.hint) || ""
           );
         }
@@ -3941,7 +3948,7 @@
     API.downloadEngine().then(function (result) {
       button.disabled = false;
       if (!result.ok && !isCancellation(result.error)) {
-        showInlineError(byId("local-error"), result.error || "引擎下载失败");
+        showInlineError(byId("local-error"), result.error || LP.t("settings.error.engineDownload"));
       }
       refreshState();
     });
@@ -3957,7 +3964,7 @@
 
   function downloadCatalogModel(id, button) {
     if (activeDownload("model", id)) {
-      toast("该模型已在下载中", "info");
+      toast(LP.t("settings.toast.modelDownloading"), "info");
       return;
     }
     button.disabled = true;
@@ -3965,8 +3972,8 @@
     API.downloadModel(id).then(function (result) {
       button.disabled = false;
       if (!result.ok && !isCancellation(result.error)) {
-        toast("模型下载失败：" + (result.error || "未知错误"), "error");
-        showInlineError(byId("local-error"), result.error || "模型下载失败");
+        toast(LP.t("settings.toast.modelDownloadFailed", { error: result.error || LP.t("settings.error.unknown") }), "error");
+        showInlineError(byId("local-error"), result.error || LP.t("settings.error.modelDownload"));
       }
       refreshState();
     });
@@ -3978,11 +3985,11 @@
       if (!result.ok) {
         showInlineError(
           byId("local-error"),
-          result.error || "导入模型失败"
+          result.error || LP.t("settings.error.importModel")
         );
         return;
       }
-      toast("模型已导入", "success");
+      toast(LP.t("settings.toast.modelImported"), "success");
       refreshState();
     });
   }
@@ -4009,11 +4016,11 @@
   }
 
   function startLocal() {
-    return runLocalAction("start", API.startLocal, "启动本地引擎失败");
+    return runLocalAction("start", API.startLocal, LP.t("settings.error.startLocal"));
   }
 
   function stopLocal() {
-    return runLocalAction("stop", API.stopLocal, "停止本地引擎失败");
+    return runLocalAction("stop", API.stopLocal, LP.t("settings.error.stopLocal"));
   }
 
   function restartLocal() {
@@ -4024,7 +4031,7 @@
         if (!result.ok) return result;
         return API.restartLocal();
       });
-    }, "重启本地引擎失败");
+    }, LP.t("settings.error.restartLocal"));
   }
 
   function toggleSkill(id, enabled) {
@@ -4195,8 +4202,8 @@
       var shown = input.type === "text";
       input.type = shown ? "password" : "text";
       this.setAttribute("aria-pressed", shown ? "false" : "true");
-      this.setAttribute("aria-label", shown ? "显示 API Key" : "隐藏 API Key");
-      this.title = shown ? "显示 API Key" : "隐藏 API Key";
+      this.setAttribute("aria-label", shown ? LP.t("settings.apiKey.show") : LP.t("settings.apiKey.hide"));
+      this.title = shown ? LP.t("settings.apiKey.show") : LP.t("settings.apiKey.hide");
       input.focus();
     });
     byId("test-connection").addEventListener("click", testConnection);
@@ -4510,9 +4517,9 @@
     if (!active) {
       if (progress.status === "failed") {
         if (kind === "engine") {
-          showInlineError(byId("local-error"), progress.error || "引擎下载失败");
+          showInlineError(byId("local-error"), progress.error || LP.t("settings.error.engineDownload"));
         } else {
-          toast("下载失败：" + (progress.error || "未知错误"), "error");
+          toast(LP.t("settings.toast.downloadFailed", { error: progress.error || LP.t("settings.error.unknown") }), "error");
         }
       }
       refreshState();
