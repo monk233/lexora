@@ -11,27 +11,32 @@
 </head>
 <body>
   <div class="picker" id="picker">
-    <div class="toolbar" id="toolbar" role="toolbar" aria-label="划词工具"></div>
+    <div class="toolbar" id="toolbar" role="toolbar" aria-label="划词工具"
+         data-i18n-aria-label="picker.aria.toolbar"></div>
     <div class="panel" id="panel" hidden>
       <div class="panel-head" id="panel-head">
         <div class="panel-head-title">
-          <span class="panel-title" id="panel-title">翻译</span>
+          <span class="panel-title" id="panel-title" data-i18n="skill.translate">翻译</span>
           <div class="panel-lang-control" id="panel-lang-control" hidden>
-            <span class="panel-lang-auto">自动识别</span>
+            <span class="panel-lang-auto" data-i18n="picker.lang.auto">自动识别</span>
             <span class="panel-lang-arrow" aria-hidden="true">→</span>
             <!-- Options are generated from window.LP.LANGUAGES in picker.js. -->
-            <select id="panel-target-lang" class="panel-target-lang" aria-label="目标语言"></select>
+            <select id="panel-target-lang" class="panel-target-lang" aria-label="目标语言"
+                    data-i18n-aria-label="picker.aria.targetLanguage"></select>
           </div>
         </div>
         <div class="panel-head-actions">
-          <button type="button" class="icon-btn" id="panel-pin" title="固定到桌面" aria-label="固定到桌面" aria-pressed="false">
+          <button type="button" class="icon-btn" id="panel-pin" title="固定到桌面" aria-label="固定到桌面"
+                  aria-pressed="false" data-i18n-title="picker.action.pin"
+                  data-i18n-aria-label="picker.action.pin">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
                  stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M12 17v5"></path>
               <path d="M9 10.8V4h6v6.8l2.5 3.2h-11L9 10.8z"></path>
             </svg>
           </button>
-          <button type="button" class="icon-btn" id="panel-close" title="关闭" aria-label="关闭">
+          <button type="button" class="icon-btn" id="panel-close" title="关闭" aria-label="关闭"
+                  data-i18n-title="picker.action.close" data-i18n-aria-label="picker.action.close">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
                  stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M18 6 6 18"></path>
@@ -45,22 +50,35 @@
         <div class="panel-suggestions" id="panel-suggestions" hidden></div>
         <div class="panel-followup-row">
           <input type="text" class="panel-followup-input" id="panel-followup-input"
-                 placeholder="继续提问…" autocomplete="off" aria-label="继续提问">
-          <button type="button" class="panel-followup-send" id="panel-followup-send">发送</button>
+                 placeholder="继续提问…" autocomplete="off" aria-label="继续提问"
+                 data-i18n-placeholder="picker.placeholder.followup"
+                 data-i18n-aria-label="picker.aria.followup">
+          <button type="button" class="panel-followup-send" id="panel-followup-send"
+                  data-i18n="picker.action.send">发送</button>
         </div>
       </div>
       <div class="panel-foot" id="panel-foot">
-        <button type="button" class="panel-foot-btn" id="panel-speak">朗读</button>
-        <button type="button" class="panel-foot-btn" id="panel-copy">复制</button>
-        <button type="button" class="panel-foot-btn" id="panel-retry">重试</button>
+        <button type="button" class="panel-foot-btn" id="panel-speak">
+          <span data-i18n="picker.action.read">朗读</span>
+        </button>
+        <button type="button" class="panel-foot-btn" id="panel-copy">
+          <span data-i18n="picker.action.copy">复制</span>
+        </button>
+        <button type="button" class="panel-foot-btn" id="panel-retry">
+          <span data-i18n="picker.action.retry">重试</span>
+        </button>
       </div>
       <div class="panel-resize-grip" id="panel-resize-grip" role="separator"
-           aria-label="调整面板大小" title="拖动调整大小 · 双击恢复自动大小"></div>
+           aria-label="调整面板大小" title="拖动调整大小 · 双击恢复自动大小"
+           data-i18n-aria-label="picker.aria.resize" data-i18n-title="picker.title.resize"></div>
     </div>
     <div class="menu" id="menu" hidden role="menu"></div>
     <div class="toast" id="toast" hidden></div>
   </div>
   <script src="shared/constants.js"></script>
+  <script src="shared/messages.zh.js"></script>
+  <script src="shared/messages.en.js"></script>
+  <script src="shared/i18n.js"></script>
   <script src="shared/skill-icons.js"></script>
   <script src="shared/lang.js"></script>
   <script src="shared/markdown.js"></script>

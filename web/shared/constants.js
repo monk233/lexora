@@ -77,6 +77,24 @@
     return skill.id;
   });
 
+  /* Localized skill label/description for render sites (falls back to metadata). */
+  LP.skillLabel = function (id) {
+    if (LP.t) {
+      var label = LP.t("skill." + id);
+      if (label !== "skill." + id) { return label; }
+    }
+    var meta = LP.SKILL_MAP && LP.SKILL_MAP[id];
+    return meta ? meta.label : String(id);
+  };
+  LP.skillDescription = function (id) {
+    if (LP.t) {
+      var text = LP.t("skill." + id + ".desc");
+      if (text !== "skill." + id + ".desc") { return text; }
+    }
+    var meta = LP.SKILL_MAP && LP.SKILL_MAP[id];
+    return meta && meta.description ? meta.description : "";
+  };
+
   /* Built-in skills whose system prompt can be edited in the settings page. */
   LP.PROMPT_SKILLS = ["translate", "summarize", "explain", "polish"];
 

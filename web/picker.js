@@ -70,19 +70,6 @@
   var AUTO_PANEL_RESIZE_INTERVAL_MS = 200;
   var AUTO_PANEL_HEIGHT_STEP = 48;
 
-  /* Label fallback only: LP.SKILL_MAP is the primary source for built-in
-   * labels/icons (see builtinSkillMeta). */
-  var SKILL_LABELS = {
-    translate: "翻译",
-    summarize: "总结",
-    explain: "解释",
-    polish: "润色",
-    read: "朗读",
-    copy: "复制",
-    screenshot: "截图",
-    search: "搜索",
-  };
-
   /* Screenshot skills (picker-image, see contracts §10.5). They reuse the text
    * skill result panel: only the loading wording, the source row and the
    * renderer (OCR is literal text, everything else Markdown) differ. */
@@ -93,9 +80,15 @@
     custom: "图片技能",
   };
   var IMAGE_CLIPBOARD_HINT = "截图已复制到剪贴板";
-  /* Shown in the header while the shell resolves the real target language of a
-   * screenshot translation from the recognized text (contract §10.3). */
-  var IMAGE_TARGET_PENDING = "识别中…";
+
+  /* Panel title keys for the screenshot actions; "" means the displayed label
+   * comes from the payload (custom image skills) and stays untranslated. */
+  function imageTitleKey(action) {
+    if (action === "custom") {
+      return "picker.image.custom";
+    }
+    return hasOwn(IMAGE_ACTION_LABELS, action) ? "capture." + action : "";
+  }
 
   /* Target languages come from the shared language table (shared/constants.js)
    * so the picker dropdown stays in sync with the settings window. The fallback
@@ -191,13 +184,18 @@
 
   /* Built-in skill metadata from the shared table. `icon` is an icon key (for
    * example translate -> "languages"), never the skill id. `kind` is "image"
-   * for skills that open the screenshot overlay instead of a text panel. */
+   * for skills that open the screenshot overlay instead of a text panel.
+   * Labels/descriptions come from the language pack (LP.skillLabel), falling
+   * back to the shared metadata and finally to the id. */
   function builtinSkillMeta(skill) {
     var map = LP.SKILL_MAP || {};
     var entry = hasOwn(map, skill) ? map[skill] : null;
+    var label = typeof LP.skillLabel === "function" ? LP.skillLabel(skill) : "";
+    var description = typeof LP.skillDescription === "function" ? LP.skillDescription(skill) : "";
     return {
       id: skill,
-      label: (entry && entry.label) || SKILL_LABELS[skill] || skill,
+      label: label || (entry && entry.label) || skill,
+      description: description || (entry && entry.description) || "",
       icon: (entry && entry.icon) || defaultCustomIcon(),
       kind: (entry && entry.kind) || (skill === "screenshot" ? "image" : "text"),
       builtin: true,
@@ -205,7 +203,7 @@
   }
 
   function isBuiltinSkill(skill) {
-    return hasOwn(SKILL_LABELS, skill) || hasOwn(LP.SKILL_MAP || {}, skill);
+    return hasOwn(LP.SKILL_MAP || {}, skill) || DEFAULT_SKILLS.indexOf(skill) >= 0;
   }
 
   var state = {
@@ -226,6 +224,10 @@
     panelPinned: false,
     panelOpen: false,
     menuOpen: false,
+    /* Current panel head title: a language-pack key ("" for user/backend labels)
+     * plus the fallback label, so a locale change can re-render the title. */
+    panelTitleKey: "",
+    panelTitleFallback: "",
     panelLang: "",
     targetLang: "",
     panelRetry: null,
@@ -470,7 +472,8 @@
     return LANGUAGE_VALUES[value] ? value : FALLBACK_TARGET_LANG;
   }
 
-  /* Fill the target-language dropdown from the shared language table. */
+  /* Fill the target-language dropdown from the shared language table. Language
+   * names stay untranslated (LP.languageLabel owns them). */
   function populateTargetLanguages() {
     if (!panelTargetSelect) {
       return;
@@ -479,7 +482,10 @@
     LANGUAGE_LIST.forEach(function (language) {
       var option = document.createElement("option");
       option.value = language.value;
-      option.textContent = language.label;
+      option.textContent =
+        typeof LP.languageLabel === "function"
+          ? LP.languageLabel(language.value)
+          : language.label;
       panelTargetSelect.appendChild(option);
     });
     panelTargetSelect.value = FALLBACK_TARGET_LANG;
@@ -546,7 +552,7 @@
     clearPendingImageTarget();
     var pending = document.createElement("option");
     pending.value = "";
-    pending.textContent = IMAGE_TARGET_PENDING;
+    pending.textContent = LP.t("picker.lang.recognizing");
     pending.disabled = true;
     pending.setAttribute("data-pending-target", "1");
     panelTargetSelect.appendChild(pending);
@@ -574,6 +580,23 @@
     panelRetry.hidden = typeof state.panelRetry !== "function";
   }
 
+  /* Footer buttons carry their own icon; the label span keeps its data-i18n
+   * attribute so the shared runtime can refresh it in place. */
+  function renderPanelFoot() {
+    function fill(button, icon, key) {
+      var label = LP.t(key);
+      button.innerHTML = icon;
+      var span = document.createElement("span");
+      span.setAttribute("data-i18n", key);
+      span.textContent = label;
+      button.appendChild(span);
+      button.setAttribute("aria-label", label);
+    }
+    fill(panelSpeak, skillIconSvg(builtinSkillMeta("read").icon), "picker.action.read");
+    fill(panelCopy, skillIconSvg(builtinSkillMeta("copy").icon), "picker.action.copy");
+    fill(panelRetry, ICONS.refresh, "picker.action.retry");
+  }
+
   function setPanelRetry(callback) {
     state.panelRetry = typeof callback === "function" ? callback : null;
     syncPanelFoot();
@@ -584,8 +607,22 @@
     syncPanelFoot();
   }
 
+  /* Panel head title: `key` is a language-pack key; `fallback` is displayed for
+   * titles the packs do not own (custom skill names, backend labels). */
+  function setPanelTitle(key, fallback) {
+    state.panelTitleKey = String(key || "");
+    state.panelTitleFallback = String(fallback || "");
+    syncPanelTitle();
+  }
+
+  function syncPanelTitle() {
+    panelTitle.textContent = state.panelTitleKey
+      ? LP.t(state.panelTitleKey)
+      : state.panelTitleFallback;
+  }
+
   function syncPanelPin() {
-    var label = state.panelPinned ? "取消固定" : "固定到桌面";
+    var label = state.panelPinned ? LP.t("picker.action.unpin") : LP.t("picker.action.pin");
     panelPin.classList.toggle("is-active", state.panelPinned);
     panelPin.setAttribute("aria-pressed", state.panelPinned ? "true" : "false");
     panelPin.setAttribute("aria-label", label);
@@ -940,7 +977,7 @@
     if (meta.kind === "image") {
       button.classList.add("is-image-skill");
     }
-    button.title = meta.label;
+    button.title = meta.description || meta.label;
     button.setAttribute("aria-label", meta.label);
     button.innerHTML = skillIconSvg(meta.icon);
     button.appendChild(el("span", "label", meta.label));
@@ -959,8 +996,8 @@
     var divider = el("span", "divider");
     var more = el("button", "tool-btn more-btn");
     more.type = "button";
-    more.title = "更多";
-    more.setAttribute("aria-label", "更多");
+    more.title = LP.t("picker.toolbar.more");
+    more.setAttribute("aria-label", LP.t("picker.toolbar.more"));
     more.innerHTML = ICONS.more;
     more.addEventListener("click", function (event) {
       event.stopPropagation();
@@ -1108,14 +1145,10 @@
     });
   }
 
-  function toggleMenu() {
-    if (!menu.hidden) {
-      closeMenu();
-      return;
-    }
+  /* Rebuilds the open menu: overflowed skills first (toolbar order), then a
+   * separator, then the picker configuration items. */
+  function renderMenu() {
     menu.innerHTML = "";
-    // Overflowed skills first (toolbar order), then a separator, then the
-    // picker configuration items. No overflow = the menu is unchanged.
     if (state.overflowSkills.length) {
       state.overflowSkills.forEach(function (skill) {
         menu.appendChild(menuSkillItem(skill));
@@ -1127,8 +1160,8 @@
     menu.appendChild(
       menuItem(
         "shield",
-        "在此应用中禁用",
-        appName || "未识别当前应用",
+        LP.t("picker.menu.disableInApp"),
+        appName || LP.t("picker.menu.unknownApp"),
         function () {
           disableInApp();
         },
@@ -1136,16 +1169,33 @@
       )
     );
     menu.appendChild(
-      menuItem("settings", "划词设置…", "打开设置窗口的划词行为", function () {
-        API.openSettings();
-      })
+      menuItem(
+        "settings",
+        LP.t("picker.menu.openSettings"),
+        LP.t("picker.menu.openSettingsHint"),
+        function () {
+          API.openSettings();
+        }
+      )
     );
     menu.appendChild(
-      menuItem("power", "禁用划词工具", "可在设置中重新启用", function () {
-        disableTool();
-      })
+      menuItem(
+        "power",
+        LP.t("picker.menu.disableTool"),
+        LP.t("picker.menu.disableToolHint"),
+        function () {
+          disableTool();
+        }
+      )
     );
+  }
 
+  function toggleMenu() {
+    if (!menu.hidden) {
+      closeMenu();
+      return;
+    }
+    renderMenu();
     resizeForMenu();
   }
 
@@ -1250,7 +1300,9 @@
     }
   }
 
-  function openPanel(title) {
+  /* Opens the result panel. `titleKey` is a language-pack key ("" when the
+   * title is a user/backend label); `titleFallback` is shown without a key. */
+  function openPanel(titleKey, titleFallback) {
     closeMenu();
     abortActiveRequest();
     stopSpeech();
@@ -1271,7 +1323,7 @@
     state.panelSpeakText = "";
     panel.hidden = false;
     setPanelCopyText("");
-    panelTitle.textContent = title;
+    setPanelTitle(titleKey, titleFallback);
     setPanelLanguage("");
     if (panelTargetSelect) {
       // Every panel starts with an editable language selector; the screenshot
@@ -1414,7 +1466,7 @@
   function loadingNode(text) {
     var wrap = el("div", "loading");
     wrap.appendChild(el("span", "spinner"));
-    wrap.appendChild(el("span", null, text || "处理中…"));
+    wrap.appendChild(el("span", null, text || LP.t("picker.loading.processing")));
     return wrap;
   }
 
@@ -2268,7 +2320,7 @@
   }
 
   function translateSkill(targetOverride) {
-    openPanel("翻译");
+    openPanel("skill.translate");
     var configured =
       state.defaultTargetLang && state.defaultTargetLang !== "auto"
         ? normalizeTargetLang(state.defaultTargetLang)
@@ -2287,7 +2339,7 @@
 
     var target = el("div");
     target.appendChild(sourceNode());
-    var loadingRow = loadingNode("正在翻译…");
+    var loadingRow = loadingNode(LP.t("picker.loading.translate"));
     target.appendChild(loadingRow);
     var result = el("div", "result-text markdown");
     target.appendChild(result);
@@ -2380,8 +2432,11 @@
    * (chunk/error/done) exactly like a text skill. */
   function beginImageRequest(image, requestId) {
     var action = image.action;
-    var label = image.label || IMAGE_ACTION_LABELS[action] || "截图结果";
-    openPanel(label);
+    var label = image.label || IMAGE_ACTION_LABELS[action] || LP.t("picker.image.result");
+    // Custom image skills keep their user-defined label; built-in screenshot
+    // actions are titled from the capture.* keys.
+    var titleKey = action === "custom" && image.label ? "" : imageTitleKey(action);
+    openPanel(titleKey, label);
     // openPanel resets the image context, then the new one is recorded here.
     state.image = image;
     state.text = "";
@@ -2410,7 +2465,9 @@
       }
       target.appendChild(note);
     }
-    var loadingRow = loadingNode(action === "ocr" ? "正在识别文字…" : "正在处理…");
+    var loadingRow = loadingNode(
+      action === "ocr" ? LP.t("picker.loading.ocr") : LP.t("picker.loading.processing")
+    );
     target.appendChild(loadingRow);
     var result =
       action === "ocr" ? el("pre", "result-text plain") : el("div", "result-text markdown");
@@ -2565,14 +2622,14 @@
    * same translate-event channel as translation (chunk/error/done), so
    * Markdown rendering, retry, copy/speak and the error panel are reused. */
   function startPolish() {
-    openPanel("润色");
+    openPanel("skill.polish");
     setPanelRetry(function () {
       startPolish();
     });
 
     var target = el("div");
     target.appendChild(sourceNode());
-    var loadingRow = loadingNode("正在润色…");
+    var loadingRow = loadingNode(LP.t("picker.loading.polish"));
     target.appendChild(loadingRow);
     var result = el("div", "result-text markdown");
     target.appendChild(result);
@@ -2630,14 +2687,14 @@
     var id = String(skillId || "");
     var meta = hasOwn(state.customSkills, id) ? state.customSkills[id] : null;
     var label = meta && meta.label ? meta.label : id;
-    openPanel(label);
+    openPanel("", label);
     setPanelRetry(function () {
       startCustomSkill(id);
     });
 
     var target = el("div");
     target.appendChild(sourceNode());
-    var loadingRow = loadingNode("正在处理…");
+    var loadingRow = loadingNode(LP.t("picker.loading.processing"));
     target.appendChild(loadingRow);
     var result = el("div", "result-text markdown");
     target.appendChild(result);
@@ -2730,8 +2787,9 @@
    * copy/speak and the error panel are shared. */
   function assistSkill(action) {
     var label = action === "summarize" ? "总结" : "解释";
-    var loadingText = action === "summarize" ? "正在总结…" : "正在解释…";
-    openPanel(label);
+    var loadingText =
+      action === "summarize" ? LP.t("picker.loading.summarize") : LP.t("picker.loading.explain");
+    openPanel("skill." + action);
     setPanelLanguage("");
     setPanelRetry(function () {
       assistSkill(action);
@@ -3146,9 +3204,7 @@
   });
   panelPin.addEventListener("click", togglePanelPinned);
   document.getElementById("panel-close").addEventListener("click", closePanel);
-  panelSpeak.innerHTML = skillIconSvg(builtinSkillMeta("read").icon) + "<span>朗读</span>";
-  panelCopy.innerHTML = skillIconSvg(builtinSkillMeta("copy").icon) + "<span>复制</span>";
-  panelRetry.innerHTML = ICONS.refresh + "<span>重试</span>";
+  renderPanelFoot();
   panelSpeak.addEventListener("click", function () {
     speak(state.panelSpeakText);
   });
@@ -3242,9 +3298,23 @@
     API.onImage(handleImageEvent);
   }
 
+  /* Initialises/updates the shared i18n runtime from picker-data. Returns true
+   * only when the active UI language actually changed. */
+  function applyLocale(locale) {
+    if (!(window.LP && LP.i18n)) {
+      return false;
+    }
+    var previous = typeof LP.i18n.currentLocale === "function" ? LP.i18n.currentLocale() : "";
+    LP.i18n.init(locale);
+    var next = typeof LP.i18n.currentLocale === "function" ? LP.i18n.currentLocale() : previous;
+    return previous !== next;
+  }
+
   API.onData(function (payload) {
     var data = payload || {};
     var config = data.config || {};
+    // picker-data carries the effective UI language (settings.effective_language).
+    var localeChanged = applyLocale(config.locale || (data.app && data.app.locale));
     state.suggestionsAvailable = config.suggestionsAvailable === true;
     state.text = String(data.text || "");
     state.programName = String(data.programName || "");
@@ -3287,6 +3357,16 @@
     state.overflowBias = 0;
     resetForHidden();
     renderToolbar();
+    if (localeChanged) {
+      // The toolbar was rebuilt above; refresh the remaining translated chrome
+      // that is already built instead of re-opening the panel/menu.
+      syncPanelPin();
+      renderPanelFoot();
+      syncPanelTitle();
+      if (state.menuOpen) {
+        renderMenu();
+      }
+    }
   });
 
   API.onHidden(function () {

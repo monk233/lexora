@@ -81,3 +81,40 @@ test("every settings.js literal lookup exists in both packs", () => {
     assert.ok(LP.messages.en[key] !== undefined, `missing en key ${key}`);
   }
 });
+
+test("skill label helpers resolve the active pack and fall back to metadata", () => {
+  const context = vm.createContext({ window: {}, console });
+  for (const file of ["messages.zh.js", "messages.en.js", "i18n.js", "constants.js"]) {
+    vm.runInContext(fs.readFileSync(path.join(__dirname, "shared", file), "utf8"), context);
+  }
+  const LP = context.window.LP;
+  LP.i18n.init("en");
+  assert.equal(LP.skillLabel("translate"), "Translate");
+  assert.match(LP.skillDescription("translate"), /default target language/);
+  LP.i18n.init("zh");
+  assert.equal(LP.skillLabel("translate"), "翻译");
+  assert.equal(LP.skillLabel("custom-not-in-pack"), "custom-not-in-pack");
+});
+
+test("every picker.js literal lookup exists in both packs", () => {
+  const LP = loadI18n();
+  const source = fs.readFileSync(path.join(__dirname, "picker.js"), "utf8");
+  const keys = Array.from(source.matchAll(/LP\.t\("([^"]+)"(?!\s*\+)/g)).map((match) => match[1]);
+  const scoped = keys.filter((key) => /^(?:picker|skill|capture|common)\./.test(key));
+  assert.ok(scoped.length > 15, "expected the picker window to use LP.t");
+  for (const key of new Set(scoped)) {
+    assert.ok(LP.messages.zh[key] !== undefined, `missing zh key ${key}`);
+    assert.ok(LP.messages.en[key] !== undefined, `missing en key ${key}`);
+  }
+});
+
+test("every picker.html data-i18n key exists in both packs", () => {
+  const LP = loadI18n();
+  const source = fs.readFileSync(path.join(__dirname, "picker.html"), "utf8");
+  const keys = Array.from(source.matchAll(/data-i18n(?:-[a-z-]+)?="([^"]+)"/g)).map((match) => match[1]);
+  assert.ok(keys.length > 8, "expected the picker shell to tag its static copy");
+  for (const key of new Set(keys)) {
+    assert.ok(LP.messages.zh[key] !== undefined, `missing zh key ${key}`);
+    assert.ok(LP.messages.en[key] !== undefined, `missing en key ${key}`);
+  }
+});

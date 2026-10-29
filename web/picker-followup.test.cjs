@@ -639,6 +639,8 @@ test("initial screenshot registration prefetches recognized text before its firs
     const h = harness(true, true);
     Object.assign(h.context, {
       IMAGE_ACTION_LABELS: { explain: "图片解释" },
+      LP: { t(key) { return key; } },
+      imageTitleKey() { return ""; },
       openPanel() { h.context.resetFollowup(); },
       clearPendingImageTarget() {}, setPanelLanguage() {}, setPanelRetry() {},
       retryImageRequest() {}, setBody() {}, loadingNode: node,
