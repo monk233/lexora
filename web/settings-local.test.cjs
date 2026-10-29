@@ -145,6 +145,64 @@ test("language select renders the saved value and saves changes", async () => {
   // deep-equaling prototypes across realms.
   assert.equal(h.saves.at(-1).patch.app.language, "en");
 });
+test("renderAll re-applies the localized save status after a language switch", () => {
+  const nodes = { "save-status": element("div", ""), "save-status-text": element("span", "") };
+  const locales = {
+    zh: { idle: "所有更改自动保存", saved: "已保存" },
+    en: { idle: "All changes are saved automatically", saved: "Saved" },
+  };
+  let locale = "zh";
+  const context = vm.createContext({
+    Object, Promise,
+    state: {},
+    saveStatus: { kind: "idle", message: "" },
+    saveStatusTimer: null,
+    window: { setTimeout: () => 1, clearTimeout() {} },
+    byId: (id) => nodes[id],
+    LP: { t: (key) => locales[locale][key.split(".").pop()] },
+  });
+  for (const name of ["saveStatusText", "renderSaveStatus", "setSaveStatus", "renderAll"]) {
+    vm.runInContext(extract(name), context);
+  }
+  // applyStatic is not involved here: renderAll must re-apply the tracked state.
+  for (const name of ["renderMode", "renderProviderBadge", "renderOnline", "renderLocal", "renderPicker", "renderApp", "renderAbout", "renderApiKeyVisibility", "renderUpdateNotesToggle"]) {
+    context[name] = () => {};
+  }
+  context.setSaveStatus("saved");
+  assert.equal(nodes["save-status-text"].textContent, "已保存");
+  assert.equal(nodes["save-status"].getAttribute("data-state"), "saved");
+  locale = "en";
+  context.renderAll();
+  assert.equal(nodes["save-status-text"].textContent, "Saved");
+  assert.equal(nodes["save-status"].getAttribute("data-state"), "saved");
+});
+test("the API key toggle label follows its expanded state across a language switch", () => {
+  const nodes = {
+    "api-key-toggle": element("button", ""),
+    "online-api-key": Object.assign(element("input", ""), { type: "text" }),
+  };
+  const labels = {
+    zh: { show: "显示 API Key", hide: "隐藏 API Key" },
+    en: { show: "Show API key", hide: "Hide API key" },
+  };
+  let locale = "zh";
+  const context = vm.createContext({
+    Object,
+    byId: (id) => nodes[id],
+    LP: { t: (key) => labels[locale][key.split(".").pop()] },
+  });
+  vm.runInContext(extract("renderApiKeyVisibility"), context);
+  context.renderApiKeyVisibility();
+  assert.equal(nodes["api-key-toggle"].title, "隐藏 API Key");
+  assert.equal(nodes["api-key-toggle"].getAttribute("aria-pressed"), "true");
+  locale = "en";
+  context.renderApiKeyVisibility();
+  assert.equal(nodes["api-key-toggle"].getAttribute("aria-label"), "Hide API key");
+  nodes["online-api-key"].type = "password";
+  context.renderApiKeyVisibility();
+  assert.equal(nodes["api-key-toggle"].title, "Show API key");
+  assert.equal(nodes["api-key-toggle"].getAttribute("aria-pressed"), "false");
+});
 test("restart waits for in-flight and queued selection saves before invoking engine", async () => {
   const h = savingHarness();
   h.context.save({ app: { resident: true } });

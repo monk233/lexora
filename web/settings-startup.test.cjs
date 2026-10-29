@@ -41,7 +41,7 @@ test("initial state does not retry other errors or successful responses", async 
 test("boot renders or reports only the final initial-state result", () => {
   const boot = source.slice(source.indexOf("  function boot()"));
   assert.match(boot, /getInitialState\(\)\.then/);
-  assert.equal((boot.match(/读取设置失败/g) || []).length, 1);
+  assert.equal((boot.match(/settings\.error\.readSettings/g) || []).length, 1);
 });
 
 function deferred() {
@@ -59,6 +59,7 @@ function raceHarness() {
     state: null,
     API: { getState() { const call = deferred(); pending.push(call); return call.promise; } },
     window: { setTimeout(resolve) { timers.push(resolve); } },
+    LP: { t: (key) => key },
     renderAll() { rendered.push(context.state); },
     toast(message) { toasts.push(message); },
   });

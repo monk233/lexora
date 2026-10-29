@@ -68,3 +68,16 @@ test("language packs have the same keys", () => {
   const LP = loadI18n();
   assert.deepEqual(Object.keys(LP.messages.zh).sort(), Object.keys(LP.messages.en).sort());
 });
+
+test("every settings.js literal lookup exists in both packs", () => {
+  const LP = loadI18n();
+  const source = fs.readFileSync(path.join(__dirname, "settings.js"), "utf8");
+  // Skip runtime-built keys such as LP.t("skill." + id): only whole literals
+  // are checked here, the pack-parity test still guards the rest.
+  const keys = Array.from(source.matchAll(/LP\.t\("([^"]+)"(?!\s*\+)/g)).map((match) => match[1]);
+  assert.ok(keys.length > 100, "expected the settings page to use LP.t");
+  for (const key of new Set(keys)) {
+    assert.ok(LP.messages.zh[key] !== undefined, `missing zh key ${key}`);
+    assert.ok(LP.messages.en[key] !== undefined, `missing en key ${key}`);
+  }
+});

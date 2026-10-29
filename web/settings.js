@@ -42,6 +42,9 @@
   var saving = false;
   var savePending = null;
   var saveStatusTimer = null;
+  /* Last save-status kind/message: a language switch overwrites the pill text
+   * through applyStatic, so renderAll re-applies the localized copy from here. */
+  var saveStatus = { kind: "idle", message: "" };
   var textTimers = {};
   var textFields = [];
   var catalogOpen = false;
@@ -303,24 +306,37 @@
     }, 3600);
   }
 
-  function setSaveStatus(kind, message) {
+  /* Localized pill copy for a save-status kind; an explicit message (server
+   * error text) wins over the kind's default label. */
+  function saveStatusText(kind, message) {
+    if (message) {
+      return message;
+    }
+    if (kind === "saving") {
+      return LP.t("settings.saveStatus.saving");
+    }
+    if (kind === "saved") {
+      return LP.t("settings.saveStatus.saved");
+    }
+    if (kind === "error") {
+      return LP.t("settings.saveStatus.error");
+    }
+    return LP.t("settings.saveStatus.idle");
+  }
+
+  function renderSaveStatus() {
     var pill = byId("save-status");
     var text = byId("save-status-text");
     if (!pill || !text) {
       return;
     }
-    pill.setAttribute("data-state", kind || "idle");
-    if (message) {
-      text.textContent = message;
-    } else if (kind === "saving") {
-      text.textContent = LP.t("settings.saveStatus.saving");
-    } else if (kind === "saved") {
-      text.textContent = LP.t("settings.saveStatus.saved");
-    } else if (kind === "error") {
-      text.textContent = LP.t("settings.saveStatus.error");
-    } else {
-      text.textContent = LP.t("settings.saveStatus.idle");
-    }
+    pill.setAttribute("data-state", saveStatus.kind || "idle");
+    text.textContent = saveStatusText(saveStatus.kind, saveStatus.message);
+  }
+
+  function setSaveStatus(kind, message) {
+    saveStatus = { kind: kind || "idle", message: String(message || "") };
+    renderSaveStatus();
     window.clearTimeout(saveStatusTimer);
     if (kind === "saved") {
       saveStatusTimer = window.setTimeout(function () {
@@ -357,7 +373,7 @@
     }).then(function (result) {
       var refreshed = Promise.resolve();
       if (!result.ok) {
-        setSaveStatus("error", LP.t("settings.saveStatus.error"));
+        setSaveStatus("error");
         toast(LP.t("settings.error.saveFailed", { error: result.error || LP.t("settings.error.unknown") }), "error");
         refreshed = refreshState();
       } else {
@@ -466,6 +482,7 @@
     if (!state) {
       return;
     }
+    renderSaveStatus();
     renderMode();
     renderProviderBadge();
     renderOnline();
@@ -473,6 +490,10 @@
     renderPicker();
     renderApp();
     renderAbout();
+    /* applyStatic restores the idle labels of these state-dependent leaves on
+     * a language switch; re-apply them here from their current state. */
+    renderApiKeyVisibility();
+    renderUpdateNotesToggle();
   }
 
   function setSegmentSelected(button, selected) {
@@ -541,7 +562,24 @@
     }
     setInputValue(byId("online-base-url"), online.baseUrl || "");
     setInputValue(byId("online-api-key"), online.apiKey || "");
+    renderApiKeyVisibility();
     renderOnlineModelOptions(online);
+  }
+
+  /* The key toggle's label depends on whether the key is currently visible, so
+   * it cannot live in the static data-i18n attributes (a language switch would
+   * reset it to "show"). */
+  function renderApiKeyVisibility() {
+    var toggle = byId("api-key-toggle");
+    var input = byId("online-api-key");
+    if (!toggle || !input) {
+      return;
+    }
+    var shown = input.type === "text";
+    var label = LP.t(shown ? "settings.apiKey.hide" : "settings.apiKey.show");
+    toggle.setAttribute("aria-pressed", shown ? "true" : "false");
+    toggle.setAttribute("aria-label", label);
+    toggle.title = label;
   }
 
   /* ---- Online model list ---------------------------------------------- */
@@ -1444,18 +1482,21 @@
     button.classList.toggle("is-recording", hotkeyRecording);
     button.disabled = hotkeySaving;
     if (hotkeyRecording) {
-      button.textContent = "请按下新的快捷键…（Esc 取消）";
-      button.title = "按下组合键后立即保存，Esc 取消";
-      button.setAttribute("aria-label", "正在录制截图快捷键，按 Esc 取消");
+      button.textContent = LP.t("settings.hotkey.recording");
+      button.title = LP.t("settings.hotkey.recordingTitle");
+      button.setAttribute("aria-label", LP.t("settings.hotkey.recordingAria"));
     } else if (hotkeySaving) {
-      button.textContent = "保存中…";
+      button.textContent = LP.t("settings.hotkey.saving");
       button.title = "";
-      button.setAttribute("aria-label", "正在保存截图快捷键");
+      button.setAttribute("aria-label", LP.t("settings.hotkey.savingAria"));
     } else {
       var text = formatShortcut(captureShortcut());
       button.textContent = text;
-      button.title = "点击后录制新的组合键";
-      button.setAttribute("aria-label", "截图快捷键：" + text + "，点击录制新的组合键");
+      button.title = LP.t("settings.action.captureHotkeyTitle");
+      button.setAttribute(
+        "aria-label",
+        LP.t("settings.hotkey.currentAria", { shortcut: text })
+      );
     }
     if (restore) {
       restore.disabled = hotkeyRecording || hotkeySaving;
@@ -1501,7 +1542,7 @@
           });
         }
         hideInlineError(byId("capture-hotkey-error"));
-        toast("已保存", "success");
+        toast(LP.t("settings.toast.hotkeySaved"), "success");
       } else {
         /* Keep the saved settings untouched and restore the old display. */
         if (state && state.settings) {
@@ -1511,7 +1552,7 @@
         }
         showInlineError(
           byId("capture-hotkey-error"),
-          (result && result.error) || "保存快捷键失败",
+          (result && result.error) || LP.t("settings.error.hotkeySave"),
           (result && result.hint) || ""
         );
       }
@@ -1547,14 +1588,14 @@
       if (!hotkeyKeyFromEvent(event)) {
         showInlineError(
           byId("capture-hotkey-error"),
-          "不支持这个主键。",
-          "请使用字母、数字、F1–F24、PrintScreen、空格、Tab 或方向键等。"
+          LP.t("settings.error.hotkeyUnsupportedKey"),
+          LP.t("settings.hint.hotkeySupportedKeys")
         );
       } else {
         showInlineError(
           byId("capture-hotkey-error"),
-          "需要至少一个修饰键。",
-          "请按住 Ctrl / Alt / Shift / Win 中的至少一个，再按主键。"
+          LP.t("settings.error.hotkeyModifierRequired"),
+          LP.t("settings.hint.hotkeyModifierRequired")
         );
       }
       return;
@@ -3449,16 +3490,15 @@
     setChecked(input, info.enabled);
     if (!info.supported) {
       if (hint) {
-        hint.textContent = "当前为便携版，此项不可用";
+        hint.textContent = LP.t("settings.login.portableHint");
       }
       if (note) {
         note.hidden = false;
-        note.textContent =
-          "便携版不写入开机启动项。如需自启，把 Lexora.exe 快捷方式放入 shell:startup。";
+        note.textContent = LP.t("settings.login.portableNote");
       }
     } else {
       if (hint) {
-        hint.textContent = "登录后启动到托盘";
+        hint.textContent = LP.t("settings.hint.startAtLogin");
       }
       if (note) {
         note.hidden = true;
@@ -3556,18 +3596,34 @@
     return notes.trim();
   }
 
+  /* Label/visibility of the release-notes toggle; split out so a language
+   * switch can re-apply the expanded/collapsed label without re-rendering the
+   * notes markup. */
+  function renderUpdateNotesToggle(notes) {
+    var toggle = byId("toggle-update-notes");
+    if (!toggle) {
+      return;
+    }
+    var text = typeof notes === "string" ? notes : updateNotesText();
+    toggle.textContent = updateNotesExpanded
+      ? LP.t("settings.action.collapse")
+      : LP.t("settings.action.expandNotes");
+    toggle.setAttribute("aria-expanded", updateNotesExpanded ? "true" : "false");
+    setHidden(toggle, !(updateNotesExpanded || text.length > 240));
+  }
+
   /* Release notes are Markdown from the GitHub release body. The shared
    * renderer escapes raw HTML, so provider-controlled markup cannot execute. */
   function renderUpdateNotes() {
     var wrap = byId("update-notes");
     var textNode = byId("update-notes-text");
-    var toggle = byId("toggle-update-notes");
     if (!wrap || !textNode) {
       return;
     }
     var notes = updateNotesText();
     if (!notes) {
       setHidden(wrap, true);
+      renderUpdateNotesToggle(notes);
       return;
     }
     setHidden(wrap, false);
@@ -3578,11 +3634,7 @@
       textNode.textContent = notes;
     }
     textNode.classList.toggle("is-clamped", !updateNotesExpanded);
-    if (toggle) {
-      toggle.textContent = updateNotesExpanded ? LP.t("settings.action.collapse") : LP.t("settings.action.expandNotes");
-      toggle.setAttribute("aria-expanded", updateNotesExpanded ? "true" : "false");
-      setHidden(toggle, !(updateNotesExpanded || notes.length > 240));
-    }
+    renderUpdateNotesToggle(notes);
   }
 
   function renderUpdateProgress() {
@@ -4188,17 +4240,22 @@
   function resetSettings() {
     API.resetSettings().then(function (result) {
       if (!result.ok) {
-        toast("恢复默认失败：" + (result.error || "未知错误"), "error");
+        toast(
+          LP.t("settings.error.resetSettings", {
+            error: result.error || LP.t("settings.error.unknown"),
+          }),
+          "error"
+        );
         return;
       }
       applyState(result.state);
-      toast("已恢复默认设置", "success");
+      toast(LP.t("settings.toast.resetDone"), "success");
     });
   }
 
   function quitApp() {
     if (!API.live) {
-      toast("浏览器预览模式：不会退出应用", "info");
+      toast(LP.t("settings.toast.previewNoQuit"), "info");
       return;
     }
     API.quit();
@@ -4206,18 +4263,18 @@
 
   function openDir(which) {
     if (!API.live) {
-      toast("浏览器预览模式：不会打开系统目录", "info");
+      toast(LP.t("settings.toast.previewNoOpenDir"), "info");
     }
     API.openDir(which).then(function (result) {
       if (!result.ok) {
-        toast(result.error || "无法打开目录", "error");
+        toast(result.error || LP.t("settings.error.openDir"), "error");
       }
     });
   }
 
   function openExternal(url) {
     if (!API.live) {
-      toast("浏览器预览模式：不会打开外部链接", "info");
+      toast(LP.t("settings.toast.previewNoExternal"), "info");
     }
     API.openExternal(url);
   }
@@ -4265,11 +4322,8 @@
     });
     byId("api-key-toggle").addEventListener("click", function () {
       var input = byId("online-api-key");
-      var shown = input.type === "text";
-      input.type = shown ? "password" : "text";
-      this.setAttribute("aria-pressed", shown ? "false" : "true");
-      this.setAttribute("aria-label", shown ? LP.t("settings.apiKey.show") : LP.t("settings.apiKey.hide"));
-      this.title = shown ? LP.t("settings.apiKey.show") : LP.t("settings.apiKey.hide");
+      input.type = input.type === "text" ? "password" : "text";
+      renderApiKeyVisibility();
       input.focus();
     });
     byId("test-connection").addEventListener("click", testConnection);
@@ -4510,7 +4564,12 @@
         input.disabled = false;
         if (!result.ok) {
           input.checked = !enabled;
-          toast("设置开机自启失败：" + (result.error || "未知错误"), "error");
+          toast(
+            LP.t("settings.error.startAtLogin", {
+              error: result.error || LP.t("settings.error.unknown"),
+            }),
+            "error"
+          );
           return;
         }
         if (state && state.loginItem) {
@@ -4551,10 +4610,10 @@
       }
     });
     byId("reset-settings").addEventListener("click", function () {
-      armDanger(byId("reset-settings"), "确认恢复默认", resetSettings);
+      armDanger(byId("reset-settings"), LP.t("settings.action.confirmReset"), resetSettings);
     });
     byId("quit-app").addEventListener("click", function () {
-      armDanger(byId("quit-app"), "确认退出", quitApp);
+      armDanger(byId("quit-app"), LP.t("settings.action.confirmQuit"), quitApp);
     });
 
     document.addEventListener("visibilitychange", function () {
@@ -4672,7 +4731,12 @@
       }
       initialStateSettled = true;
       if (!result.ok) {
-        toast("读取设置失败：" + (result.error || "未知错误"), "error");
+        toast(
+          LP.t("settings.error.readSettings", {
+            error: result.error || LP.t("settings.error.unknown"),
+          }),
+          "error"
+        );
         return;
       }
       applyState(result.state);
