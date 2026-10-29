@@ -501,8 +501,14 @@
     if (!payload || !payload.settings) {
       return;
     }
+    /* The UI language is initialized once, from the first state that arrives;
+     * later changes are applied by handleStateChanged via setLocale. */
+    var firstState = !state;
     initialStateSettled = true;
     state = payload;
+    if (firstState && window.LP && LP.i18n) {
+      LP.i18n.init(state.app && state.app.locale);
+    }
     renderAll();
   }
 
@@ -3339,7 +3345,29 @@
   function renderApp() {
     var app = state.settings.app || {};
     setChecked(byId("close-to-tray"), app.closeToTray !== false);
+    renderAppLanguage();
     renderStartAtLogin();
+  }
+
+  /* ---- App language ---------------------------------------------------- */
+
+  function renderAppLanguage() {
+    var app = (state.settings && state.settings.app) || {};
+    var select = byId("app-language");
+    if (!select || select === document.activeElement) {
+      return;
+    }
+    var value = ["system", "zh", "en"].indexOf(String(app.language || "")) >= 0
+      ? String(app.language)
+      : "system";
+    if (select.value !== value) {
+      select.value = value;
+    }
+  }
+
+  function saveAppLanguage(value) {
+    var next = ["system", "zh", "en"].indexOf(String(value)) >= 0 ? String(value) : "system";
+    save({ app: { language: next } });
   }
 
   function renderStartAtLogin() {
@@ -4396,6 +4424,9 @@
     byId("close-to-tray").addEventListener("change", function (event) {
       save({ app: { closeToTray: event.target.checked } });
     });
+    byId("app-language").addEventListener("change", function (event) {
+      saveAppLanguage(event.target.value);
+    });
     byId("start-at-login").addEventListener("change", function (event) {
       var input = event.target;
       var enabled = input.checked;
@@ -4490,6 +4521,11 @@
 
   function handleStateChanged(payload) {
     applyState(payload);
+    if (window.LP && LP.i18n && state && state.app) {
+      if (LP.i18n.setLocale(state.app.locale)) {
+        renderAll();
+      }
+    }
   }
 
   function handleToast(payload) {

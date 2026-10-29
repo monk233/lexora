@@ -30,13 +30,13 @@
           </svg>
         </span>
         <div class="brand-text">
-          <span class="brand-title">Lexora</span>
-          <span class="brand-sub">划词翻译 · 设置</span>
+          <span class="brand-title" data-i18n="settings.page.title">Lexora</span>
+          <span class="brand-sub" data-i18n="settings.page.subtitle">Selection translation · Settings</span>
         </div>
       </div>
       <div class="save-status" id="save-status" data-state="idle" role="status" aria-live="polite">
         <span class="save-dot" aria-hidden="true"></span>
-        <span id="save-status-text">所有更改自动保存</span>
+        <span id="save-status-text" data-i18n="settings.saveStatus.idle">All changes are saved automatically</span>
       </div>
     </div>
   </header>
@@ -46,23 +46,23 @@
     <section class="card" aria-labelledby="card-provider-title">
       <div class="card-head">
         <div class="card-head-text">
-          <h2 id="card-provider-title">翻译服务</h2>
-          <p>在线 API 或本地模型。</p>
+          <h2 id="card-provider-title" data-i18n="settings.card.services.title">Translation service</h2>
+          <p data-i18n="settings.card.services.desc">Online API or a local model.</p>
         </div>
-        <span class="badge" id="provider-badge" data-tone="muted">读取中…</span>
+        <span class="badge" id="provider-badge" data-tone="muted" data-i18n="settings.badge.loading">Loading…</span>
       </div>
       <div class="card-body">
-        <div class="segmented" role="tablist" aria-label="翻译服务模式">
-          <button type="button" class="segment" id="mode-online" data-mode="online" role="tab" aria-selected="true">在线 API</button>
-          <button type="button" class="segment" id="mode-local" data-mode="local" role="tab" aria-selected="false">本地模型</button>
+        <div class="segmented" role="tablist" aria-label="Translation service mode" data-i18n-aria-label="settings.tabs.providerMode">
+          <button type="button" class="segment" id="mode-online" data-mode="online" role="tab" aria-selected="true" data-i18n="settings.mode.online">Online API</button>
+          <button type="button" class="segment" id="mode-local" data-mode="local" role="tab" aria-selected="false" data-i18n="settings.mode.local">Local model</button>
         </div>
 
         <!-- 在线 API -->
         <div class="mode-panel" id="provider-online">
           <div class="field">
             <div class="field-label">
-              <label for="online-preset">服务商预设</label>
-              <p class="field-hint" id="online-preset-hint">切换后填入服务地址，清空 Key 与模型名</p>
+              <label for="online-preset" data-i18n="settings.field.providerPreset">Provider preset</label>
+              <p class="field-hint" id="online-preset-hint" data-i18n="settings.hint.providerPreset">Switching fills in the service URL and clears the key and model name</p>
             </div>
             <div class="field-control">
               <select class="select" id="online-preset"></select>
@@ -71,8 +71,8 @@
 
           <div class="field">
             <div class="field-label">
-              <label for="online-base-url">服务地址</label>
-              <p class="field-hint">OpenAI 兼容接口根地址</p>
+              <label for="online-base-url" data-i18n="settings.field.baseUrl">Service URL</label>
+              <p class="field-hint" data-i18n="settings.hint.baseUrl">OpenAI-compatible API root URL</p>
             </div>
             <div class="field-control">
               <input class="input" id="online-base-url" type="url" spellcheck="false"
@@ -82,15 +82,17 @@
 
           <div class="field">
             <div class="field-label">
-              <label for="online-api-key">API Key</label>
-              <p class="field-hint">仅保存在本机</p>
+              <label for="online-api-key" data-i18n="settings.field.apiKey">API Key</label>
+              <p class="field-hint" data-i18n="settings.hint.apiKey">Stored on this device only</p>
             </div>
             <div class="field-control">
               <div class="input-group">
                 <input class="input" id="online-api-key" type="password" spellcheck="false"
                        placeholder="sk-..." autocomplete="off">
                 <button type="button" class="btn btn-icon" id="api-key-toggle"
-                        aria-pressed="false" title="显示 API Key" aria-label="显示 API Key">
+                        aria-pressed="false" title="Show API Key" aria-label="Show API Key"
+                        data-i18n-title="settings.apiKey.show"
+                        data-i18n-aria-label="settings.apiKey.show">
                   <svg class="icon-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                        stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                     <path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"></path>
@@ -110,17 +112,17 @@
 
           <div class="field">
             <div class="field-label">
-              <label for="online-model">模型名</label>
-              <p class="field-hint">从服务端拉取，或手动填写</p>
+              <label for="online-model" data-i18n="settings.field.modelName">Model name</label>
+              <p class="field-hint" data-i18n="settings.hint.modelName">Fetch from the server or enter it manually</p>
             </div>
             <div class="field-control">
               <div class="inline-actions inline-actions-grow">
                 <select class="select" id="online-model"></select>
-                <button type="button" class="btn" id="fetch-online-models">拉取模型</button>
+                <button type="button" class="btn" id="fetch-online-models" data-i18n="settings.action.fetchModels">Fetch models</button>
               </div>
               <input class="input" id="online-model-custom" type="text" spellcheck="false"
                      placeholder="deepseek-chat" autocomplete="off"
-                     aria-label="自定义模型名" hidden>
+                     aria-label="Custom model name" data-i18n-aria-label="settings.field.customModelName" hidden>
               <p class="inline-hint" id="online-model-hint" hidden></p>
               <p class="inline-error" id="online-model-error" hidden></p>
             </div>
@@ -128,12 +130,12 @@
 
           <div class="field">
             <div class="field-label">
-              <span class="field-name">连接状态</span>
-              <p class="field-hint">验证地址、Key 与模型名</p>
+              <span class="field-name" data-i18n="settings.field.connection">Connection status</span>
+              <p class="field-hint" data-i18n="settings.hint.connection">Verify the URL, key and model name</p>
             </div>
             <div class="field-control">
               <div class="inline-actions">
-                <button type="button" class="btn" id="test-connection">测试连接</button>
+                <button type="button" class="btn" id="test-connection" data-i18n="settings.action.testConnection">Test connection</button>
                 <span class="badge" id="test-badge" data-tone="muted" hidden></span>
               </div>
               <p class="inline-error" id="test-error" hidden></p>
@@ -147,13 +149,13 @@
             <div class="engine-info">
               <span class="status-dot" id="engine-dot" data-tone="muted"></span>
               <div class="engine-text">
-                <span class="engine-title" id="engine-title">正在读取引擎状态…</span>
+                <span class="engine-title" id="engine-title" data-i18n="settings.status.engineLoading">Reading engine status…</span>
                 <span class="engine-sub" id="engine-sub"></span>
               </div>
             </div>
             <div class="inline-actions" id="engine-actions">
-              <button type="button" class="btn" id="download-engine" hidden>下载引擎</button>
-              <button type="button" class="btn btn-ghost" id="cancel-engine-download" hidden>取消</button>
+              <button type="button" class="btn" id="download-engine" data-i18n="settings.action.downloadEngine" hidden>Download engine</button>
+              <button type="button" class="btn btn-ghost" id="cancel-engine-download" data-i18n="common.cancel" hidden>Cancel</button>
             </div>
           </div>
           <div class="progress" id="engine-progress" hidden>
@@ -163,8 +165,8 @@
 
           <div class="field">
             <div class="field-label">
-              <span class="field-name">本地模型</span>
-              <p class="field-hint">所有本地 AI 任务共用手动选择的 Qwen3.5：翻译 / 通用 / 视觉；未选择时本地 AI 不可用。切换模型后运行中的引擎会自动重启。</p>
+              <span class="field-name" data-i18n="settings.field.localModel">Local model</span>
+              <p class="field-hint" data-i18n="settings.hint.localModel">All local AI tasks share the manually selected Qwen3.5: translation / general / vision. Local AI is unavailable until a model is selected. Changing the model restarts a running engine automatically.</p>
             </div>
             <div class="field-control">
               <div class="local-hardware" aria-live="polite">
@@ -174,31 +176,31 @@
               <div class="local-models" id="local-models"></div>
               <p class="inline-hint" id="local-models-hint" hidden></p>
               <div class="inline-actions">
-                <button type="button" class="btn" id="toggle-catalog" aria-expanded="false">下载模型</button>
-                <button type="button" class="btn" id="import-model">导入 GGUF</button>
+                <button type="button" class="btn" id="toggle-catalog" aria-expanded="false" data-i18n="settings.action.downloadModel">Download model</button>
+                <button type="button" class="btn" id="import-model" data-i18n="settings.action.importModel">Import GGUF</button>
               </div>
             </div>
           </div>
 
           <div class="catalog" id="catalog" hidden>
             <div class="catalog-head">
-              <span class="catalog-title">模型目录</span>
-              <span class="catalog-sub">Qwen3.5 含视觉投影器，完整下载后可手动选择</span>
+              <span class="catalog-title" data-i18n="settings.catalog.title">Model catalog</span>
+              <span class="catalog-sub" data-i18n="settings.catalog.sub">Qwen3.5 includes a vision projector; select it manually after a complete download</span>
             </div>
             <ul class="catalog-list" id="catalog-list"></ul>
           </div>
 
           <div class="field field-switch local-state-field">
             <div class="field-label">
-              <span class="field-name">运行状态</span>
-              <p class="field-hint">需先启动本地引擎；翻译 / 通用 / 视觉共用你手动选择的模型；空闲 10 分钟后自动停止以释放内存</p>
+              <span class="field-name" data-i18n="settings.field.runtime">Running status</span>
+              <p class="field-hint" data-i18n="settings.hint.runtime">Start the local engine first; translation / general / vision share the model you select; it stops automatically after 10 idle minutes to free memory</p>
             </div>
             <div class="field-control">
               <div class="inline-actions">
-                <span class="badge" id="local-state-badge" data-tone="muted">未启动</span>
-                <button type="button" class="btn btn-primary" id="start-local">启动</button>
-                <button type="button" class="btn" id="restart-local" hidden>重启</button>
-                <button type="button" class="btn" id="stop-local" hidden>停止</button>
+                <span class="badge" id="local-state-badge" data-tone="muted" data-i18n="settings.engine.notStarted">Not running</span>
+                <button type="button" class="btn btn-primary" id="start-local" data-i18n="settings.action.start">Start</button>
+                <button type="button" class="btn" id="restart-local" data-i18n="settings.action.restart" hidden>Restart</button>
+                <button type="button" class="btn" id="stop-local" data-i18n="settings.action.stop" hidden>Stop</button>
               </div>
               <p class="inline-hint" id="local-state-hint" hidden></p>
               <p class="inline-error" id="local-error" hidden></p>
@@ -212,15 +214,15 @@
     <section class="card" aria-labelledby="card-picker-title">
       <div class="card-head">
         <div class="card-head-text">
-          <h2 id="card-picker-title">划词行为</h2>
-          <p>触发方式、工具栏技能与目标语言。</p>
+          <h2 id="card-picker-title" data-i18n="settings.card.picker.title">Selection behavior</h2>
+          <p data-i18n="settings.card.picker.desc">Trigger, toolbar skills and target language.</p>
         </div>
       </div>
       <div class="card-body">
         <div class="field field-switch">
           <div class="field-label">
-            <span class="field-name">启用划词工具</span>
-            <p class="field-hint">关闭后不弹出工具栏</p>
+            <span class="field-name" data-i18n="settings.field.pickerEnabled">Enable selection tool</span>
+            <p class="field-hint" data-i18n="settings.hint.pickerEnabled">The toolbar stays hidden when disabled</p>
           </div>
           <div class="field-control">
             <label class="switch">
@@ -232,8 +234,8 @@
 
         <div class="field field-switch">
           <div class="field-label">
-            <span class="field-name">紧凑模式</span>
-            <p class="field-hint">工具栏只显示图标</p>
+            <span class="field-name" data-i18n="settings.field.compactMode">Compact mode</span>
+            <p class="field-hint" data-i18n="settings.hint.compactMode">Show icons only in the toolbar</p>
           </div>
           <div class="field-control">
             <label class="switch">
@@ -245,43 +247,47 @@
 
         <div class="field field-switch panel-mode-field">
           <div class="field-label">
-            <span class="field-name">面板模式</span>
-            <p class="field-hint">滚动：固定高度、显示滚动条；自适应：固定宽度、限高并隐藏滚动条</p>
+            <span class="field-name" data-i18n="settings.field.panelMode">Panel mode</span>
+            <p class="field-hint" data-i18n="settings.hint.panelMode">Scroll: fixed height with a scrollbar; Auto: fixed width, capped height and no scrollbar</p>
           </div>
           <div class="field-control">
-            <div class="segmented panel-mode-segmented" role="group" aria-label="面板模式">
+            <div class="segmented panel-mode-segmented" role="group" aria-label="Panel mode" data-i18n-aria-label="settings.field.panelMode">
               <button type="button" class="segment" id="panel-mode-scroll"
                       data-panel-mode="scroll" aria-pressed="false"
-                      aria-label="滚动模式：面板高度固定，内容在面板内滚动"
-                      title="高度固定，内容内滚">滚动</button>
+                      aria-label="Scroll mode: the panel has a fixed height and its content scrolls inside"
+                      title="Fixed height, content scrolls" data-i18n="settings.panelMode.scroll"
+                      data-i18n-aria-label="settings.panelMode.scrollAria"
+                      data-i18n-title="settings.panelMode.scrollTitle">Scroll</button>
               <button type="button" class="segment" id="panel-mode-auto"
                       data-panel-mode="auto" aria-pressed="true"
-                      aria-label="自适应模式：固定宽度，随内容增高，达到上限后隐藏滚动条并自动跟随"
-                      title="固定宽度，限高后隐藏滚动条并自动跟随">自适应</button>
+                      aria-label="Auto mode: fixed width, grows with content, then hides the scrollbar and follows automatically"
+                      title="Fixed width, hides the scrollbar once capped and follows automatically" data-i18n="settings.panelMode.auto"
+                      data-i18n-aria-label="settings.panelMode.autoAria"
+                      data-i18n-title="settings.panelMode.autoTitle">Auto</button>
             </div>
           </div>
         </div>
 
         <div class="field field-stack">
           <div class="field-label">
-            <span class="field-name">工具栏技能</span>
-            <p class="field-hint">勾选显示内容，拖动排序</p>
+            <span class="field-name" data-i18n="settings.field.toolbarSkills">Toolbar skills</span>
+            <p class="field-hint" data-i18n="settings.hint.toolbarSkills">Check what to show and drag to reorder</p>
           </div>
           <div class="field-control">
-            <div class="segmented skill-kind-tabs" role="tablist" aria-label="技能分类">
+            <div class="segmented skill-kind-tabs" role="tablist" aria-label="Skill category" data-i18n-aria-label="settings.tabs.skillKind">
               <button type="button" class="segment" id="skill-tab-text"
                       data-skill-tab="text" role="tab" aria-selected="true"
                       aria-controls="skill-list">
-                文字技能<span class="segment-count" id="skill-tab-text-count"></span>
+                <span data-i18n="settings.skills.textTab">Text skills</span><span class="segment-count" id="skill-tab-text-count"></span>
               </button>
               <button type="button" class="segment" id="skill-tab-image"
                       data-skill-tab="image" role="tab" aria-selected="false"
                       aria-controls="capture-action-list">
-                图片技能<span class="segment-count" id="skill-tab-image-count"></span>
+                <span data-i18n="settings.skills.imageTab">Image skills</span><span class="segment-count" id="skill-tab-image-count"></span>
               </button>
             </div>
             <ul class="skill-list" id="capture-action-list" hidden></ul>
-            <p class="skill-kind-note" id="capture-actions-empty" hidden>无动作时截图只显示确认/取消</p>
+            <p class="skill-kind-note" id="capture-actions-empty" data-i18n="settings.hint.captureEmpty" hidden>Without actions, screenshots only show confirm/cancel</p>
             <ul class="skill-list" id="skill-list"></ul>
             <div class="skill-actions">
               <button type="button" class="btn" id="add-custom-skill">
@@ -290,70 +296,77 @@
                   <path d="M12 5v14"></path>
                   <path d="M5 12h14"></path>
                 </svg>
-                添加技能
+                <span data-i18n="settings.action.addSkill">Add skill</span>
               </button>
             </div>
 
             <div class="custom-skill-editor" id="custom-skill-editor" hidden>
               <div class="custom-skill-editor-head">
-                <span class="custom-skill-editor-title" id="custom-skill-editor-title">新增技能</span>
-                <span class="custom-skill-editor-sub">显示在工具栏中</span>
+                <span class="custom-skill-editor-title" id="custom-skill-editor-title" data-i18n="settings.editor.newTitle">New skill</span>
+                <span class="custom-skill-editor-sub" data-i18n="settings.editor.subtitle">Shown in the toolbar</span>
               </div>
 
               <div class="custom-skill-field">
-                <span class="custom-skill-label">图标</span>
+                <span class="custom-skill-label" data-i18n="settings.field.icon">Icon</span>
                 <div class="custom-skill-icon-row">
                   <span class="custom-skill-icon-preview" id="custom-skill-icon-preview"
                         aria-hidden="true"></span>
                   <span class="custom-skill-icon-current" id="custom-skill-icon-current">sparkles</span>
                   <button type="button" class="btn" id="toggle-icon-picker"
-                          aria-expanded="false" aria-controls="custom-skill-icon-panel">更换图标</button>
+                          aria-expanded="false" aria-controls="custom-skill-icon-panel"
+                          data-i18n="settings.action.changeIcon">Change icon</button>
                 </div>
                 <div class="custom-skill-icon-panel" id="custom-skill-icon-panel" hidden>
                   <input class="input" id="custom-skill-icon-search" type="search"
-                         placeholder="搜索图标（英文，如 pen）"
-                         aria-label="搜索图标" autocomplete="off" spellcheck="false">
+                         placeholder="Search icons (English, e.g. pen)"
+                         aria-label="Search icons" autocomplete="off" spellcheck="false"
+                         data-i18n-placeholder="settings.placeholder.iconSearch"
+                         data-i18n-aria-label="settings.field.iconSearch">
                   <div class="icon-grid" id="custom-skill-icons" role="radiogroup"
-                       aria-label="技能图标"></div>
-                  <p class="inline-hint" id="custom-skill-icon-empty" hidden>没有匹配的图标</p>
+                       aria-label="Skill icons" data-i18n-aria-label="settings.field.iconGrid"></div>
+                  <p class="inline-hint" id="custom-skill-icon-empty" data-i18n="settings.hint.iconEmpty" hidden>No matching icons</p>
                 </div>
               </div>
 
               <div class="custom-skill-field">
-                <span class="custom-skill-label">技能类型</span>
-                <div class="segmented custom-skill-kind-segmented" role="group" aria-label="技能类型">
+                <span class="custom-skill-label" data-i18n="settings.field.skillKind">Skill type</span>
+                <div class="segmented custom-skill-kind-segmented" role="group" aria-label="Skill type" data-i18n-aria-label="settings.field.skillKind">
                   <button type="button" class="segment" id="custom-skill-kind-text"
                           data-skill-kind="text" aria-pressed="true"
-                          aria-label="文本技能">文本</button>
+                          aria-label="Text skill" data-i18n="settings.skillKind.text"
+                          data-i18n-aria-label="settings.skillKind.textAria">Text</button>
                   <button type="button" class="segment" id="custom-skill-kind-image"
                           data-skill-kind="image" aria-pressed="false"
-                          aria-label="图片技能">图片</button>
+                          aria-label="Image skill" data-i18n="settings.skillKind.image"
+                          data-i18n-aria-label="settings.skillKind.imageAria">Image</button>
                 </div>
-                <p class="custom-skill-hint" id="custom-skill-kind-hint">文本技能处理选中文字</p>
+                <p class="custom-skill-hint" id="custom-skill-kind-hint" data-i18n="settings.hint.kindText">Text skills process the selected text</p>
               </div>
 
               <div class="custom-skill-field">
-                <label class="custom-skill-label" for="custom-skill-name">名称</label>
+                <label class="custom-skill-label" for="custom-skill-name" data-i18n="settings.field.name">Name</label>
                 <input class="input" id="custom-skill-name" type="text" maxlength="20"
-                       placeholder="例如：提取关键词" autocomplete="off" spellcheck="false">
+                       placeholder="e.g. Extract keywords" autocomplete="off" spellcheck="false"
+                       data-i18n-placeholder="settings.placeholder.skillName">
               </div>
 
               <div class="custom-skill-field">
-                <label class="custom-skill-label" for="custom-skill-prompt">提示词</label>
+                <label class="custom-skill-label" for="custom-skill-prompt" data-i18n="settings.field.prompt">Prompt</label>
                 <textarea class="textarea" id="custom-skill-prompt" rows="6" maxlength="4000"
                           spellcheck="false"
-                          placeholder="例如：提取 5 个关键词，逗号分隔输出：&#10;{text}"></textarea>
+                          placeholder="e.g. Extract 5 keywords as a comma-separated list:&#10;{text}"
+                          data-i18n-placeholder="settings.placeholder.skillPrompt"></textarea>
                 <p class="custom-skill-hint" id="custom-skill-vars-hint">
-                  变量：<code>{text}</code> 选中文本、<code>{target}</code>/<code>{language}</code> 目标语言、<code>{program}</code>/<code>{app}</code> 当前应用
+                  <span data-i18n="settings.hint.varsPrefix">Variables: </span><code>{text}</code> <span data-i18n="settings.vars.selectedText">selected text</span> · <code>{target}</code>/<code>{language}</code> <span data-i18n="settings.vars.targetLanguage">target language</span> · <code>{program}</code>/<code>{app}</code> <span data-i18n="settings.vars.currentApp">current app</span>
                 </p>
               </div>
 
               <p class="inline-error" id="custom-skill-error" hidden></p>
 
               <div class="custom-skill-actions">
-                <button type="button" class="btn btn-primary" id="save-custom-skill">保存</button>
-                <button type="button" class="btn" id="cancel-custom-skill">取消</button>
-                <button type="button" class="btn btn-danger" id="delete-custom-skill" hidden>删除</button>
+                <button type="button" class="btn btn-primary" id="save-custom-skill" data-i18n="settings.action.save">Save</button>
+                <button type="button" class="btn" id="cancel-custom-skill" data-i18n="common.cancel">Cancel</button>
+                <button type="button" class="btn btn-danger" id="delete-custom-skill" data-i18n="settings.action.delete" hidden>Delete</button>
               </div>
             </div>
           </div>
@@ -361,8 +374,8 @@
 
         <div class="field">
           <div class="field-label">
-            <label for="default-target-lang">默认目标语言</label>
-            <p class="field-hint">自动识别：中文译英文，其他译中文</p>
+            <label for="default-target-lang" data-i18n="settings.field.defaultTargetLang">Default target language</label>
+            <p class="field-hint" data-i18n="settings.hint.defaultTargetLang">Auto-detect: Chinese to English, anything else to Chinese</p>
           </div>
           <div class="field-control">
             <select class="select" id="default-target-lang"></select>
@@ -371,13 +384,14 @@
 
         <div class="field field-stack">
           <div class="field-label">
-            <label for="blacklist-input">应用黑名单</label>
-            <p class="field-hint">这些应用不触发划词；输入进程名回车添加</p>
+            <label for="blacklist-input" data-i18n="settings.field.blacklist">App blocklist</label>
+            <p class="field-hint" data-i18n="settings.hint.blacklist">These apps never trigger selection; type a process name and press Enter</p>
           </div>
           <div class="field-control">
             <div class="chips" id="blacklist-chips"></div>
             <input class="input" id="blacklist-input" type="text" spellcheck="false"
-                   placeholder="例如 WeChat.exe" autocomplete="off">
+                   placeholder="e.g. WeChat.exe" autocomplete="off"
+                   data-i18n-placeholder="settings.placeholder.blacklist">
           </div>
         </div>
       </div>
@@ -387,21 +401,22 @@
     <section class="card hotkey-card" aria-labelledby="card-shortcuts-title">
       <div class="card-head">
         <div class="card-head-text">
-          <h2 id="card-shortcuts-title">快捷键</h2>
-          <p>全局快捷键。</p>
+          <h2 id="card-shortcuts-title" data-i18n="settings.card.shortcuts.title">Keyboard shortcuts</h2>
+          <p data-i18n="settings.card.shortcuts.desc">Global shortcuts.</p>
         </div>
       </div>
       <div class="card-body">
         <div class="field hotkey-field">
           <div class="field-label">
-            <span class="field-name">截图快捷键</span>
-            <p class="field-hint">点击后按新组合键；需含修饰键</p>
+            <span class="field-name" data-i18n="settings.field.captureHotkey">Screenshot shortcut</span>
+            <p class="field-hint" data-i18n="settings.hint.captureHotkey">Click, then press the new combination; modifiers are required</p>
           </div>
           <div class="field-control">
             <div class="inline-actions">
               <button type="button" class="btn hotkey-display" id="capture-hotkey"
-                      title="点击后录制新的组合键">Win + Shift + X</button>
-              <button type="button" class="btn btn-ghost" id="capture-hotkey-restore">恢复默认</button>
+                      title="Click to record a new shortcut"
+                      data-i18n-title="settings.action.captureHotkeyTitle">Win + Shift + X</button>
+              <button type="button" class="btn btn-ghost" id="capture-hotkey-restore" data-i18n="settings.action.restoreDefault">Restore default</button>
             </div>
             <p class="inline-error" id="capture-hotkey-error" hidden></p>
           </div>
@@ -413,15 +428,29 @@
     <section class="card" aria-labelledby="card-app-title">
       <div class="card-head">
         <div class="card-head-text">
-          <h2 id="card-app-title">应用与启动</h2>
-          <p>开机自启、托盘与数据目录。</p>
+          <h2 id="card-app-title" data-i18n="settings.card.app.title">App and startup</h2>
+          <p data-i18n="settings.card.app.desc">Autostart, tray and data folders.</p>
         </div>
       </div>
       <div class="card-body">
+        <div class="field">
+          <div class="field-label">
+            <label class="field-name" for="app-language" data-i18n="settings.language.title">Interface language</label>
+            <p class="field-hint" data-i18n="settings.language.hint">Applies immediately; Follow system picks the language from your Windows region and time zone.</p>
+          </div>
+          <div class="field-control">
+            <select class="select" id="app-language">
+              <option value="system" data-i18n="common.followSystem">Follow system</option>
+              <option value="zh">简体中文</option>
+              <option value="en">English</option>
+            </select>
+          </div>
+        </div>
+
         <div class="field field-switch">
           <div class="field-label">
-            <span class="field-name">开机自启</span>
-            <p class="field-hint" id="start-at-login-hint">登录后在托盘启动</p>
+            <span class="field-name" data-i18n="settings.field.startAtLogin">Start with Windows</span>
+            <p class="field-hint" id="start-at-login-hint" data-i18n="settings.hint.startAtLogin">Starts in the tray after sign-in</p>
           </div>
           <div class="field-control">
             <label class="switch">
@@ -434,8 +463,8 @@
 
         <div class="field field-switch">
           <div class="field-label">
-            <span class="field-name">关闭窗口后驻留托盘</span>
-            <p class="field-hint">关闭窗口后继续在托盘运行</p>
+            <span class="field-name" data-i18n="settings.field.closeToTray">Keep running in the tray when closed</span>
+            <p class="field-hint" data-i18n="settings.hint.closeToTray">Keeps running in the tray after the window closes</p>
           </div>
           <div class="field-control">
             <label class="switch">
@@ -447,15 +476,15 @@
 
         <div class="field field-stack">
           <div class="field-label">
-            <span class="field-name">数据与目录</span>
-            <p class="field-hint">设置、模型、引擎与日志</p>
+            <span class="field-name" data-i18n="settings.field.dataDirs">Data and folders</span>
+            <p class="field-hint" data-i18n="settings.hint.dataDirs">Settings, models, engine and logs</p>
           </div>
           <div class="field-control">
             <div class="dir-grid">
-              <button type="button" class="btn" data-open-dir="data">数据目录</button>
-              <button type="button" class="btn" data-open-dir="models">模型目录</button>
-              <button type="button" class="btn" data-open-dir="logs">日志目录</button>
-              <button type="button" class="btn" data-open-dir="engine">引擎目录</button>
+              <button type="button" class="btn" data-open-dir="data" data-i18n="settings.action.dataDir">Data folder</button>
+              <button type="button" class="btn" data-open-dir="models" data-i18n="settings.action.modelsDir">Models folder</button>
+              <button type="button" class="btn" data-open-dir="logs" data-i18n="settings.action.logsDir">Logs folder</button>
+              <button type="button" class="btn" data-open-dir="engine" data-i18n="settings.action.engineDir">Engine folder</button>
             </div>
           </div>
         </div>
@@ -463,17 +492,17 @@
         <div class="danger-zone">
           <div class="danger-row">
             <div class="danger-text">
-              <span class="danger-title">恢复默认设置</span>
-              <p class="danger-desc">重置选项，保留技能、模型与引擎</p>
+              <span class="danger-title" data-i18n="settings.danger.resetTitle">Reset to defaults</span>
+              <p class="danger-desc" data-i18n="settings.danger.resetDesc">Resets options; keeps skills, models and the engine</p>
             </div>
-            <button type="button" class="btn btn-danger" id="reset-settings">恢复默认</button>
+            <button type="button" class="btn btn-danger" id="reset-settings" data-i18n="settings.action.reset">Reset</button>
           </div>
           <div class="danger-row">
             <div class="danger-text">
-              <span class="danger-title">退出 Lexora</span>
-              <p class="danger-desc">退出后划词与托盘停止</p>
+              <span class="danger-title" data-i18n="settings.danger.quitTitle">Quit Lexora</span>
+              <p class="danger-desc" data-i18n="settings.danger.quitDesc">Selection and the tray stop after quitting</p>
             </div>
-            <button type="button" class="btn btn-danger" id="quit-app">退出程序</button>
+            <button type="button" class="btn btn-danger" id="quit-app" data-i18n="settings.action.quit">Quit app</button>
           </div>
         </div>
       </div>
@@ -483,37 +512,37 @@
     <section class="card" aria-labelledby="card-about-title">
       <div class="card-head">
         <div class="card-head-text">
-          <h2 id="card-about-title">关于</h2>
-          <p>版本、数据位置与许可。</p>
+          <h2 id="card-about-title" data-i18n="settings.card.about.title">About</h2>
+          <p data-i18n="settings.card.about.desc">Version, data location and license.</p>
         </div>
       </div>
       <div class="card-body">
         <dl class="about-grid">
           <div>
-            <dt>版本</dt>
+            <dt data-i18n="settings.about.version">Version</dt>
             <dd id="about-version">—</dd>
           </div>
           <div>
-            <dt>平台</dt>
+            <dt data-i18n="settings.about.platform">Platform</dt>
             <dd id="about-platform">—</dd>
           </div>
           <div>
-            <dt>许可证</dt>
+            <dt data-i18n="settings.about.license">License</dt>
             <dd id="about-license">MIT</dd>
           </div>
           <div>
-            <dt>翻译引擎</dt>
+            <dt data-i18n="settings.about.engine">Translation engine</dt>
             <dd id="about-engine">—</dd>
           </div>
           <div class="about-wide">
-            <dt>数据目录</dt>
+            <dt data-i18n="settings.about.dataDir">Data folder</dt>
             <dd>
               <code id="about-data-dir">—</code>
-              <button type="button" class="btn" id="open-data-dir">打开</button>
+              <button type="button" class="btn" id="open-data-dir" data-i18n="settings.action.open">Open</button>
             </dd>
           </div>
           <div class="about-wide">
-            <dt>本地模型</dt>
+            <dt data-i18n="settings.about.localModels">Local models</dt>
             <dd id="about-models">—</dd>
           </div>
         </dl>
@@ -521,10 +550,10 @@
         <div class="update-block">
           <div class="update-head">
             <div class="update-head-text">
-              <span class="update-title">版本更新</span>
-              <p class="update-hint" id="update-current-hint">当前版本 — · 自动检查，下载后替换并重启</p>
+              <span class="update-title" data-i18n="settings.update.title">Version updates</span>
+              <p class="update-hint" id="update-current-hint" data-i18n="settings.update.hint">Current version — · checks automatically, installs and restarts after download</p>
             </div>
-            <button type="button" class="btn" id="check-update">检查更新</button>
+            <button type="button" class="btn" id="check-update" data-i18n="settings.action.checkUpdate">Check for updates</button>
           </div>
 
           <div class="update-status" id="update-status" data-state="idle" aria-live="polite" hidden>
@@ -533,7 +562,7 @@
             <div class="update-notes" id="update-notes" hidden>
               <div class="update-notes-text markdown is-clamped" id="update-notes-text"></div>
               <button type="button" class="btn btn-ghost update-notes-toggle"
-                      id="toggle-update-notes" hidden>展开全部</button>
+                      id="toggle-update-notes" hidden data-i18n="settings.action.expandNotes">Show all</button>
             </div>
 
             <div class="update-meta" id="update-meta" hidden>
@@ -549,8 +578,8 @@
             </div>
 
             <div class="update-actions" id="update-actions" hidden>
-              <button type="button" class="btn btn-primary" id="install-update">下载并更新</button>
-              <button type="button" class="btn" id="dismiss-update">稍后</button>
+              <button type="button" class="btn btn-primary" id="install-update" data-i18n="settings.action.installUpdate">Download and update</button>
+              <button type="button" class="btn" id="dismiss-update" data-i18n="settings.action.later">Later</button>
             </div>
 
             <p class="inline-error" id="update-error" hidden></p>
@@ -558,7 +587,7 @@
         </div>
 
         <div class="about-links">
-          <button type="button" class="btn" id="open-repo">GitHub 仓库</button>
+          <button type="button" class="btn" id="open-repo" data-i18n="settings.action.githubRepo">GitHub repository</button>
           <span class="about-url">github.com/monk233/lexora</span>
           <span class="about-sep" aria-hidden="true">·</span>
           <span class="about-url">MIT License</span>

@@ -94,7 +94,7 @@ main().catch((error) => { console.error(error); process.exitCode = 1; });
 const test = require("node:test");
 function savingHarness() {
   const nodes = {};
-  for (const id of ["local-state-badge", "start-local", "stop-local", "restart-local", "local-state-hint", "local-error"]) nodes[id] = element("div", "");
+  for (const id of ["local-state-badge", "start-local", "stop-local", "restart-local", "local-state-hint", "local-error", "app-language"]) nodes[id] = element("div", "");
   const saves = [];
   const calls = [];
   let persisted = "old";
@@ -107,6 +107,7 @@ function savingHarness() {
   const context = vm.createContext({
     Promise, Object,
     state: { engine: { localState: "ready" }, settings: { provider: { local: { selectedModel: "old" } } } },
+    document: { activeElement: null },
     saveQueue: null, saving: false, savePending: null, localBusy: false, localAction: "",
     // Restart must not flush unrelated text drafts, including online API credentials.
     flushAllTextFields() { throw new Error("Unexpected text debounce flush"); },
@@ -126,12 +127,24 @@ function savingHarness() {
       restartLocal() { calls.push("restart:" + persisted); return Promise.resolve({ ok: true }); },
     },
   });
-  for (const name of ["optimisticApply", "enqueuePatch", "flushSaveQueue", "save", "renderLocalState", "runLocalAction", "restartLocal"]) vm.runInContext(extract(name), context);
+  for (const name of ["optimisticApply", "enqueuePatch", "flushSaveQueue", "save", "renderAppLanguage", "saveAppLanguage", "renderLocalState", "runLocalAction", "restartLocal"]) vm.runInContext(extract(name), context);
   context.renderAll = () => context.renderLocalState();
   context.applyState = () => {};
   context.refreshState = async () => { refreshes++; context.renderLocalState(); return { ok: true }; };
   return { context, nodes, saves, calls, refreshes: () => refreshes };
 }
+test("language select renders the saved value and saves changes", async () => {
+  const h = savingHarness();
+  h.context.state.settings.app = { language: "system" };
+  h.nodes["app-language"] = element("select", "");
+  h.context.renderAppLanguage();
+  assert.equal(h.nodes["app-language"].value, "system");
+  h.context.saveAppLanguage("en");
+  await new Promise(setImmediate);
+  // The patch literal comes from the vm realm, so compare its field instead of
+  // deep-equaling prototypes across realms.
+  assert.equal(h.saves.at(-1).patch.app.language, "en");
+});
 test("restart waits for in-flight and queued selection saves before invoking engine", async () => {
   const h = savingHarness();
   h.context.save({ app: { resident: true } });
