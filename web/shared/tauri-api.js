@@ -354,7 +354,7 @@
         languageSetting: "system",
       },
       settings: {
-        version: 8,
+        version: 9,
         picker: {
           enabled: true,
           skills: ["translate", "summarize", "explain", "polish", "read", "copy", "screenshot", "search"],
@@ -599,7 +599,7 @@
       searchEngines.indexOf(String(picker.searchEngine || "")) >= 0
         ? String(picker.searchEngine)
         : "google";
-    settings.version = 8;
+    settings.version = 9;
     var promptStore =
       picker.prompts && typeof picker.prompts === "object" ? picker.prompts : {};
     picker.prompts = {};
@@ -665,7 +665,7 @@
       }
     });
     picker.captureSkills = captureSkills;
-    settings.version = 8;
+    settings.version = 9;
     var capturePrompts =
       picker.capturePrompts && typeof picker.capturePrompts === "object"
         ? picker.capturePrompts
@@ -806,6 +806,10 @@
           panelMode: picker.panelMode === "scroll" ? "scroll" : "auto",
           panelPinned: panelPinned,
           suggestionsAvailable: mockSuggestionsAvailable(),
+          locale:
+            mockStore.settings.app.language === "system"
+              ? "zh"
+              : mockStore.settings.app.language,
         },
       });
     }

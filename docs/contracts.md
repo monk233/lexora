@@ -218,9 +218,9 @@ lexora/
   "picker": {"visible":false,"pinned":false},
   "loginItem": {"supported":true,"enabled":false},
   "promptDefaults": {                       // 系统默认提示词，供设置页 textarea 预填
-    "translate": "You are a professional translation engine. Translate the user's text into {target}. ...",
-    "summarize": "You are a concise Chinese writing assistant. ...",
-    "explain": "You are a knowledge assistant. ..."
+    "translate": "You are a professional translator. Translate the user's text into {target}. ...",
+    "summarize": "You are a concise writing assistant. Summarize the user's text in {answer} in 3-5 key points. ...",
+    "explain": "You are a knowledge assistant. Explain the user's text in {answer}: ..."
   }
 }
 ```

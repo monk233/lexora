@@ -496,7 +496,7 @@ pub fn create_capture_window(
     // (the page still re-reads it from the backend state on every capture).
     let language = state(app)
         .map(|app_state| app_state.settings.get().effective_language())
-        .unwrap_or("zh");
+        .unwrap_or("en");
     let window = WebviewWindowBuilder::new(
         app,
         label.as_str(),

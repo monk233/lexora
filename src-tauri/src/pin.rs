@@ -374,7 +374,7 @@ pub fn create_pin(
     let language = app
         .try_state::<Arc<AppState>>()
         .map(|app_state| app_state.settings.get().effective_language())
-        .unwrap_or("zh");
+        .unwrap_or("en");
     let label = label_for(id);
     let window = match WebviewWindowBuilder::new(
         app,

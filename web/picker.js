@@ -471,12 +471,13 @@
     return LANGUAGE_VALUES[value] ? value : FALLBACK_TARGET_LANG;
   }
 
-  /* Fill the target-language dropdown from the shared language table. Language
-   * names stay untranslated (LP.languageLabel owns them). */
+  /* Fill the target-language dropdown from the shared language table. Labels
+   * come from LP.languageLabel so a locale switch can rebuild the options. */
   function populateTargetLanguages() {
     if (!panelTargetSelect) {
       return;
     }
+    var selected = String(panelTargetSelect.value || "");
     panelTargetSelect.innerHTML = "";
     LANGUAGE_LIST.forEach(function (language) {
       var option = document.createElement("option");
@@ -487,7 +488,9 @@
           : language.label;
       panelTargetSelect.appendChild(option);
     });
-    panelTargetSelect.value = FALLBACK_TARGET_LANG;
+    panelTargetSelect.value = LANGUAGE_VALUES[selected]
+      ? selected
+      : FALLBACK_TARGET_LANG;
   }
 
   function setPanelLanguage(targetLang) {
@@ -3423,6 +3426,7 @@
     if (localeChanged) {
       // The toolbar was rebuilt above; refresh the remaining translated chrome
       // that is already built instead of re-opening the panel/menu.
+      populateTargetLanguages();
       syncPanelPin();
       renderPanelFoot();
       syncPanelTitle();

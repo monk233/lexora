@@ -248,6 +248,27 @@
     return LP.PRESET_MAP[String(id || "")] || null;
   };
 
+  /* Localized preset copy for render sites; the metadata above is the fallback
+   * for packs that do not know a preset id yet. */
+  LP.presetLabel = function (id) {
+    var preset = LP.presetFor(id);
+    var key = "settings.preset." + String(id || "") + ".label";
+    if (LP.t) {
+      var label = LP.t(key);
+      if (label !== key) { return label; }
+    }
+    return preset ? preset.label : String(id || "");
+  };
+  LP.presetHint = function (id) {
+    var preset = LP.presetFor(id);
+    var key = "settings.preset." + String(id || "") + ".hint";
+    if (LP.t) {
+      var hint = LP.t(key);
+      if (hint !== key) { return hint; }
+    }
+    return preset && preset.hint ? preset.hint : "";
+  };
+
   /* ---- Formatting ------------------------------------------------------ */
 
   LP.formatBytes = function (bytes) {
@@ -285,14 +306,24 @@
 
   LP.platformLabel = function (app) {
     var info = app || {};
-    var name = info.platform === "windows" ? "Windows" : String(info.platform || "未知平台");
+    function localized(key, fallback) {
+      if (LP.t) {
+        var text = LP.t(key);
+        if (text !== key) { return text; }
+      }
+      return fallback;
+    }
+    var name =
+      info.platform === "windows"
+        ? localized("about.platform.windows", "Windows")
+        : String(info.platform || localized("about.platform.unknown", "Unknown platform"));
     if (info.portable) {
-      return name + " · 便携版";
+      return name + " · " + localized("about.platform.portable", "Portable");
     }
     if (info.packaged) {
-      return name + " · 安装版";
+      return name + " · " + localized("about.platform.installed", "Installed");
     }
-    return name + " · 开发版";
+    return name + " · " + localized("about.platform.dev", "Development");
   };
 
   /* ---- Small utilities ------------------------------------------------- */

@@ -186,6 +186,119 @@ test("renderAll re-applies the localized save status after a language switch", (
   context.renderAll();
   assert.equal(updateRenders, 2, "an unchanged locale leaves the update card alone");
 });
+test("local model cards and catalog rows rebuild local labels after a language switch", () => {
+  function listNode() {
+    const node = element("div", "");
+    Object.defineProperty(node, "innerHTML", {
+      get() { return ""; },
+      set() { node.children.length = 0; },
+    });
+    return node;
+  }
+  function textOf(node) {
+    return [node.textContent || ""].concat(node.children.map(textOf)).join(" ");
+  }
+  const nodes = {
+    "engine-dot": element("div", ""),
+    "engine-title": element("div", ""),
+    "engine-sub": element("div", ""),
+    "download-engine": element("div", ""),
+    "cancel-engine-download": element("div", ""),
+    "local-models": listNode(),
+    "local-models-hint": element("div", ""),
+    catalog: element("section", ""),
+    "catalog-list": listNode(),
+    "toggle-catalog": element("button", ""),
+  };
+  const state = {
+    engine: { engineAvailable: true, localState: "ready" },
+    models: [
+      {
+        file: "qwen3.5-2b-q3-k-m.gguf",
+        name: "Qwen3.5 2B Q3_K_M",
+        catalogId: "qwen3.5-2b-q3-k-m",
+        sizeBytes: 1117320736,
+      },
+      { file: "legacy.gguf", name: "Legacy", catalogId: "", sizeBytes: 42 },
+    ],
+    catalog: [
+      {
+        id: "qwen3.5-2b-q3-k-m",
+        name: "Qwen3.5 2B Q3_K_M",
+        filename: "qwen3.5-2b-q3-k-m.gguf",
+        sizeBytes: 1117320736,
+        vision: true,
+        installed: true,
+      },
+    ],
+    settings: {
+      provider: { local: { selectedModel: "qwen3.5-2b-q3-k-m" } },
+    },
+  };
+  const context = vm.createContext({
+    Object,
+    Promise,
+    window: {},
+    document: { createElement: element },
+    state,
+    catalogOpen: true,
+    localBusy: false,
+    localAction: "",
+    removingModels: Object.create(null),
+    byId: (id) => nodes[id],
+    el: element,
+    isQwen35: (id) => /^qwen3\.5-(?:0\.8b|2b|4b)-q[34]-k-m$/.test(String(id || "")),
+    selectedLocalModel: () => "qwen3.5-2b-q3-k-m",
+    recommendedModelId: () => "qwen3.5-2b-q3-k-m",
+    activeDownload: () => null,
+    activeModelDownloadIds: () => [],
+    setTone() {},
+    setHidden(node, hidden) { node.hidden = hidden; },
+    renderEngineProgress() {},
+    renderHardwareRecommendation() {},
+    renderLocalState() {},
+    updateCatalogProgress() {},
+    toast() {},
+    save() {},
+    API: {},
+  });
+  for (const file of ["constants.js", "messages.zh.js", "messages.en.js", "i18n.js"]) {
+    vm.runInContext(
+      fs.readFileSync(require("node:path").join(__dirname, "shared", file), "utf8"),
+      context
+    );
+  }
+  context.LP = context.window.LP;
+  context.LP.i18n.init("zh");
+  for (const name of ["modelRole", "localModelRow", "catalogRow", "renderLocale", "renderCatalog", "renderLocal"]) {
+    vm.runInContext(extract(name), context);
+  }
+
+  context.renderLocal();
+  const cards = nodes["local-models"];
+  const catalog = nodes["catalog-list"];
+  assert.match(textOf(cards), /翻译 \/ 通用 \/ 视觉/);
+  assert.match(textOf(cards), /已选择/);
+  assert.match(textOf(cards), /推荐/);
+  assert.match(textOf(cards), /删除/);
+  assert.match(textOf(catalog), /已安装/);
+  const zhCard = cards.children[0];
+
+  // An unchanged locale must keep the already-built rows.
+  context.renderLocal();
+  assert.equal(cards.children[0], zhCard, "same-locale render keeps the model card");
+
+  context.LP.i18n.init("en");
+  context.renderLocal();
+  assert.notEqual(cards.children[0], zhCard, "language switch rebuilds the model card");
+  assert.match(textOf(cards), /Translation \/ General \/ Vision/);
+  assert.match(textOf(cards), /Selected/);
+  assert.match(textOf(cards), /Recommended/);
+  assert.match(textOf(cards), /Delete/);
+  assert.match(textOf(catalog), /Installed/);
+  assert.doesNotMatch(textOf(cards), /翻译 \/ 通用 \/ 视觉|已选择|推荐/);
+});
+
 test("the API key toggle label follows its expanded state across a language switch", () => {
   const nodes = {
     "api-key-toggle": element("button", ""),

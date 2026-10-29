@@ -18,7 +18,7 @@ async function checkSettingsMerge(withSharedHelpers) {
   const api = window.settingsAPI;
   let result = await api.getState();
   assert.equal(result.ok, true);
-  assert.equal(result.state.settings.version, 8);
+  assert.equal(result.state.settings.version, 9);
   assert.ok(result.state.promptDefaults.translate.includes("entire translation"));
   assert.ok(result.state.promptDefaults.wordLookup.includes("dictionary assistant"));
   assert.equal(Object.hasOwn(result.state.settings.picker, "wordLookupMode"), false);

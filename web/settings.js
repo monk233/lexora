@@ -588,16 +588,45 @@
     }
   }
 
+  function presetOptions() {
+    return (LP.PRESETS || []).map(function (preset) {
+      return {
+        value: preset.id,
+        label: LP.presetLabel ? LP.presetLabel(preset.id) : preset.label,
+      };
+    });
+  }
+
+  /* Rebuild the preset select when the UI language changes; the saved value is
+   * re-applied by renderOnline right after. */
+  function fillPresetOptions() {
+    var select = byId("online-preset");
+    if (!select) {
+      return;
+    }
+    var locale = renderLocale();
+    if (select.getAttribute("data-locale") === locale) {
+      return;
+    }
+    fillSelect(select, presetOptions());
+    select.setAttribute("data-locale", locale);
+  }
+
   function renderOnline() {
     var online = state.settings.provider.online || {};
     var preset = LP.presetFor(online.preset);
+    fillPresetOptions();
     var presetSelect = byId("online-preset");
     if (presetSelect) {
       setSelectValue(presetSelect, preset ? preset.id : "custom");
     }
     var hint = byId("online-preset-hint");
     if (hint) {
-      hint.textContent = preset && preset.hint ? preset.hint : LP.t("settings.hint.customBaseUrl");
+      hint.textContent = preset
+        ? LP.presetHint
+          ? LP.presetHint(preset.id)
+          : preset.hint
+        : LP.t("settings.hint.customBaseUrl");
     }
     setInputValue(byId("online-base-url"), online.baseUrl || "");
     setInputValue(byId("online-api-key"), online.apiKey || "");
@@ -1033,16 +1062,19 @@
     var models = Array.isArray(state.models) ? state.models : [];
     var list = byId("local-models");
     if (list) {
-      var signature = models
-        .map(function (model) {
-          return [
-            model.file,
-            model.name,
-            model.catalogId,
-            model.sizeBytes,
-          ].join("\u0001");
-        })
-        .join("\u0002") + "#" + selectedLocalModel() + "#" + recommendedModelId() + "#" +
+      var signature =
+        renderLocale() +
+        "\u0000" +
+        models
+          .map(function (model) {
+            return [
+              model.file,
+              model.name,
+              model.catalogId,
+              model.sizeBytes,
+            ].join("\u0001");
+          })
+          .join("\u0002") + "#" + selectedLocalModel() + "#" + recommendedModelId() + "#" +
         (state.catalog || []).map(function (entry) { return entry.id + ":" + entry.installed; }).join("|");
       if (list.getAttribute("data-signature") !== signature) {
         list.setAttribute("data-signature", signature);
@@ -1251,6 +1283,8 @@
     var catalog = state.catalog || [];
     var activeIds = activeModelDownloadIds();
     var signature =
+      renderLocale() +
+      "\u0000" +
       catalog
         .map(function (entry) {
           return entry.id + ":" + (entry.installed ? 1 : 0);
@@ -4749,12 +4783,7 @@
   }
 
   function boot() {
-    fillSelect(
-      byId("online-preset"),
-      LP.PRESETS.map(function (preset) {
-        return { value: preset.id, label: preset.label };
-      })
-    );
+    fillPresetOptions();
     fillSelect(byId("default-target-lang"), targetLanguageOptions());
 
     bindEvents();

@@ -22,6 +22,14 @@ test("t() resolves the current locale, falls back to en, then to the key", () =>
   assert.equal(LP.t("missing.key"), "missing.key");
 });
 
+test("t() ignores inherited object keys and falls back to the key", () => {
+  const LP = loadI18n();
+  LP.i18n.init("en");
+  assert.equal(LP.t("constructor"), "constructor");
+  assert.equal(LP.t("toString"), "toString");
+  assert.equal(LP.t("__proto__"), "__proto__");
+});
+
 test("t() interpolates named parameters", () => {
   const LP = loadI18n();
   LP.i18n.init("en");
@@ -84,16 +92,30 @@ test("every settings.js literal lookup exists in both packs", () => {
 
 test("skill label helpers resolve the active pack and fall back to metadata", () => {
   const context = vm.createContext({ window: {}, console });
-  for (const file of ["messages.zh.js", "messages.en.js", "i18n.js", "constants.js"]) {
+  for (const file of ["messages.zh.js", "messages.en.js", "i18n.js", "constants.js", "lang.js"]) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, "shared", file), "utf8"), context);
   }
   const LP = context.window.LP;
   LP.i18n.init("en");
   assert.equal(LP.skillLabel("translate"), "Translate");
   assert.match(LP.skillDescription("translate"), /default target language/);
+  assert.equal(LP.languageLabel("ja"), "Japanese");
+  assert.equal(LP.languageLabel("unknown-code"), "unknown-code");
+  assert.equal(LP.presetLabel("ollama"), "Ollama (local)");
+  assert.equal(LP.presetHint("custom"), "Any OpenAI-compatible service URL");
+  assert.equal(LP.platformLabel({ platform: "windows", packaged: true }), "Windows · Installed");
+  LP.LANGUAGES.forEach((language) => {
+    assert.equal(LP.languageLabel(language.value), LP.t("language." + language.value));
+  });
+  LP.PRESETS.forEach((preset) => {
+    assert.equal(LP.presetLabel(preset.id), LP.t("settings.preset." + preset.id + ".label"));
+    assert.equal(LP.presetHint(preset.id), LP.t("settings.preset." + preset.id + ".hint"));
+  });
   LP.i18n.init("zh");
   assert.equal(LP.skillLabel("translate"), "翻译");
   assert.equal(LP.skillLabel("custom-not-in-pack"), "custom-not-in-pack");
+  assert.equal(LP.presetLabel("custom"), "自定义");
+  assert.equal(LP.platformLabel({ platform: "windows", portable: true }), "Windows · 便携版");
 });
 
 test("every picker.js literal lookup exists in both packs", () => {

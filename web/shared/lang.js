@@ -38,6 +38,11 @@
   };
 
   LP.languageLabel = function (code) {
-    return LP.LANG_LABELS[String(code || "")] || String(code || "");
+    var key = String(code || "").trim().toLowerCase();
+    if (LP.t) {
+      var text = LP.t("language." + key);
+      if (text !== "language." + key) { return text; }
+    }
+    return LP.LANG_LABELS[key] || String(code || "");
   };
 })();

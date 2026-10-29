@@ -40,10 +40,15 @@
     });
   }
 
+  function lookup(locale, key) {
+    var messages = pack(locale);
+    return Object.prototype.hasOwnProperty.call(messages, key) ? messages[key] : undefined;
+  }
+
   LP.t = function (key, params) {
-    var text = pack(current)[key];
+    var text = lookup(current, key);
     if (text === undefined) {
-      text = pack("en")[key];
+      text = lookup("en", key);
     }
     if (text === undefined) {
       return String(key);
