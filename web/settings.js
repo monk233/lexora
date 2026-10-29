@@ -31,7 +31,7 @@
   ).slice();
   var SEARCH_ENGINES = LP.SEARCH_ENGINES || [
     { value: "google", label: "Google" },
-    { value: "baidu", label: "百度" },
+    { value: "baidu", label: "Baidu" },
     { value: "bing", label: "Bing" },
   ];
   var CUSTOM_MODEL_VALUE = "__custom__";
@@ -111,44 +111,34 @@
   var updateChecking = false;
   var updateInstalling = false;
 
-  /* Friendly names for the legacy/common icon keys (unknown keys show as-is). */
+  /* Message keys for the friendly names of the legacy/common icon keys
+   * (unknown keys show as-is). */
   var CUSTOM_ICON_LABELS = {
-    sparkles: "灵感",
-    "wand-sparkles": "润色",
-    languages: "语言",
-    "pen-line": "书写",
-    "book-open": "阅读",
-    earth: "全球",
-    code: "代码",
-    list: "列表",
-    "message-circle": "对话",
-    lightbulb: "点子",
-    quote: "引用",
-    briefcase: "工作",
-    star: "收藏",
-    search: "搜索",
-    "circle-help": "帮助",
-    "volume-2": "朗读",
-    copy: "复制",
+    sparkles: "settings.icon.sparkles",
+    "wand-sparkles": "settings.icon.wandSparkles",
+    languages: "settings.icon.languages",
+    "pen-line": "settings.icon.penLine",
+    "book-open": "settings.icon.bookOpen",
+    earth: "settings.icon.earth",
+    code: "settings.icon.code",
+    list: "settings.icon.list",
+    "message-circle": "settings.icon.messageCircle",
+    lightbulb: "settings.icon.lightbulb",
+    quote: "settings.icon.quote",
+    briefcase: "settings.icon.briefcase",
+    star: "settings.icon.star",
+    search: "settings.icon.search",
+    "circle-help": "settings.icon.circleHelp",
+    "volume-2": "settings.icon.volume2",
+    copy: "settings.icon.copy",
   };
 
   var CUSTOM_ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 
   /* Custom skill types: "text" processes the selected text, "image" is used
    * in the screenshot overlay (capture first, then run the prompt on the
-   * cropped image with a vision model). */
-  var CUSTOM_KIND_HINTS = {
-    text: "文本技能处理选中文字：点击后直接执行提示词。",
-    image:
-      "选中文字后进入截图，对框选区域执行提示词（需视觉模型）。",
-  };
-
-  var CUSTOM_VARS_HINTS = {
-    text:
-      '变量：<code>{text}</code> 选中文本、<code>{target}</code>/<code>{language}</code> 目标语言、<code>{program}</code>/<code>{app}</code> 当前应用',
-    image:
-      '变量：<code>{target}</code>/<code>{language}</code> 目标语言、<code>{program}</code>/<code>{app}</code> 当前应用（图片内容由截图提供）',
-  };
+   * cropped image with a vision model). The hints themselves live in the
+   * message packs, keyed by kind. */
 
   /* Screenshot toolbar skills (contract §7.2/§11.2, tenth review round). Stored
    * in `picker.captureSkills`: one ordered list that mixes the built-in capture
@@ -172,62 +162,20 @@
   /* Built-in actions whose system prompt can be overridden in the settings
    * page (`picker.capturePrompts`). */
   var CAPTURE_PROMPT_ACTIONS = ["translate", "explain"];
+  /* Names and descriptions live in the message packs (`capture.<id>` /
+   * `capture.<id>.desc`); only icons stay here. */
   var CAPTURE_ACTION_META = {
-    pin: {
-      label: "钉在桌面",
-      description: "把框选区域钉成置顶窗口",
-      icon: "pin",
-    },
-    shape: {
-      label: "形状",
-      description: "添加矩形、椭圆或直线",
-      icon: "square",
-    },
-    arrow: {
-      label: "箭头",
-      description: "添加箭头",
-      icon: "arrow-up-right",
-    },
-    pen: {
-      label: "画笔",
-      description: "自由绘制笔迹",
-      icon: "pen",
-    },
-    text: {
-      label: "文字",
-      description: "添加文字",
-      icon: "type",
-    },
-    number: {
-      label: "序号",
-      description: "添加自动递增序号",
-      icon: "hash",
-    },
-    mosaic: {
-      label: "马赛克",
-      description: "涂抹打码",
-      icon: "layout-grid",
-    },
-    ocr: {
-      label: "提取文字",
-      description: "用视觉模型提取框选区域文字",
-      icon: "scan-text",
-    },
-    translate: {
-      label: "翻译",
-      description: "识别并翻译框选区域文字",
-      icon: "languages",
-    },
-    explain: {
-      label: "解释图片",
-      description: "用视觉模型解释图片内容",
-      icon: "lightbulb",
-    },
-    longshot: {
-      label: "长截图",
-      description: "自动滚动并拼接长图",
-      icon: "scroll",
-    },
+    pin: { icon: "pin" },
+    shape: { icon: "square" },
+    arrow: { icon: "arrow-up-right" },
+    pen: { icon: "pen" },
+    text: { icon: "type" },
+    number: { icon: "hash" },
+    mosaic: { icon: "layout-grid" },
+    ocr: { icon: "scan-text" },
+    translate: { icon: "languages" },
+    explain: { icon: "lightbulb" },
+    longshot: { icon: "scroll" },
   };
 
   /* Inline SVG markup shared by the skill rows (pencil / trash). */
@@ -1305,13 +1253,40 @@
     });
   }
 
+  /* Target-language labels come from the packs so the dropdown follows the UI
+   * language; a code the pack does not know yet keeps its shared label. */
+  function targetLanguageOptions() {
+    return (LP.TARGET_LANGS || []).map(function (language) {
+      var key = "settings.targetLang." + language.value;
+      var label = LP.t(key);
+      return {
+        value: language.value,
+        label: label === key ? language.label : label,
+      };
+    });
+  }
+
+  function fillTargetLanguageOptions(select) {
+    if (!select) {
+      return;
+    }
+    var locale = LP.i18n && LP.i18n.currentLocale ? LP.i18n.currentLocale() : "";
+    if (select.getAttribute("data-locale") === locale) {
+      return;
+    }
+    fillSelect(select, targetLanguageOptions());
+    select.setAttribute("data-locale", locale);
+  }
+
   function renderPicker() {
     var picker = state.settings.picker || {};
     setChecked(byId("picker-enabled"), picker.enabled !== false);
     setChecked(byId("picker-compact"), picker.compact === true);
     renderPanelMode();
     renderHotkey();
-    setSelectValue(byId("default-target-lang"), picker.defaultTargetLang || "auto");
+    var langSelect = byId("default-target-lang");
+    fillTargetLanguageOptions(langSelect);
+    setSelectValue(langSelect, picker.defaultTargetLang || "auto");
     renderSkills();
     renderCustomSkillEditor(false);
     renderBlacklist();
@@ -1607,7 +1582,9 @@
       seen[id] = true;
       result.push({
         id: id,
-        label: String(entry.label || "").trim() || "自定义技能",
+        label:
+          String(entry.label || "").trim() ||
+          LP.t("settings.skill.customFallback"),
         icon: validCustomIcon(entry.icon),
         prompt: String(entry.prompt || ""),
         kind: customSkillKind(entry),
@@ -1661,15 +1638,24 @@
     return LP.DEFAULT_SEARCH_ENGINE || "google";
   }
 
+  /* Display name comes from the pack so brands are localized; an engine the
+   * pack does not know yet keeps its shared label. */
+  function searchEngineLabel(engine) {
+    var key = "settings.searchEngine." + engine.value;
+    var label = LP.t(key);
+    return label === key ? engine.label : label;
+  }
+
   function searchEnginePanel() {
     var panel = el("div", "skill-prompt search-engine-panel");
     panel.id = "search-engine-panel";
     var current = currentSearchEngine();
     var group = el("div", "search-engine-list");
     group.setAttribute("role", "radiogroup");
-    group.setAttribute("aria-label", "搜索引擎");
+    group.setAttribute("aria-label", LP.t("settings.aria.searchEngine"));
     SEARCH_ENGINES.forEach(function (engine) {
       var selected = engine.value === current;
+      var name = searchEngineLabel(engine);
       var button = el(
         "button",
         "search-engine-option" + (selected ? " is-selected" : "")
@@ -1678,8 +1664,11 @@
       button.setAttribute("data-search-engine", engine.value);
       button.setAttribute("role", "radio");
       button.setAttribute("aria-checked", selected ? "true" : "false");
-      button.setAttribute("aria-label", "使用" + engine.label + "搜索");
-      button.appendChild(el("span", "search-engine-name", engine.label));
+      button.setAttribute(
+        "aria-label",
+        LP.t("settings.aria.searchWith", { engine: name })
+      );
+      button.appendChild(el("span", "search-engine-name", name));
       if (engine.url) {
         var host = String(engine.url)
           .replace(/^https?:\/\//, "")
@@ -1693,7 +1682,7 @@
       el(
         "p",
         "skill-prompt-hint",
-        "搜索技能会在所选搜索引擎中打开选中的文本；选择后立即保存"
+        LP.t("settings.hint.searchEngine")
       )
     );
     return panel;
@@ -1742,7 +1731,7 @@
     return result;
   }
 
-  /* ---- Skill categories (文字技能 / 图片技能 tabs) ----------------------- */
+  /* ---- Skill categories (text / image tabs) ---------------------------- */
 
   /* Built-in skills all live in the text-skill tab, including the screenshot
    * entry skill (fourth review round); the image tab lists the screenshot
@@ -1919,7 +1908,7 @@
     );
   }
 
-  /* ---- Screenshot toolbar skills (图片技能 Tab 统一列表) ----------------- */
+  /* ---- Screenshot toolbar skills (unified image-tab list) --------------- */
 
   /* Custom image skills by id; a row with a `custom-` id renders as a custom
    * skill row instead of a built-in action row. */
@@ -2007,7 +1996,7 @@
         var detail = custom
           ? custom.label + "\u0003" + custom.icon + "\u0003" + custom.prompt
           : CAPTURE_ACTION_META[id]
-            ? CAPTURE_ACTION_META[id].description
+            ? id
             : "";
         return id + ":" + (enabled.indexOf(id) >= 0 ? 1 : 0) + ":" + detail;
       })
@@ -2032,8 +2021,11 @@
   function skillDragHandle(enabled) {
     var drag = el("span", "skill-drag");
     drag.setAttribute("role", "img");
-    drag.setAttribute("aria-label", enabled ? "拖动排序" : "启用后可拖动排序");
-    drag.title = enabled ? "拖动排序" : "启用后可拖动排序";
+    var dragLabel = LP.t(
+      enabled ? "settings.aria.dragReorder" : "settings.aria.dragReorderDisabled"
+    );
+    drag.setAttribute("aria-label", dragLabel);
+    drag.title = dragLabel;
     drag.innerHTML =
       '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' +
       '<circle cx="9" cy="6" r="1.5"></circle><circle cx="15" cy="6" r="1.5"></circle>' +
@@ -2049,7 +2041,10 @@
     input.type = "checkbox";
     input.checked = enabled;
     input.setAttribute(attribute, id);
-    input.setAttribute("aria-label", "启用" + label);
+    input.setAttribute(
+      "aria-label",
+      LP.t("settings.aria.enableSkill", { name: label })
+    );
     var track = el("span", "switch-track");
     var thumb = el("span", "switch-thumb");
     track.appendChild(thumb);
@@ -2060,6 +2055,7 @@
 
   function captureActionRow(id, enabled) {
     var meta = CAPTURE_ACTION_META[id];
+    var name = LP.t("capture." + id);
     var row = el("li", "skill-item" + (enabled ? "" : " is-disabled"));
     row.setAttribute("data-capture-skill", id);
 
@@ -2076,31 +2072,34 @@
 
     var main = el("div", "skill-main");
     var nameRow = el("div", "skill-name-row");
-    nameRow.appendChild(el("span", "skill-name", meta.label));
+    nameRow.appendChild(el("span", "skill-name", name));
     main.appendChild(nameRow);
-    main.appendChild(el("span", "skill-desc", meta.description));
+    main.appendChild(el("span", "skill-desc", LP.t("capture." + id + ".desc")));
     line.appendChild(main);
 
     if (isCapturePromptSkill(id)) {
       var editButton = el("button", "skill-edit");
       editButton.type = "button";
       editButton.setAttribute("data-capture-prompt-toggle", id);
-      editButton.setAttribute("aria-label", "编辑提示词");
+      editButton.setAttribute(
+        "aria-label",
+        LP.t("settings.action.editPrompt")
+      );
       editButton.setAttribute(
         "aria-expanded",
         capturePromptExpanded[id] ? "true" : "false"
       );
-      editButton.title = "编辑提示词";
+      editButton.title = LP.t("settings.action.editPrompt");
       editButton.innerHTML = SKILL_PENCIL_SVG;
       line.appendChild(editButton);
     }
 
     line.appendChild(
-      skillSwitchNode("data-capture-toggle", id, enabled, meta.label)
+      skillSwitchNode("data-capture-toggle", id, enabled, name)
     );
     row.appendChild(line);
     if (isCapturePromptSkill(id) && capturePromptExpanded[id]) {
-      row.appendChild(capturePromptPanel(id, meta));
+      row.appendChild(capturePromptPanel(id));
     }
     return row;
   }
@@ -2125,8 +2124,12 @@
     var main = el("div", "skill-main");
     var nameRow = el("div", "skill-name-row");
     nameRow.appendChild(el("span", "skill-name", custom.label));
-    var badge = el("span", "skill-kind-badge", "图片");
-    badge.title = "图片技能：点击后进入截图";
+    var badge = el(
+      "span",
+      "skill-kind-badge",
+      LP.t("settings.skillKind.image")
+    );
+    badge.title = LP.t("settings.badge.imageSkillTitle");
     nameRow.appendChild(badge);
     main.appendChild(nameRow);
     var description = String(custom.prompt || "")
@@ -2144,16 +2147,22 @@
       "aria-expanded",
       customEditorOpen && customEditingId === id ? "true" : "false"
     );
-    customEdit.setAttribute("aria-label", "编辑技能");
-    customEdit.title = "编辑技能";
+    customEdit.setAttribute(
+      "aria-label",
+      LP.t("settings.action.editSkill")
+    );
+    customEdit.title = LP.t("settings.action.editSkill");
     customEdit.innerHTML = SKILL_PENCIL_SVG;
     line.appendChild(customEdit);
 
     var customDelete = el("button", "skill-delete");
     customDelete.type = "button";
     customDelete.setAttribute("data-custom-delete", id);
-    customDelete.setAttribute("aria-label", "删除技能" + custom.label);
-    customDelete.title = "删除技能";
+    customDelete.setAttribute(
+      "aria-label",
+      LP.t("settings.aria.deleteSkill", { name: custom.label })
+    );
+    customDelete.title = LP.t("settings.action.deleteSkill");
     customDelete.innerHTML = SKILL_TRASH_SVG;
     line.appendChild(customDelete);
 
@@ -2238,7 +2247,11 @@
 
     var foot = el("div", "skill-prompt-foot");
     foot.appendChild(el("p", "skill-prompt-hint", hint));
-    var reset = el("button", "btn btn-ghost skill-prompt-reset", "重置为默认");
+    var reset = el(
+      "button",
+      "btn btn-ghost skill-prompt-reset",
+      LP.t("common.reset")
+    );
     reset.type = "button";
     reset.setAttribute("data-capture-prompt-reset", id);
     foot.appendChild(reset);
@@ -2249,29 +2262,29 @@
   /* The screenshot translate action owns two prompts, mirroring text
    * translation: ordinary translation plus the dictionary prompt used when
    * the OCR text is classified as a single word or short term. */
-  function capturePromptPanel(id, meta) {
+  function capturePromptPanel(id) {
     if (id === "translate") {
       var group = el("div", "skill-prompt-group");
       group.appendChild(
         capturePromptBlock(
           "translate",
-          "翻译提示词",
-          "整句、段落等普通翻译使用；支持 {target} 占位符"
+          LP.t("settings.prompt.translate"),
+          LP.t("settings.prompt.translateHint")
         )
       );
       group.appendChild(
         capturePromptBlock(
           "wordLookup",
-          "单词查询提示词",
-          "识别结果为单个单词或短语时使用；支持 {target}，可要求模型输出音标或拼音"
+          LP.t("settings.prompt.wordLookup"),
+          LP.t("settings.prompt.wordLookupHintCapture")
         )
       );
       return group;
     }
     return capturePromptBlock(
       id,
-      meta.label + "提示词",
-      "留空或重置后使用系统默认提示词"
+      LP.t("settings.prompt.forSkill", { skill: LP.t("capture." + id) }),
+      LP.t("settings.hint.capturePrompt")
     );
   }
 
@@ -2323,7 +2336,7 @@
     if (textarea) {
       textarea.value = capturePromptDefault(id);
     }
-    toast("已重置为默认提示词", "success");
+    toast(LP.t("settings.toast.promptReset"), "success");
   }
 
   /* Click handler for the unified image-skill list: prompt editors plus custom
@@ -2481,7 +2494,10 @@
             .replace(/\s+/g, " ")
             .trim(),
         }
-      : (LP.SKILL_MAP && LP.SKILL_MAP[id]) || { label: id, description: "" };
+      : {
+          label: LP.t("skill." + id),
+          description: LP.t("skill." + id + ".desc"),
+        };
     var row = el("li", "skill-item" + (enabled ? "" : " is-disabled"));
     row.setAttribute("data-skill", id);
 
@@ -2492,8 +2508,11 @@
 
     var drag = el("span", "skill-drag");
     drag.setAttribute("role", "img");
-    drag.setAttribute("aria-label", enabled ? "拖动排序" : "启用后可拖动排序");
-    drag.title = enabled ? "拖动排序" : "启用后可拖动排序";
+    var dragLabel = LP.t(
+      enabled ? "settings.aria.dragReorder" : "settings.aria.dragReorderDisabled"
+    );
+    drag.setAttribute("aria-label", dragLabel);
+    drag.title = dragLabel;
     drag.innerHTML =
       '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' +
       '<circle cx="9" cy="6" r="1.5"></circle><circle cx="15" cy="6" r="1.5"></circle>' +
@@ -2526,8 +2545,11 @@
         "aria-expanded",
         customEditorOpen && customEditingId === id ? "true" : "false"
       );
-      customEdit.setAttribute("aria-label", "编辑技能");
-      customEdit.title = "编辑技能";
+      customEdit.setAttribute(
+        "aria-label",
+        LP.t("settings.action.editSkill")
+      );
+      customEdit.title = LP.t("settings.action.editSkill");
       customEdit.innerHTML =
         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>';
       line.appendChild(customEdit);
@@ -2535,8 +2557,11 @@
       var removeButton = el("button", "skill-delete");
       removeButton.type = "button";
       removeButton.setAttribute("data-custom-delete", id);
-      removeButton.setAttribute("aria-label", "删除技能" + meta.label);
-      removeButton.title = "删除技能";
+      removeButton.setAttribute(
+        "aria-label",
+        LP.t("settings.aria.deleteSkill", { name: meta.label })
+      );
+      removeButton.title = LP.t("settings.action.deleteSkill");
       removeButton.innerHTML =
         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"></path><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path></svg>';
       line.appendChild(removeButton);
@@ -2544,12 +2569,15 @@
       var editButton = el("button", "skill-edit");
       editButton.type = "button";
       editButton.setAttribute("data-prompt-toggle", id);
-      editButton.setAttribute("aria-label", "编辑提示词");
+      editButton.setAttribute(
+        "aria-label",
+        LP.t("settings.action.editPrompt")
+      );
       editButton.setAttribute(
         "aria-expanded",
         promptExpanded[id] ? "true" : "false"
       );
-      editButton.title = "编辑提示词";
+      editButton.title = LP.t("settings.action.editPrompt");
       editButton.innerHTML =
         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>';
       line.appendChild(editButton);
@@ -2557,12 +2585,15 @@
       var configButton = el("button", "skill-edit");
       configButton.type = "button";
       configButton.setAttribute("data-search-config", "1");
-      configButton.setAttribute("aria-label", "配置搜索");
+      configButton.setAttribute(
+        "aria-label",
+        LP.t("settings.action.configureSearch")
+      );
       configButton.setAttribute(
         "aria-expanded",
         searchPanelOpen ? "true" : "false"
       );
-      configButton.title = "配置搜索";
+      configButton.title = LP.t("settings.action.configureSearch");
       configButton.innerHTML =
         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h10"></path><path d="M4 17h6"></path><path d="M18 7v10"></path><circle cx="16" cy="7" r="2"></circle><circle cx="12" cy="17" r="2"></circle></svg>';
       line.appendChild(configButton);
@@ -2573,7 +2604,10 @@
     input.type = "checkbox";
     input.checked = enabled;
     input.setAttribute("data-skill-toggle", id);
-    input.setAttribute("aria-label", "启用" + meta.label);
+    input.setAttribute(
+      "aria-label",
+      LP.t("settings.aria.enableSkill", { name: meta.label })
+    );
     var track = el("span", "switch-track");
     var thumb = el("span", "switch-thumb");
     track.appendChild(thumb);
@@ -2648,7 +2682,11 @@
 
     var foot = el("div", "skill-prompt-foot");
     foot.appendChild(el("p", "skill-prompt-hint", hint));
-    var reset = el("button", "btn btn-ghost skill-prompt-reset", "重置为默认");
+    var reset = el(
+      "button",
+      "btn btn-ghost skill-prompt-reset",
+      LP.t("common.reset")
+    );
     reset.type = "button";
     reset.setAttribute("data-prompt-reset", id);
     foot.appendChild(reset);
@@ -2665,23 +2703,23 @@
       group.appendChild(
         promptBlock(
           "translate",
-          "翻译提示词",
-          "整句、段落等普通翻译使用；支持 {target} 占位符"
+          LP.t("settings.prompt.translate"),
+          LP.t("settings.prompt.translateHint")
         )
       );
       group.appendChild(
         promptBlock(
           "wordLookup",
-          "单词查询提示词",
-          "自动识别到单个单词或短语时使用；支持 {target}，可要求模型输出音标或拼音"
+          LP.t("settings.prompt.wordLookup"),
+          LP.t("settings.prompt.wordLookupHint")
         )
       );
       return group;
     }
     return promptBlock(
       id,
-      meta.label + "提示词",
-      "留空或重置后使用系统默认提示词；支持 {target} 占位符"
+      LP.t("settings.prompt.forSkill", { skill: meta.label }),
+      LP.t("settings.hint.skillPrompt")
     );
   }
 
@@ -2731,7 +2769,7 @@
     if (textarea) {
       textarea.value = promptDefault(id);
     }
-    toast("已重置为默认提示词", "success");
+    toast(LP.t("settings.toast.promptReset"), "success");
   }
 
   /* ---- Custom skill editor --------------------------------------------- */
@@ -2759,8 +2797,9 @@
     button.classList.add("is-armed");
     button.setAttribute("data-saved-title", button.title || "");
     button.setAttribute("data-saved-label", button.getAttribute("aria-label") || "");
-    button.title = "再次点击确认删除";
-    button.setAttribute("aria-label", "再次点击确认删除");
+    var confirmLabel = LP.t("settings.action.confirmDeleteAgain");
+    button.title = confirmLabel;
+    button.setAttribute("aria-label", confirmLabel);
     if (armedLabel) {
       button.setAttribute("data-saved-text", button.textContent || "");
       button.textContent = armedLabel;
@@ -2828,9 +2867,12 @@
     }
     var current = byId("custom-skill-icon-current");
     if (current) {
-      var friendly = CUSTOM_ICON_LABELS[key] || "";
+      var labelKey = CUSTOM_ICON_LABELS[key];
+      var friendly = labelKey ? LP.t(labelKey) : "";
       current.textContent = key;
-      current.title = friendly ? key + "（" + friendly + "）" : key;
+      current.title = friendly
+        ? LP.t("settings.icon.title", { key: key, label: friendly })
+        : key;
     }
   }
 
@@ -2843,7 +2885,9 @@
     var toggle = byId("toggle-icon-picker");
     if (toggle) {
       toggle.setAttribute("aria-expanded", iconPickerOpen ? "true" : "false");
-      toggle.textContent = iconPickerOpen ? "收起图标" : "更换图标";
+      toggle.textContent = iconPickerOpen
+        ? LP.t("settings.action.hideIcons")
+        : LP.t("settings.action.changeIcon");
     }
     if (!iconPickerOpen) {
       return;
@@ -2874,11 +2918,11 @@
     });
     var hint = byId("custom-skill-kind-hint");
     if (hint) {
-      hint.textContent = CUSTOM_KIND_HINTS[kind] || CUSTOM_KIND_HINTS.text;
+      hint.textContent = LP.t("settings.hint.customKind." + kind);
     }
     var varsHint = byId("custom-skill-vars-hint");
     if (varsHint) {
-      varsHint.innerHTML = CUSTOM_VARS_HINTS[kind] || CUSTOM_VARS_HINTS.text;
+      varsHint.innerHTML = LP.t("settings.varsHint." + kind);
     }
   }
 
@@ -2914,8 +2958,12 @@
         button.setAttribute("data-icon-key", key);
         button.setAttribute("role", "radio");
         button.setAttribute("aria-checked", key === selected ? "true" : "false");
-        var label = CUSTOM_ICON_LABELS[key] || key;
-        button.setAttribute("aria-label", "图标：" + label);
+        var labelKey = CUSTOM_ICON_LABELS[key];
+        var label = labelKey ? LP.t(labelKey) : key;
+        button.setAttribute(
+          "aria-label",
+          LP.t("settings.aria.icon", { label: label })
+        );
         button.title = key;
         button.innerHTML = LP.skillIconSvg(key);
         grid.appendChild(button);
@@ -2944,7 +2992,9 @@
     setHidden(editor, false);
     var title = byId("custom-skill-editor-title");
     if (title) {
-      title.textContent = customEditingId ? "编辑技能" : "新增技能";
+      title.textContent = customEditingId
+        ? LP.t("settings.editor.editTitle")
+        : LP.t("settings.editor.newTitle");
     }
     setHidden(byId("delete-custom-skill"), !customEditingId);
     renderIconPreview();
@@ -2956,7 +3006,9 @@
         "aria-expanded",
         iconPickerOpen ? "true" : "false"
       );
-      iconToggle.textContent = iconPickerOpen ? "收起图标" : "更换图标";
+      iconToggle.textContent = iconPickerOpen
+        ? LP.t("settings.action.hideIcons")
+        : LP.t("settings.action.changeIcon");
     }
     if (syncFields) {
       assignFieldValue(
@@ -2977,7 +3029,7 @@
     var targetId = String(id || "");
     var custom = targetId ? findCustomSkill(targetId) : null;
     if (targetId && !custom) {
-      toast("技能不存在，可能已被删除", "error");
+      toast(LP.t("settings.error.skillMissing"), "error");
       refreshState();
       return;
     }
@@ -3059,14 +3111,17 @@
       .trim();
     var prompt = String(promptInput ? promptInput.value : customDraft.prompt).trim();
     if (!label) {
-      showInlineError(errorNode, "请填写技能名称（最多 20 个字符）");
+      showInlineError(
+        errorNode,
+        LP.t("settings.error.skillNameRequired")
+      );
       if (nameInput && nameInput.focus) {
         nameInput.focus();
       }
       return;
     }
     if (label.length > 20) {
-      showInlineError(errorNode, "技能名称最多 20 个字符");
+      showInlineError(errorNode, LP.t("settings.error.skillNameTooLong"));
       if (nameInput && nameInput.focus) {
         nameInput.focus();
       }
@@ -3075,9 +3130,11 @@
     if (!prompt) {
       showInlineError(
         errorNode,
-        customDraft.kind === "image"
-          ? "请填写提示词，可使用 {target}、{language}、{program}、{app} 变量"
-          : "请填写提示词，可使用 {text}、{target}、{language}、{program}、{app} 变量"
+        LP.t(
+          customDraft.kind === "image"
+            ? "settings.error.promptRequiredImage"
+            : "settings.error.promptRequiredText"
+        )
       );
       if (promptInput && promptInput.focus) {
         promptInput.focus();
@@ -3085,7 +3142,7 @@
       return;
     }
     if (prompt.length > 4000) {
-      showInlineError(errorNode, "提示词最多 4000 个字符");
+      showInlineError(errorNode, LP.t("settings.error.promptTooLong"));
       if (promptInput && promptInput.focus) {
         promptInput.focus();
       }
@@ -3105,7 +3162,10 @@
         }
       });
       if (index < 0) {
-        showInlineError(errorNode, "技能不存在，可能已被删除");
+        showInlineError(
+          errorNode,
+          LP.t("settings.error.skillMissing")
+        );
         refreshState();
         return;
       }
@@ -3117,7 +3177,7 @@
         kind: kind,
       };
       id = editingId;
-      labelText = "已保存技能「" + label + "」";
+      labelText = LP.t("settings.toast.skillSaved", { label: label });
     } else {
       id = generateCustomSkillId(customs);
       customs.push({
@@ -3127,7 +3187,7 @@
         prompt: prompt,
         kind: kind,
       });
-      labelText = "已添加技能「" + label + "」";
+      labelText = LP.t("settings.toast.skillAdded", { label: label });
     }
     /* Keep picker.skills (text toolbar) and picker.captureSkills (screenshot
      * toolbar) in sync with the skill kind. An id already in its container
@@ -3166,7 +3226,7 @@
   function deleteCustomSkill(id) {
     var custom = findCustomSkill(id);
     if (!custom) {
-      toast("技能不存在，可能已被删除", "error");
+      toast(LP.t("settings.error.skillMissing"), "error");
       refreshState();
       return;
     }
@@ -3194,7 +3254,10 @@
         captureSkills: captureSkills,
       },
     });
-    toast("已删除技能「" + custom.label + "」", "success");
+    toast(
+      LP.t("settings.toast.skillDeleted", { label: custom.label }),
+      "success"
+    );
   }
 
   /* ---- Skill drag ordering -------------------------------------------- */
@@ -3337,7 +3400,10 @@
       var remove = el("button", "chip-remove", "×");
       remove.type = "button";
       remove.setAttribute("data-blacklist-entry", entry);
-      remove.setAttribute("aria-label", "移除 " + entry);
+      remove.setAttribute(
+        "aria-label",
+        LP.t("settings.aria.removeBlacklist", { name: entry })
+      );
       chip.appendChild(remove);
       wrap.appendChild(chip);
     });
@@ -4042,7 +4108,7 @@
       }
     } else {
       if (skills.length <= 1) {
-        toast("至少保留一个工具栏技能", "error");
+        toast(LP.t("settings.toast.keepOneSkill"), "error");
         renderSkills(true);
         return;
       }
@@ -4060,7 +4126,7 @@
       return;
     }
     if (entry.length > 120) {
-      toast("进程名过长（最多 120 个字符）", "error");
+      toast(LP.t("settings.error.processNameTooLong"), "error");
       return;
     }
     var list = Array.isArray(state.settings.picker.blacklist)
@@ -4075,7 +4141,7 @@
       return;
     }
     if (list.length >= 200) {
-      toast("黑名单最多 200 个应用", "error");
+      toast(LP.t("settings.error.blacklistFull"), "error");
       return;
     }
     list.push(entry);
@@ -4399,7 +4465,7 @@
         function () {
           deleteCustomSkill(editingId);
         },
-        "确认删除"
+        LP.t("settings.action.confirmDelete")
       );
     });
     byId("blacklist-input").addEventListener("keydown", function (event) {
@@ -4575,7 +4641,7 @@
         return { value: preset.id, label: preset.label };
       })
     );
-    fillSelect(byId("default-target-lang"), LP.TARGET_LANGS);
+    fillSelect(byId("default-target-lang"), targetLanguageOptions());
 
     bindEvents();
 
