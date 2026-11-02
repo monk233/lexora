@@ -318,6 +318,8 @@ fn main() {
             commands::quick_ready,
             commands::quick_open,
             commands::quick_hide,
+            commands::quick_resize,
+            commands::quick_drag_panel,
             commands::quick_pin,
             commands::quick_set_hotkey,
             commands::quick_set_target_lang,

@@ -75,14 +75,16 @@
         "height": 640,
         "minWidth": 640,
         "minHeight": 420,
-        "resizable": true,
-        "decorations": true,
-        "transparent": false,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
         "visible": false,
         "center": true,
         "focus": true,
         "skipTaskbar": false,
-        "dragDropEnabled": false
+        "dragDropEnabled": false,
+        "backgroundColor": "#00000000"
       }
     ],
     "security": {

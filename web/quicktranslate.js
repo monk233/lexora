@@ -14,6 +14,26 @@
  * overlay and toasts. Streamed chunks are merged into one rAF render, the same
  * approach as the picker result panel.
  */
+/* Lexora quick-translate window (contract §6, frameless adaptive panel).
+ *
+ * The shell owns the window and the translation stream; this renderer keeps the
+ * whole UI usable in two cases:
+ *
+ *   - packaged app: `window.quickAPI` forwards to Tauri commands and
+ *     `translate-event` / `quick-show` events (web/shared/tauri-api.js). The
+ *     window is transparent and undecorated: the visible card is .qt-shell
+ *     inside a 6px transparent .qt-win padding, the top bar drags the window
+ *     (`quick_drag_panel`) and the height follows the content
+ *     (`quick_resize`, 900px wide, throttled).
+ *   - browser preview (file://): the same API runs against the in-memory mock
+ *     backend, so every interaction can be checked without Rust.
+ *
+ * Layout: top language bar (auto source -> target, swap, pin, history, close),
+ * two equal columns (source textarea / streamed Markdown translation), history
+ * overlay and toasts. Streamed chunks are merged into one rAF render, the same
+ * approach as the picker result panel. Both columns scroll internally with the
+ * scrollbars hidden.
+ */
 (function () {
   "use strict";
 
@@ -23,9 +43,26 @@
   var MAX_CHARS = 20000;
   var MAX_HISTORY = 500;
   var TOAST_MS = 4000;
+  var NO_VOICE_MESSAGE =
+    "系统未安装可用的语音包：可在 Windows 设置 → 时间和语言 → 语音 中添加";
+
+  /* Frameless window: fixed 900px width, content-driven height. */
+  var WINDOW_WIDTH = 900;
+  var MIN_WINDOW_HEIGHT = 420;
+  var MAX_WINDOW_HEIGHT = 760;
+  var MIN_SOURCE_HEIGHT = 260; // matches .qt-textarea min-height
+  var EMPTY_RESULT_HEIGHT = 120; // matches .qt-empty min-height
+  var LOADING_RESULT_HEIGHT = 44;
+  var RESIZE_THROTTLE_MS = 120;
+  var RESIZE_SCREEN_MARGIN = 80;
 
   /* ---- DOM ------------------------------------------------------------- */
 
+  var winNode = document.getElementById("qt-win");
+  var shellNode = document.getElementById("qt-shell");
+  var topbarNode = document.getElementById("qt-topbar");
+  var bodyNode = document.getElementById("qt-body");
+  var closeButton = document.getElementById("qt-close");
   var sourceInput = document.getElementById("qt-source");
   var sourceCount = document.getElementById("qt-source-count");
   var sourceClear = document.getElementById("qt-source-clear");
@@ -39,7 +76,14 @@
   var resultCount = document.getElementById("qt-result-count");
   var resultError = document.getElementById("qt-result-error");
   var copyButton = document.getElementById("qt-copy");
+  var speakButton = document.getElementById("qt-speak");
   var elapsedNode = document.getElementById("qt-elapsed");
+  var sourceHeadNode = document.getElementById("qt-source-head");
+  var sourceBodyNode = document.getElementById("qt-source-body");
+  var sourceFootNode = document.getElementById("qt-source-foot");
+  var resultHeadNode = document.getElementById("qt-result-head");
+  var resultBodyNode = document.getElementById("qt-result-body");
+  var resultFootNode = document.getElementById("qt-result-foot");
   var historyOverlay = document.getElementById("qt-history-overlay");
   var historyClose = document.getElementById("qt-history-close");
   var historySearch = document.getElementById("qt-history-search");
@@ -64,11 +108,33 @@
     startedAt: 0,
     elapsedMs: null,
     renderPending: false,
+    windowHeight: 0,
     history: [],
     historyOpen: false,
     historyQuery: "",
     historyClearArmed: false,
     clearTimer: null,
+  };
+
+  /* Window drag (top bar) and adaptive resize bookkeeping. */
+  var TOPBAR_DRAG_EXCLUDE = "button, select, input, textarea, a, label, [contenteditable]";
+  var dragState = {
+    active: false,
+    session: 0,
+    lastX: 0,
+    lastY: 0,
+    pendingX: 0,
+    pendingY: 0,
+    frame: 0,
+  };
+  var resizeState = { timer: 0, lastHeight: 0 };
+
+  /* Speech synthesis state (same flags as picker.js). */
+  var speech = {
+    utterance: null,
+    speaking: false,
+    loading: false,
+    cancelRequested: false,
   };
 
   /* ------------------------------------------------------------------ */
@@ -135,16 +201,17 @@
     });
   }
 
-  /* "842 ms"; the footer prefixes it with "耗时 ". */
+  /* "1.1 秒" (one decimal); zero/unknown shows a dash. The footer prefixes it
+   * with "耗时 ". */
   function qtFormatElapsed(milliseconds) {
     if (milliseconds === null || milliseconds === undefined || milliseconds === "") {
       return "—";
     }
     var value = Number(milliseconds);
-    if (!isFinite(value) || value < 0) {
+    if (!isFinite(value) || value <= 0) {
       return "—";
     }
-    return Math.round(value) + " ms";
+    return (value / 1000).toFixed(1) + " 秒";
   }
 
   /* History rows show "2026/11/02 10:15"; empty when the stamp is unusable. */
@@ -234,6 +301,268 @@
   }
 
   /* ------------------------------------------------------------------ */
+  /* Frameless window: drag handle + adaptive height                     */
+  /* ------------------------------------------------------------------ */
+
+  /* Interactive header elements keep their normal behaviour; the rest of the
+   * top bar acts as the window drag handle (same pattern as picker.js). */
+  function isDragExcludedTarget(target) {
+    var node = target;
+    if (node && node.nodeType !== 1) {
+      node = node.parentElement;
+    }
+    if (!node || typeof node.closest !== "function") {
+      return true;
+    }
+    return !!node.closest(TOPBAR_DRAG_EXCLUDE);
+  }
+
+  function beginWindowDrag(event) {
+    if (!event || event.button !== 0 || !topbarNode) {
+      return;
+    }
+    if (isDragExcludedTarget(event.target)) {
+      return;
+    }
+    dragState.active = true;
+    dragState.session += 1;
+    dragState.lastX = Number(event.screenX) || 0;
+    dragState.lastY = Number(event.screenY) || 0;
+    dragState.pendingX = 0;
+    dragState.pendingY = 0;
+    topbarNode.classList.add("is-dragging");
+    // No text selection / native drag while the window follows the cursor.
+    event.preventDefault();
+  }
+
+  function endWindowDrag() {
+    if (!dragState.active) {
+      return;
+    }
+    dragState.active = false;
+    if (dragState.frame) {
+      window.cancelAnimationFrame(dragState.frame);
+      dragState.frame = 0;
+    }
+    flushWindowDrag();
+    if (topbarNode) {
+      topbarNode.classList.remove("is-dragging");
+    }
+  }
+
+  /* Batches mousemove deltas into one shell call per animation frame. */
+  function queueWindowDrag(dx, dy) {
+    dragState.pendingX += dx;
+    dragState.pendingY += dy;
+    if (!dragState.frame) {
+      dragState.frame = window.requestAnimationFrame(flushWindowDrag);
+    }
+  }
+
+  function flushWindowDrag() {
+    dragState.frame = 0;
+    var dx = dragState.pendingX;
+    var dy = dragState.pendingY;
+    dragState.pendingX = 0;
+    dragState.pendingY = 0;
+    if (!dx && !dy) {
+      return;
+    }
+    if (!API || typeof API.dragPanel !== "function") {
+      endWindowDrag();
+      return;
+    }
+    var session = dragState.session;
+    var result = API.dragPanel(dx, dy);
+    // If the shell rejects the drag (command unavailable), stop the drag
+    // instead of leaving the card in the "dragging" cursor state.
+    if (result && typeof result.then === "function") {
+      result.then(function (response) {
+        if (
+          response &&
+          response.ok === false &&
+          dragState.active &&
+          dragState.session === session
+        ) {
+          endWindowDrag();
+        }
+      });
+    }
+  }
+
+  function handleWindowDragMove(event) {
+    if (!dragState.active) {
+      return;
+    }
+    if (event.buttons === 0) {
+      endWindowDrag();
+      return;
+    }
+    var x = Number(event.screenX) || 0;
+    var y = Number(event.screenY) || 0;
+    var dx = x - dragState.lastX;
+    var dy = y - dragState.lastY;
+    if (!dx && !dy) {
+      return;
+    }
+    dragState.lastX = x;
+    dragState.lastY = y;
+    queueWindowDrag(dx, dy);
+  }
+
+  function measureNodeHeight(node) {
+    if (!node) {
+      return 0;
+    }
+    var height = node.offsetHeight;
+    if (!isFinite(height) || height <= 0) {
+      var rect = node.getBoundingClientRect();
+      height = rect && isFinite(rect.height) ? rect.height : 0;
+    }
+    return height;
+  }
+
+  function verticalPadding(style) {
+    var top = parseFloat(style && style.paddingTop) || 0;
+    var bottom = parseFloat(style && style.paddingBottom) || 0;
+    return top + bottom;
+  }
+
+  function rowGap(style) {
+    var gap = parseFloat(style && style.rowGap);
+    if (!isFinite(gap)) {
+      gap = parseFloat(style && style.gap);
+    }
+    return isFinite(gap) ? gap : 0;
+  }
+
+  /* The window may never exceed the screen working area. */
+  function screenMaxWindowHeight() {
+    var available =
+      window.screen && isFinite(window.screen.availHeight) && window.screen.availHeight > 0
+        ? Number(window.screen.availHeight)
+        : MAX_WINDOW_HEIGHT + RESIZE_SCREEN_MARGIN;
+    return Math.max(
+      MIN_WINDOW_HEIGHT,
+      Math.min(MAX_WINDOW_HEIGHT, available - RESIZE_SCREEN_MARGIN)
+    );
+  }
+
+  /* Natural height of the rendered translation. A Range measures the content
+   * independently of the (stretched) result box, so the window can also shrink
+   * again when a shorter history entry is restored. */
+  function measureResultContentHeight() {
+    if (!resultNode) {
+      return 0;
+    }
+    var dataState = resultNode.getAttribute("data-state");
+    if (dataState === "empty") {
+      return EMPTY_RESULT_HEIGHT;
+    }
+    if (dataState === "loading") {
+      return LOADING_RESULT_HEIGHT;
+    }
+    if (!state.raw) {
+      return EMPTY_RESULT_HEIGHT;
+    }
+    try {
+      var range = document.createRange();
+      range.selectNodeContents(resultNode);
+      var rect = range.getBoundingClientRect();
+      if (rect && isFinite(rect.height) && rect.height > 0) {
+        // Range slightly under-measures the outer block margins.
+        return Math.ceil(rect.height) + 8;
+      }
+    } catch (error) {
+      /* fall through to scrollHeight */
+    }
+    return resultNode.scrollHeight || 0;
+  }
+
+  function computeDesiredWindowHeight() {
+    if (!winNode || !shellNode || !topbarNode || !bodyNode) {
+      return MIN_WINDOW_HEIGHT;
+    }
+    var winStyle = window.getComputedStyle(winNode);
+    var shellStyle = window.getComputedStyle(shellNode);
+    var bodyStyle = window.getComputedStyle(bodyNode);
+    var sourceBodyStyle = window.getComputedStyle(sourceBodyNode);
+    var resultBodyStyle = window.getComputedStyle(resultBodyNode);
+
+    var chrome =
+      verticalPadding(winStyle) +
+      (parseFloat(shellStyle.borderTopWidth) || 0) +
+      (parseFloat(shellStyle.borderBottomWidth) || 0) +
+      measureNodeHeight(topbarNode) +
+      verticalPadding(bodyStyle);
+
+    // Source column: header + padding + minimum editor + gap + footer row.
+    var sourceNeeded =
+      measureNodeHeight(sourceHeadNode) +
+      verticalPadding(sourceBodyStyle) +
+      MIN_SOURCE_HEIGHT +
+      rowGap(sourceBodyStyle) +
+      measureNodeHeight(sourceFootNode);
+
+    // Result column: header + padding + natural translation height + footer.
+    var errorNeeded =
+      resultError && !resultError.hidden
+        ? measureNodeHeight(resultError) + rowGap(resultBodyStyle)
+        : 0;
+    var resultNeeded =
+      measureNodeHeight(resultHeadNode) +
+      verticalPadding(resultBodyStyle) +
+      measureResultContentHeight() +
+      rowGap(resultBodyStyle) +
+      measureNodeHeight(resultFootNode) +
+      errorNeeded;
+
+    var desired = Math.round(chrome + Math.max(sourceNeeded, resultNeeded));
+    return Math.min(
+      screenMaxWindowHeight(),
+      Math.max(MIN_WINDOW_HEIGHT, desired)
+    );
+  }
+
+  function applyWindowResize() {
+    var height = computeDesiredWindowHeight();
+    state.windowHeight = height;
+    if (height === resizeState.lastHeight) {
+      return;
+    }
+    resizeState.lastHeight = height;
+    if (!API || typeof API.resize !== "function") {
+      return;
+    }
+    API.resize(WINDOW_WIDTH, height).then(
+      function (result) {
+        // Growing the window after the last paint must keep the newest stream
+        // text pinned to the bottom of the result area.
+        if (state.translating && resultNode) {
+          resultNode.scrollTop = resultNode.scrollHeight;
+        }
+        if (result && result.ok === false) {
+          console.warn("[quicktranslate] resize failed:", result.error || "");
+        }
+      },
+      function (error) {
+        console.warn("[quicktranslate] resize failed:", error);
+      }
+    );
+  }
+
+  /* Throttled to one measurement/call per ~120ms while the stream grows. */
+  function scheduleWindowResize() {
+    if (resizeState.timer) {
+      return;
+    }
+    resizeState.timer = window.setTimeout(function () {
+      resizeState.timer = 0;
+      applyWindowResize();
+    }, RESIZE_THROTTLE_MS);
+  }
+
+  /* ------------------------------------------------------------------ */
   /* Rendering                                                           */
   /* ------------------------------------------------------------------ */
 
@@ -257,6 +586,8 @@
   function updateResultCount() {
     resultCount.textContent = qtCountChars(state.raw) + " 字符";
     copyButton.disabled = !state.raw;
+    speakButton.disabled = !state.raw;
+    syncSpeakUi();
   }
 
   function renderEmptyResult() {
@@ -274,6 +605,7 @@
     wrapper.appendChild(hint);
     resultNode.appendChild(wrapper);
     updateResultCount();
+    scheduleWindowResize();
   }
 
   function renderLoading() {
@@ -290,6 +622,7 @@
     wrapper.appendChild(label);
     resultNode.appendChild(wrapper);
     resultNode.scrollTop = 0;
+    scheduleWindowResize();
   }
 
   function renderResult() {
@@ -306,9 +639,12 @@
       resultNode.textContent = state.raw;
     }
     updateResultCount();
-    if (stick) {
+    // Streaming keeps the newest text in view; after done only stick if the
+    // reader had not scrolled away.
+    if (state.translating || stick) {
       resultNode.scrollTop = resultNode.scrollHeight;
     }
+    scheduleWindowResize();
   }
 
   /* Merge streamed chunks into one rAF paint (same idea as picker.js). */
@@ -444,6 +780,189 @@
   }
 
   /* ------------------------------------------------------------------ */
+  /* Speech (Windows system voices via speechSynthesis)                  */
+  /* ------------------------------------------------------------------ */
+
+  function syncSpeakUi() {
+    if (!speakButton) {
+      return;
+    }
+    var active = !!speech.speaking;
+    speakButton.classList.toggle("is-active", active);
+    speakButton.setAttribute("aria-pressed", active ? "true" : "false");
+    // Icon-only button: the label lives in the tooltip / accessible name.
+    var label = active ? "停止朗读" : "朗读";
+    speakButton.title = label;
+    speakButton.setAttribute("aria-label", label);
+    if (!active) {
+      speakButton.disabled = !state.raw;
+    }
+  }
+
+  function clearSpeechState(utterance) {
+    if (speech.utterance !== utterance) {
+      return;
+    }
+    speech.utterance = null;
+    if (speech.speaking) {
+      speech.speaking = false;
+      syncSpeakUi();
+    }
+  }
+
+  /* Intentional stop (second click, new translation, hide, clear...):
+   * `speechSynthesis.cancel()` still fires `onerror` on the cancelled
+   * utterance - the flags below keep that path silent. */
+  function stopSpeech() {
+    var utterance = speech.utterance;
+    if (utterance) {
+      utterance.__lexoraCancelled = true;
+    }
+    speech.utterance = null;
+    speech.cancelRequested = true;
+    var synth = window.speechSynthesis;
+    if (synth) {
+      try {
+        synth.cancel();
+      } catch (error) {
+        /* ignore */
+      }
+    }
+    if (speech.speaking) {
+      speech.speaking = false;
+      syncSpeakUi();
+    }
+  }
+
+  function getVoices() {
+    return new Promise(function (resolve) {
+      var synth = window.speechSynthesis;
+      if (!synth) {
+        resolve([]);
+        return;
+      }
+      var voices = synth.getVoices() || [];
+      if (voices.length) {
+        resolve(voices);
+        return;
+      }
+      var settled = false;
+      var timer = window.setTimeout(finish, 900);
+      function finish() {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        window.clearTimeout(timer);
+        try {
+          synth.removeEventListener("voiceschanged", finish);
+        } catch (error) {
+          /* ignore */
+        }
+        try {
+          resolve(synth.getVoices() || []);
+        } catch (error) {
+          resolve([]);
+        }
+      }
+      try {
+        synth.addEventListener("voiceschanged", finish);
+      } catch (error) {
+        synth.onvoiceschanged = finish;
+      }
+    });
+  }
+
+  function pickVoice(voices, text) {
+    var wantsChinese = /[\u4e00-\u9fff]/.test(text);
+    var preferred = voices.filter(function (voice) {
+      var lang = String(voice.lang || "").toLowerCase();
+      return wantsChinese ? lang.indexOf("zh") === 0 : lang.indexOf("en") === 0;
+    });
+    return preferred[0] || voices[0] || null;
+  }
+
+  function speak(text) {
+    var value = String(text || "").trim();
+    if (!value) {
+      toast("没有可朗读的文本", "error");
+      return;
+    }
+    if (speech.speaking) {
+      stopSpeech();
+      return;
+    }
+    var synth = window.speechSynthesis;
+    if (!synth || typeof window.SpeechSynthesisUtterance !== "function") {
+      toast(NO_VOICE_MESSAGE, "error");
+      return;
+    }
+    if (speech.loading) {
+      return;
+    }
+    speech.loading = true;
+    getVoices().then(function (voices) {
+      speech.loading = false;
+      if (!voices || !voices.length) {
+        toast(NO_VOICE_MESSAGE, "error");
+        return;
+      }
+      var voice = pickVoice(voices, value);
+      var utterance = new window.SpeechSynthesisUtterance(value);
+      if (voice) {
+        utterance.voice = voice;
+        utterance.lang = voice.lang || "zh-CN";
+      }
+      utterance.rate = 1.0;
+      utterance.onend = function () {
+        clearSpeechState(utterance);
+      };
+      utterance.onerror = function (event) {
+        var wasCurrent = speech.utterance === utterance;
+        var cancelled =
+          !!utterance.__lexoraCancelled ||
+          speech.cancelRequested ||
+          (event &&
+            (event.error === "interrupted" ||
+              event.error === "canceled" ||
+              event.error === "cancelled"));
+        clearSpeechState(utterance);
+        // A user stop or a replaced utterance ends silently; only a genuine
+        // failure of the utterance we started is worth reporting.
+        if (wasCurrent && !cancelled) {
+          toast("朗读失败，请检查 Windows 的语音设置", "error");
+        }
+      };
+      speech.cancelRequested = false;
+      speech.utterance = utterance;
+      speech.speaking = true;
+      syncSpeakUi();
+      try {
+        synth.cancel();
+        synth.speak(utterance);
+      } catch (error) {
+        clearSpeechState(utterance);
+        toast("朗读失败，请检查 Windows 的语音设置", "error");
+      }
+    });
+  }
+
+  /* Reads the plain text of the Markdown translation, not its markup. */
+  function speakResult() {
+    var value = String(state.raw || "").trim();
+    if (!value) {
+      toast("没有可朗读的文本", "error");
+      return;
+    }
+    if (speech.speaking) {
+      stopSpeech();
+      return;
+    }
+    var plain = typeof LP.markdownToPlain === "function" ? LP.markdownToPlain(value) : value;
+    speak(plain);
+  }
+
+  /* ------------------------------------------------------------------ */
   /* Translation                                                         */
   /* ------------------------------------------------------------------ */
 
@@ -461,6 +980,8 @@
       sourceInput.focus();
       return;
     }
+    // A new round replaces the previous translation, so its speech too.
+    stopSpeech();
     var requestId = qtMakeRequestId();
     state.requestId = requestId;
     state.raw = "";
@@ -560,6 +1081,8 @@
     renderError(message, hint);
     elapsedNode.textContent = "耗时 —";
     copyButton.disabled = !state.raw;
+    // The error block adds a row below the result area.
+    scheduleWindowResize();
     toast(String(message == null ? "" : message) || "翻译失败", "error");
     sourceInput.focus();
   }
@@ -747,6 +1270,7 @@
     if (!entry || typeof entry !== "object") {
       return;
     }
+    stopSpeech();
     if (state.translating) {
       stopTranslate(false);
     }
@@ -849,6 +1373,8 @@
   /* ------------------------------------------------------------------ */
 
   function hideWindow() {
+    // Hiding the panel also ends any speech (contract §6).
+    stopSpeech();
     if (!API || typeof API.hide !== "function") {
       return;
     }
@@ -870,6 +1396,7 @@
     if (state.translating) {
       return;
     }
+    stopSpeech();
     var detected = qtDetectSourceLang(sourceInput.value);
     if (state.raw) {
       sourceInput.value = state.raw;
@@ -940,6 +1467,7 @@
   }
 
   function clearPanel() {
+    stopSpeech();
     if (state.translating) {
       stopTranslate(false);
     }
@@ -961,6 +1489,7 @@
       closeHistory();
     }
     refreshConfig().then(function () {
+      scheduleWindowResize();
       sourceInput.focus();
     });
   }
@@ -1010,6 +1539,12 @@
       }
     });
     copyButton.addEventListener("click", copyResult);
+    if (speakButton) {
+      speakButton.addEventListener("click", speakResult);
+    }
+    if (closeButton) {
+      closeButton.addEventListener("click", hideWindow);
+    }
     swapButton.addEventListener("click", handleSwap);
     pinButton.addEventListener("click", togglePin);
     historyToggle.addEventListener("click", function () {
@@ -1031,6 +1566,13 @@
     });
     historyClear.addEventListener("click", handleHistoryClearClick);
     document.addEventListener("keydown", handleKeydown, true);
+    if (topbarNode) {
+      topbarNode.addEventListener("mousedown", beginWindowDrag);
+      document.addEventListener("mousemove", handleWindowDragMove);
+      document.addEventListener("mouseup", endWindowDrag);
+      window.addEventListener("blur", endWindowDrag);
+    }
+    window.addEventListener("resize", scheduleWindowResize);
   }
 
   function init() {
@@ -1047,6 +1589,7 @@
     elapsedNode.textContent = "耗时 —";
     setPinUi(false);
     setTranslatingUi(false);
+    syncSpeakUi();
     bindEvents();
     if (API) {
       if (typeof API.onTranslateEvent === "function") {
@@ -1056,9 +1599,11 @@
         API.onShow(handleShow);
       }
     }
+    scheduleWindowResize();
     refreshConfig().then(function () {
       updateSourceCount();
       updateResultCount();
+      scheduleWindowResize();
       sourceInput.focus();
     });
     if (!API) {

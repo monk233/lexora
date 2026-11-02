@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize};
 
 use crate::engine::{EngineError, QUICK_MAX_TEXT_CHARS};
 use crate::settings::{
@@ -52,6 +52,14 @@ pub const MAX_HISTORY: usize = 500;
 const HISTORY_VERSION: u32 = 1;
 /// `createdAt`/`target`/`source` text cap: same limit as the panel input.
 const HISTORY_TEXT_MAX_CHARS: usize = QUICK_MAX_TEXT_CHARS;
+/// Renderer-controlled panel size limits, logical (CSS) pixels (contract §4).
+const MIN_PANEL_WIDTH: f64 = 640.0;
+const MAX_PANEL_WIDTH: f64 = 1_600.0;
+const MIN_PANEL_HEIGHT: f64 = 420.0;
+const MAX_PANEL_HEIGHT: f64 = 760.0;
+/// Free space kept between the panel and the monitor work-area edges, so the
+/// floating window never touches the taskbar or the screen border.
+const PANEL_WORK_AREA_MARGIN: f64 = 80.0;
 
 // ---------------------------------------------------------------------------
 // Source-language heuristic (contract §5, shared with the renderer)
@@ -210,6 +218,132 @@ pub fn set_pinned(app: &AppHandle, pinned: bool) -> bool {
         return false;
     };
     window.set_always_on_top(pinned).is_ok()
+}
+
+// ---------------------------------------------------------------------------
+// Borderless window geometry (contract §2/§4)
+// ---------------------------------------------------------------------------
+
+/// Current DPI scale of the panel, sanitized like the picker helpers.
+fn window_scale<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> f64 {
+    window
+        .scale_factor()
+        .ok()
+        .filter(|scale| scale.is_finite() && *scale > 0.1)
+        .unwrap_or(1.0)
+}
+
+/// Converts a logical (CSS) pixel length to physical pixels, at least 1.
+fn physical_length(logical: f64, scale: f64) -> i32 {
+    ((logical * scale).round() as i32).max(1)
+}
+
+/// Pure size clamp of [`resize`] (contract §4): width `[640, 1600]`, height
+/// `[420, min(760, work-area height - 80)]`. On a tiny work area the minimum
+/// height still wins instead of producing an invalid range.
+fn clamp_panel_size(width: f64, height: f64, work_height_logical: f64) -> (f64, f64) {
+    let max_height = (work_height_logical - PANEL_WORK_AREA_MARGIN)
+        .min(MAX_PANEL_HEIGHT)
+        .max(MIN_PANEL_HEIGHT);
+    (
+        width.clamp(MIN_PANEL_WIDTH, MAX_PANEL_WIDTH).round(),
+        height.clamp(MIN_PANEL_HEIGHT, max_height).round(),
+    )
+}
+
+/// Applies a renderer-provided logical panel size (`quick_resize`, contract §4).
+///
+/// The panel is a borderless transparent surface whose height follows the
+/// renderer content: `width`/`height` are logical (CSS) pixels, converted to
+/// physical pixels and clamped to the work area of the monitor the window
+/// currently lives on. A grown panel is kept inside the virtual desktop (the
+/// position is only written when it actually has to move). Returns the applied
+/// logical width/height, or `None` when the panel window is gone.
+pub fn resize(app: &AppHandle, width: f64, height: f64) -> Option<(f64, f64)> {
+    let window = app.get_webview_window(QUICK_LABEL)?;
+    let scale = window_scale(&window);
+    let current = window.outer_position().ok()?;
+    let current_size = window.outer_size().ok();
+    // Work area of the monitor the panel currently lives on (physical pixels).
+    let work = crate::win32::work_area_physical(current.x, current.y);
+    let work_height_logical = if work.bottom > work.top {
+        (work.bottom - work.top) as f64 / scale
+    } else {
+        MAX_PANEL_HEIGHT + PANEL_WORK_AREA_MARGIN
+    };
+    // Non-finite renderer values fall back to the current window size instead
+    // of breaking the window API.
+    let fallback_width = current_size
+        .map(|size| size.width as f64 / scale)
+        .unwrap_or(MIN_PANEL_WIDTH);
+    let fallback_height = current_size
+        .map(|size| size.height as f64 / scale)
+        .unwrap_or(MIN_PANEL_HEIGHT);
+    let requested_width = if width.is_finite() && width > 0.0 {
+        width
+    } else {
+        fallback_width
+    };
+    let requested_height = if height.is_finite() && height > 0.0 {
+        height
+    } else {
+        fallback_height
+    };
+    let (logical_width, logical_height) =
+        clamp_panel_size(requested_width, requested_height, work_height_logical);
+
+    let physical_width = physical_length(logical_width, scale);
+    let physical_height = physical_length(logical_height, scale);
+    let _ = window.set_size(PhysicalSize::new(
+        physical_width as u32,
+        physical_height as u32,
+    ));
+
+    // The grown panel may stick out of the screen: keep it inside the virtual
+    // desktop. An unchanged position never receives a redundant `set_position`.
+    let position = window.outer_position().unwrap_or(current);
+    let (x, y) = crate::win32::clamp_to_virtual_screen(
+        position.x,
+        position.y,
+        physical_width,
+        physical_height,
+    );
+    if (x, y) != (position.x, position.y) {
+        let _ = window.set_position(PhysicalPosition::new(x, y));
+    }
+    if let Some(state) = state_of(app) {
+        state.log.info(&format!(
+            "quicktranslate resized to logical={logical_width:.0}x{logical_height:.0} \
+             physical={physical_width}x{physical_height} scale={scale:.3} \
+             work_height={work_height_logical:.0}"
+        ));
+    }
+    Some((logical_width, logical_height))
+}
+
+/// Moves the borderless panel by a logical-pixel delta (`quick_drag_panel`,
+/// contract §4): the top bar drags the window, and the whole window is clamped
+/// into the virtual desktop so it can travel across monitors. Returns whether
+/// the window accepted the move (hidden/non-finite input is a no-op).
+pub fn drag_panel(app: &AppHandle, dx: f64, dy: f64) -> bool {
+    let Some(window) = app.get_webview_window(QUICK_LABEL) else {
+        return false;
+    };
+    if !window.is_visible().unwrap_or(false) || !dx.is_finite() || !dy.is_finite() {
+        return false;
+    }
+    let scale = window_scale(&window);
+    let Ok(current) = window.outer_position() else {
+        return false;
+    };
+    let size = window
+        .outer_size()
+        .unwrap_or(PhysicalSize::new(1, 1));
+    let x = current.x + (dx * scale).round() as i32;
+    let y = current.y + (dy * scale).round() as i32;
+    let (x, y) =
+        crate::win32::clamp_to_virtual_screen(x, y, size.width as i32, size.height as i32);
+    window.set_position(PhysicalPosition::new(x, y)).is_ok()
 }
 
 /// Cleanup hook for the `Destroyed` window event: the panel only goes away with
@@ -920,6 +1054,26 @@ mod tests {
             assert!(TARGET_LANGS.contains(&code), "code={code}");
             assert_ne!(code, "auto");
         }
+    }
+
+    #[test]
+    fn panel_size_follows_the_contract_limits() {
+        // Normal 1080p work area: the height is only capped at 760.
+        assert_eq!(clamp_panel_size(900.0, 640.0, 1040.0), (900.0, 640.0));
+        assert_eq!(clamp_panel_size(100.0, 100.0, 1040.0), (640.0, 420.0));
+        assert_eq!(clamp_panel_size(2_000.0, 2_000.0, 1040.0), (1_600.0, 760.0));
+        // The height follows the current monitor work area (`work - 80`).
+        assert_eq!(clamp_panel_size(900.0, 700.0, 800.0), (900.0, 700.0));
+        assert_eq!(clamp_panel_size(900.0, 750.0, 800.0), (900.0, 720.0));
+        // Tiny work areas never invert the range: the minimum height wins.
+        assert_eq!(clamp_panel_size(900.0, 700.0, 400.0), (900.0, 420.0));
+        // Fractional CSS sizes are rounded to whole logical pixels.
+        assert_eq!(clamp_panel_size(900.4, 640.6, 1040.0), (900.0, 641.0));
+        // Physical conversion is scale-aware and never produces zero.
+        assert_eq!(physical_length(900.0, 1.0), 900);
+        assert_eq!(physical_length(900.0, 1.5), 1_350);
+        assert_eq!(physical_length(900.0, 1.25), 1_125);
+        assert_eq!(physical_length(0.0, 1.0), 1);
     }
 
     #[test]

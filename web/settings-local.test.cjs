@@ -299,19 +299,53 @@ function quickHotkeyHarness(result, available = true) {
   return { context, nodes, calls };
 }
 
-test("settings page ships the quick translate card between shortcuts and app", () => {
+/* Extracts one <section class="card"> block by its `aria-labelledby` title id. */
+function cardBlock(html, titleId) {
+  const marker = 'aria-labelledby="' + titleId + '"';
+  const markerIndex = html.indexOf(marker);
+  assert.notEqual(markerIndex, -1, "missing card " + titleId);
+  const start = html.lastIndexOf("<section", markerIndex);
+  const end = html.indexOf("</section>", markerIndex);
+  assert.ok(start >= 0 && end > markerIndex, "malformed card " + titleId);
+  return html.slice(start, end);
+}
+
+test("settings cards run provider, picker, quick, shortcuts, app, about", () => {
+  const html = fs.readFileSync(require("node:path").join(__dirname, "index.html"), "utf8");
+  const order = ["card-provider-title", "card-picker-title", "card-quick-title", "card-shortcuts-title", "card-app-title", "card-about-title"];
+  const positions = order.map((id) => html.indexOf('aria-labelledby="' + id + '"'));
+  for (let index = 0; index < positions.length; index += 1) {
+    assert.ok(positions[index] >= 0, "missing card " + order[index]);
+    if (index > 0) {
+      assert.ok(positions[index] > positions[index - 1], order[index] + " must follow " + order[index - 1]);
+    }
+  }
+});
+
+test("shortcut card owns both shortcut rows; quick card keeps its own controls", () => {
   const html = fs.readFileSync(require("node:path").join(__dirname, "index.html"), "utf8");
   for (const id of ["quick-enabled", "quick-hotkey", "quick-hotkey-restore", "quick-hotkey-error", "quick-prompt", "quick-prompt-reset", "quick-history-clear"]) {
     assert.ok(html.includes('id="' + id + '"'), "missing #" + id);
   }
   assert.match(html, /<textarea[^>]*id="quick-prompt"[^>]*maxlength="4000"/s);
-  const shortcuts = html.indexOf('id="card-shortcuts-title"');
-  const quick = html.indexOf('id="card-quick-title"');
-  const app = html.indexOf('id="card-app-title"');
-  assert.ok(shortcuts >= 0 && quick > shortcuts, "quick card must follow the shortcuts card");
-  assert.ok(app > quick, "quick card must precede the app card");
-  assert.match(html, /按快捷键呼出翻译面板，再次按下隐藏/);
-  assert.match(html, /最多保留 500 条/);
+  const shortcutsCard = cardBlock(html, "card-shortcuts-title");
+  const quickCard = cardBlock(html, "card-quick-title");
+  for (const id of ["quick-hotkey", "quick-hotkey-restore", "quick-hotkey-error"]) {
+    assert.ok(shortcutsCard.includes('id="' + id + '"'), id + " must live in the shortcuts card");
+    assert.ok(!quickCard.includes('id="' + id + '"'), id + " must not live in the quick card");
+  }
+  assert.ok(
+    shortcutsCard.indexOf('id="capture-hotkey"') < shortcutsCard.indexOf('id="quick-hotkey"'),
+    "capture shortcut row keeps its place above the quick translate row"
+  );
+  assert.match(shortcutsCard, /配置 Lexora 的全局快捷键。/);
+  assert.match(shortcutsCard, /呼出快捷翻译/);
+  assert.match(shortcutsCard, /点击后按下新的组合键；需含修饰键/);
+  for (const id of ["quick-enabled", "quick-prompt", "quick-history-clear"]) {
+    assert.ok(quickCard.includes('id="' + id + '"'), id + " must stay in the quick card");
+  }
+  assert.match(quickCard, /按快捷键呼出翻译面板，再次按下隐藏/);
+  assert.match(quickCard, /最多保留 500 条/);
 });
 
 test("quick card wiring targets quickAPI and update_settings", () => {

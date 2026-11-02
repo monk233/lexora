@@ -396,8 +396,8 @@ textarea {
   font-weight: 600;
 }
 
-/* The shortcut card holds a single field row: trim the trailing card-body
- * padding so the row is balanced between the card head and the card bottom
+/* The shortcut card ends with a field row: trim the trailing card-body padding
+ * so the last row is balanced between the card head and the card bottom
  * (other cards end with a field row that already adds its own breathing room). */
 .hotkey-card .card-body {
   padding-bottom: 4px;

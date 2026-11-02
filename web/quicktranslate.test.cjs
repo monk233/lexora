@@ -158,11 +158,17 @@ test("character counter counts code points like the Rust side", () => {
   assert.equal(context.qtCountChars(12345), 5);
 });
 
-test("elapsed formatting shows integer milliseconds or a dash", () => {
-  assert.equal(context.qtFormatElapsed(842), "842 ms");
-  assert.equal(context.qtFormatElapsed(842.6), "843 ms");
-  assert.equal(context.qtFormatElapsed(0), "0 ms");
-  assert.equal(context.qtFormatElapsed("120"), "120 ms");
+test("elapsed formatting shows seconds with one decimal or a dash", () => {
+  assert.equal(context.qtFormatElapsed(842), "0.8 秒");
+  assert.equal(context.qtFormatElapsed(842.6), "0.8 秒");
+  assert.equal(context.qtFormatElapsed(1100), "1.1 秒");
+  assert.equal(context.qtFormatElapsed(1000), "1.0 秒");
+  assert.equal(context.qtFormatElapsed(499), "0.5 秒");
+  assert.equal(context.qtFormatElapsed(2500), "2.5 秒");
+  assert.equal(context.qtFormatElapsed(10000), "10.0 秒");
+  assert.equal(context.qtFormatElapsed("120"), "0.1 秒");
+  assert.equal(context.qtFormatElapsed(9), "0.0 秒");
+  assert.equal(context.qtFormatElapsed(0), "—");
   assert.equal(context.qtFormatElapsed(null), "—");
   assert.equal(context.qtFormatElapsed(undefined), "—");
   assert.equal(context.qtFormatElapsed(""), "—");

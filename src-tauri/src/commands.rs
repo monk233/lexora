@@ -1799,6 +1799,32 @@ pub fn quick_hide(app: AppHandle) -> Value {
     json!({ "ok": true })
 }
 
+/// Renderer-controlled panel size (contract §4 `quick_resize`): `width`/`height`
+/// are logical (CSS) pixels. The shell converts them to physical pixels, clamps
+/// them to `[640,1600]×[420,min(760, work-area height-80)]` and keeps the window
+/// inside the virtual desktop; the applied logical size is returned.
+#[tauri::command]
+pub fn quick_resize(app: AppHandle, width: f64, height: f64) -> Value {
+    match crate::quicktranslate::resize(&app, width, height) {
+        Some((width, height)) => json!({ "ok": true, "width": width, "height": height }),
+        None => json!({
+            "ok": false,
+            "error": "快捷翻译窗口不可用。",
+        }),
+    }
+}
+
+/// Drags the borderless panel by a logical-pixel delta (contract §4
+/// `quick_drag_panel`); the top bar calls this while the user moves the window.
+#[tauri::command]
+pub fn quick_drag_panel(app: AppHandle, dx: f64, dy: f64) -> Value {
+    if crate::quicktranslate::drag_panel(&app, dx, dy) {
+        json!({ "ok": true })
+    } else {
+        json!({ "ok": false })
+    }
+}
+
 /// Toggles the panel's "always on top" state and remembers it in
 /// `quick.pinned` (contract §2/§4).
 #[tauri::command]

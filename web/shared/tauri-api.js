@@ -2093,6 +2093,28 @@
       case "quick_open_settings":
         console.info("[mock] 打开设置窗口（快捷翻译）");
         return { ok: true };
+      /* The browser preview cannot move/resize a real window; record the last
+       * request on `window.__mockQuickResize` / `__mockQuickDragCalls` so the
+       * quick panel can assert that the calls happen, and resolve {ok:true}. */
+      case "quick_resize": {
+        var quickResize = {
+          width: Math.round(Number(args.width) || 0),
+          height: Math.round(Number(args.height) || 0),
+        };
+        window.__mockQuickResize = quickResize;
+        window.__mockQuickResizeCalls = window.__mockQuickResizeCalls || [];
+        window.__mockQuickResizeCalls.push(quickResize);
+        return { ok: true };
+      }
+      case "quick_drag_panel": {
+        var quickDrag = {
+          dx: Number(args.dx) || 0,
+          dy: Number(args.dy) || 0,
+        };
+        window.__mockQuickDragCalls = window.__mockQuickDragCalls || [];
+        window.__mockQuickDragCalls.push(quickDrag);
+        return { ok: true };
+      }
       default:
         return mockNotFound(command);
     }
@@ -2643,6 +2665,20 @@
     },
     openSettings: function () {
       return safeInvoke("quick_open_settings", {});
+    },
+    /* Frameless window controls (quick-translate §6): fixed width + content
+     * height, and dragging by a logical-pixel delta from the top bar. */
+    resize: function (width, height) {
+      return safeInvoke("quick_resize", {
+        width: Math.round(Number(width) || 0),
+        height: Math.round(Number(height) || 0),
+      });
+    },
+    dragPanel: function (dx, dy) {
+      return safeInvoke("quick_drag_panel", {
+        dx: Number(dx) || 0,
+        dy: Number(dy) || 0,
+      });
     },
 
     /* Aliases used by the settings card (quick-translate contract §7). */
