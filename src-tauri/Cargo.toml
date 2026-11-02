@@ -1,6 +1,6 @@
 [package]
 name = "lexora"
-version = "0.4.1"
+version = "0.4.2"
 description = "Lexora desktop shell: selection translator for Windows"
 edition = "2021"
 # whatlang 0.18 (offline language detection) requires rustc >= 1.85; CI uses
