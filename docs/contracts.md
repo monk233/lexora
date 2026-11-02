@@ -416,6 +416,19 @@ pub struct SelectionService {
 - 视觉：系统字体栈 `Segoe UI`/`Microsoft YaHei UI`；背景 `#f6f7f9`，卡片白 + 1px `#e5e7eb` 边框 + 12px 圆角；主色 `#4f46e5`；支持 `prefers-color-scheme: dark`；控件高 32–36px；不用渐变/大阴影。
 - 安全：HTML 带 CSP（`default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'`），无内联脚本；外链经 `open_external`。
 
+### 7.3 快捷翻译面板（quicktranslate）
+
+详细契约见 [quick-translate.md](quick-translate.md)。摘要：
+
+- 独立窗口 label `quicktranslate`（`web/quicktranslate.html`），默认隐藏；全局快捷键默认 `Alt+Space`（设置 `quick.hotkey`，可改），按下切换显隐；`Esc` 与关闭按钮只隐藏窗口，失焦不隐藏；隐藏时中止进行中的流。
+- 命令：`quick_ready` / `quick_open` / `quick_hide` / `quick_pin` / `quick_set_hotkey` / `quick_set_target_lang` / `quick_translate` / `quick_abort_translate` / `quick_history_list` / `quick_history_delete` / `quick_history_clear` / `quick_copy` / `quick_open_settings`。
+- 事件：`translate-event`（chunk/error/done，定向 `quicktranslate` 窗口，done 带 `elapsedMs`）、`quick-show`。
+- 设置 schema 9 新增 `quick: {enabled, hotkey, targetLang, prompt, pinned}`；目标语言 38 种（不含 auto）。
+- 翻译历史 `<data>/quick-history.json`：最多 500 条、最新在前；`quick_translate` 正常 `done` 后写入（取消/失败不写）；源语言由启发式检测（`detect_source_lang`）得出。
+- 提示词：`quick.prompt` 为空时使用 `DEFAULT_QUICK_TRANSLATE_PROMPT`，支持 `{target}` 占位符；不做单词/词条自动切换。
+- 渲染端：双栏（原文输入 / 流式 Markdown 译文）、字数与耗时、`Ctrl+Enter`、停止/重试、复制译文、Pin、历史浮层（搜索/单条删除/清空/回填）。
+- 设置页新增「快捷翻译」卡片：启用开关、呼出快捷键录制（冲突提示 + 恢复默认）、自定义提示词（重置默认）、清空历史。
+
 ## 8. 验收
 
 

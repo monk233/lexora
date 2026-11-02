@@ -403,6 +403,14 @@ textarea {
   padding-bottom: 4px;
 }
 
+/* ---- Quick translate prompt --------------------------------------------- */
+
+/* A little taller than the generic textarea so the built-in default prompt is
+ * readable at a glance; every other rule comes from `.textarea`. */
+.quick-prompt {
+  min-height: 128px;
+}
+
 .inline-actions {
   display: flex;
   align-items: center;

@@ -409,6 +409,72 @@
       </div>
     </section>
 
+    <!-- ============================ 快捷翻译 ============================ -->
+    <section class="card" aria-labelledby="card-quick-title">
+      <div class="card-head">
+        <div class="card-head-text">
+          <h2 id="card-quick-title">快捷翻译</h2>
+          <p>按快捷键呼出翻译面板，再次按下隐藏。</p>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="field field-switch">
+          <div class="field-label">
+            <span class="field-name">启用快捷翻译</span>
+            <p class="field-hint">关闭后快捷键不注册，面板不显示</p>
+          </div>
+          <div class="field-control">
+            <label class="switch">
+              <input type="checkbox" id="quick-enabled">
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="field hotkey-field">
+          <div class="field-label">
+            <span class="field-name">呼出快捷键</span>
+            <p class="field-hint">点击后按新组合键；需含修饰键</p>
+          </div>
+          <div class="field-control">
+            <div class="inline-actions">
+              <button type="button" class="btn hotkey-display" id="quick-hotkey"
+                      title="点击后录制新的组合键">Alt + Space</button>
+              <button type="button" class="btn btn-ghost" id="quick-hotkey-restore">恢复默认</button>
+            </div>
+            <p class="inline-error" id="quick-hotkey-error" hidden></p>
+          </div>
+        </div>
+
+        <div class="field field-stack">
+          <div class="field-label">
+            <label for="quick-prompt">自定义提示词</label>
+            <p class="field-hint">支持 {target} 占位符；留空或与默认一致时使用内置提示词</p>
+          </div>
+          <div class="field-control">
+            <textarea class="textarea quick-prompt" id="quick-prompt" rows="6" maxlength="4000"
+                      spellcheck="false"
+                      placeholder="留空使用内置默认提示词，可写 {target} 表示目标语言"></textarea>
+            <div class="skill-prompt-foot">
+              <p class="skill-prompt-hint" id="quick-prompt-hint">翻译时 {target} 会替换为目标语言；重置后使用内置默认提示词</p>
+              <button type="button" class="btn btn-ghost skill-prompt-reset"
+                      id="quick-prompt-reset">重置为默认</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="field field-switch">
+          <div class="field-label">
+            <span class="field-name">翻译历史</span>
+            <p class="field-hint">最多保留 500 条</p>
+          </div>
+          <div class="field-control">
+            <button type="button" class="btn btn-danger" id="quick-history-clear">清空历史</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- ============================ 应用与启动 ========================== -->
     <section class="card" aria-labelledby="card-app-title">
       <div class="card-head">

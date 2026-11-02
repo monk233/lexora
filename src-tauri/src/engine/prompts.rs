@@ -13,6 +13,11 @@ use crate::engine::EngineError;
 /// Free-form summary/explanation prompts get this much input at most.
 pub const ASSIST_MAX_CHARS: usize = 8_000;
 
+/// Hard input cap of the quick-translate panel. The panel is meant for short
+/// snippets, but paste happens: the text is truncated (never rejected) so a
+/// large paste still translates predictably and history entries stay bounded.
+pub const QUICK_MAX_TEXT_CHARS: usize = 20_000;
+
 /// Built-in English default prompts. `{target}` and `{language}` are replaced
 /// by the target language name; the same rule applies to custom prompts.
 ///
@@ -22,6 +27,12 @@ pub const ASSIST_MAX_CHARS: usize = 8_000;
 /// Pronunciations (English IPA / Chinese pinyin) come from the model itself;
 /// there is no separate offline dictionary service.
 pub const DEFAULT_TRANSLATE_PROMPT: &str = "You are a professional translator. Translate the user's text into {target}. Write the entire translation in {target}. Output only the translation: no explanations, labels, notes or source text. Preserve paragraphs, lists, Markdown structure, code and placeholders; leave code and placeholders unchanged.";
+
+/// System prompt of the quick-translate panel (`quick.prompt` empty). The panel
+/// has a fixed, predictable behavior: it always translates the whole input and
+/// never switches to dictionary/word-lookup mode (see
+/// [`quick_translate_messages`]). The source language is detected by the model.
+pub const DEFAULT_QUICK_TRANSLATE_PROMPT: &str = "You are a professional translator. Translate the user's text into {target}. Detect the source language automatically and write the entire translation in {target}. Output only the translation: no explanations, labels, notes or source text. Preserve paragraphs, lists, Markdown structure, code fences, inline code and placeholders; leave code and placeholders unchanged.";
 
 /// System prompt for a single word or short term routed to dictionary lookup.
 /// The input is already classified by the application; this prompt only has to
@@ -230,6 +241,36 @@ pub fn translate_messages(text: &str, target_lang: &str, custom_prompt: &str) ->
     let custom_prompt = custom_prompt.trim();
     let template = if custom_prompt.is_empty() {
         DEFAULT_TRANSLATE_PROMPT
+    } else {
+        custom_prompt
+    };
+    let has_placeholder = template.contains("{target}") || template.contains("{language}");
+    let mut system = template
+        .replace("{target}", &language)
+        .replace("{language}", &language);
+    if !has_placeholder {
+        system.push_str(&format!("\n\nTarget language: {language}."));
+    }
+    (system, text.to_string())
+}
+
+/// Builds the quick-translate panel messages. Unlike [`translate_messages`],
+/// the fallback is [`DEFAULT_QUICK_TRANSLATE_PROMPT`] and the input is never
+/// routed through the dictionary/word-lookup logic: the panel behavior stays
+/// fixed and predictable (contract §4).
+///
+/// Placeholder rendering matches the ordinary translation path: `{target}` /
+/// `{language}` become the target language name, and a custom prompt without a
+/// placeholder gets the explicit `Target language: ...` suffix.
+pub fn quick_translate_messages(
+    text: &str,
+    target_lang: &str,
+    custom_prompt: &str,
+) -> (String, String) {
+    let language = language_name(target_lang);
+    let custom_prompt = custom_prompt.trim();
+    let template = if custom_prompt.is_empty() {
+        DEFAULT_QUICK_TRANSLATE_PROMPT
     } else {
         custom_prompt
     };
@@ -640,6 +681,8 @@ pub fn default_prompts() -> serde_json::Value {
         "captureTranslate": DEFAULT_TRANSLATE_PROMPT,
         "captureWordLookup": DEFAULT_WORD_LOOKUP_PROMPT,
         "captureExplain": DEFAULT_EXPLAIN_IMAGE_PROMPT,
+        // Quick-translate panel (contract §4 `promptDefault`).
+        "quickTranslate": DEFAULT_QUICK_TRANSLATE_PROMPT,
     })
 }
 
@@ -751,7 +794,38 @@ mod tests {
         assert_eq!(defaults["captureTranslate"], DEFAULT_TRANSLATE_PROMPT);
         assert_eq!(defaults["captureWordLookup"], DEFAULT_WORD_LOOKUP_PROMPT);
         assert_eq!(defaults["captureExplain"], DEFAULT_EXPLAIN_IMAGE_PROMPT);
-        assert_eq!(defaults.as_object().unwrap().len(), 8);
+        // Quick-translate panel (`quick_ready`'s `promptDefault`).
+        assert_eq!(defaults["quickTranslate"], DEFAULT_QUICK_TRANSLATE_PROMPT);
+        assert_eq!(defaults.as_object().unwrap().len(), 9);
+    }
+
+    #[test]
+    fn quick_translate_prompt_is_english_and_renders_the_target() {
+        assert!(DEFAULT_QUICK_TRANSLATE_PROMPT.starts_with("You are"));
+        assert!(DEFAULT_QUICK_TRANSLATE_PROMPT.contains("{target}"));
+        assert!(DEFAULT_QUICK_TRANSLATE_PROMPT.contains("Output only the translation"));
+        assert!(DEFAULT_QUICK_TRANSLATE_PROMPT.contains("Detect the source language"));
+        assert!(DEFAULT_QUICK_TRANSLATE_PROMPT.contains("Markdown"));
+        assert!(DEFAULT_QUICK_TRANSLATE_PROMPT.contains("code"));
+        assert_eq!(QUICK_MAX_TEXT_CHARS, 20_000);
+
+        // Empty custom prompt → built-in default with `{target}` rendered.
+        let (system, user) = quick_translate_messages("hello", "ja", "");
+        assert_eq!(
+            system,
+            DEFAULT_QUICK_TRANSLATE_PROMPT.replace("{target}", "Japanese")
+        );
+        assert_eq!(user, "hello");
+
+        // Custom prompt: trimmed, placeholders rendered, no dictionary extras.
+        let (system, _) = quick_translate_messages("hello", "de", "  Translate to {target} only.  ");
+        assert_eq!(system, "Translate to German only.");
+        // A custom prompt without a placeholder still gets an explicit target.
+        let (system, _) = quick_translate_messages("hello", "fr", "Translate only.");
+        assert_eq!(system, "Translate only.\n\nTarget language: French.");
+        // The quick path never uses the ordinary or dictionary defaults.
+        let (system, _) = quick_translate_messages("hello", "zh", "");
+        assert_ne!(system, DEFAULT_WORD_LOOKUP_PROMPT);
     }
 
     #[test]

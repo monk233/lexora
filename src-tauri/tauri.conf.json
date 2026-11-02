@@ -66,6 +66,23 @@
         "minimizable": false,
         "closable": false,
         "backgroundColor": "#00000000"
+      },
+      {
+        "label": "quicktranslate",
+        "title": "Lexora 快捷翻译",
+        "url": "quicktranslate.html",
+        "width": 900,
+        "height": 640,
+        "minWidth": 640,
+        "minHeight": 420,
+        "resizable": true,
+        "decorations": true,
+        "transparent": false,
+        "visible": false,
+        "center": true,
+        "focus": true,
+        "skipTaskbar": false,
+        "dragDropEnabled": false
       }
     ],
     "security": {

@@ -177,6 +177,14 @@ pub fn update_settings(
     if settings.capture.region_shortcut != previous_shortcut {
         sync_capture_hotkey(&app, &state, &settings);
     }
+    // Contract §3: a generic patch (settings page switch / recorded shortcut)
+    // must re-register the quick-translate hotkey exactly like
+    // `quick_set_hotkey` does.
+    if settings.quick.hotkey != previous.quick.hotkey
+        || settings.quick.enabled != previous.quick.enabled
+    {
+        sync_quick_hotkey(&app, &settings);
+    }
     // Switching the local model restarts a running engine automatically so the
     // new weights are loaded without asking the user to press 重启.
     let selected_model_changed =
@@ -203,7 +211,8 @@ pub fn update_settings(
 
 #[tauri::command]
 pub fn reset_settings(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<Value, String> {
-    let previous_shortcut = state.settings.get().capture.region_shortcut;
+    let previous = state.settings.get();
+    let previous_shortcut = previous.capture.region_shortcut;
     let settings = state.settings.reset();
     let autostart_result = sync_reset_autostart(
         portable_mode(),
@@ -213,6 +222,12 @@ pub fn reset_settings(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result
     state.selection.apply_settings(&settings);
     if settings.capture.region_shortcut != previous_shortcut {
         sync_capture_hotkey(&app, &state, &settings);
+    }
+    // A reset also restores the default quick hotkey/enabled state.
+    if settings.quick.hotkey != previous.quick.hotkey
+        || settings.quick.enabled != previous.quick.enabled
+    {
+        sync_quick_hotkey(&app, &settings);
     }
     crate::tray::refresh(&app);
     broadcast_state(&app, &state);
@@ -252,6 +267,14 @@ fn sync_capture_hotkey(
         }
         _ => {}
     }
+}
+
+/// Keeps the quick-translate hotkey in sync when a generic settings patch (or a
+/// reset) changed `quick.hotkey` / `quick.enabled` outside `quick_set_hotkey`.
+/// The dedicated hotkey thread owns the registration, so this is a cheap no-op
+/// whenever nothing changed; failures are only logged (contract §3).
+fn sync_quick_hotkey(app: &AppHandle, settings: &crate::settings::Settings) {
+    crate::quicktranslate::sync_hotkey(app, settings);
 }
 
 #[tauri::command]
@@ -1721,9 +1744,334 @@ pub fn picker_disable_tool(app: AppHandle, state: State<'_, Arc<AppState>>) -> V
     }
 }
 
+// ---------------------------------------------------------------------------
+// Quick-translate panel commands (docs/quick-translate.md §4)
+// ---------------------------------------------------------------------------
+
+/// Resolves the target of a `quick_translate` request: an explicit concrete
+/// language wins, anything else (`auto`, unknown, empty) falls back to the
+/// remembered panel target (which settings normalization keeps concrete).
+fn resolve_quick_target(requested: &str, remembered: &str) -> String {
+    let requested = requested.trim().to_ascii_lowercase();
+    if requested != "auto" && crate::settings::TARGET_LANGS.contains(&requested.as_str()) {
+        return requested;
+    }
+    let remembered = remembered.trim().to_ascii_lowercase();
+    if remembered != "auto" && crate::settings::TARGET_LANGS.contains(&remembered.as_str()) {
+        remembered
+    } else {
+        crate::settings::DEFAULT_QUICK_TARGET_LANG.to_string()
+    }
+}
+
+/// Refreshes the renderer configuration: the `quick` settings block plus the
+/// built-in English default prompt (`promptDefault`, with its `{target}`
+/// placeholder) so the panel and the settings page can show/reset it.
+#[tauri::command]
+pub fn quick_ready(state: State<'_, Arc<AppState>>) -> Value {
+    let settings = state.settings.get();
+    json!({
+        "ok": true,
+        "quick": settings.quick,
+        "promptDefault": crate::engine::DEFAULT_QUICK_TRANSLATE_PROMPT,
+    })
+}
+
+/// Shows + focuses the panel. The panel does not open while `quick.enabled` is
+/// off (contract §7: disabled means "hotkey not registered, panel not shown").
+#[tauri::command]
+pub fn quick_open(app: AppHandle, state: State<'_, Arc<AppState>>) -> Value {
+    if !state.settings.get().quick.enabled {
+        return json!({
+            "ok": false,
+            "error": "快捷翻译已关闭。",
+            "hint": "请在设置中启用快捷翻译后再试。",
+        });
+    }
+    crate::quicktranslate::show(&app);
+    json!({ "ok": true })
+}
+
+/// Hides the panel (renderer `Esc` / title-bar close) and aborts its stream.
+#[tauri::command]
+pub fn quick_hide(app: AppHandle) -> Value {
+    crate::quicktranslate::hide(&app);
+    json!({ "ok": true })
+}
+
+/// Toggles the panel's "always on top" state and remembers it in
+/// `quick.pinned` (contract §2/§4).
+#[tauri::command]
+pub fn quick_pin(app: AppHandle, state: State<'_, Arc<AppState>>, pinned: bool) -> Value {
+    if !crate::quicktranslate::set_pinned(&app, pinned) {
+        return json!({
+            "ok": false,
+            "pinned": false,
+            "error": "快捷翻译窗口不可用。",
+        });
+    }
+    match state
+        .settings
+        .update_json(json!({ "quick": { "pinned": pinned } }))
+    {
+        Ok(_) => json!({ "ok": true, "pinned": pinned }),
+        Err(error) => {
+            state
+                .log
+                .warn(&format!("quick pin preference not persisted: {error}"));
+            json!({
+                "ok": false,
+                "pinned": pinned,
+                "error": format!("保存置顶偏好失败：{error}"),
+            })
+        }
+    }
+}
+
+/// Normalizes + re-registers the panel hotkey and persists the canonical value;
+/// an invalid combination falls back to `Alt+Space`, a conflict keeps the
+/// previous shortcut (contract §3/§4).
+#[tauri::command]
+pub fn quick_set_hotkey(app: AppHandle, shortcut: String) -> Value {
+    match crate::quicktranslate::set_hotkey(&app, &shortcut) {
+        crate::quicktranslate::SetHotkeyOutcome::Applied { shortcut, warning } => match warning {
+            Some(warning) => json!({ "ok": true, "shortcut": shortcut, "hint": warning }),
+            None => json!({ "ok": true, "shortcut": shortcut }),
+        },
+        crate::quicktranslate::SetHotkeyOutcome::Failed {
+            shortcut,
+            error,
+            hint,
+        } => json!({
+            "ok": false,
+            "shortcut": shortcut,
+            "error": error,
+            "hint": hint,
+        }),
+    }
+}
+
+/// Remembers the panel's target language (never `auto`: the panel always
+/// translates into one concrete language).
+#[tauri::command]
+pub fn quick_set_target_lang(state: State<'_, Arc<AppState>>, target_lang: String) -> Value {
+    let language = target_lang.trim().to_ascii_lowercase();
+    if language == "auto" || !crate::settings::TARGET_LANGS.contains(&language.as_str()) {
+        return json!({
+            "ok": false,
+            "error": "不支持的目标语言。",
+            "hint": "请选择一种具体的目标语言。",
+        });
+    }
+    match state
+        .settings
+        .update_json(json!({ "quick": { "targetLang": language } }))
+    {
+        Ok(settings) => json!({ "ok": true, "targetLang": settings.quick.target_lang }),
+        Err(error) => json!({
+            "ok": false,
+            "error": format!("保存目标语言失败：{error}"),
+        }),
+    }
+}
+
+/// Starts a streaming quick translation. Returns immediately; chunks, errors
+/// and the final `done` (`elapsedMs` included) are pushed as
+/// `translate-event` **targeted at the quick panel** (contract §4). A completed
+/// stream writes one history entry; cancelled or failed streams never do
+/// (contract §5).
+#[tauri::command]
+pub fn quick_translate(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    request_id: String,
+    text: String,
+    target_lang: String,
+) -> Value {
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return json!({
+            "ok": false,
+            "error": "没有可翻译的文本。",
+            "hint": "请输入要翻译的内容后再试。",
+        });
+    }
+    let settings = state.settings.get();
+    let target = resolve_quick_target(&target_lang, &settings.quick.target_lang);
+    let prompt = settings.quick.prompt;
+    // Contract §4: an over-long paste is truncated to 20 000 characters, never
+    // rejected, and history stores the same truncated source.
+    let source = crate::engine::truncate_chars(&text, crate::engine::QUICK_MAX_TEXT_CHARS);
+
+    // Only one stream at a time: abort the previous request (the slot is shared
+    // with the picker, so a new request always wins).
+    state.abort_translate();
+
+    let engine = state.engine.clone();
+    let task_state = state.inner().clone();
+    let task_app = app.clone();
+    let rid = request_id.clone();
+    let handle = tauri::async_runtime::spawn(async move {
+        let emit = |payload: Value| {
+            let _ = task_app.emit_to(
+                crate::quicktranslate::QUICK_LABEL,
+                crate::quicktranslate::EVENT_TRANSLATE,
+                payload,
+            );
+        };
+        let started = std::time::Instant::now();
+        let mut answer = String::new();
+        match engine
+            .quick_translate_stream(&source, &target, &prompt)
+            .await
+        {
+            Ok(mut stream) => {
+                while let Some(item) = stream.next().await {
+                    match item {
+                        Ok(chunk) => {
+                            if chunk.is_empty() {
+                                continue;
+                            }
+                            answer.push_str(&chunk);
+                            emit(json!({
+                                "requestId": rid.clone(),
+                                "type": "chunk",
+                                "text": chunk,
+                            }));
+                        }
+                        Err(error) => {
+                            task_state.log.warn(&format!(
+                                "quick translate failed: action=quick_translate request={rid} error={}",
+                                error.message
+                            ));
+                            emit(json!({
+                                "requestId": rid.clone(),
+                                "type": "error",
+                                "message": error.message,
+                                "hint": error.hint,
+                            }));
+                            return;
+                        }
+                    }
+                }
+                let elapsed_ms = started.elapsed().as_millis() as u64;
+                // Write history before `done`: the renderer refreshes its list
+                // on `done` and must already see this entry.
+                let entry = crate::quicktranslate::HistoryEntry {
+                    id: crate::quicktranslate::new_entry_id(),
+                    source: source.clone(),
+                    target: crate::engine::truncate_chars(
+                        &answer,
+                        crate::engine::QUICK_MAX_TEXT_CHARS,
+                    ),
+                    source_lang: crate::quicktranslate::detect_source_lang(&source).to_string(),
+                    target_lang: target.clone(),
+                    created_at: crate::quicktranslate::now_millis(),
+                    elapsed_ms,
+                };
+                if let Err(error) = task_state.quick_history.add(entry) {
+                    task_state
+                        .log
+                        .warn(&format!("quick history write failed: {error}"));
+                }
+                task_state.log.info(&format!(
+                    "quick translate done: action=quick_translate request={rid} chars={} elapsed_ms={elapsed_ms}",
+                    source.chars().count()
+                ));
+                emit(json!({
+                    "requestId": rid,
+                    "type": "done",
+                    "elapsedMs": elapsed_ms,
+                }));
+            }
+            Err(error) => {
+                task_state.log.warn(&format!(
+                    "quick translate failed: action=quick_translate request={rid} error={}",
+                    error.message
+                ));
+                emit(json!({
+                    "requestId": rid,
+                    "type": "error",
+                    "message": error.message,
+                    "hint": error.hint,
+                }));
+            }
+        }
+    });
+
+    *lock(&state.translate_task) = Some(TranslateTask { request_id, handle });
+    json!({ "ok": true })
+}
+
+/// Aborts the panel stream (same shared slot as the picker). `requestId` only
+/// aborts when it still is the current request.
+#[tauri::command]
+pub fn quick_abort_translate(state: State<'_, Arc<AppState>>, request_id: String) -> Value {
+    let mut guard = lock(&state.translate_task);
+    let matches_current = guard
+        .as_ref()
+        .map(|task| task.request_id == request_id)
+        .unwrap_or(false);
+    if matches_current {
+        if let Some(task) = guard.take() {
+            task.handle.abort();
+        }
+    }
+    json!({ "ok": true })
+}
+
+/// Translation history, newest first (contract §5).
+#[tauri::command]
+pub fn quick_history_list(state: State<'_, Arc<AppState>>) -> Value {
+    json!({ "ok": true, "entries": state.quick_history.list() })
+}
+
+#[tauri::command]
+pub fn quick_history_delete(state: State<'_, Arc<AppState>>, id: String) -> Value {
+    match state.quick_history.delete(id.trim()) {
+        Ok(_) => json!({ "ok": true }),
+        Err(error) => json!({
+            "ok": false,
+            "error": format!("删除翻译历史失败：{error}"),
+        }),
+    }
+}
+
+#[tauri::command]
+pub fn quick_history_clear(state: State<'_, Arc<AppState>>) -> Value {
+    match state.quick_history.clear() {
+        Ok(()) => json!({ "ok": true }),
+        Err(error) => json!({
+            "ok": false,
+            "error": format!("清空翻译历史失败：{error}"),
+        }),
+    }
+}
+
+/// Writes text (e.g. the streamed translation) to the system clipboard.
+#[tauri::command]
+pub fn quick_copy(app: AppHandle, text: String) -> Value {
+    match app.clipboard().write_text(text) {
+        Ok(()) => json!({ "ok": true }),
+        Err(error) => json!({
+            "ok": false,
+            "error": format!("复制到剪贴板失败：{error}"),
+        }),
+    }
+}
+
+/// Opens the settings window from the panel.
+#[tauri::command]
+pub fn quick_open_settings(app: AppHandle) -> Value {
+    crate::windows::show_settings(&app);
+    json!({ "ok": true })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{persist_panel_pinned, picker_surface_label, sync_reset_autostart};
+    use super::{
+        persist_panel_pinned, picker_surface_label, resolve_quick_target, sync_reset_autostart,
+    };
 
     #[test]
     fn reset_syncs_the_requested_autostart_value() {
@@ -1783,5 +2131,25 @@ mod tests {
         assert!(!cleared.picker.panel_pinned);
         let reloaded = crate::settings::SettingsStore::load(file);
         assert!(!reloaded.get().picker.panel_pinned);
+    }
+
+    #[test]
+    fn quick_translate_target_falls_back_to_the_remembered_language() {
+        // A concrete requested language wins.
+        assert_eq!(resolve_quick_target("ja", "zh"), "ja");
+        assert_eq!(resolve_quick_target(" ZH-HANT ", "zh"), "zh-hant");
+        // `auto`, unknown and empty values fall back to the remembered target.
+        assert_eq!(resolve_quick_target("auto", "ja"), "ja");
+        assert_eq!(resolve_quick_target("", "de"), "de");
+        assert_eq!(resolve_quick_target("xx", "fr"), "fr");
+        // Finally the schema default when both values are unusable.
+        assert_eq!(
+            resolve_quick_target("auto", "auto"),
+            crate::settings::DEFAULT_QUICK_TARGET_LANG
+        );
+        assert_eq!(
+            resolve_quick_target("", "nonsense"),
+            crate::settings::DEFAULT_QUICK_TARGET_LANG
+        );
     }
 }

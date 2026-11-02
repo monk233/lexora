@@ -50,11 +50,19 @@
   var removingModels = Object.create(null);
   var loginBusy = false;
 
-  /* Region-screenshot shortcut recorder (contract §10.4): while recording the
-   * global keydown handler owns the keyboard, while saving the display is
-   * locked so a `state-changed` refresh cannot flash the old value. */
-  var hotkeyRecording = false;
-  var hotkeySaving = false;
+  /* Global shortcut recorders (contract §10.4 + quick-translate §7): the
+   * screenshot shortcut and the quick-translate summon shortcut share the same
+   * capture-phase keydown flow. Only one recorder can be active at a time;
+   * while saving the display is locked so a `state-changed` refresh cannot
+   * flash the old value. */
+  var hotkeyRecorders = {
+    capture: { recording: false, saving: false },
+    quick: { recording: false, saving: false },
+  };
+
+  /* Quick-translate prompt editor: pending draft + 500ms debounce timer. */
+  var quickPromptDraft = null;
+  var quickPromptTimer = null;
 
   /* Online models fetched from /models, cached per baseUrl + apiKey. */
   var onlineModelCache = {};
@@ -484,6 +492,7 @@
     Object.keys(promptDrafts).forEach(function (id) {
       flushPromptDraft(id);
     });
+    flushQuickPromptDraft();
   }
 
   /* ---- State loading --------------------------------------------------- */
@@ -517,6 +526,7 @@
     renderOnline();
     renderLocal();
     renderPicker();
+    renderQuick();
     renderApp();
     renderAbout();
   }
@@ -1303,7 +1313,7 @@
     setChecked(byId("picker-enabled"), picker.enabled !== false);
     setChecked(byId("picker-compact"), picker.compact === true);
     renderPanelMode();
-    renderHotkey();
+    renderHotkey("capture");
     setSelectValue(byId("default-target-lang"), picker.defaultTargetLang || "auto");
     renderSkills();
     renderCustomSkillEditor(false);
@@ -1335,7 +1345,7 @@
     save({ picker: { panelMode: next } });
   }
 
-  /* ---- Screenshot shortcut recorder (contract §10.4) -------------------- */
+  /* ---- Global shortcut recorders (screenshot / quick translate) -------- */
 
   /* Fixed modifier order Win → Ctrl → Alt → Shift mirrors
    * `settings::normalize_shortcut`; the main-key list matches the contract. */
@@ -1380,9 +1390,56 @@
     AltGraph: true,
   };
 
-  function captureShortcut() {
+  /* Per-target DOM ids, display label and default combination. */
+  var HOTKEY_TARGETS = {
+    capture: {
+      button: "capture-hotkey",
+      restore: "capture-hotkey-restore",
+      error: "capture-hotkey-error",
+      label: "截图快捷键",
+      fallback: "Win+Shift+X",
+    },
+    quick: {
+      button: "quick-hotkey",
+      restore: "quick-hotkey-restore",
+      error: "quick-hotkey-error",
+      label: "呼出快捷键",
+      fallback: "Alt+Space",
+    },
+  };
+
+  /* Current combination for one recorder target. */
+  function hotkeyTargetShortcut(target) {
+    if (target === "quick") {
+      var quick = (state && state.settings && state.settings.quick) || {};
+      return String(quick.hotkey || "").trim() || HOTKEY_TARGETS.quick.fallback;
+    }
     var capture = (state && state.settings && state.settings.capture) || {};
-    return String(capture.regionShortcut || "").trim() || "Win+Shift+X";
+    return (
+      String(capture.regionShortcut || "").trim() || HOTKEY_TARGETS.capture.fallback
+    );
+  }
+
+  /* Remember a saved combination locally so the display is deterministic even
+   * before the backend's `state-changed` broadcast arrives. */
+  function storeHotkeyTargetShortcut(target, shortcut) {
+    if (!state || !state.settings) {
+      return;
+    }
+    if (target === "quick") {
+      state.settings.quick = LP.deepMerge(state.settings.quick || {}, {
+        hotkey: shortcut,
+      });
+    } else {
+      state.settings.capture = LP.deepMerge(state.settings.capture || {}, {
+        regionShortcut: shortcut,
+      });
+    }
+  }
+
+  function hotkeyErrorNode(target) {
+    var meta = HOTKEY_TARGETS[target];
+    return meta ? byId(meta.error) : null;
   }
 
   /* "Ctrl+Alt+P" → "Ctrl + Alt + P" for display only. */
@@ -1453,94 +1510,126 @@
     return modifiers.concat(key).join("+");
   }
 
-  function renderHotkey() {
-    var button = byId("capture-hotkey");
-    var restore = byId("capture-hotkey-restore");
+  function renderHotkey(target) {
+    var meta = HOTKEY_TARGETS[target];
+    var recorder = hotkeyRecorders[target];
+    if (!meta || !recorder) {
+      return;
+    }
+    var button = byId(meta.button);
+    var restore = byId(meta.restore);
     if (!button) {
       return;
     }
-    button.classList.toggle("is-recording", hotkeyRecording);
-    button.disabled = hotkeySaving;
-    if (hotkeyRecording) {
+    button.classList.toggle("is-recording", recorder.recording);
+    button.disabled = recorder.saving;
+    if (recorder.recording) {
       button.textContent = "请按下新的快捷键…（Esc 取消）";
       button.title = "按下组合键后立即保存，Esc 取消";
-      button.setAttribute("aria-label", "正在录制截图快捷键，按 Esc 取消");
-    } else if (hotkeySaving) {
+      button.setAttribute(
+        "aria-label",
+        "正在录制" + meta.label + "，按 Esc 取消"
+      );
+    } else if (recorder.saving) {
       button.textContent = "保存中…";
       button.title = "";
-      button.setAttribute("aria-label", "正在保存截图快捷键");
+      button.setAttribute("aria-label", "正在保存" + meta.label);
     } else {
-      var text = formatShortcut(captureShortcut());
+      var text = formatShortcut(hotkeyTargetShortcut(target));
       button.textContent = text;
       button.title = "点击后录制新的组合键";
-      button.setAttribute("aria-label", "截图快捷键：" + text + "，点击录制新的组合键");
+      button.setAttribute(
+        "aria-label",
+        meta.label + "：" + text + "，点击录制新的组合键"
+      );
     }
     if (restore) {
-      restore.disabled = hotkeyRecording || hotkeySaving;
+      restore.disabled = recorder.recording || recorder.saving;
     }
   }
 
-  function startHotkeyRecording() {
-    if (hotkeyRecording || hotkeySaving) {
-      return;
+  /* The active recorder, if any. The two shortcuts never record together. */
+  function activeHotkeyTarget() {
+    if (hotkeyRecorders.quick.recording) {
+      return "quick";
     }
-    hotkeyRecording = true;
-    hideInlineError(byId("capture-hotkey-error"));
-    renderHotkey();
+    if (hotkeyRecorders.capture.recording) {
+      return "capture";
+    }
+    return "";
   }
 
-  function cancelHotkeyRecording() {
-    if (!hotkeyRecording) {
+  function startHotkeyRecording(target) {
+    var recorder = hotkeyRecorders[target];
+    if (!recorder || recorder.recording || recorder.saving) {
       return;
     }
-    hotkeyRecording = false;
-    hideInlineError(byId("capture-hotkey-error"));
-    renderHotkey();
+    if (activeHotkeyTarget()) {
+      return;
+    }
+    recorder.recording = true;
+    hideInlineError(hotkeyErrorNode(target));
+    renderHotkey(target);
   }
 
-  function submitHotkey(combo) {
-    if (hotkeySaving) {
+  function cancelHotkeyRecording(target) {
+    var recorder = hotkeyRecorders[target];
+    if (!recorder || !recorder.recording) {
       return;
     }
-    var previous = captureShortcut();
-    hotkeyRecording = false;
-    hotkeySaving = true;
-    hideInlineError(byId("capture-hotkey-error"));
-    renderHotkey();
-    API.setCaptureHotkey(combo).then(function (result) {
-      hotkeySaving = false;
-      if (result && result.ok) {
-        var saved = String(result.shortcut || combo).trim() || combo;
-        /* The backend broadcasts `state-changed` as well, but applying the
-         * returned value here keeps the display deterministic. */
-        if (state && state.settings) {
-          state.settings.capture = LP.deepMerge(state.settings.capture || {}, {
-            regionShortcut: saved,
-          });
+    recorder.recording = false;
+    hideInlineError(hotkeyErrorNode(target));
+    renderHotkey(target);
+  }
+
+  function submitHotkey(target, combo) {
+    var recorder = hotkeyRecorders[target];
+    if (!recorder || recorder.saving) {
+      return;
+    }
+    var previous = hotkeyTargetShortcut(target);
+    recorder.recording = false;
+    recorder.saving = true;
+    hideInlineError(hotkeyErrorNode(target));
+    renderHotkey(target);
+    var request =
+      target === "quick"
+        ? quickApiCall("setHotkey", [combo])
+        : API.setCaptureHotkey(combo);
+    Promise.resolve(request)
+      .catch(function (error) {
+        return { ok: false, error: (error && error.message) || "保存快捷键失败" };
+      })
+      .then(function (result) {
+        recorder.saving = false;
+        if (result && result.ok) {
+          var saved = String(result.shortcut || combo).trim() || combo;
+          /* The backend broadcasts `state-changed` as well, but applying the
+           * returned value here keeps the display deterministic. */
+          storeHotkeyTargetShortcut(target, saved);
+          hideInlineError(hotkeyErrorNode(target));
+          toast(
+            target === "quick" ? "呼出快捷键已更新" : "已保存",
+            "success"
+          );
+        } else {
+          /* Keep the saved settings untouched and restore the old display. */
+          storeHotkeyTargetShortcut(target, previous);
+          showInlineError(
+            hotkeyErrorNode(target),
+            (result && result.error) || "保存快捷键失败",
+            (result && result.hint) || ""
+          );
         }
-        hideInlineError(byId("capture-hotkey-error"));
-        toast("已保存", "success");
-      } else {
-        /* Keep the saved settings untouched and restore the old display. */
-        if (state && state.settings) {
-          state.settings.capture = LP.deepMerge(state.settings.capture || {}, {
-            regionShortcut: previous,
-          });
-        }
-        showInlineError(
-          byId("capture-hotkey-error"),
-          (result && result.error) || "保存快捷键失败",
-          (result && result.hint) || ""
-        );
-      }
-      renderHotkey();
-    });
+        renderHotkey(target);
+      });
   }
 
   /* Capture-phase listener on window: while recording, the combo must not reach
    * buttons, text fields or the other page shortcuts. */
   function handleHotkeyKeydown(event) {
-    if (!hotkeyRecording || !event) {
+    var target = activeHotkeyTarget();
+    if (!target || !event) {
       return;
     }
     if (event.isComposing) {
@@ -1553,7 +1642,7 @@
     }
     var key = String(event.key || "");
     if (key === "Escape" || key === "Esc") {
-      cancelHotkeyRecording();
+      cancelHotkeyRecording(target);
       return;
     }
     if (HOTKEY_MODIFIER_KEYS[key]) {
@@ -1564,20 +1653,194 @@
     if (!combo) {
       if (!hotkeyKeyFromEvent(event)) {
         showInlineError(
-          byId("capture-hotkey-error"),
+          hotkeyErrorNode(target),
           "不支持这个主键。",
           "请使用字母、数字、F1–F24、PrintScreen、空格、Tab 或方向键等。"
         );
       } else {
         showInlineError(
-          byId("capture-hotkey-error"),
+          hotkeyErrorNode(target),
           "需要至少一个修饰键。",
           "请按住 Ctrl / Alt / Shift / Win 中的至少一个，再按主键。"
         );
       }
       return;
     }
-    submitHotkey(combo);
+    submitHotkey(target, combo);
+  }
+
+  /* ---- Quick translate settings (quick-translate §7) ------------------- */
+
+  /* Defaults mirror `settings::QuickSettings` so a stale cached script or an
+   * older settings file still renders a usable card. */
+  var QUICK_DEFAULTS = {
+    enabled: true,
+    hotkey: "Alt+Space",
+    targetLang: "zh",
+    prompt: "",
+    pinned: false,
+  };
+
+  /* Normalized `settings.quick`, with per-field fallbacks. */
+  function quickSettings() {
+    var stored = (state && state.settings && state.settings.quick) || {};
+    return {
+      enabled: stored.enabled !== false,
+      hotkey:
+        String(stored.hotkey || "").trim() || QUICK_DEFAULTS.hotkey,
+      targetLang:
+        String(stored.targetLang || "").trim() || QUICK_DEFAULTS.targetLang,
+      prompt: typeof stored.prompt === "string" ? stored.prompt : "",
+      pinned: stored.pinned === true,
+    };
+  }
+
+  /* Partial patches keep the untouched fields (targetLang / pinned / ...) in
+   * the backend settings object. */
+  function saveQuickEnabled(enabled) {
+    save({ quick: { enabled: !!enabled } });
+  }
+
+  /* Built-in prompt comes from `promptDefaults` (Rust `default_prompts()`);
+   * settings loaded before the field existed simply show an empty textarea. */
+  function quickPromptDefault() {
+    var defaults = (state && state.promptDefaults) || {};
+    var value = defaults.quickTranslate;
+    return typeof value === "string" ? value : "";
+  }
+
+  /* Textarea value: pending draft wins, then the custom prompt, then the
+   * built-in default. */
+  function quickPromptEditorValue() {
+    if (quickPromptDraft !== null) {
+      return quickPromptDraft;
+    }
+    return quickSettings().prompt || quickPromptDefault();
+  }
+
+  /* Empty (or the built-in default) is persisted as "" so the quick panel
+   * falls back to the bundled prompt; mirrors the skill prompt editors. */
+  function saveQuickPromptValue(rawValue) {
+    var text = String(rawValue === null || rawValue === undefined ? "" : rawValue);
+    var trimmed = text.trim();
+    var stored = "";
+    if (trimmed && trimmed !== quickPromptDefault().trim()) {
+      stored = trimmed;
+    }
+    save({ quick: { prompt: stored } });
+  }
+
+  function saveQuickPromptDraft() {
+    if (quickPromptDraft === null) {
+      return;
+    }
+    var value = quickPromptDraft;
+    quickPromptDraft = null;
+    saveQuickPromptValue(value);
+  }
+
+  function flushQuickPromptDraft() {
+    if (quickPromptTimer) {
+      window.clearTimeout(quickPromptTimer);
+      quickPromptTimer = null;
+    }
+    saveQuickPromptDraft();
+  }
+
+  function resetQuickPrompt() {
+    flushQuickPromptDraft();
+    quickPromptDraft = null;
+    saveQuickPromptValue("");
+    setInputValue(byId("quick-prompt"), quickPromptDefault());
+    toast("已重置为默认提示词", "success");
+  }
+
+  function renderQuickPrompt() {
+    setInputValue(byId("quick-prompt"), quickPromptEditorValue());
+  }
+
+  function renderQuick() {
+    setChecked(byId("quick-enabled"), quickSettings().enabled);
+    renderHotkey("quick");
+    renderQuickPrompt();
+  }
+
+  function bindQuickPrompt() {
+    var textarea = byId("quick-prompt");
+    if (!textarea) {
+      return;
+    }
+    textarea.addEventListener("input", function () {
+      quickPromptDraft = textarea.value;
+      if (quickPromptTimer) {
+        window.clearTimeout(quickPromptTimer);
+      }
+      quickPromptTimer = window.setTimeout(function () {
+        quickPromptTimer = null;
+        saveQuickPromptDraft();
+      }, 500);
+    });
+    textarea.addEventListener("blur", flushQuickPromptDraft);
+    textarea.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        textarea.blur();
+      }
+    });
+  }
+
+  /* `window.quickAPI` is provided by shared/tauri-api.js (quick-translate §6).
+   * An older cached script must degrade to an inline error, never crash. */
+  var QUICK_API_ALIASES = {
+    setHotkey: ["setHotkey", "quickSetHotkey"],
+    historyClear: ["historyClear", "quickHistoryClear"],
+  };
+
+  function quickApiMethod(method) {
+    var quick = window.quickAPI;
+    if (!quick) {
+      return null;
+    }
+    var names = QUICK_API_ALIASES[method] || [method];
+    for (var index = 0; index < names.length; index += 1) {
+      if (typeof quick[names[index]] === "function") {
+        return quick[names[index]];
+      }
+    }
+    return null;
+  }
+
+  function quickApiCall(method, args) {
+    var fn = quickApiMethod(method);
+    if (!fn) {
+      return Promise.resolve({
+        ok: false,
+        error: "当前版本不支持快捷翻译接口",
+        hint: "请更新应用后重试。",
+      });
+    }
+    try {
+      return Promise.resolve(
+        fn.apply(window.quickAPI, args || [])
+      ).catch(function (error) {
+        return { ok: false, error: (error && error.message) || "操作失败" };
+      });
+    } catch (error) {
+      return Promise.resolve({
+        ok: false,
+        error: (error && error.message) || "操作失败",
+      });
+    }
+  }
+
+  function clearQuickHistory() {
+    quickApiCall("historyClear", []).then(function (result) {
+      if (result && result.ok) {
+        toast("已清空翻译历史", "success");
+      } else {
+        toast("清空失败：" + ((result && result.error) || "未知错误"), "error");
+      }
+    });
   }
 
   /* ---- Custom skills ----------------------------------------------------- */
@@ -4208,16 +4471,40 @@
     byId("picker-compact").addEventListener("change", function (event) {
       save({ picker: { compact: event.target.checked } });
     });
-    byId("capture-hotkey").addEventListener("click", startHotkeyRecording);
+    byId("capture-hotkey").addEventListener("click", function () {
+      startHotkeyRecording("capture");
+    });
     byId("capture-hotkey-restore").addEventListener("click", function () {
-      if (hotkeySaving) {
+      if (hotkeyRecorders.capture.saving) {
         return;
       }
-      hotkeyRecording = false;
-      submitHotkey("Win+Shift+X");
+      hotkeyRecorders.capture.recording = false;
+      submitHotkey("capture", HOTKEY_TARGETS.capture.fallback);
     });
     window.addEventListener("keydown", handleHotkeyKeydown, true);
-    window.addEventListener("blur", cancelHotkeyRecording);
+    window.addEventListener("blur", function () {
+      cancelHotkeyRecording("capture");
+      cancelHotkeyRecording("quick");
+    });
+
+    byId("quick-enabled").addEventListener("change", function (event) {
+      saveQuickEnabled(event.target.checked);
+    });
+    byId("quick-hotkey").addEventListener("click", function () {
+      startHotkeyRecording("quick");
+    });
+    byId("quick-hotkey-restore").addEventListener("click", function () {
+      if (hotkeyRecorders.quick.saving) {
+        return;
+      }
+      hotkeyRecorders.quick.recording = false;
+      submitHotkey("quick", HOTKEY_TARGETS.quick.fallback);
+    });
+    bindQuickPrompt();
+    byId("quick-prompt-reset").addEventListener("click", resetQuickPrompt);
+    byId("quick-history-clear").addEventListener("click", function () {
+      armDanger(byId("quick-history-clear"), "确认清空", clearQuickHistory);
+    });
     byId("panel-mode-scroll").addEventListener("click", function () {
       selectPanelMode("scroll");
     });

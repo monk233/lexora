@@ -39,8 +39,9 @@ mod prompts;
 
 pub use llama::LocalState;
 pub use prompts::{
-    default_prompts, render_image_prompt, resolve_target_lang, DEFAULT_EXPLAIN_IMAGE_PROMPT,
-    DEFAULT_OCR_PROMPT,
+    default_prompts, render_image_prompt, resolve_target_lang, truncate_chars,
+    DEFAULT_EXPLAIN_IMAGE_PROMPT, DEFAULT_OCR_PROMPT, DEFAULT_QUICK_TRANSLATE_PROMPT,
+    QUICK_MAX_TEXT_CHARS,
 };
 
 /// Pinned llama.cpp Windows CPU release used when the user installs the engine.
@@ -1169,6 +1170,63 @@ impl EngineService {
                 target,
                 resolved.mode,
                 resolved.prompt_source
+            ),
+            messages,
+        )
+        .await
+    }
+
+    /// Streams a quick-translate panel request (contract §4). The panel keeps a
+    /// fixed, predictable behavior, so the input **never** switches to the
+    /// dictionary/word-lookup prompt: the default is
+    /// [`DEFAULT_QUICK_TRANSLATE_PROMPT`] and a non-empty `custom_prompt`
+    /// replaces it completely (with `{target}` / `{language}` rendered exactly
+    /// like the ordinary translation path).
+    ///
+    /// The input is truncated (never rejected) to [`QUICK_MAX_TEXT_CHARS`] so a
+    /// huge paste still translates predictably; the log action is
+    /// `quick_translate`.
+    pub async fn quick_translate_stream(
+        &self,
+        text: &str,
+        target_lang: &str,
+        custom_prompt: &str,
+    ) -> Result<BoxStream<'static, Result<String, EngineError>>, EngineError> {
+        let settings = self.settings.get();
+        let cleaned = text.trim();
+        if cleaned.is_empty() {
+            return Err(EngineError::new(
+                "没有可翻译的文本。",
+                "请输入要翻译的内容后再试。",
+            ));
+        }
+        let truncated = prompts::truncate_chars(cleaned, QUICK_MAX_TEXT_CHARS);
+        let target = prompts::resolve_target_lang(target_lang, &truncated);
+        let (system, user) = prompts::quick_translate_messages(&truncated, &target, custom_prompt);
+        let messages = vec![
+            json!({"role": "system", "content": system}),
+            json!({"role": "user", "content": user}),
+        ];
+        let config = self.chat_config(&settings, LocalRole::Translate).await?;
+        let source = prompt_source(custom_prompt);
+        let config = request_config(&config, "quick_translate", source);
+        self.logger.info(&format!(
+            "quick translate stream start: action=quick_translate provider={} model={} chars={} target={} prompt_source={}",
+            if config.local { "local" } else { "online" },
+            config.model,
+            truncated.chars().count(),
+            target,
+            source
+        ));
+        self.logged_stream(
+            "quick_translate",
+            &config,
+            format!(
+                "input_chars={} target={} prompt_source={} prompt_version={}",
+                truncated.chars().count(),
+                target,
+                source,
+                prompts::PROMPT_VERSION
             ),
             messages,
         )
@@ -2768,6 +2826,7 @@ mod tests {
             "followup",
             "vision_followup",
             "custom_skill",
+            "quick_translate",
         ] {
             assert_eq!(effective_max_tokens(8192, mode, "default"), 8192);
             assert_eq!(effective_max_tokens(64, mode, "custom"), 64);
@@ -2869,6 +2928,12 @@ mod tests {
                 socket
                     .set_read_timeout(Some(Duration::from_secs(5)))
                     .unwrap();
+                // `listener.set_nonblocking(true)` makes `accept` non-blocking,
+                // but it also leaves the accepted socket non-blocking on
+                // Windows: a read before the client has sent its headers would
+                // fail with `WouldBlock`. Restore blocking mode for the
+                // request/response exchange, bounded by the read timeout above.
+                socket.set_nonblocking(false).unwrap();
                 let mut bytes = Vec::new();
                 let mut buffer = [0; 4096];
                 let payload = loop {

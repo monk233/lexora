@@ -12,9 +12,14 @@ use std::sync::{Arc, RwLock};
 
 /// Version of the on-disk settings schema. Bumped whenever defaults or fields
 /// change so [`Settings::normalize`] can migrate an older file in place.
-pub const SETTINGS_VERSION: u32 = 8;
+pub const SETTINGS_VERSION: u32 = 9;
 /// Default global shortcut that starts a region screenshot.
 pub const DEFAULT_REGION_SHORTCUT: &str = "Win+Shift+X";
+/// Default global shortcut that opens the quick-translate panel.
+pub const DEFAULT_QUICK_SHORTCUT: &str = "Alt+Space";
+/// Target language used by the quick panel when the stored value is missing,
+/// unknown or `auto` (the panel always translates into one concrete language).
+pub const DEFAULT_QUICK_TARGET_LANG: &str = "zh";
 /// Built-in picker skills, in their canonical toolbar order.
 pub const SKILLS: [&str; 8] = [
     "translate",
@@ -173,6 +178,9 @@ pub struct Settings {
     /// Region-screenshot preferences (`v4`).
     #[serde(default)]
     pub capture: CaptureSettings,
+    /// Quick-translate panel preferences (`v9`).
+    #[serde(default)]
+    pub quick: QuickSettings,
 }
 
 /// Screenshot settings. `region_shortcut` is stored in canonical form (see
@@ -187,6 +195,37 @@ impl Default for CaptureSettings {
     fn default() -> Self {
         Self {
             region_shortcut: DEFAULT_REGION_SHORTCUT.to_string(),
+        }
+    }
+}
+
+/// Quick-translate panel preferences (schema `v9`). `hotkey` is stored in its
+/// canonical form (see [`normalize_quick_shortcut`]) so the dedicated hotkey
+/// thread can parse it without surprises; `target_lang` is always one of the
+/// concrete [`TARGET_LANGS`] entries (never `auto`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct QuickSettings {
+    /// `false` disables the global hotkey registration and hides the panel.
+    pub enabled: bool,
+    /// Canonical shortcut, e.g. `Alt+Space`.
+    pub hotkey: String,
+    /// Remembered translation target of the panel.
+    pub target_lang: String,
+    /// Optional system prompt override; empty = built-in quick default.
+    pub prompt: String,
+    /// Remembered "always on top" state of the panel window.
+    pub pinned: bool,
+}
+
+impl Default for QuickSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            hotkey: DEFAULT_QUICK_SHORTCUT.to_string(),
+            target_lang: DEFAULT_QUICK_TARGET_LANG.to_string(),
+            prompt: String::new(),
+            pinned: false,
         }
     }
 }
@@ -356,6 +395,7 @@ impl Default for Settings {
             provider: ProviderSettings::default(),
             app: AppSettings::default(),
             capture: CaptureSettings::default(),
+            quick: QuickSettings::default(),
         }
     }
 }
@@ -686,6 +726,19 @@ impl Settings {
         // default so a hand-edited file can never leave the hotkey thread with
         // an unparseable combination.
         self.capture.region_shortcut = normalize_shortcut(&self.capture.region_shortcut);
+        // Quick-translate panel (v9): the panel hotkey normalizes with its own
+        // fallback, the target language is never `auto`, and a pasted custom
+        // prompt is trimmed/capped like every other prompt override.
+        self.quick.hotkey = normalize_quick_shortcut(&self.quick.hotkey);
+        self.quick.target_lang = {
+            let value = self.quick.target_lang.trim().to_ascii_lowercase();
+            if value != "auto" && TARGET_LANGS.contains(&value.as_str()) {
+                value
+            } else {
+                DEFAULT_QUICK_TARGET_LANG.to_string()
+            }
+        };
+        self.quick.prompt = truncate(&self.quick.prompt, PROMPT_MAX_CHARS);
         self.version = SETTINGS_VERSION;
         self
     }
@@ -900,6 +953,16 @@ pub fn normalize_shortcut(raw: &str) -> String {
     parse_shortcut(raw)
         .map(|shortcut| shortcut.label())
         .unwrap_or_else(|| DEFAULT_REGION_SHORTCUT.to_string())
+}
+
+/// Normalizes the quick-translate hotkey. Same canonical form as
+/// [`normalize_shortcut`], but an invalid value falls back to
+/// [`DEFAULT_QUICK_SHORTCUT`] — the screenshot default must never leak into the
+/// quick panel.
+pub fn normalize_quick_shortcut(raw: &str) -> String {
+    parse_shortcut(raw)
+        .map(|shortcut| shortcut.label())
+        .unwrap_or_else(|| DEFAULT_QUICK_SHORTCUT.to_string())
 }
 
 /// Thread-safe settings holder with atomic persistence.
@@ -1141,7 +1204,7 @@ mod tests {
     fn defaults_are_normalized() {
         let settings = Settings::default().normalize();
         assert_eq!(settings.version, SETTINGS_VERSION);
-        assert_eq!(SETTINGS_VERSION, 8);
+        assert_eq!(SETTINGS_VERSION, 9);
         let expected = vec![
             "translate",
             "summarize",
@@ -1355,7 +1418,7 @@ mod tests {
         }))
         .unwrap();
         let migrated = legacy.normalize();
-        assert_eq!(migrated.version, 8);
+        assert_eq!(migrated.version, SETTINGS_VERSION);
         assert_eq!(migrated.picker.prompts.word_lookup, "Look it up.");
         assert_eq!(
             migrated.picker.prompts.translate,
@@ -2292,5 +2355,153 @@ mod tests {
             );
             assert!(parse_shortcut(raw).is_none(), "raw={raw:?}");
         }
+    }
+
+    #[test]
+    fn quick_settings_defaults_and_serialization() {
+        let settings = Settings::default().normalize();
+        assert_eq!(settings.quick, QuickSettings::default());
+        assert!(settings.quick.enabled);
+        assert_eq!(settings.quick.hotkey, DEFAULT_QUICK_SHORTCUT);
+        assert_eq!(settings.quick.hotkey, "Alt+Space");
+        assert_eq!(settings.quick.target_lang, DEFAULT_QUICK_TARGET_LANG);
+        assert_eq!(settings.quick.target_lang, "zh");
+        assert_eq!(settings.quick.prompt, "");
+        assert!(!settings.quick.pinned);
+        // camelCase keys, exactly the contract's `quick` block.
+        let value = serde_json::to_value(&settings).unwrap();
+        assert_eq!(
+            value["quick"],
+            json!({
+                "enabled": true,
+                "hotkey": "Alt+Space",
+                "targetLang": "zh",
+                "prompt": "",
+                "pinned": false,
+            })
+        );
+        let parsed: Settings = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed, settings);
+        // A v8 file (no `quick` block) loads the defaults through serde.
+        let legacy: Settings = serde_json::from_value(json!({ "version": 8 })).unwrap();
+        assert_eq!(legacy.normalize().quick, QuickSettings::default());
+    }
+
+    #[test]
+    fn quick_hotkey_normalization_falls_back_to_alt_space() {
+        for raw in ["alt+space", " ALT + SPACE ", "Alt+Space"] {
+            assert_eq!(normalize_quick_shortcut(raw), "Alt+Space");
+        }
+        assert_eq!(normalize_quick_shortcut("ctrl+alt+q"), "Ctrl+Alt+Q");
+        // Canonical modifier order is Win, Ctrl, Alt, Shift.
+        assert_eq!(normalize_quick_shortcut("shift+alt+win+f5"), "Win+Alt+Shift+F5");
+        // Invalid values never borrow the screenshot fallback.
+        for invalid in ["", "   ", "Space", "Alt", "Alt+Shift+F25", "Alt+A+B"] {
+            assert_eq!(
+                normalize_quick_shortcut(invalid),
+                DEFAULT_QUICK_SHORTCUT,
+                "raw={invalid:?}"
+            );
+        }
+        assert_ne!(normalize_quick_shortcut(""), DEFAULT_REGION_SHORTCUT);
+    }
+
+    #[test]
+    fn quick_settings_normalize_invalid_values() {
+        let mut settings = Settings::default();
+        settings.quick.hotkey = "  alt + space  ".to_string();
+        settings.quick.target_lang = " ZH ".to_string();
+        settings.quick.prompt = format!("  {}  ", "p".repeat(PROMPT_MAX_CHARS + 10));
+        let normalized = settings.normalize();
+        assert_eq!(normalized.quick.hotkey, "Alt+Space");
+        assert_eq!(normalized.quick.target_lang, "zh");
+        assert_eq!(
+            normalized.quick.prompt.chars().count(),
+            PROMPT_MAX_CHARS,
+            "custom prompt is trimmed and truncated"
+        );
+        assert!(!normalized.quick.prompt.starts_with(' '));
+
+        // `auto` is not a valid quick-panel target: the panel has no detection
+        // dropdown, so an invalid value falls back to the remembered default.
+        for invalid in ["auto", "", "  ", "xx", "AUTO", "zh-cn"] {
+            let mut settings = Settings::default();
+            settings.quick.target_lang = invalid.to_string();
+            assert_eq!(
+                settings.normalize().quick.target_lang,
+                DEFAULT_QUICK_TARGET_LANG,
+                "wrong fallback for {invalid:?}"
+            );
+        }
+        // Every concrete target is accepted and persisted lower-cased.
+        for code in TARGET_LANGS.into_iter().filter(|code| *code != "auto") {
+            let mut settings = Settings::default();
+            settings.quick.target_lang = code.to_ascii_uppercase();
+            assert_eq!(settings.normalize().quick.target_lang, code);
+        }
+        // Invalid hotkeys fall back to the quick default, not the screenshot one.
+        let mut settings = Settings::default();
+        settings.quick.hotkey = "not a shortcut".to_string();
+        assert_eq!(
+            settings.normalize().quick.hotkey,
+            DEFAULT_QUICK_SHORTCUT
+        );
+        // Idempotent.
+        let once = Settings::default().normalize();
+        assert_eq!(once.clone().normalize(), once);
+    }
+
+    #[test]
+    fn quick_settings_migrate_from_schema_eight_preserving_other_fields() {
+        let legacy: Settings = serde_json::from_value(json!({
+            "version": 8,
+            "picker": {
+                "enabled": false,
+                "prompts": { "translate": "Translate into {target}." },
+                "blacklist": ["WeChat"]
+            },
+            "capture": { "regionShortcut": "Ctrl+Alt+P" },
+            "provider": { "online": { "model": "gpt-4o-mini" } },
+            "app": { "theme": "dark", "closeToTray": false }
+        }))
+        .unwrap();
+        let migrated = legacy.normalize();
+        assert_eq!(migrated.version, SETTINGS_VERSION);
+        // The v8 fields survive the version bump untouched.
+        assert!(!migrated.picker.enabled);
+        assert_eq!(migrated.picker.prompts.translate, "Translate into {target}.");
+        assert_eq!(migrated.picker.blacklist, vec!["WeChat".to_string()]);
+        assert_eq!(migrated.capture.region_shortcut, "Ctrl+Alt+P");
+        assert_eq!(migrated.provider.online.model, "gpt-4o-mini");
+        assert_eq!(migrated.app.theme, "dark");
+        assert!(!migrated.app.close_to_tray);
+        // ...and the new quick block gets its defaults.
+        assert_eq!(migrated.quick, QuickSettings::default());
+        assert_eq!(migrated.clone().normalize(), migrated);
+    }
+
+    #[test]
+    fn quick_settings_roundtrip_through_the_patch_path() {
+        let (store, dir) = store();
+        let updated = store
+            .update_json(json!({
+                "quick": {
+                    "enabled": false,
+                    "hotkey": "ctrl + alt + q",
+                    "targetLang": "ja",
+                    "prompt": "Translate into {target}.",
+                    "pinned": true
+                }
+            }))
+            .unwrap();
+        assert!(!updated.quick.enabled);
+        assert_eq!(updated.quick.hotkey, "Ctrl+Alt+Q");
+        assert_eq!(updated.quick.target_lang, "ja");
+        assert_eq!(updated.quick.prompt, "Translate into {target}.");
+        assert!(updated.quick.pinned);
+        let reloaded = SettingsStore::load(dir.path().join("settings.json"));
+        assert_eq!(reloaded.get().quick, updated.quick);
+        // Reset restores the quick defaults like every other settings block.
+        assert_eq!(store.reset().quick, QuickSettings::default());
     }
 }

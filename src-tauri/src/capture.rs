@@ -3175,7 +3175,9 @@ fn default_shortcut() -> Shortcut {
 
 /// Native `(modifier flags, virtual key)` pair for `RegisterHotKey`. Includes
 /// `MOD_NOREPEAT` so holding the keys down fires the screenshot exactly once.
-fn native_hotkey(shortcut: Shortcut) -> (u32, u32) {
+/// Shared with the quick-translate hotkey thread so both shortcuts map keys
+/// identically.
+pub(crate) fn native_hotkey(shortcut: Shortcut) -> (u32, u32) {
     let mut modifiers = MOD_NOREPEAT_RAW;
     if shortcut.modifiers.alt {
         modifiers |= MOD_ALT_RAW;
