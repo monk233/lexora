@@ -195,3 +195,360 @@ test("restart waits for additional model selection queued during the save", asyn
   await restart;
   assert.deepEqual(h.calls, ["save", "save", "restart:latest"]);
 });
+
+/* ---- Quick translate settings card (quick-translate §7) ---------------- */
+
+const mergePatch = (target, patch) => {
+  const result = { ...target };
+  for (const key of Object.keys(patch)) {
+    result[key] =
+      patch[key] && typeof patch[key] === "object" && !Array.isArray(patch[key])
+        ? mergePatch(target[key] || {}, patch[key])
+        : patch[key];
+  }
+  return result;
+};
+
+/* Mirrors `QUICK_DEFAULTS` in settings.js (top-level var, not extractable). */
+const QUICK_DEFAULTS = { enabled: true, hotkey: "Alt+Space", targetLang: "zh", prompt: "", wordLookupPrompt: "", pinned: false };
+
+/* Mirrors `QUICK_PROMPT_SLOTS` in settings.js. */
+const QUICK_PROMPT_SLOTS = {
+  paragraph: { input: "quick-prompt", reset: "quick-prompt-reset", field: "prompt", defaultKey: "quickTranslate" },
+  word: { input: "quick-word-prompt", reset: "quick-word-prompt-reset", field: "wordLookupPrompt", defaultKey: "quickTranslateWordLookup" },
+};
+
+function quickSettingsHarness(settings) {
+  const context = vm.createContext({
+    state: settings === undefined ? {} : { settings },
+    QUICK_DEFAULTS,
+  });
+  vm.runInContext(extract("quickSettings"), context);
+  return context;
+}
+
+function renderQuickHarness(quick, promptDefaults) {
+  const nodes = {
+    "quick-enabled": element("input", ""),
+    "quick-hotkey": element("button", ""),
+    "quick-hotkey-restore": element("button", ""),
+    "quick-hotkey-error": element("p", ""),
+    "quick-prompt": element("textarea", ""),
+    "quick-word-prompt": element("textarea", ""),
+  };
+  const calls = { checked: [], values: [], hotkey: [] };
+  const context = vm.createContext({
+    Promise, Object,
+    state: { settings: quick === undefined ? {} : { quick }, promptDefaults },
+    QUICK_DEFAULTS,
+    QUICK_PROMPT_SLOTS,
+    quickPromptDrafts: { paragraph: null, word: null },
+    byId: (id) => nodes[id] || null,
+    setChecked(node, value) { node.checked = value; calls.checked.push(value); },
+    setInputValue(node, value) { node.value = value; calls.values.push(value); },
+    renderHotkey(target) { calls.hotkey.push(target); },
+  });
+  for (const name of ["quickSettings", "quickPromptDefault", "quickPromptCustomValue", "quickPromptEditorValue", "renderQuickPrompt", "renderQuick"]) {
+    vm.runInContext(extract(name), context);
+  }
+  context.renderQuick();
+  return { context, nodes, calls };
+}
+
+function quickSaveHarness(promptDefaults) {
+  const nodes = {
+    "quick-prompt": element("textarea", "textarea"),
+    "quick-word-prompt": element("textarea", "textarea"),
+  };
+  const saves = [];
+  const toasts = [];
+  const context = vm.createContext({
+    Promise, Object,
+    state: { promptDefaults },
+    QUICK_PROMPT_SLOTS,
+    quickPromptDrafts: { paragraph: null, word: null },
+    quickPromptTimers: { paragraph: null, word: null },
+    window: { clearTimeout() {} },
+    byId: (id) => nodes[id] || null,
+    save(patch) { saves.push(JSON.parse(JSON.stringify(patch))); },
+    setInputValue(node, value) { if (node) node.value = value; },
+    toast(message) { toasts.push(message); },
+  });
+  for (const name of ["quickPromptDefault", "saveQuickPromptValue", "saveQuickPromptDraft", "flushQuickPromptDraft", "resetQuickPrompt", "saveQuickEnabled"]) {
+    vm.runInContext(extract(name), context);
+  }
+  return { context, saves, nodes, toasts };
+}
+
+function quickHotkeyHarness(result, available = true) {
+  const nodes = {
+    "quick-hotkey": element("button", "hotkey-display"),
+    "quick-hotkey-restore": element("button", "btn"),
+    "quick-hotkey-error": element("p", "inline-error"),
+  };
+  nodes["quick-hotkey-error"].hidden = true;
+  const calls = { setHotkey: [], toasts: [], rendering: [] };
+  const quickApi = available
+    ? {
+        setHotkey(combo) {
+          calls.setHotkey.push(combo);
+          return Promise.resolve(result);
+        },
+      }
+    : null;
+  const context = vm.createContext({
+    Promise, Object,
+    state: { settings: { quick: { enabled: true, hotkey: "Alt+Space", targetLang: "zh", prompt: "", pinned: false } } },
+    hotkeyRecorders: { capture: { recording: false, saving: false }, quick: { recording: false, saving: false } },
+    HOTKEY_TARGETS: {
+      capture: { button: "capture-hotkey", restore: "capture-hotkey-restore", error: "capture-hotkey-error", label: "截图快捷键", fallback: "Win+Shift+X" },
+      quick: { button: "quick-hotkey", restore: "quick-hotkey-restore", error: "quick-hotkey-error", label: "呼出快捷键", fallback: "Alt+Space" },
+    },
+    QUICK_API_ALIASES: { setHotkey: ["setHotkey", "quickSetHotkey"], historyClear: ["historyClear", "quickHistoryClear"] },
+    LP: { deepMerge: mergePatch },
+    window: quickApi ? { quickAPI: quickApi } : {},
+    byId: (id) => nodes[id] || null,
+    hotkeyErrorNode: (target) => (target === "quick" ? nodes["quick-hotkey-error"] : null),
+    renderHotkey(target) { calls.rendering.push(target); },
+    hideInlineError(node) { node.hidden = true; node.textContent = ""; },
+    showInlineError(node, message, hint) { node.hidden = false; node.textContent = message + (hint || ""); },
+    toast(message) { calls.toasts.push(message); },
+  });
+  for (const name of ["quickApiMethod", "quickApiCall", "hotkeyTargetShortcut", "storeHotkeyTargetShortcut", "submitHotkey"]) {
+    vm.runInContext(extract(name), context);
+  }
+  return { context, nodes, calls };
+}
+
+/* Extracts one <section class="card"> block by its `aria-labelledby` title id. */
+function cardBlock(html, titleId) {
+  const marker = 'aria-labelledby="' + titleId + '"';
+  const markerIndex = html.indexOf(marker);
+  assert.notEqual(markerIndex, -1, "missing card " + titleId);
+  const start = html.lastIndexOf("<section", markerIndex);
+  const end = html.indexOf("</section>", markerIndex);
+  assert.ok(start >= 0 && end > markerIndex, "malformed card " + titleId);
+  return html.slice(start, end);
+}
+
+test("settings cards run provider, picker, quick, shortcuts, app, about", () => {
+  const html = fs.readFileSync(require("node:path").join(__dirname, "index.html"), "utf8");
+  const order = ["card-provider-title", "card-picker-title", "card-quick-title", "card-shortcuts-title", "card-app-title", "card-about-title"];
+  const positions = order.map((id) => html.indexOf('aria-labelledby="' + id + '"'));
+  for (let index = 0; index < positions.length; index += 1) {
+    assert.ok(positions[index] >= 0, "missing card " + order[index]);
+    if (index > 0) {
+      assert.ok(positions[index] > positions[index - 1], order[index] + " must follow " + order[index - 1]);
+    }
+  }
+});
+
+test("shortcut card owns both shortcut rows; quick card keeps its own controls", () => {
+  const html = fs.readFileSync(require("node:path").join(__dirname, "index.html"), "utf8");
+  for (const id of ["quick-enabled", "quick-hotkey", "quick-hotkey-restore", "quick-hotkey-error", "quick-prompt", "quick-prompt-reset", "quick-word-prompt", "quick-word-prompt-reset", "quick-history-clear"]) {
+    assert.ok(html.includes('id="' + id + '"'), "missing #" + id);
+  }
+  assert.match(html, /<textarea[^>]*id="quick-prompt"[^>]*maxlength="4000"/s);
+  assert.match(html, /<textarea[^>]*id="quick-word-prompt"[^>]*maxlength="4000"/s);
+  const shortcutsCard = cardBlock(html, "card-shortcuts-title");
+  const quickCard = cardBlock(html, "card-quick-title");
+  for (const id of ["quick-hotkey", "quick-hotkey-restore", "quick-hotkey-error"]) {
+    assert.ok(shortcutsCard.includes('id="' + id + '"'), id + " must live in the shortcuts card");
+    assert.ok(!quickCard.includes('id="' + id + '"'), id + " must not live in the quick card");
+  }
+  assert.ok(
+    shortcutsCard.indexOf('id="capture-hotkey"') < shortcutsCard.indexOf('id="quick-hotkey"'),
+    "capture shortcut row keeps its place above the quick translate row"
+  );
+  assert.match(shortcutsCard, /配置 Lexora 的全局快捷键。/);
+  assert.match(shortcutsCard, /呼出快捷翻译/);
+  assert.match(shortcutsCard, /点击后按下新的组合键；需含修饰键/);
+  for (const id of ["quick-enabled", "quick-prompt", "quick-prompt-reset", "quick-word-prompt", "quick-word-prompt-reset", "quick-history-clear"]) {
+    assert.ok(quickCard.includes('id="' + id + '"'), id + " must stay in the quick card");
+  }
+  for (const id of ["quick-prompt", "quick-word-prompt"]) {
+    assert.ok(!shortcutsCard.includes('id="' + id + '"'), id + " must not live in the shortcuts card");
+  }
+  assert.match(quickCard, /段落 \/ 长句提示词/);
+  assert.match(quickCard, /单词 \/ 短语提示词/);
+  assert.match(quickCard, /\{source\} 与 \{target\} 占位符/);
+  assert.match(quickCard, /自动识别源语言时 \{source\} 使用检测到的语言/);
+  assert.match(quickCard, /按快捷键呼出翻译面板，再次按下隐藏/);
+  assert.match(quickCard, /最多保留 500 条/);
+});
+
+test("quick card wiring targets quickAPI and update_settings", () => {
+  assert.match(source, /quickApiCall\("setHotkey"/);
+  assert.match(source, /quickApiCall\("historyClear"/);
+  assert.match(source, /renderHotkey\("quick"\)/);
+  assert.match(source, /byId\("quick-enabled"\)\.addEventListener\("change"/);
+  assert.match(source, /byId\("quick-history-clear"\)\.addEventListener/);
+  assert.match(source, /byId\("quick-word-prompt-reset"\)\.addEventListener/);
+  assert.match(source, /wordLookupPrompt/);
+});
+
+test("quick settings default to enabled Alt+Space and Chinese", () => {
+  const defaults = quickSettingsHarness({}).quickSettings();
+  assert.equal(defaults.enabled, true);
+  assert.equal(defaults.hotkey, "Alt+Space");
+  assert.equal(defaults.targetLang, "zh");
+  assert.equal(defaults.prompt, "");
+  assert.equal(defaults.wordLookupPrompt, "");
+  assert.equal(defaults.pinned, false);
+  const stored = quickSettingsHarness({
+    quick: { enabled: false, hotkey: "Ctrl+Alt+Q", targetLang: "en", prompt: "P {source} {target}", wordLookupPrompt: "W {source} {target}", pinned: true },
+  }).quickSettings();
+  assert.equal(stored.enabled, false);
+  assert.equal(stored.hotkey, "Ctrl+Alt+Q");
+  assert.equal(stored.targetLang, "en");
+  assert.equal(stored.prompt, "P {source} {target}");
+  assert.equal(stored.wordLookupPrompt, "W {source} {target}");
+  assert.equal(stored.pinned, true);
+  const empty = quickSettingsHarness({
+    quick: { hotkey: "   ", targetLang: "", prompt: 42, wordLookupPrompt: 7, pinned: "1" },
+  }).quickSettings();
+  assert.equal(empty.hotkey, "Alt+Space");
+  assert.equal(empty.targetLang, "zh");
+  assert.equal(empty.prompt, "");
+  assert.equal(empty.wordLookupPrompt, "");
+  assert.equal(empty.pinned, false);
+});
+
+test("quick card renders both prompt defaults and custom values", () => {
+  const defaults = renderQuickHarness(undefined, { quickTranslate: "DEFAULT {target}", quickTranslateWordLookup: "WORDDEFAULT {source}" });
+  assert.equal(defaults.nodes["quick-enabled"].checked, true);
+  assert.equal(defaults.nodes["quick-prompt"].value, "DEFAULT {target}");
+  assert.equal(defaults.nodes["quick-word-prompt"].value, "WORDDEFAULT {source}");
+  assert.deepEqual(defaults.calls.hotkey, ["quick"]);
+  const custom = renderQuickHarness(
+    { enabled: false, prompt: "CUSTOM {target}", wordLookupPrompt: "WORDCUSTOM {source}" },
+    { quickTranslate: "DEFAULT", quickTranslateWordLookup: "WORDDEFAULT" }
+  );
+  assert.equal(custom.nodes["quick-enabled"].checked, false);
+  assert.equal(custom.nodes["quick-prompt"].value, "CUSTOM {target}");
+  assert.equal(custom.nodes["quick-word-prompt"].value, "WORDCUSTOM {source}");
+  const noDefaults = renderQuickHarness({ prompt: "", wordLookupPrompt: "" }, undefined);
+  assert.equal(noDefaults.nodes["quick-prompt"].value, "");
+  assert.equal(noDefaults.nodes["quick-word-prompt"].value, "");
+});
+
+test("quick card saves partial quick patches through update_settings", () => {
+  const h = quickSaveHarness({ quickTranslate: "Default {target}", quickTranslateWordLookup: "Word default {source}" });
+  h.context.saveQuickEnabled(false);
+  h.context.saveQuickPromptValue("paragraph", "  Custom {target}  ");
+  h.context.saveQuickPromptValue("paragraph", "Default {target}");
+  h.context.saveQuickPromptValue("paragraph", "   ");
+  h.context.saveQuickPromptValue("word", "  Custom word {source}  ");
+  h.context.saveQuickPromptValue("word", "Word default {source}");
+  assert.deepEqual(h.saves, [
+    { quick: { enabled: false } },
+    { quick: { prompt: "Custom {target}" } },
+    { quick: { prompt: "" } },
+    { quick: { prompt: "" } },
+    { quick: { wordLookupPrompt: "Custom word {source}" } },
+    { quick: { wordLookupPrompt: "" } },
+  ]);
+  // Partial patches leave targetLang / pinned / the other prompt to the merge.
+  assert.deepEqual(Object.keys(h.saves[0].quick), ["enabled"]);
+  assert.deepEqual(Object.keys(h.saves[1].quick), ["prompt"]);
+  assert.deepEqual(Object.keys(h.saves[4].quick), ["wordLookupPrompt"]);
+});
+
+test("quick prompt reset clears custom values and restores both defaults", () => {
+  const h = quickSaveHarness({ quickTranslate: "Default {target}", quickTranslateWordLookup: "Word default {source}" });
+  h.context.resetQuickPrompt("paragraph");
+  h.context.resetQuickPrompt("word");
+  assert.deepEqual(h.saves, [
+    { quick: { prompt: "" } },
+    { quick: { wordLookupPrompt: "" } },
+  ]);
+  assert.equal(h.nodes["quick-prompt"].value, "Default {target}");
+  assert.equal(h.nodes["quick-word-prompt"].value, "Word default {source}");
+  assert.deepEqual(h.toasts, ["已重置为默认提示词", "已重置为默认提示词"]);
+});
+
+test("quick hotkey recorder saves through quickAPI.setHotkey", async () => {
+  const h = quickHotkeyHarness({ ok: true, shortcut: "Ctrl+Alt+Q" });
+  h.context.submitHotkey("quick", "Ctrl+Alt+Q");
+  await new Promise(setImmediate);
+  assert.deepEqual(h.calls.setHotkey, ["Ctrl+Alt+Q"]);
+  assert.equal(h.context.state.settings.quick.hotkey, "Ctrl+Alt+Q");
+  assert.deepEqual(h.calls.toasts, ["呼出快捷键已更新"]);
+  assert.equal(h.nodes["quick-hotkey-error"].hidden, true);
+  assert.equal(h.context.hotkeyRecorders.quick.saving, false);
+});
+
+test("quick hotkey failure keeps the previous value and shows inline error", async () => {
+  const h = quickHotkeyHarness({ ok: false, error: "快捷键被占用", hint: "请换一个组合" });
+  h.context.submitHotkey("quick", "Ctrl+Alt+Q");
+  await new Promise(setImmediate);
+  assert.equal(h.context.state.settings.quick.hotkey, "Alt+Space");
+  assert.equal(h.nodes["quick-hotkey-error"].hidden, false);
+  assert.equal(h.nodes["quick-hotkey-error"].textContent, "快捷键被占用请换一个组合");
+  assert.deepEqual(h.calls.toasts, []);
+});
+
+test("quick hotkey recorder degrades when quickAPI is unavailable", async () => {
+  const h = quickHotkeyHarness(null, false);
+  h.context.submitHotkey("quick", "Ctrl+Alt+Q");
+  await new Promise(setImmediate);
+  assert.match(h.nodes["quick-hotkey-error"].textContent, /当前版本不支持快捷翻译接口/);
+  assert.equal(h.context.state.settings.quick.hotkey, "Alt+Space");
+});
+
+test("quick history clear calls quickAPI.historyClear and toasts", async () => {
+  const toasts = [];
+  const calls = [];
+  const context = vm.createContext({
+    Promise, Object,
+    QUICK_API_ALIASES: { historyClear: ["historyClear", "quickHistoryClear"] },
+    window: { quickAPI: { historyClear() { calls.push("clear"); return Promise.resolve({ ok: true }); } } },
+    toast(message, tone) { toasts.push([message, tone]); },
+  });
+  for (const name of ["quickApiMethod", "quickApiCall", "clearQuickHistory"]) vm.runInContext(extract(name), context);
+  context.clearQuickHistory();
+  await new Promise(setImmediate);
+  assert.deepEqual(calls, ["clear"]);
+  assert.deepEqual(toasts, [["已清空翻译历史", "success"]]);
+});
+
+test("quick prompt debounce saves after 500ms per editor", () => {
+  const nodes = {
+    "quick-prompt": element("textarea", "textarea"),
+    "quick-word-prompt": element("textarea", "textarea"),
+  };
+  const saves = [];
+  const timers = [];
+  const context = vm.createContext({
+    Promise, Object,
+    state: { promptDefaults: { quickTranslate: "Default {target}", quickTranslateWordLookup: "Word default {source}" } },
+    QUICK_PROMPT_SLOTS,
+    quickPromptDrafts: { paragraph: null, word: null },
+    quickPromptTimers: { paragraph: null, word: null },
+    window: {
+      setTimeout(fn, delay) { timers.push({ fn, delay }); return timers.length; },
+      clearTimeout() {},
+    },
+    byId: (id) => nodes[id] || null,
+    save(patch) { saves.push(JSON.parse(JSON.stringify(patch))); },
+    setInputValue() {},
+  });
+  for (const name of ["quickPromptDefault", "saveQuickPromptValue", "saveQuickPromptDraft", "flushQuickPromptDraft", "bindQuickPrompt"]) {
+    vm.runInContext(extract(name), context);
+  }
+  context.bindQuickPrompt("paragraph");
+  context.bindQuickPrompt("word");
+  nodes["quick-prompt"].value = "  Custom prompt  ";
+  nodes["quick-prompt"].input();
+  nodes["quick-word-prompt"].value = "  Custom word  ";
+  nodes["quick-word-prompt"].input();
+  assert.equal(saves.length, 0);
+  assert.equal(timers.length, 2);
+  assert.deepEqual(timers.map((timer) => timer.delay), [500, 500]);
+  timers[0].fn();
+  timers[1].fn();
+  assert.deepEqual(saves, [
+    { quick: { prompt: "Custom prompt" } },
+    { quick: { wordLookupPrompt: "Custom word" } },
+  ]);
+});

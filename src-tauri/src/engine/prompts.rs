@@ -13,6 +13,11 @@ use crate::engine::EngineError;
 /// Free-form summary/explanation prompts get this much input at most.
 pub const ASSIST_MAX_CHARS: usize = 8_000;
 
+/// Hard input cap of the quick-translate panel. The panel is meant for short
+/// snippets, but paste happens: the text is truncated (never rejected) so a
+/// large paste still translates predictably and history entries stay bounded.
+pub const QUICK_MAX_TEXT_CHARS: usize = 20_000;
+
 /// Built-in English default prompts. `{target}` and `{language}` are replaced
 /// by the target language name; the same rule applies to custom prompts.
 ///
@@ -22,6 +27,18 @@ pub const ASSIST_MAX_CHARS: usize = 8_000;
 /// Pronunciations (English IPA / Chinese pinyin) come from the model itself;
 /// there is no separate offline dictionary service.
 pub const DEFAULT_TRANSLATE_PROMPT: &str = "You are a professional translator. Translate the user's text into {target}. Write the entire translation in {target}. Output only the translation: no explanations, labels, notes or source text. Preserve paragraphs, lists, Markdown structure, code and placeholders; leave code and placeholders unchanged.";
+
+/// System prompt of the quick-translate panel for paragraphs / sentences
+/// (`quick.prompt` empty). The source language is resolved by the shell (explicit
+/// setting or offline detection) and rendered into `{source}`; the model only
+/// translates the whole input and keeps the structure.
+pub const DEFAULT_QUICK_TRANSLATE_PROMPT: &str = "You are a professional translator. Translate the user's text from {source} into {target}. The source language is a best-effort detection: still translate naturally when the text mixes languages. Write the entire translation in {target}. Output only the translation: no explanations, labels, notes or source text. Preserve paragraphs, lists, Markdown structure, code fences, inline code and placeholders; leave code and placeholders unchanged.";
+
+/// System prompt of the quick-translate panel for a single word or short term
+/// (`quick.wordLookupPrompt` empty). Mirrors the ordinary dictionary lookup,
+/// but names both languages so pronunciation/meanings are produced for the exact
+/// language pair the user selected.
+pub const DEFAULT_QUICK_WORD_TRANSLATE_PROMPT: &str = "You are a careful dictionary assistant. The input is a single word or a short fixed term in {source}. Answer in compact Markdown in {target} with: the headword, its pronunciation (IPA for alphabetic languages, Hanyu Pinyin with tone marks for Chinese, kana reading for Japanese), its part of speech and at most 3 common meanings, plus optionally one short example in {target}. Never invent a meaning or a pronunciation. If the word looks misspelled, first say it may be misspelled and ask whether the user meant a correct spelling. Do not translate the whole input as a sentence and do not add background or usage essays.";
 
 /// System prompt for a single word or short term routed to dictionary lookup.
 /// The input is already classified by the application; this prompt only has to
@@ -92,6 +109,35 @@ pub fn language_name(code: &str) -> String {
         "kk" => "Kazakh".to_string(),
         "mn" => "Mongolian".to_string(),
         "ug" => "Uyghur".to_string(),
+        // Additional quick-panel source languages (schema v10 `SOURCE_LANGS`).
+        "sv" => "Swedish".to_string(),
+        "no" | "nb" => "Norwegian".to_string(),
+        "da" => "Danish".to_string(),
+        "fi" => "Finnish".to_string(),
+        "el" => "Greek".to_string(),
+        "hu" => "Hungarian".to_string(),
+        "ro" => "Romanian".to_string(),
+        "sk" => "Slovak".to_string(),
+        "sl" => "Slovenian".to_string(),
+        "hr" => "Croatian".to_string(),
+        "sr" => "Serbian".to_string(),
+        "lt" => "Lithuanian".to_string(),
+        "lv" => "Latvian".to_string(),
+        "et" => "Estonian".to_string(),
+        "is" => "Icelandic".to_string(),
+        "bg" => "Bulgarian".to_string(),
+        "be" => "Belarusian".to_string(),
+        "az" => "Azerbaijani".to_string(),
+        "uz" => "Uzbek".to_string(),
+        "ka" => "Georgian".to_string(),
+        "hy" => "Armenian".to_string(),
+        "sq" => "Albanian".to_string(),
+        "ca" => "Catalan".to_string(),
+        "cy" => "Welsh".to_string(),
+        "ga" => "Irish".to_string(),
+        "mt" => "Maltese".to_string(),
+        "af" => "Afrikaans".to_string(),
+        "sw" => "Swahili".to_string(),
         // Unknown codes are handed to the model as-is; it usually understands
         // BCP-47 tags and this keeps custom targets working without a schema
         // change.
@@ -239,6 +285,71 @@ pub fn translate_messages(text: &str, target_lang: &str, custom_prompt: &str) ->
         .replace("{language}", &language);
     if !has_placeholder {
         system.push_str(&format!("\n\nTarget language: {language}."));
+    }
+    (system, text.to_string())
+}
+
+/// Prompt mode of the quick panel: a single word / short fixed term uses the
+/// word-entry prompt, everything else the paragraph prompt. The classification
+/// reuses [`single_word_kind`] (input shape only, never spelling validation), so
+/// the panel and the picker agree on what counts as a "word".
+pub fn quick_prompt_mode(text: &str) -> &'static str {
+    if single_word_kind(text).is_some() {
+        "word"
+    } else {
+        "paragraph"
+    }
+}
+
+/// Builds the quick-translate panel messages (contract §4/§"提示词").
+///
+/// `source_lang` may be `auto`/empty: the shell then resolves it with the
+/// offline detector ([`crate::quicktranslate::resolve_source_lang`]) so the
+/// resolved source is always concrete. The input shape picks the prompt:
+/// - a single word / short term → `word_prompt` (or
+///   [`DEFAULT_QUICK_WORD_TRANSLATE_PROMPT`]);
+/// - everything else → `paragraph_prompt` (or
+///   [`DEFAULT_QUICK_TRANSLATE_PROMPT`]).
+///
+/// Both prompts support `{source}` / `{target}` placeholders (English language
+/// names, e.g. `Swedish`, `Simplified Chinese`); the legacy `{language}` is kept
+/// as an alias for `{target}`. A custom prompt without a target placeholder gets
+/// an explicit `Target language: ...` suffix (and a word prompt without a source
+/// placeholder gets a `Source language: ...` suffix) so the selection still
+/// takes effect.
+pub fn quick_translate_messages(
+    text: &str,
+    source_lang: &str,
+    target_lang: &str,
+    paragraph_prompt: &str,
+    word_prompt: &str,
+) -> (String, String) {
+    let source_code = crate::quicktranslate::resolve_source_lang(text, source_lang);
+    let source_name = language_name(source_code);
+    let target_name = language_name(target_lang);
+    let word_mode = quick_prompt_mode(text) == "word";
+    let custom_prompt = if word_mode { word_prompt } else { paragraph_prompt };
+    let custom_prompt = custom_prompt.trim();
+    let template = if custom_prompt.is_empty() {
+        if word_mode {
+            DEFAULT_QUICK_WORD_TRANSLATE_PROMPT
+        } else {
+            DEFAULT_QUICK_TRANSLATE_PROMPT
+        }
+    } else {
+        custom_prompt
+    };
+    let has_source = template.contains("{source}");
+    let has_target = template.contains("{target}") || template.contains("{language}");
+    let mut system = template
+        .replace("{source}", &source_name)
+        .replace("{target}", &target_name)
+        .replace("{language}", &target_name);
+    if !has_target {
+        system.push_str(&format!("\n\nTarget language: {target_name}."));
+    }
+    if word_mode && !has_source {
+        system.push_str(&format!("\n\nSource language: {source_name}."));
     }
     (system, text.to_string())
 }
@@ -640,6 +751,9 @@ pub fn default_prompts() -> serde_json::Value {
         "captureTranslate": DEFAULT_TRANSLATE_PROMPT,
         "captureWordLookup": DEFAULT_WORD_LOOKUP_PROMPT,
         "captureExplain": DEFAULT_EXPLAIN_IMAGE_PROMPT,
+        // Quick-translate panel (contract §4 `promptDefault`).
+        "quickTranslate": DEFAULT_QUICK_TRANSLATE_PROMPT,
+        "quickTranslateWordLookup": DEFAULT_QUICK_WORD_TRANSLATE_PROMPT,
     })
 }
 
@@ -751,7 +865,138 @@ mod tests {
         assert_eq!(defaults["captureTranslate"], DEFAULT_TRANSLATE_PROMPT);
         assert_eq!(defaults["captureWordLookup"], DEFAULT_WORD_LOOKUP_PROMPT);
         assert_eq!(defaults["captureExplain"], DEFAULT_EXPLAIN_IMAGE_PROMPT);
-        assert_eq!(defaults.as_object().unwrap().len(), 8);
+        // Quick-translate panel (`quick_ready`'s prompts; schema v10 adds the
+        // word prompt).
+        assert_eq!(defaults["quickTranslate"], DEFAULT_QUICK_TRANSLATE_PROMPT);
+        assert_eq!(
+            defaults["quickTranslateWordLookup"],
+            DEFAULT_QUICK_WORD_TRANSLATE_PROMPT
+        );
+        assert_eq!(defaults.as_object().unwrap().len(), 10);
+    }
+
+    #[test]
+    fn language_names_cover_every_supported_source() {
+        for code in crate::settings::SOURCE_LANGS {
+            if code == "auto" {
+                continue;
+            }
+            let name = language_name(code);
+            assert!(!name.is_empty(), "empty name for {code}");
+            assert_ne!(name, code, "code {code} should map to an English name");
+        }
+        for (code, name) in [
+            ("sv", "Swedish"),
+            ("no", "Norwegian"),
+            ("da", "Danish"),
+            ("fi", "Finnish"),
+            ("el", "Greek"),
+            ("hu", "Hungarian"),
+            ("ro", "Romanian"),
+            ("sk", "Slovak"),
+            ("sl", "Slovenian"),
+            ("hr", "Croatian"),
+            ("sr", "Serbian"),
+            ("lt", "Lithuanian"),
+            ("lv", "Latvian"),
+            ("et", "Estonian"),
+            ("is", "Icelandic"),
+            ("bg", "Bulgarian"),
+            ("be", "Belarusian"),
+            ("az", "Azerbaijani"),
+            ("uz", "Uzbek"),
+            ("ka", "Georgian"),
+            ("hy", "Armenian"),
+            ("sq", "Albanian"),
+            ("ca", "Catalan"),
+            ("cy", "Welsh"),
+            ("ga", "Irish"),
+            ("mt", "Maltese"),
+            ("af", "Afrikaans"),
+            ("sw", "Swahili"),
+        ] {
+            assert_eq!(language_name(code), name, "wrong name for {code}");
+        }
+    }
+
+    #[test]
+    fn quick_translate_prompts_are_english_and_render_source_target() {
+        assert!(DEFAULT_QUICK_TRANSLATE_PROMPT.starts_with("You are"));
+        assert!(DEFAULT_QUICK_TRANSLATE_PROMPT.contains("{source}"));
+        assert!(DEFAULT_QUICK_TRANSLATE_PROMPT.contains("{target}"));
+        assert!(DEFAULT_QUICK_TRANSLATE_PROMPT.contains("Output only the translation"));
+        assert!(DEFAULT_QUICK_TRANSLATE_PROMPT.contains("Markdown"));
+        assert!(DEFAULT_QUICK_WORD_TRANSLATE_PROMPT.starts_with("You are"));
+        assert!(DEFAULT_QUICK_WORD_TRANSLATE_PROMPT.contains("{source}"));
+        assert!(DEFAULT_QUICK_WORD_TRANSLATE_PROMPT.contains("{target}"));
+        assert!(DEFAULT_QUICK_WORD_TRANSLATE_PROMPT.contains("pronunciation"));
+        assert!(DEFAULT_QUICK_WORD_TRANSLATE_PROMPT.contains("at most 3 common meanings"));
+        assert_eq!(QUICK_MAX_TEXT_CHARS, 20_000);
+
+        // Paragraph text (sentence frame) → paragraph prompt; `auto` source is
+        // resolved by the offline detector (Swedish regression case).
+        let paragraph = "Hej! Det är en verkligen underbar dag.";
+        let (system, user) = quick_translate_messages(paragraph, "auto", "zh", "", "");
+        assert_eq!(
+            system,
+            DEFAULT_QUICK_TRANSLATE_PROMPT
+                .replace("{source}", "Swedish")
+                .replace("{target}", "Simplified Chinese")
+        );
+        assert_eq!(user, paragraph);
+        assert_eq!(quick_prompt_mode(paragraph), "paragraph");
+
+        // A single word → word prompt; explicit `sv` source is rendered.
+        let (system, user) = quick_translate_messages("häst", "sv", "en", "", "");
+        assert_eq!(
+            system,
+            DEFAULT_QUICK_WORD_TRANSLATE_PROMPT
+                .replace("{source}", "Swedish")
+                .replace("{target}", "English")
+        );
+        assert_eq!(user, "häst");
+        assert_eq!(quick_prompt_mode("häst"), "word");
+        // Chinese words also use the word-entry prompt.
+        assert_eq!(quick_prompt_mode("银行"), "word");
+        assert_eq!(quick_prompt_mode("good morning"), "paragraph");
+
+        // Custom paragraph prompt: trimmed, both placeholders rendered.
+        let (system, _) = quick_translate_messages(
+            "This is a normal sentence for testing.",
+            "en",
+            "de",
+            "  Translate from {source} to {target} only.  ",
+            "",
+        );
+        assert_eq!(system, "Translate from English to German only.");
+        // A custom prompt without a placeholder still gets an explicit target.
+        let (system, _) = quick_translate_messages(
+            "This is a normal sentence for testing.",
+            "en",
+            "fr",
+            "Translate only.",
+            "",
+        );
+        assert_eq!(system, "Translate only.\n\nTarget language: French.");
+        // A word prompt without a source placeholder gets a source suffix too.
+        let (system, _) = quick_translate_messages("häst", "sv", "en", "", "Give 3 meanings.");
+        assert_eq!(
+            system,
+            "Give 3 meanings.\n\nTarget language: English.\n\nSource language: Swedish."
+        );
+        // The legacy `{language}` placeholder still means the target language.
+        let (system, _) = quick_translate_messages(
+            "This is a normal sentence for testing.",
+            "en",
+            "ja",
+            "Translate into {language}.",
+            "",
+        );
+        assert_eq!(system, "Translate into Japanese.");
+        // The quick path never uses the ordinary or the picker word-lookup default.
+        assert_ne!(system, DEFAULT_WORD_LOOKUP_PROMPT);
+        assert_ne!(system, DEFAULT_TRANSLATE_PROMPT);
+        assert_ne!(system, DEFAULT_QUICK_TRANSLATE_PROMPT);
     }
 
     #[test]

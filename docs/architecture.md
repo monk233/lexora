@@ -34,6 +34,7 @@ lexora.exe
 | `commands.rs` | 全部 `invoke` 命令；组装 `StatePayload` 广播前端 |
 | `windows.rs` | picker 面板、临时工具栏、settings 与 capture overlay 的几何、显示/隐藏和 pending payload |
 | `capture.rs` | 截图会话：热点单实例守卫、xcap 抓屏、overlay 复用、裁切/标注合成、剪贴板、技能分发、长截图 seed/拼接算法 |
+| `quicktranslate.rs` | 快捷翻译面板：全局热键（默认 `Alt+Space`）、窗口显隐与 Pin、`quick_translate` 流式任务、翻译历史存储（`quick-history.json`，上限 500）、源语言启发式检测 |
 | `longshot.rs` | 手动滚动长截图：预览窗口、后台抓帧线程、双向（行/列）拼接、方向切换、完成/取消 |
 | `pin.rs` | 钉在桌面窗口：图片 registry、DPI 适配尺寸、置顶窗口、拖动/复制/关闭 |
 | `updater.rs` | 检查 GitHub Release、下载并替换 exe、助手脚本重启（自更新） |

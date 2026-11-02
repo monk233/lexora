@@ -3,7 +3,9 @@ name = "lexora"
 version = "0.4.1"
 description = "Lexora desktop shell: selection translator for Windows"
 edition = "2021"
-rust-version = "1.77"
+# whatlang 0.18 (offline language detection) requires rustc >= 1.85; CI uses
+# `rust-toolchain@stable`, so this only documents the real minimum.
+rust-version = "1.85"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -56,6 +58,10 @@ windows = { version = "0.62", features = [
   "Win32_System_JobObjects",
   "Win32_Security"
 ] }
+# Offline source-language detection for the quick-translate panel: pure Rust,
+# no system dependencies. Fixes Latin-script languages (e.g. Swedish) being
+# reported as English by the old character-script heuristic.
+whatlang = "0.18.0"
 
 [target.'cfg(windows)'.dependencies]
 tauri-winrt-notification = "0.8.1"

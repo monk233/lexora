@@ -20,6 +20,7 @@ mod longshot;
 mod notification;
 mod paths;
 mod pin;
+mod quicktranslate;
 mod selection;
 mod settings;
 mod state;
@@ -98,15 +99,18 @@ fn main() {
 
             state.selection.start(app.handle().clone());
             crate::capture::start_hotkey_listener(app.handle().clone());
+            crate::quicktranslate::start_hotkey_listener(app.handle().clone());
             crate::updater::start_automatic_update_checker(app.handle().clone());
 
             // The picker/settings windows are shown and hidden all the time; a
             // DWM fade would read as a flash on capture exit (round 21). Disable
-            // their open/close transitions as well.
+            // their open/close transitions as well. The quick-translate panel is
+            // shown/hidden by the hotkey just as often.
             for label in [
                 windows::SETTINGS_LABEL,
                 windows::PICKER_LABEL,
                 windows::PICKER_TOOLBAR_LABEL,
+                crate::quicktranslate::QUICK_LABEL,
             ] {
                 if let Some(window) = app.get_webview_window(label) {
                     if !crate::win32::disable_transitions(&window) {
@@ -169,6 +173,12 @@ fn main() {
                     api.prevent_close();
                     windows::hide_toolbar(window.app_handle());
                 }
+                crate::quicktranslate::QUICK_LABEL => {
+                    // Title-bar close / Alt+F4 only hides the panel; the app is
+                    // tray-resident and the hotkey brings it back (contract §2).
+                    api.prevent_close();
+                    crate::quicktranslate::hide(window.app_handle());
+                }
                 label if label.starts_with(crate::pin::PIN_PREFIX) => {
                     // A pinned window is closed through `pin_close` (buttons,
                     // double click, Esc, Alt+F4) so the registry is cleaned up.
@@ -207,6 +217,11 @@ fn main() {
                 _ => {}
             },
             WindowEvent::Destroyed => {
+                if window.label() == crate::quicktranslate::QUICK_LABEL {
+                    // Never leave a quick-translate stream running behind a
+                    // destroyed panel.
+                    crate::quicktranslate::handle_destroyed(window.app_handle());
+                }
                 if let Some(id) = crate::pin::pin_id_from_label(window.label()) {
                     crate::pin::forget(id);
                 }
@@ -299,7 +314,23 @@ fn main() {
             commands::cancel_followups,
             commands::picker_status,
             commands::picker_disable_in_app,
-            commands::picker_disable_tool
+            commands::picker_disable_tool,
+            commands::quick_ready,
+            commands::quick_open,
+            commands::quick_hide,
+            commands::quick_resize,
+            commands::quick_drag_panel,
+            commands::quick_pin,
+            commands::quick_set_hotkey,
+            commands::quick_set_source_lang,
+            commands::quick_set_target_lang,
+            commands::quick_translate,
+            commands::quick_abort_translate,
+            commands::quick_history_list,
+            commands::quick_history_delete,
+            commands::quick_history_clear,
+            commands::quick_copy,
+            commands::quick_open_settings
         ])
         .build(tauri::generate_context!())
         .expect("error while building Lexora");

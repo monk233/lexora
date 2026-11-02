@@ -1,9 +1,10 @@
 /* Tauri frontend bridge for Lexora.
  *
- * Exposes the two API shapes used by the renderers:
+ * Exposes the API shapes used by the renderers:
  *
  *   window.pickerAPI   - word-selection toolbar window  (contract §5.2/§5.3)
  *   window.settingsAPI - settings window                (contract §5.1/§5.3)
+ *   window.quickAPI    - quick-translate window          (quick-translate §4/§6)
  *
  * In the packaged app (Tauri, `withGlobalTauri: true`) the calls are forwarded
  * to `window.__TAURI__.core.invoke` / `window.__TAURI__.event.listen`. When the
@@ -201,6 +202,12 @@
   var mockPins = {};
   var mockPinSeq = 0;
   var mockLongshot = null;
+  /* Quick-translate history and the single in-flight quick stream (both are
+   * per-page in the browser preview; the packaged app persists them on disk). */
+  var mockQuickHistory = [];
+  var mockQuickActiveRequestId = "";
+  /* `?quickFail=1` previews the stream error path of the quick panel. */
+  var MOCK_QUICK_FAIL = /[?&]quickFail=1(?:&|$)/.test(String(window.location.search || ""));
 
   /* Placeholder long-screenshot preview: a dark document whose height grows on
    * every preview call so the browser preview window shows progress. */
@@ -367,6 +374,16 @@
           captureSkills: mockCaptureSkills(query),
           capturePrompts: { translate: "", wordLookup: "", explain: "" },
         },
+        /* Quick-translate panel settings (quick-translate contract §3). */
+        quick: {
+          enabled: true,
+          hotkey: "Alt+Space",
+          sourceLang: "auto",
+          targetLang: "zh",
+          prompt: "",
+          wordLookupPrompt: "",
+          pinned: false,
+        },
         provider: {
           mode: "online",
           online: {
@@ -441,6 +458,12 @@
           "You are a careful dictionary assistant. The input is a single word or a short fixed term. Answer in compact Markdown with: the headword, its pronunciation (IPA only for English words, Hanyu Pinyin with tone marks only for Chinese words), its part of speech and at most 3 common meanings written in {target}, plus optionally one short example in {target}. Never invent a meaning or a pronunciation. If the word looks misspelled, first say it may be misspelled and ask whether the user meant a correct spelling. Do not translate the whole input as a sentence and do not add background or usage essays.",
         captureExplain:
           "You are a vision assistant. Explain the image in Simplified Chinese using Markdown: one sentence for the main subject, at most 3 key points and optionally one short example. Usually use 150-250 Chinese characters; simple images need less. Distinguish visible facts from inference. Do not invent unreadable text or unseen details.",
+        // Quick-translate panel default prompt (quick-translate §4 提示词).
+        quickTranslate: MOCK_QUICK_TRANSLATE_PROMPT,
+        // Quick panel word lookup (settings card default prompt); mirrors
+        // `DEFAULT_QUICK_WORD_TRANSLATE_PROMPT` in engine/prompts.rs.
+        quickTranslateWordLookup:
+          "You are a careful dictionary assistant. The input is a single word or a short fixed term in {source}. Answer in compact Markdown in {target} with: the headword, its pronunciation (IPA for alphabetic languages, Hanyu Pinyin with tone marks for Chinese, kana reading for Japanese), its part of speech and at most 3 common meanings, plus optionally one short example in {target}. Never invent a meaning or a pronunciation. If the word looks misspelled, first say it may be misspelled and ask whether the user meant a correct spelling. Do not translate the whole input as a sentence and do not add background or usage essays.",
       },
     };
     [
@@ -669,6 +692,23 @@
       wordLookup: String(capturePrompts.wordLookup || "").trim().slice(0, 4000),
       explain: String(capturePrompts.explain || "").trim().slice(0, 4000),
     };
+    // Quick-translate settings (quick-translate §3): normalize hotkey/language/
+    // prompt the same way the shell does, so the browser preview stays usable.
+    var quickSettings =
+      settings.quick && typeof settings.quick === "object" ? settings.quick : {};
+    var quickLang =
+      languageValues.indexOf(String(quickSettings.targetLang || "")) >= 0
+        ? String(quickSettings.targetLang)
+        : "zh";
+    settings.quick = {
+      enabled: quickSettings.enabled !== false,
+      hotkey: normalizeMockShortcut(quickSettings.hotkey) || "Alt+Space",
+      sourceLang: mockNormalizeSourceLang(quickSettings.sourceLang),
+      targetLang: quickLang,
+      prompt: String(quickSettings.prompt || "").trim().slice(0, 4000),
+      wordLookupPrompt: String(quickSettings.wordLookupPrompt || "").trim().slice(0, 4000),
+      pinned: quickSettings.pinned === true,
+    };
     mockStore.picker.pinned = false;
   }
 
@@ -680,6 +720,16 @@
   function mockNotFound(command) {
     return { ok: false, error: "浏览器预览模式没有实现命令：" + command };
   }
+
+  /* Built-in quick-translate prompt shown/used by the settings card and by
+   * `quick_ready.promptDefault` (quick-translate contract §4 提示词). Mirrors
+   * `DEFAULT_QUICK_TRANSLATE_PROMPT` in src-tauri/src/engine/prompts.rs. */
+  var MOCK_QUICK_TRANSLATE_PROMPT =
+    "You are a professional translator. Translate the user's text from {source} into {target}. " +
+    "The source language is a best-effort detection: still translate naturally when the text " +
+    "mixes languages. Write the entire translation in {target}. Output only the translation: no " +
+    "explanations, labels, notes or source text. Preserve paragraphs, lists, Markdown structure, " +
+    "code fences, inline code and placeholders; leave code and placeholders unchanged.";
 
   var MOCK_TRANSLATIONS = {
     zh: "翻译是把某种语言文本的含义用另一种语言完整、准确地表达出来的活动，也是跨文化交流的桥梁。",
@@ -704,8 +754,17 @@
     return prefix + fallback;
   }
 
-  function startMockTranslate(requestId, text, targetLang) {
-    var output = mockTranslationText(text, targetLang);
+  /* Simulated stream shared by the picker and the quick-translate panel.
+   * `options` (all optional):
+   *   output  - override the demo translation text
+   *   elapsed - include `elapsedMs` on the done event (quick panel)
+   *   onDone  - called after the done event (quick history bookkeeping)
+   *   fail    - emit an error event at the end instead of done */
+  function startMockTranslate(requestId, text, targetLang, options) {
+    var opts = options || {};
+    var output =
+      typeof opts.output === "string" ? opts.output : mockTranslationText(text, targetLang);
+    var startedAt = Date.now();
     var cursor = 0;
     var timer = null;
     var stream = { cancelled: false };
@@ -738,8 +797,31 @@
       }
       if (cursor >= output.length) {
         window.setTimeout(function () {
-          if (!stream.cancelled) {
-            mockEmit("translate-event", { requestId: requestId, type: "done" });
+          if (stream.cancelled) {
+            cleanup();
+            return;
+          }
+          if (opts.fail) {
+            mockEmit("translate-event", {
+              requestId: requestId,
+              type: "error",
+              message: "模拟翻译失败（浏览器预览）",
+              hint: "请检查翻译服务配置后重试。",
+            });
+            cleanup();
+            return;
+          }
+          var payload = { requestId: requestId, type: "done" };
+          if (opts.elapsed) {
+            payload.elapsedMs = Math.max(0, Math.round(Date.now() - startedAt));
+          }
+          mockEmit("translate-event", payload);
+          if (typeof opts.onDone === "function") {
+            try {
+              opts.onDone();
+            } catch (error) {
+              console.error("[mock] quick translate bookkeeping failed", error);
+            }
           }
           cleanup();
         }, 120);
@@ -749,6 +831,117 @@
     }
 
     timer = window.setTimeout(emitChunk, 260);
+  }
+
+  /* Quick-translate mock helpers. `detect_source_lang` mirrors the Rust
+   * heuristic one-to-one (quick-translate contract §5). */
+  function mockDetectSourceLang(text) {
+    var value = String(text == null ? "" : text);
+    if (/[\u3040-\u30ff\u31f0-\u31ff\uff66-\uff9f]/.test(value)) {
+      return "ja";
+    }
+    if (/[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/.test(value)) {
+      return "zh";
+    }
+    if (/[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/.test(value)) {
+      return "ko";
+    }
+    if (/[\u0400-\u04ff]/.test(value)) {
+      return "ru";
+    }
+    if (/[\u0600-\u06ff\u0750-\u077f]/.test(value)) {
+      return "ar";
+    }
+    if (/[\u0e00-\u0e7f]/.test(value)) {
+      return "th";
+    }
+    if (/[\u0900-\u097f]/.test(value)) {
+      return "hi";
+    }
+    if (/[\u0590-\u05ff]/.test(value)) {
+      return "he";
+    }
+    return "en";
+  }
+
+  function mockQuickTargetLang(value) {
+    var code = String(value == null ? "" : value);
+    var languages =
+      window.LP && Array.isArray(window.LP.LANGUAGES) ? window.LP.LANGUAGES : [];
+    var match = languages.filter(function (entry) {
+      return entry.value === code;
+    })[0];
+    return match ? match.value : "zh";
+  }
+
+  /* Extra source languages accepted by the quick panel beyond the project's
+   * target-language table (mirrors quicktranslate.js `qtSourceLanguages`). */
+  var MOCK_EXTRA_SOURCE_LANGS = [
+    "sv", "no", "da", "fi", "el", "hu", "ro", "sk", "sl", "hr", "sr", "lt", "lv",
+    "et", "is", "bg", "be", "az", "uz", "ka", "hy", "sq", "ca", "cy", "ga", "mt",
+    "af", "sw",
+  ];
+
+  function mockSourceLangValid(value) {
+    var code = String(value == null ? "" : value).trim();
+    if (!code) {
+      return false;
+    }
+    if (code === "auto") {
+      return true;
+    }
+    var languages =
+      window.LP && Array.isArray(window.LP.LANGUAGES) ? window.LP.LANGUAGES : [];
+    if (
+      languages.some(function (entry) {
+        return entry.value === code;
+      })
+    ) {
+      return true;
+    }
+    return MOCK_EXTRA_SOURCE_LANGS.indexOf(code) >= 0;
+  }
+
+  function mockNormalizeSourceLang(value) {
+    var code = String(value == null ? "" : value).trim();
+    return mockSourceLangValid(code) ? code : "auto";
+  }
+
+  /* `<yyyymmdd-hhmmss>-<6 hex>` history id (quick-translate contract §5). */
+  function mockQuickHistoryId() {
+    var date = new Date();
+    function pad(number) {
+      return number < 10 ? "0" + number : String(number);
+    }
+    var stamp =
+      String(date.getFullYear()) +
+      pad(date.getMonth() + 1) +
+      pad(date.getDate()) +
+      "-" +
+      pad(date.getHours()) +
+      pad(date.getMinutes()) +
+      pad(date.getSeconds());
+    var hex = "";
+    for (var index = 0; index < 6; index += 1) {
+      hex += "0123456789abcdef".charAt(Math.floor(Math.random() * 16));
+    }
+    return stamp + "-" + hex;
+  }
+
+  /* Markdown-rich demo output so the quick panel can show streaming Markdown. */
+  function mockQuickTranslationText(text, targetLang) {
+    var sourceLine = String(text == null ? "" : text)
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 80);
+    return (
+      mockTranslationText(text, targetLang) +
+      "\n\n**预览说明**\n\n" +
+      "- 浏览器预览使用模拟流，真实应用会流式返回模型输出。\n" +
+      "- 译文由 shared/markdown.js 渲染为安全 Markdown。\n\n" +
+      "> 原文摘要：" +
+      (sourceLine || "（空）")
+    );
   }
 
   var mockStreams = {};
@@ -1061,6 +1254,14 @@
   window.__mockTranslateEvent = function (payload) {
     mockEmit("translate-event", payload || {});
   };
+
+  /* Quick-translate console helpers: `__mockQuickShow()` re-emits the event the
+   * shell sends when the hotkey shows the window; `__mockQuickFailNext = true`
+   * makes the next simulated quick translation end with an error event. */
+  window.__mockQuickShow = function () {
+    mockEmit("quick-show", {});
+  };
+  window.__mockQuickFailNext = false;
 
   var MOCK_NAMED_KEYS = {
     printscreen: "PrintScreen",
@@ -1790,6 +1991,198 @@
       case "quit_app":
         console.info("[mock] 退出程序（预览模式不会真的退出）");
         return { ok: true };
+
+      /* ---- quick translate (quick-translate contract §4) ---- */
+      case "quick_ready":
+        return {
+          ok: true,
+          quick: clone(mockStore.settings.quick),
+          promptDefault: MOCK_QUICK_TRANSLATE_PROMPT,
+        };
+      case "quick_open":
+        return { ok: true };
+      case "quick_hide":
+        console.info("[mock] 隐藏快捷翻译窗口（浏览器预览不会真的隐藏）");
+        return { ok: true };
+      case "quick_pin": {
+        var quickPinned = args.pinned === true;
+        mockStore.settings.quick.pinned = quickPinned;
+        mockPublishState();
+        return { ok: true, pinned: quickPinned };
+      }
+      case "quick_set_hotkey": {
+        var quickShortcut = normalizeMockShortcut(args.shortcut);
+        if (!quickShortcut) {
+          return {
+            ok: false,
+            shortcut: String(mockStore.settings.quick.hotkey || ""),
+            error: "快捷键格式无效。",
+            hint: "至少需要一个修饰键（Ctrl / Alt / Shift / Win）和一个主键。",
+          };
+        }
+        mockStore.settings.quick.hotkey = quickShortcut;
+        mockPublishState();
+        return { ok: true, shortcut: quickShortcut };
+      }
+      case "quick_set_target_lang": {
+        var quickRequestedLang = String(args.targetLang == null ? "" : args.targetLang);
+        var quickLanguages =
+          window.LP && Array.isArray(window.LP.LANGUAGES) ? window.LP.LANGUAGES : null;
+        var quickLangValid = Boolean(quickRequestedLang);
+        if (quickLangValid && quickLanguages) {
+          quickLangValid = quickLanguages.some(function (entry) {
+            return entry.value === quickRequestedLang;
+          });
+        }
+        if (!quickLangValid) {
+          return { ok: false, error: "不支持的目标语言：" + quickRequestedLang };
+        }
+        mockStore.settings.quick.targetLang = quickRequestedLang;
+        mockPublishState();
+        return { ok: true, targetLang: quickRequestedLang };
+      }
+      case "quick_set_source_lang": {
+        var quickRequestedSource = String(
+          args.sourceLang == null ? "" : args.sourceLang
+        ).trim();
+        if (!mockSourceLangValid(quickRequestedSource)) {
+          return {
+            ok: false,
+            error: "不支持的源语言：" + quickRequestedSource,
+          };
+        }
+        mockStore.settings.quick.sourceLang = quickRequestedSource;
+        mockPublishState();
+        return { ok: true, sourceLang: quickRequestedSource };
+      }
+      case "quick_translate": {
+        var quickRequestId = String(args.requestId || "");
+        if (!quickRequestId) {
+          return { ok: false, error: "缺少请求 ID" };
+        }
+        var quickText = String(args.text == null ? "" : args.text).trim();
+        if (!quickText) {
+          return {
+            ok: false,
+            error: "没有可翻译的文本。",
+            hint: "请输入或粘贴要翻译的内容。",
+          };
+        }
+        var quickChars = Array.from(quickText);
+        if (quickChars.length > 20000) {
+          quickText = quickChars.slice(0, 20000).join("");
+        }
+        var quickTargetLang = mockQuickTargetLang(args.targetLang);
+        // Mirrors the shell: empty/invalid sourceLang falls back to the
+        // remembered setting; "auto" then runs the detection below.
+        var quickSourceRequested = String(
+          args.sourceLang == null ? "" : args.sourceLang
+        ).trim();
+        var quickSourceLang =
+          quickSourceRequested && mockSourceLangValid(quickSourceRequested)
+            ? quickSourceRequested
+            : mockNormalizeSourceLang(mockStore.settings.quick.sourceLang);
+        if (mockQuickActiveRequestId) {
+          cancelMockTranslate(mockQuickActiveRequestId);
+          mockQuickActiveRequestId = "";
+        }
+        var quickOutput = mockQuickTranslationText(quickText, quickTargetLang);
+        var quickStartedAt = Date.now();
+        var quickForceFail = MOCK_QUICK_FAIL || window.__mockQuickFailNext === true;
+        window.__mockQuickFailNext = false;
+        mockQuickActiveRequestId = quickRequestId;
+        startMockTranslate(quickRequestId, quickText, quickTargetLang, {
+          output: quickOutput,
+          elapsed: true,
+          fail: quickForceFail,
+          onDone: function () {
+            mockQuickActiveRequestId = "";
+            mockQuickHistory.unshift({
+              id: mockQuickHistoryId(),
+              source: quickText,
+              target: quickOutput,
+              sourceLang:
+                quickSourceLang === "auto"
+                  ? mockDetectSourceLang(quickText)
+                  : quickSourceLang,
+              targetLang: quickTargetLang,
+              createdAt: Date.now(),
+              elapsedMs: Math.max(0, Math.round(Date.now() - quickStartedAt)),
+            });
+            if (mockQuickHistory.length > 500) {
+              mockQuickHistory.length = 500;
+            }
+          },
+        });
+        return { ok: true };
+      }
+      case "quick_abort_translate": {
+        var quickAbortId = String(args.requestId || "");
+        cancelMockTranslate(quickAbortId);
+        if (mockQuickActiveRequestId === quickAbortId) {
+          mockQuickActiveRequestId = "";
+        }
+        return { ok: true };
+      }
+      case "quick_history_list":
+        return { ok: true, entries: clone(mockQuickHistory) };
+      case "quick_history_delete": {
+        var quickDeleteId = String(args.id || "");
+        mockQuickHistory = mockQuickHistory.filter(function (entry) {
+          return entry.id !== quickDeleteId;
+        });
+        return { ok: true };
+      }
+      case "quick_history_clear":
+        mockQuickHistory = [];
+        return { ok: true };
+      case "quick_copy": {
+        var quickCopyText = String(args.text == null ? "" : args.text);
+        // Best effort only: never wait on the clipboard promise here, a
+        // permissionless file:// preview may keep it pending forever.
+        try {
+          if (
+            typeof navigator !== "undefined" &&
+            navigator.clipboard &&
+            typeof navigator.clipboard.writeText === "function"
+          ) {
+            Promise.resolve(navigator.clipboard.writeText(quickCopyText)).catch(
+              function () {
+                /* clipboard unavailable in the preview */
+              }
+            );
+          }
+        } catch (ignored) {
+          /* file:// pages have no clipboard permission */
+        }
+        console.info("[mock] 复制到剪贴板：", quickCopyText.slice(0, 80));
+        return { ok: true };
+      }
+      case "quick_open_settings":
+        console.info("[mock] 打开设置窗口（快捷翻译）");
+        return { ok: true };
+      /* The browser preview cannot move/resize a real window; record the last
+       * request on `window.__mockQuickResize` / `__mockQuickDragCalls` so the
+       * quick panel can assert that the calls happen, and resolve {ok:true}. */
+      case "quick_resize": {
+        var quickResize = {
+          width: Math.round(Number(args.width) || 0),
+          height: Math.round(Number(args.height) || 0),
+        };
+        window.__mockQuickResize = quickResize;
+        window.__mockQuickResizeCalls = window.__mockQuickResizeCalls || [];
+        window.__mockQuickResizeCalls.push(quickResize);
+        return { ok: true };
+      }
+      case "quick_drag_panel": {
+        var quickDrag = {
+          dx: Number(args.dx) || 0,
+          dy: Number(args.dy) || 0,
+        };
+        window.__mockQuickDragCalls = window.__mockQuickDragCalls || [];
+        window.__mockQuickDragCalls.push(quickDrag);
+        return { ok: true };
+      }
       default:
         return mockNotFound(command);
     }
@@ -2194,6 +2587,17 @@
         shortcut: String(shortcut == null ? "" : shortcut),
       });
     },
+    /* Settings card「快捷翻译」helpers; the canonical names live on
+     * `window.quickAPI` (quick-translate contract §6), these keep the settings
+     * page able to call them through the existing `API` alias. */
+    quickSetHotkey: function (shortcut) {
+      return safeInvoke("quick_set_hotkey", {
+        shortcut: String(shortcut == null ? "" : shortcut),
+      });
+    },
+    quickHistoryClear: function () {
+      return safeInvoke("quick_history_clear", {});
+    },
     checkUpdate: function () {
       return safeInvoke("check_update", {});
     },
@@ -2243,6 +2647,122 @@
           callback(payload);
         }
       });
+    },
+  };
+
+  /* ------------------------------------------------------------------ */
+  /* quickAPI (quick-translate window, contract §6)                      */
+  /* ------------------------------------------------------------------ */
+
+  window.quickAPI = {
+    live: LIVE,
+
+    ready: function () {
+      return safeInvoke("quick_ready", {});
+    },
+    open: function () {
+      return safeInvoke("quick_open", {});
+    },
+    hide: function () {
+      return safeInvoke("quick_hide", {});
+    },
+    pin: function (pinned) {
+      return safeInvoke("quick_pin", { pinned: !!pinned });
+    },
+    /* Normalizes + re-registers the global hotkey; on failure the shell keeps
+     * the previous one and resolves with {ok:false, error, hint}. */
+    setHotkey: function (shortcut) {
+      return safeInvoke("quick_set_hotkey", {
+        shortcut: String(shortcut == null ? "" : shortcut),
+      });
+    },
+    setTargetLang: function (targetLang) {
+      return safeInvoke("quick_set_target_lang", {
+        targetLang: String(targetLang == null ? "" : targetLang),
+      });
+    },
+    /* Remembers the pinned source language ("auto" = detect per request). */
+    setSourceLang: function (sourceLang) {
+      return safeInvoke("quick_set_source_lang", {
+        sourceLang: String(sourceLang == null ? "auto" : sourceLang),
+      });
+    },
+    translate: function (requestId, text, targetLang, sourceLang) {
+      return safeInvoke("quick_translate", {
+        requestId: String(requestId == null ? "" : requestId),
+        text: String(text == null ? "" : text),
+        targetLang: String(targetLang == null ? "" : targetLang),
+        // Empty means "use quick.sourceLang" on the shell side.
+        sourceLang: String(sourceLang == null ? "" : sourceLang),
+      });
+    },
+    abortTranslate: function (requestId) {
+      return safeInvoke("quick_abort_translate", {
+        requestId: String(requestId == null ? "" : requestId),
+      });
+    },
+    /* `requestId` is optional: when given, events of other requests are
+     * filtered out here instead of in the caller. */
+    onTranslateEvent: function (callback, requestId) {
+      var filter = requestId == null ? "" : String(requestId);
+      return subscribe("translate-event", function (payload) {
+        if (!payload || typeof payload !== "object") {
+          return;
+        }
+        if (filter && String(payload.requestId || "") !== filter) {
+          return;
+        }
+        if (typeof callback === "function") {
+          callback(payload);
+        }
+      });
+    },
+    /* Emitted when the shell shows the window (hotkey or quick_open). */
+    onShow: function (callback) {
+      return subscribe("quick-show", function (payload) {
+        if (typeof callback === "function") {
+          callback(payload);
+        }
+      });
+    },
+    historyList: function () {
+      return safeInvoke("quick_history_list", {});
+    },
+    historyDelete: function (id) {
+      return safeInvoke("quick_history_delete", {
+        id: String(id == null ? "" : id),
+      });
+    },
+    historyClear: function () {
+      return safeInvoke("quick_history_clear", {});
+    },
+    copy: function (text) {
+      return safeInvoke("quick_copy", { text: String(text == null ? "" : text) });
+    },
+    openSettings: function () {
+      return safeInvoke("quick_open_settings", {});
+    },
+    /* Frameless window controls (quick-translate §6): fixed width + content
+     * height, and dragging by a logical-pixel delta from the top bar. */
+    resize: function (width, height) {
+      return safeInvoke("quick_resize", {
+        width: Math.round(Number(width) || 0),
+        height: Math.round(Number(height) || 0),
+      });
+    },
+    dragPanel: function (dx, dy) {
+      return safeInvoke("quick_drag_panel", {
+        dx: Number(dx) || 0,
+        dy: Number(dy) || 0,
+      });
+    },
+
+    /* Aliases used by the settings card (quick-translate contract §7). */
+    quickSetHotkey: function (shortcut) {
+      return window.quickAPI.setHotkey(shortcut);
+    },
+    quickHistoryClear: function () {
+      return window.quickAPI.historyClear();
     },
   };
 

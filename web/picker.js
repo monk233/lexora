@@ -139,6 +139,8 @@
       '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v9"></path><path d="M6.3 6.3a8 8 0 1 0 11.4 0"></path></svg>',
     refresh:
       '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.9-3M4 4v4h4"></path><path d="M4 13a8 8 0 0 0 14.9 3M20 20v-4h-4"></path></svg>',
+    stop:
+      '<svg class="icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6.5" y="6.5" width="11" height="11" rx="2"></rect></svg>',
   };
 
   function hasOwn(object, key) {
@@ -283,6 +285,7 @@
   var panelSpeak = document.getElementById("panel-speak");
   var panelCopy = document.getElementById("panel-copy");
   var panelRetry = document.getElementById("panel-retry");
+  var panelStop = document.getElementById("panel-stop");
   var panelFollowup = document.getElementById("panel-followup");
   var panelSuggestions = document.getElementById("panel-suggestions");
   var panelFollowupInput = document.getElementById("panel-followup-input");
@@ -572,6 +575,14 @@
     panelSpeak.disabled = !state.panelSpeakText;
     panelCopy.disabled = !panelBody.textContent.trim();
     panelRetry.hidden = typeof state.panelRetry !== "function";
+    // The stop button is only actionable while an AI stream is in flight
+    // (translation / assist / polish / custom skill / screenshot skill /
+    // follow-up all share this footer).
+    var streaming = !!(activeRequest && activeRequest.active);
+    if (panelStop) {
+      panelStop.disabled = !streaming;
+      panelStop.classList.toggle("is-streaming", streaming);
+    }
   }
 
   function setPanelRetry(callback) {
@@ -1796,6 +1807,7 @@
     };
     activeRequest = request;
     state.translating = true;
+    syncPanelFoot();
     var source = state.text;
     var stream = runAfterSuggestions(request, function () {
       return imageMode
@@ -1885,6 +1897,7 @@
     error.appendChild(retryButton);
     request.block.appendChild(error);
     setFollowupBusy(false);
+    syncPanelFoot();
     panelBody.scrollTop = panelBody.scrollHeight;
     resizePanelForContent();
   }
@@ -1899,6 +1912,44 @@
       request.active = false;
       API.abortTranslate(request.id);
     }
+  }
+
+  /* Footer "停止": aborts the in-flight AI stream and freezes the text that was
+   * already rendered. Every AI panel shares this path (translation,
+   * summarize/explain, polish, custom text skills, screenshot skills and
+   * follow-ups) because they all register `activeRequest` and stream through
+   * `translate-event`. The backend aborts the model request through
+   * `picker_abort_translate`; late chunks are ignored because the request is
+   * inactive and `activeRequest` was cleared. */
+  function stopActiveRequest() {
+    var request = activeRequest;
+    if (!request || !request.active) {
+      syncPanelFoot();
+      return;
+    }
+    request.active = false;
+    request.finishReason = "stopped";
+    request.partial = true;
+    activeRequest = null;
+    state.translating = false;
+    invalidateFollowupSuggestions();
+    if (API && typeof API.abortTranslate === "function") {
+      API.abortTranslate(request.id);
+    }
+    removeLoadingRow(request);
+    renderRequestResult(request);
+    var output = requestOutputText(request);
+    setPanelSpeakText(output);
+    setPanelCopyText(output);
+    var container = request.kind === "followup" ? request.block : request.target;
+    if (container) {
+      container.appendChild(el("p", "stop-note", "已停止生成"));
+    }
+    if (request.kind === "followup") {
+      setFollowupBusy(false);
+    }
+    syncPanelFoot();
+    resizePanelForContent();
   }
 
   function removeLoadingRow(request) {
@@ -2309,6 +2360,7 @@
     };
     activeRequest = request;
     state.translating = true;
+    syncPanelFoot();
     resizePanelForContent();
 
     runAfterSuggestions(request, function () { return API.translate(request.id, state.text, targetLang); }).then(
@@ -2437,6 +2489,7 @@
     };
     activeRequest = request;
     state.translating = true;
+    syncPanelFoot();
     refreshFollowupSuggestions(request, false, true);
     resizePanelForContent();
     return request;
@@ -2594,6 +2647,7 @@
     };
     activeRequest = request;
     state.translating = true;
+    syncPanelFoot();
     resizePanelForContent();
 
     if (!API || typeof API.polish !== "function") {
@@ -2661,6 +2715,7 @@
     };
     activeRequest = request;
     state.translating = true;
+    syncPanelFoot();
     resizePanelForContent();
 
     if (!API || typeof API.customSkill !== "function") {
@@ -2763,6 +2818,7 @@
     };
     activeRequest = request;
     state.translating = true;
+    syncPanelFoot();
     resizePanelForContent();
 
     if (!API || typeof API.assist !== "function") {
@@ -2798,6 +2854,10 @@
       readButton.classList.toggle("is-active", active);
     }
     panelSpeak.classList.toggle("is-active", active);
+    // Icon-only footer: the label lives in the tooltip / accessible name.
+    var label = active ? "停止朗读" : "朗读";
+    panelSpeak.title = label;
+    panelSpeak.setAttribute("aria-label", label);
   }
 
   function clearSpeechState(utterance) {
@@ -3146,9 +3206,11 @@
   });
   panelPin.addEventListener("click", togglePanelPinned);
   document.getElementById("panel-close").addEventListener("click", closePanel);
-  panelSpeak.innerHTML = skillIconSvg(builtinSkillMeta("read").icon) + "<span>朗读</span>";
-  panelCopy.innerHTML = skillIconSvg(builtinSkillMeta("copy").icon) + "<span>复制</span>";
-  panelRetry.innerHTML = ICONS.refresh + "<span>重试</span>";
+  /* Icon-only footer: no labels, the tooltip/aria-label carries the name. */
+  panelSpeak.innerHTML = skillIconSvg(builtinSkillMeta("read").icon);
+  panelCopy.innerHTML = skillIconSvg(builtinSkillMeta("copy").icon);
+  panelRetry.innerHTML = ICONS.refresh;
+  panelStop.innerHTML = ICONS.stop;
   panelSpeak.addEventListener("click", function () {
     speak(state.panelSpeakText);
   });
@@ -3174,6 +3236,7 @@
       state.panelRetry();
     }
   });
+  panelStop.addEventListener("click", stopActiveRequest);
 
   document.addEventListener("keydown", function (event) {
     if (event.key !== "Escape") {
