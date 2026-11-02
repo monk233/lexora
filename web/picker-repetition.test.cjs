@@ -32,7 +32,7 @@ function harness() {
     setPanelSpeakText(text) { context.state.speech = text; },
     setPanelCopyText(text) { context.state.copy = text; },
     invalidateFollowupSuggestions() {}, finishFollowupSuggestions() {}, refreshFollowupSuggestions() {},
-    syncFollowupOverlay() {}, resizePanelForContent() {},
+    syncFollowupOverlay() {}, resizePanelForContent() {}, syncPanelFoot() {},
     renderTranslationDraft(request) {
       frames.push(() => { if (request.active) context.renderRequestResult(request); });
     },

@@ -57,7 +57,7 @@ function harness(available = true, streamOnly = false) {
     friendlyError: String, showToast() { assert.fail("Unexpected toast"); },
     appendFollowupBlock() { return { block: node(), answer: node(), loading: node() }; },
     abortActiveRequest() {}, stopSpeech() {}, setInputActivated() {}, syncPanelPin() {},
-    notifyPanelState() {}, closeMenu() {}, scheduleToolbarResize() {}, PICKER_SURFACE: "panel",
+    syncPanelFoot() {}, notifyPanelState() {}, closeMenu() {}, scheduleToolbarResize() {}, PICKER_SURFACE: "panel",
     API: {
       cancelFollowups(id) { cancelled.push(id); return Promise.resolve({ ok: true }); },
       generateFollowups(...args) {

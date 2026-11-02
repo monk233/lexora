@@ -960,24 +960,25 @@ body.is-resizing-panel * {
   background: var(--surface);
 }
 
+/* Icon-only footer buttons: square hit area, the label lives in the title. */
 .panel-foot-btn {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  justify-content: center;
+  width: 28px;
   height: 28px;
-  padding: 0 9px;
+  padding: 0;
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-muted);
   font-family: inherit;
-  font-size: 12px;
   cursor: pointer;
 }
 
 .panel-foot-btn .icon {
-  width: 13px;
-  height: 13px;
+  width: 15px;
+  height: 15px;
   color: var(--text-muted);
 }
 
@@ -995,14 +996,44 @@ body.is-resizing-panel * {
   color: var(--primary);
 }
 
+/* Stop button: enabled only while an AI stream is running; hovering it warns
+ * that the generation will be cut off. */
+.panel-foot-stop.is-streaming {
+  color: var(--danger);
+}
+
+.panel-foot-stop.is-streaming .icon {
+  color: var(--danger);
+}
+
+.panel-foot-stop:hover:not(:disabled) {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.panel-foot-stop:hover:not(:disabled) .icon {
+  color: var(--danger);
+}
+
 .panel-foot-btn:disabled {
   color: var(--text-faint);
   cursor: default;
 }
 
+.panel-foot-btn:disabled .icon {
+  color: var(--text-faint);
+}
+
 .panel-foot-btn:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 1px;
+}
+
+/* Neutral note appended when the user stops a stream mid-answer. */
+.stop-note {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 /* ---- Loading / error / empty ------------------------------------------ */
