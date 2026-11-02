@@ -60,10 +60,6 @@
     quick: { recording: false, saving: false },
   };
 
-  /* Quick-translate prompt editor: pending draft + 500ms debounce timer. */
-  var quickPromptDraft = null;
-  var quickPromptTimer = null;
-
   /* Online models fetched from /models, cached per baseUrl + apiKey. */
   var onlineModelCache = {};
   var customModelMode = false;
@@ -492,7 +488,7 @@
     Object.keys(promptDrafts).forEach(function (id) {
       flushPromptDraft(id);
     });
-    flushQuickPromptDraft();
+    flushQuickPromptDrafts();
   }
 
   /* ---- State loading --------------------------------------------------- */
@@ -1678,8 +1674,30 @@
     hotkey: "Alt+Space",
     targetLang: "zh",
     prompt: "",
+    wordLookupPrompt: "",
     pinned: false,
   };
+
+  /* The two quick-translate prompt editors share one debounce flow; each slot
+   * maps to its own textarea/reset button, settings field and default prompt. */
+  var QUICK_PROMPT_SLOTS = {
+    paragraph: {
+      input: "quick-prompt",
+      reset: "quick-prompt-reset",
+      field: "prompt",
+      defaultKey: "quickTranslate",
+    },
+    word: {
+      input: "quick-word-prompt",
+      reset: "quick-word-prompt-reset",
+      field: "wordLookupPrompt",
+      defaultKey: "quickTranslateWordLookup",
+    },
+  };
+
+  /* Pending edit (null = mirror the saved value) + 500ms timer, per slot. */
+  var quickPromptDrafts = { paragraph: null, word: null };
+  var quickPromptTimers = { paragraph: null, word: null };
 
   /* Normalized `settings.quick`, with per-field fallbacks. */
   function quickSettings() {
@@ -1691,6 +1709,10 @@
       targetLang:
         String(stored.targetLang || "").trim() || QUICK_DEFAULTS.targetLang,
       prompt: typeof stored.prompt === "string" ? stored.prompt : "",
+      wordLookupPrompt:
+        typeof stored.wordLookupPrompt === "string"
+          ? stored.wordLookupPrompt
+          : "",
       pinned: stored.pinned === true,
     };
   }
@@ -1701,92 +1723,126 @@
     save({ quick: { enabled: !!enabled } });
   }
 
-  /* Built-in prompt comes from `promptDefaults` (Rust `default_prompts()`);
-   * settings loaded before the field existed simply show an empty textarea. */
-  function quickPromptDefault() {
+  /* Built-in prompts come from `promptDefaults` (Rust `default_prompts()`);
+   * settings loaded before a field existed simply show an empty textarea. */
+  function quickPromptDefault(slot) {
+    var meta = QUICK_PROMPT_SLOTS[slot];
     var defaults = (state && state.promptDefaults) || {};
-    var value = defaults.quickTranslate;
+    var value = meta ? defaults[meta.defaultKey] : "";
     return typeof value === "string" ? value : "";
+  }
+
+  function quickPromptCustomValue(slot) {
+    var quick = quickSettings();
+    return slot === "word" ? quick.wordLookupPrompt : quick.prompt;
   }
 
   /* Textarea value: pending draft wins, then the custom prompt, then the
    * built-in default. */
-  function quickPromptEditorValue() {
-    if (quickPromptDraft !== null) {
-      return quickPromptDraft;
+  function quickPromptEditorValue(slot) {
+    if (quickPromptDrafts[slot] !== null) {
+      return quickPromptDrafts[slot];
     }
-    return quickSettings().prompt || quickPromptDefault();
+    return quickPromptCustomValue(slot) || quickPromptDefault(slot);
   }
 
   /* Empty (or the built-in default) is persisted as "" so the quick panel
    * falls back to the bundled prompt; mirrors the skill prompt editors. */
-  function saveQuickPromptValue(rawValue) {
+  function saveQuickPromptValue(slot, rawValue) {
+    var meta = QUICK_PROMPT_SLOTS[slot];
+    if (!meta) {
+      return;
+    }
     var text = String(rawValue === null || rawValue === undefined ? "" : rawValue);
     var trimmed = text.trim();
     var stored = "";
-    if (trimmed && trimmed !== quickPromptDefault().trim()) {
+    if (trimmed && trimmed !== quickPromptDefault(slot).trim()) {
       stored = trimmed;
     }
-    save({ quick: { prompt: stored } });
+    var patch = { quick: {} };
+    patch.quick[meta.field] = stored;
+    save(patch);
   }
 
-  function saveQuickPromptDraft() {
-    if (quickPromptDraft === null) {
+  function saveQuickPromptDraft(slot) {
+    if (quickPromptDrafts[slot] === null) {
       return;
     }
-    var value = quickPromptDraft;
-    quickPromptDraft = null;
-    saveQuickPromptValue(value);
+    var value = quickPromptDrafts[slot];
+    quickPromptDrafts[slot] = null;
+    saveQuickPromptValue(slot, value);
   }
 
-  function flushQuickPromptDraft() {
-    if (quickPromptTimer) {
-      window.clearTimeout(quickPromptTimer);
-      quickPromptTimer = null;
+  function flushQuickPromptDraft(slot) {
+    if (quickPromptTimers[slot]) {
+      window.clearTimeout(quickPromptTimers[slot]);
+      quickPromptTimers[slot] = null;
     }
-    saveQuickPromptDraft();
+    saveQuickPromptDraft(slot);
   }
 
-  function resetQuickPrompt() {
-    flushQuickPromptDraft();
-    quickPromptDraft = null;
-    saveQuickPromptValue("");
-    setInputValue(byId("quick-prompt"), quickPromptDefault());
+  function flushQuickPromptDrafts() {
+    flushQuickPromptDraft("paragraph");
+    flushQuickPromptDraft("word");
+  }
+
+  function resetQuickPrompt(slot) {
+    var meta = QUICK_PROMPT_SLOTS[slot];
+    if (!meta) {
+      return;
+    }
+    flushQuickPromptDraft(slot);
+    quickPromptDrafts[slot] = null;
+    saveQuickPromptValue(slot, "");
+    setInputValue(byId(meta.input), quickPromptDefault(slot));
     toast("已重置为默认提示词", "success");
   }
 
-  function renderQuickPrompt() {
-    setInputValue(byId("quick-prompt"), quickPromptEditorValue());
+  function renderQuickPrompt(slot) {
+    var meta = QUICK_PROMPT_SLOTS[slot];
+    if (!meta) {
+      return;
+    }
+    setInputValue(byId(meta.input), quickPromptEditorValue(slot));
   }
 
   function renderQuick() {
     setChecked(byId("quick-enabled"), quickSettings().enabled);
     renderHotkey("quick");
-    renderQuickPrompt();
+    renderQuickPrompt("paragraph");
+    renderQuickPrompt("word");
   }
 
-  function bindQuickPrompt() {
-    var textarea = byId("quick-prompt");
+  function bindQuickPrompt(slot) {
+    var meta = QUICK_PROMPT_SLOTS[slot];
+    var textarea = meta ? byId(meta.input) : null;
     if (!textarea) {
       return;
     }
     textarea.addEventListener("input", function () {
-      quickPromptDraft = textarea.value;
-      if (quickPromptTimer) {
-        window.clearTimeout(quickPromptTimer);
+      quickPromptDrafts[slot] = textarea.value;
+      if (quickPromptTimers[slot]) {
+        window.clearTimeout(quickPromptTimers[slot]);
       }
-      quickPromptTimer = window.setTimeout(function () {
-        quickPromptTimer = null;
-        saveQuickPromptDraft();
+      quickPromptTimers[slot] = window.setTimeout(function () {
+        quickPromptTimers[slot] = null;
+        saveQuickPromptDraft(slot);
       }, 500);
     });
-    textarea.addEventListener("blur", flushQuickPromptDraft);
+    textarea.addEventListener("blur", function () {
+      flushQuickPromptDraft(slot);
+    });
     textarea.addEventListener("keydown", function (event) {
       if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
         textarea.blur();
       }
     });
+  }
+
+  function bindQuickPrompts() {
+    bindQuickPrompt("paragraph");
+    bindQuickPrompt("word");
   }
 
   /* `window.quickAPI` is provided by shared/tauri-api.js (quick-translate §6).
@@ -4500,8 +4556,13 @@
       hotkeyRecorders.quick.recording = false;
       submitHotkey("quick", HOTKEY_TARGETS.quick.fallback);
     });
-    bindQuickPrompt();
-    byId("quick-prompt-reset").addEventListener("click", resetQuickPrompt);
+    bindQuickPrompts();
+    byId("quick-prompt-reset").addEventListener("click", function () {
+      resetQuickPrompt("paragraph");
+    });
+    byId("quick-word-prompt-reset").addEventListener("click", function () {
+      resetQuickPrompt("word");
+    });
     byId("quick-history-clear").addEventListener("click", function () {
       armDanger(byId("quick-history-clear"), "确认清空", clearQuickHistory);
     });

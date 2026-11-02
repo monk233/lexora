@@ -175,18 +175,10 @@ textarea {
   flex: 0 0 auto;
 }
 
-.qt-lang-auto {
-  display: inline-flex;
-  align-items: center;
-  height: 30px;
-  padding: 0 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--surface-muted);
-  color: var(--text-muted);
-  font-size: 12.5px;
-  white-space: nowrap;
-  flex: 0 0 auto;
+/* Source language selector: same control look as the target selector, slightly
+ * narrower so both fit the 900px top bar with the swap button. */
+.qt-select-source {
+  min-width: 132px;
 }
 
 .qt-lang-arrow {
@@ -362,6 +354,16 @@ textarea {
 .qt-icon-btn:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 1px;
+}
+
+.qt-icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.qt-icon-btn:disabled:hover {
+  background: transparent;
+  color: var(--text-muted);
 }
 
 .qt-icon-btn[aria-pressed="true"] {

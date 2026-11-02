@@ -32,7 +32,7 @@ use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize};
 use crate::engine::{EngineError, QUICK_MAX_TEXT_CHARS};
 use crate::settings::{
     normalize_quick_shortcut, parse_shortcut, Settings, Shortcut, DEFAULT_QUICK_SHORTCUT,
-    DEFAULT_QUICK_TARGET_LANG, TARGET_LANGS,
+    DEFAULT_QUICK_TARGET_LANG, SOURCE_LANGS, TARGET_LANGS,
 };
 use crate::state::{lock, AppState};
 
@@ -62,39 +62,169 @@ const MAX_PANEL_HEIGHT: f64 = 760.0;
 const PANEL_WORK_AREA_MARGIN: f64 = 80.0;
 
 // ---------------------------------------------------------------------------
-// Source-language heuristic (contract §5, shared with the renderer)
+// Source-language detection (contract §5)
 // ---------------------------------------------------------------------------
 
-/// Best-effort source language of the text, returned as a [`TARGET_LANGS`]
-/// code. Purely script-presence based (never by character count), with the same
-/// priority order as `qtDetectSourceLang` in `web/quicktranslate.js` so the
-/// history label and the swap button agree on both sides:
+/// Minimum character count before the statistical detector (`whatlang`) is
+/// trusted. Shorter snippets are too ambiguous for trigram statistics and fall
+/// back to the script heuristic.
+const MIN_STATISTICAL_CHARS: usize = 10;
+/// Minimum `whatlang` confidence for a statistical result to be used. The
+/// Swedish reference sentence scores ~0.77, so gating on `is_reliable()`
+/// (stricter) would wrongly fall back to `en`; a low-confidence Latin result is
+/// still guarded by the character-script fallback below.
+const MIN_STATISTICAL_CONFIDENCE: f64 = 0.5;
+
+/// Best-effort source language of the text, returned as a concrete
+/// [`SOURCE_LANGS`] code (never `auto`).
 ///
-/// kana → `ja` (even with many Han characters), Han → `zh` (Traditional and
-/// Simplified share the ideograph ranges), Hangul → `ko`, Cyrillic → `ru`,
-/// Arabic → `ar`, Thai → `th`, Devanagari → `hi`, Hebrew → `he`, everything
-/// else (including empty or digit/punctuation-only text) → `en`.
+/// Three layers:
+/// 1. unambiguous CJK scripts are decided by presence first (kana → `ja`,
+///    Han → `zh`, Hangul → `ko`): trigram statistics easily confuse mixed
+///    Japanese/Chinese text and half-width katakana;
+/// 2. everything else (Latin, Cyrillic, Arabic, Greek, ...) uses the offline
+///    `whatlang` detector when the text has at least [`MIN_STATISTICAL_CHARS`]
+///    characters and its confidence reaches
+///    [`MIN_STATISTICAL_CONFIDENCE`]. This is what fixes Latin-script languages
+///    being reported as English (e.g. Swedish → `sv`);
+/// 3. too-short or low-confidence input falls back to the script heuristic and
+///    finally to `en`.
 pub fn detect_source_lang(text: &str) -> &'static str {
+    let trimmed = text.trim();
+    if let Some(code) = unambiguous_cjk_lang(trimmed) {
+        return code;
+    }
+    if trimmed.chars().count() >= MIN_STATISTICAL_CHARS {
+        if let Some(info) = whatlang::detect(trimmed) {
+            if info.confidence() >= MIN_STATISTICAL_CONFIDENCE {
+                if let Some(code) = whatlang_source_code(info.lang()) {
+                    return code;
+                }
+            }
+        }
+    }
+    if let Some(code) = detect_latin_language_by_markers(trimmed) {
+        return code;
+    }
+    detect_source_lang_by_script(trimmed)
+}
+
+/// Kana → `ja`, Han → `zh`, Hangul → `ko`; `None` when the text contains none
+/// of those scripts. Priority matches the historical heuristic: kana wins over
+/// Han (Japanese mixes both), Han over Hangul.
+fn unambiguous_cjk_lang(text: &str) -> Option<&'static str> {
     let mut seen_han = false;
     let mut seen_kana = false;
+    let mut seen_hangul = false;
+    for character in text.chars() {
+        let code = character as u32;
+        if (0x3040..=0x30FF).contains(&code)
+            || (0x31F0..=0x31FF).contains(&code)
+            || (0xFF66..=0xFF9D).contains(&code)
+        {
+            seen_kana = true;
+        } else if (0x4E00..=0x9FFF).contains(&code)
+            || (0x3400..=0x4DBF).contains(&code)
+            || (0xF900..=0xFAFF).contains(&code)
+        {
+            seen_han = true;
+        } else if (0xAC00..=0xD7AF).contains(&code) || (0x1100..=0x11FF).contains(&code) {
+            seen_hangul = true;
+        }
+    }
+    if seen_kana {
+        Some("ja")
+    } else if seen_han {
+        Some("zh")
+    } else if seen_hangul {
+        Some("ko")
+    } else {
+        None
+    }
+}
+
+/// Maps a `whatlang` language to the application's ISO 639-1 source code.
+/// Languages outside [`SOURCE_LANGS`] return `None` so the script fallback
+/// decides instead of leaking an unsupported code.
+fn whatlang_source_code(language: whatlang::Lang) -> Option<&'static str> {
+    use whatlang::Lang;
+    Some(match language {
+        Lang::Eng => "en",
+        Lang::Cmn => "zh",
+        Lang::Spa => "es",
+        Lang::Por => "pt",
+        Lang::Ita => "it",
+        Lang::Ben => "bn",
+        Lang::Fra => "fr",
+        Lang::Deu => "de",
+        Lang::Ukr => "uk",
+        Lang::Kat => "ka",
+        Lang::Ara => "ar",
+        Lang::Hin => "hi",
+        Lang::Jpn => "ja",
+        Lang::Heb => "he",
+        Lang::Pol => "pl",
+        Lang::Kor => "ko",
+        // Norwegian Bokmål is what whatlang detects; report the generic code.
+        Lang::Nob => "no",
+        Lang::Dan => "da",
+        Lang::Swe => "sv",
+        Lang::Fin => "fi",
+        Lang::Tur => "tr",
+        Lang::Nld => "nl",
+        Lang::Hun => "hu",
+        Lang::Ces => "cs",
+        Lang::Ell => "el",
+        Lang::Bul => "bg",
+        Lang::Bel => "be",
+        Lang::Mar => "mr",
+        Lang::Ron => "ro",
+        Lang::Slv => "sl",
+        Lang::Hrv => "hr",
+        Lang::Srp => "sr",
+        Lang::Lit => "lt",
+        Lang::Lav => "lv",
+        Lang::Est => "et",
+        Lang::Tam => "ta",
+        Lang::Vie => "vi",
+        Lang::Urd => "ur",
+        Lang::Tha => "th",
+        Lang::Guj => "gu",
+        Lang::Uzb => "uz",
+        Lang::Aze => "az",
+        Lang::Ind => "id",
+        Lang::Tel => "te",
+        Lang::Pes => "fa",
+        Lang::Mya => "my",
+        Lang::Khm => "km",
+        Lang::Afr => "af",
+        Lang::Slk => "sk",
+        Lang::Cat => "ca",
+        Lang::Tgl => "tl",
+        Lang::Hye => "hy",
+        Lang::Cym => "cy",
+        // Languages the application does not list as a source (Esperanto,
+        // Yiddish, Amharic, Javanese, Kannada, Macedonian, ...): let the script
+        // heuristic pick the closest supported code.
+        _ => return None,
+    })
+}
+
+/// Character-script fallback used when statistical detection is not applicable
+/// (short/low-confidence text, or a language outside [`SOURCE_LANGS`]).
+fn detect_source_lang_by_script(text: &str) -> &'static str {
+    let mut seen_han = false;
     let mut seen_hangul = false;
     let mut seen_cyrillic = false;
     let mut seen_arabic = false;
     let mut seen_thai = false;
     let mut seen_devanagari = false;
     let mut seen_hebrew = false;
+    let mut seen_greek = false;
+    let mut seen_georgian = false;
+    let mut seen_armenian = false;
     for character in text.chars() {
         let code = character as u32;
-        // Kana wins over Han: Japanese sentences mix both scripts.
-        if (0x3040..=0x30FF).contains(&code) || (0x31F0..=0x31FF).contains(&code) {
-            seen_kana = true;
-            continue;
-        }
-        // Half-width Katakana is part of the alignment.
-        if (0xFF66..=0xFF9D).contains(&code) {
-            seen_kana = true;
-            continue;
-        }
         if (0x4E00..=0x9FFF).contains(&code)
             || (0x3400..=0x4DBF).contains(&code)
             || (0xF900..=0xFAFF).contains(&code)
@@ -112,11 +242,15 @@ pub fn detect_source_lang(text: &str) -> &'static str {
             seen_devanagari = true;
         } else if (0x0590..=0x05FF).contains(&code) {
             seen_hebrew = true;
+        } else if (0x0370..=0x03FF).contains(&code) {
+            seen_greek = true;
+        } else if (0x10A0..=0x10FF).contains(&code) {
+            seen_georgian = true;
+        } else if (0x0530..=0x058F).contains(&code) {
+            seen_armenian = true;
         }
     }
-    if seen_kana {
-        "ja"
-    } else if seen_han {
+    if seen_han {
         "zh"
     } else if seen_hangul {
         "ko"
@@ -130,9 +264,169 @@ pub fn detect_source_lang(text: &str) -> &'static str {
         "hi"
     } else if seen_hebrew {
         "he"
+    } else if seen_greek {
+        "el"
+    } else if seen_georgian {
+        "ka"
+    } else if seen_armenian {
+        "hy"
     } else {
         "en"
     }
+}
+
+/// Stop words distinguishing the main Latin-script languages. Two matches are
+/// required (see [`detect_latin_language_by_markers`]), so a foreign word or a
+/// name alone cannot flip the answer.
+const LATIN_STOPWORD_SETS: &[(&str, &[&str])] = &[
+    (
+        "de",
+        &["der", "die", "und", "ist", "nicht", "ich", "das", "ein"],
+    ),
+    (
+        "fr",
+        &["le", "la", "les", "est", "une", "je", "pas", "des", "que"],
+    ),
+    ("es", &["el", "los", "las", "una", "que", "es", "por", "con"]),
+    ("it", &["il", "che", "una", "per", "non", "sono", "della"]),
+    ("nl", &["het", "een", "van", "niet", "zijn", "ook", "maar"]),
+];
+
+/// Conservative Latin-script fallback for languages `whatlang` does not know
+/// (`is`, `mt`, `sq`, `ga`, `cy`, ...) or only detects with low confidence.
+/// It combines diacritic signatures with a few distinctive stop words and only
+/// runs on pure-Latin text, so it can never turn a right-to-left/CJK/Cyrillic
+/// script into a Latin language.
+fn detect_latin_language_by_markers(text: &str) -> Option<&'static str> {
+    if !is_latin_script_text(text) {
+        return None;
+    }
+    let lower = text.to_lowercase();
+    let has_diacritic =
+        |markers: &[char]| markers.iter().any(|marker| lower.contains(*marker));
+    // Unambiguous diacritics: one is enough.
+    if has_diacritic(&['þ', 'ð']) {
+        return Some("is");
+    }
+    if has_diacritic(&['ħ', 'ġ']) {
+        return Some("mt");
+    }
+    if has_diacritic(&['ß']) {
+        return Some("de");
+    }
+    if has_diacritic(&['ñ']) {
+        return Some("es");
+    }
+    if has_diacritic(&['ã', 'õ']) {
+        return Some("pt");
+    }
+    if has_diacritic(&['ř', 'ě']) {
+        return Some("cs");
+    }
+    if has_diacritic(&['ș', 'ț']) {
+        return Some("ro");
+    }
+    if has_diacritic(&['ő', 'ű']) {
+        return Some("hu");
+    }
+    if has_diacritic(&['ğ', 'ı', 'ş']) {
+        return Some("tr");
+    }
+    if has_diacritic(&['ơ', 'ư', 'đ']) {
+        return Some("vi");
+    }
+    if has_diacritic(&['ą', 'ę', 'ł', 'ż', 'ź']) {
+        return Some("pl");
+    }
+    let words: Vec<&str> = lower
+        .split(|character: char| !character.is_alphabetic())
+        .filter(|word| !word.is_empty())
+        .collect();
+    let word_matches =
+        |markers: &[&str]| markers.iter().filter(|marker| words.contains(marker)).count();
+    // Albanian: `ë` is shared with other languages, require two words.
+    if lower.contains('ë') && word_matches(&["dhe", "është", "një", "që", "nuk", "për"]) >= 2 {
+        return Some("sq");
+    }
+    // Irish: síneadh fada vowels plus Irish function words.
+    if has_diacritic(&['á', 'é', 'í', 'ó', 'ú'])
+        && word_matches(&["agus", "tá", "ní", "seo", "sí", "daoibh"]) >= 2
+    {
+        return Some("ga");
+    }
+    if lower.contains('ŵ') || lower.contains('ŷ') || word_matches(&["mae", "gyda", "wedi", "dyma"]) >= 2 {
+        return Some("cy");
+    }
+    // Swedish / Finnish / Danish / Norwegian share ä/ö and partly æ/ø: require
+    // the language's own distinctive function words before choosing one.
+    if has_diacritic(&['å', 'ä', 'ö'])
+        && word_matches(&["och", "är", "jag", "inte", "för", "hej", "mycket", "också"]) >= 2
+    {
+        return Some("sv");
+    }
+    if has_diacritic(&['ä', 'ö'])
+        && word_matches(&["ja", "on", "että", "ei", "minä", "mutta", "hän"]) >= 2
+    {
+        return Some("fi");
+    }
+    if has_diacritic(&['æ', 'ø']) && word_matches(&["hvad", "dansk", "ikke", "jeg", "til"]) >= 1 {
+        return if words.contains(&"hvad") || words.contains(&"dansk") {
+            Some("da")
+        } else {
+            Some("no")
+        };
+    }
+    let mut best: Option<(&'static str, usize)> = None;
+    for (code, markers) in LATIN_STOPWORD_SETS {
+        let count = word_matches(markers);
+        if count >= 2 && best.map(|(_, best_count)| count > best_count).unwrap_or(true) {
+            best = Some((code, count));
+        }
+    }
+    best.map(|(code, _)| code)
+}
+
+/// `true` when every alphabetic character is Latin, i.e. the text belongs to the
+/// Latin-script group the marker fallback understands.
+fn is_latin_script_text(text: &str) -> bool {
+    let mut latin = 0usize;
+    for character in text.chars() {
+        if !character.is_alphabetic() {
+            continue;
+        }
+        if character.is_ascii_alphabetic() {
+            latin += 1;
+            continue;
+        }
+        let code = character as u32;
+        let is_latin_letter = (0x00C0..=0x024F).contains(&code)
+            || (0x1E00..=0x1EFF).contains(&code)
+            || (0x2C60..=0x2C7F).contains(&code)
+            || (0xA720..=0xA7FF).contains(&code);
+        if !is_latin_letter {
+            return false;
+        }
+        latin += 1;
+    }
+    latin > 0
+}
+
+/// Resolves the source language of one request: an explicit [`SOURCE_LANGS`]
+/// entry wins, everything else (`auto`, empty, unknown) is detected from the
+/// text. The result is always concrete (never `auto`), which is exactly what
+/// the prompt placeholders and the history entry need.
+pub fn resolve_source_lang(text: &str, requested: &str) -> &'static str {
+    let normalized = requested.trim().to_ascii_lowercase();
+    if normalized != "auto" && !normalized.is_empty() {
+        if let Some(code) = crate::settings::SOURCE_LANGS
+            .iter()
+            .copied()
+            .find(|code| *code == normalized.as_str())
+        {
+            return code;
+        }
+    }
+    detect_source_lang(text)
 }
 
 // ---------------------------------------------------------------------------
@@ -928,8 +1222,16 @@ fn normalize_entries(entries: Vec<HistoryEntry>) -> Vec<HistoryEntry> {
         if normalized.iter().any(|current| current.id == id) {
             continue;
         }
-        let source_lang = normalize_history_lang(&entry.source_lang, detect_source_lang(&source));
-        let target_lang = normalize_history_lang(&entry.target_lang, DEFAULT_QUICK_TARGET_LANG);
+        let source_lang = normalize_history_lang(
+            &entry.source_lang,
+            &SOURCE_LANGS,
+            detect_source_lang(&source),
+        );
+        let target_lang = normalize_history_lang(
+            &entry.target_lang,
+            &TARGET_LANGS,
+            DEFAULT_QUICK_TARGET_LANG,
+        );
         normalized.push(HistoryEntry {
             id,
             source,
@@ -943,10 +1245,10 @@ fn normalize_entries(entries: Vec<HistoryEntry>) -> Vec<HistoryEntry> {
     normalized
 }
 
-/// Keeps only concrete translation-language codes (`auto` is not a language).
-fn normalize_history_lang(raw: &str, fallback: &str) -> String {
+/// Keeps only concrete codes from `allowed` (`auto` is not a language).
+fn normalize_history_lang(raw: &str, allowed: &[&str], fallback: &str) -> String {
     let value = raw.trim().to_ascii_lowercase();
-    if value != "auto" && TARGET_LANGS.contains(&value.as_str()) {
+    if value != "auto" && allowed.contains(&value.as_str()) {
         value
     } else {
         fallback.to_string()
@@ -1048,10 +1350,88 @@ mod tests {
         ] {
             assert_eq!(detect_source_lang(text), expected, "text={text:?}");
         }
-        // The result is always a concrete `TARGET_LANGS` code, never `auto`.
+        // The result is always a concrete `SOURCE_LANGS` code, never `auto`.
         for text in ["中文", "hello", "こんにちは", "한국어", ""] {
             let code = detect_source_lang(text);
-            assert!(TARGET_LANGS.contains(&code), "code={code}");
+            assert!(SOURCE_LANGS.contains(&code), "code={code}");
+            assert_ne!(code, "auto");
+        }
+    }
+
+    #[test]
+    fn detects_swedish_and_other_latin_languages() {
+        // Regression: Swedish used to be reported as English because only the
+        // character script was looked at. `whatlang` now decides Latin-script
+        // languages from at least 10 characters and 0.5 confidence.
+        for (text, expected) in [
+            (
+                "Hej! Det är en verkligen underbar dag. Önskar dig en god morgon...",
+                "sv",
+            ),
+            ("Jag älskar att läsa böcker och dricka kaffe på morgonen.", "sv"),
+            ("Det här är ett test av språkigenkänning.", "sv"),
+            ("Das ist ein langer deutscher Satz zum Testen.", "de"),
+            (
+                "Bonjour, ceci est une longue phrase française pour tester.",
+                "fr",
+            ),
+            (
+                "Hola, esta es una frase larga en español para probar.",
+                "es",
+            ),
+            (
+                "Cześć, to jest długie zdanie po polsku do przetestowania.",
+                "pl",
+            ),
+            (
+                "Bună ziua, acesta este un text lung în limba română.",
+                "ro",
+            ),
+            ("Καλημέρα, αυτό είναι ένα μεγάλο κείμενο στα ελληνικά.", "el"),
+            (
+                "Merhaba, bu dil algılamayı test etmek için uzun bir Türkçe cümle.",
+                "tr",
+            ),
+            (
+                "Tämä on pitkä suomenkielinen lause kielen tunnistuksen testaamiseksi.",
+                "fi",
+            ),
+            (
+                "Ahoj, toto je dlouhá česká věta pro testování rozpoznání jazyka.",
+                "cs",
+            ),
+            (
+                "Xin chào, đây là một câu tiếng Việt dài để kiểm tra nhận dạng ngôn ngữ.",
+                "vi",
+            ),
+            // Languages `whatlang` does not support: the conservative
+            // diacritic/stop-word fallback still identifies them.
+            ("Þetta er íslenskur texti fyrir prófun.", "is"),
+            ("Kjo është një fjali shqipe për testim.", "sq"),
+        ] {
+            assert_eq!(detect_source_lang(text), expected, "text={text:?}");
+        }
+    }
+
+    #[test]
+    fn resolve_source_lang_prefers_an_explicit_supported_language() {
+        // An explicit source wins over detection (the text looks English but
+        // the user told us it is Swedish).
+        assert_eq!(resolve_source_lang("hello world", "sv"), "sv");
+        assert_eq!(resolve_source_lang("hello world", " SV "), "sv");
+        // `auto`/empty/unknown falls back to detection.
+        let swedish = "Hej! Det är en verkligen underbar dag.";
+        assert_eq!(resolve_source_lang(swedish, "auto"), "sv");
+        assert_eq!(resolve_source_lang(swedish, ""), "sv");
+        assert_eq!(resolve_source_lang(swedish, "xx"), "sv");
+        // Every concrete SOURCE_LANGS code round-trips unchanged.
+        for code in SOURCE_LANGS.iter().filter(|code| **code != "auto") {
+            assert_eq!(resolve_source_lang("hello", code), *code);
+        }
+        // The resolved code is always concrete and inside SOURCE_LANGS.
+        for text in ["", "hello", "中文", swedish] {
+            let code = resolve_source_lang(text, "auto");
+            assert!(SOURCE_LANGS.contains(&code), "code={code}");
             assert_ne!(code, "auto");
         }
     }
@@ -1180,6 +1560,50 @@ mod tests {
     }
 
     #[test]
+    fn history_keeps_extended_source_codes_and_redetects_auto() {
+        // An entry written with the extended source list must survive a reload
+        // (schema v10 history: sv is a valid sourceLang, not only TARGET_LANGS).
+        let swedish = "Hej! Det är en verkligen underbar dag. Önskar dig en god morgon...";
+        let (store, dir) = temp_store();
+        store
+            .add(HistoryEntry {
+                id: "id-sv".to_string(),
+                source: swedish.to_string(),
+                target: "你好！祝你早上好……".to_string(),
+                source_lang: "sv".to_string(),
+                target_lang: "zh".to_string(),
+                created_at: 1,
+                elapsed_ms: 2,
+            })
+            .unwrap();
+        let reloaded = HistoryStore::load(dir.path().join(HISTORY_FILE_NAME)).list();
+        assert_eq!(reloaded.len(), 1);
+        assert_eq!(reloaded[0].source_lang, "sv");
+        assert_eq!(reloaded[0].target_lang, "zh");
+
+        // A persisted `auto` (or an unknown code) is re-detected instead of
+        // being shown as-is: the Swedish sentence becomes `sv`, never `en`.
+        let path = dir.path().join("auto-history.json");
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "version": 1,
+                "entries": [
+                    {"id": "id-auto", "source": swedish, "target": "你好",
+                     "sourceLang": "auto", "targetLang": "zh", "createdAt": 1, "elapsedMs": 2},
+                    {"id": "id-unknown", "source": swedish, "target": "你好",
+                     "sourceLang": "xx", "targetLang": "zh", "createdAt": 3, "elapsedMs": 4}
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        for entry in HistoryStore::load(path).list() {
+            assert_eq!(entry.source_lang, "sv", "id={}", entry.id);
+        }
+    }
+
+    #[test]
     fn history_entries_are_truncated_to_the_input_limit() {
         let long_source = "源".repeat(HISTORY_TEXT_MAX_CHARS + 100);
         let long_target = "译".repeat(HISTORY_TEXT_MAX_CHARS + 100);
@@ -1216,5 +1640,23 @@ mod tests {
         let first = new_entry_id();
         let second = new_entry_id();
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn script_fallback_keeps_the_contract_priority_order() {
+        // Non-Latin scripts that are statistically ambiguous still resolve by
+        // character script (the `whatlang` detector is bypassed for CJK).
+        for (text, expected) in [
+            ("日本語のテキストです", "ja"),
+            ("한국어 텍스트입니다", "ko"),
+            ("Русский текст", "ru"),
+            ("نص عربي", "ar"),
+            ("טקסט עברי", "he"),
+            ("ข้อความภาษาไทย", "th"),
+            ("यह हिंदी है", "hi"),
+            ("Καλημέρα", "el"),
+        ] {
+            assert_eq!(detect_source_lang(text), expected, "text={text:?}");
+        }
     }
 }

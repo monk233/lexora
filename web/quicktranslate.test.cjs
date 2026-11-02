@@ -31,14 +31,33 @@ for (const name of [
   "qtFormatHistoryTime",
   "qtMakeRequestId",
   "qtNormalizeInput",
+  "qtSourceLanguages",
+  "qtNormalizeSourceLang",
+  "qtSourceLangLabel",
 ]) {
   vm.runInContext(extract(quickSource, name), context);
 }
+
+/* Project target-language table (38 entries), loaded from the real shared file. */
+const sharedContext = vm.createContext({ window: {}, console });
+vm.runInContext(
+  fs.readFileSync(path.join(__dirname, "shared", "constants.js"), "utf8"),
+  sharedContext
+);
+const projectLanguages = Array.from(sharedContext.window.LP.LANGUAGES, (entry) => ({
+  value: entry.value,
+  label: entry.label,
+}));
 
 /* Cross-realm arrays need a copy before deepEqual: the vm context has its own
  * Array prototype. */
 function plain(list) {
   return Array.from(list);
+}
+
+/* Plain JSON copy for cross-realm object comparisons. */
+function json(value) {
+  return JSON.parse(JSON.stringify(value));
 }
 
 test("source language heuristic follows the Rust contract order", () => {
@@ -212,4 +231,217 @@ test("input normalization trims and truncates to 20000 code points", () => {
   // Trimming happens before truncation, so the limit applies to the payload.
   const padded = " " + "b".repeat(20000) + " ";
   assert.equal(context.qtNormalizeInput(padded).length, 20000);
+});
+
+test("source language selector list covers auto + project + extra languages", () => {
+  const list = json(context.qtSourceLanguages(projectLanguages));
+  assert.equal(list.length, 1 + projectLanguages.length + 28);
+  assert.deepEqual(list[0], { value: "auto", label: "自动识别" });
+
+  const values = list.map((entry) => entry.value);
+  assert.equal(new Set(values).size, values.length, "values must be unique");
+  assert.ok(values.every((value) => typeof value === "string" && value.length > 0));
+  assert.ok(
+    list.every((entry) => /[\u4e00-\u9fff]/.test(entry.label)),
+    "every label is Chinese"
+  );
+
+  const byValue = Object.fromEntries(list.map((entry) => [entry.value, entry.label]));
+  // Project target languages keep their labels.
+  for (const [code, label] of [
+    ["zh", "中文"],
+    ["en", "英语"],
+    ["zh-hant", "繁体中文"],
+    ["yue", "粤语"],
+  ]) {
+    assert.equal(byValue[code], label);
+  }
+  // Extra common source languages (patch list order/labels).
+  const extras = {
+    sv: "瑞典语",
+    no: "挪威语",
+    da: "丹麦语",
+    fi: "芬兰语",
+    el: "希腊语",
+    hu: "匈牙利语",
+    ro: "罗马尼亚语",
+    sk: "斯洛伐克语",
+    sl: "斯洛文尼亚语",
+    hr: "克罗地亚语",
+    sr: "塞尔维亚语",
+    lt: "立陶宛语",
+    lv: "拉脱维亚语",
+    et: "爱沙尼亚语",
+    is: "冰岛语",
+    bg: "保加利亚语",
+    be: "白俄罗斯语",
+    az: "阿塞拜疆语",
+    uz: "乌兹别克语",
+    ka: "格鲁吉亚语",
+    hy: "亚美尼亚语",
+    sq: "阿尔巴尼亚语",
+    ca: "加泰罗尼亚语",
+    cy: "威尔士语",
+    ga: "爱尔兰语",
+    mt: "马耳他语",
+    af: "南非荷兰语",
+    sw: "斯瓦希里语",
+  };
+  assert.equal(Object.keys(extras).length, 28);
+  for (const [code, label] of Object.entries(extras)) {
+    assert.equal(byValue[code], label, code);
+  }
+});
+
+test("source language list drops duplicates and keeps base labels", () => {
+  const base = [
+    { value: "auto", label: "不应出现" },
+    { value: "sv", label: "自定义瑞典语" },
+    { value: "zh", label: "中文" },
+  ];
+  const list = json(context.qtSourceLanguages(base));
+  assert.equal(list.filter((entry) => entry.value === "auto").length, 1);
+  assert.equal(list.filter((entry) => entry.value === "sv").length, 1);
+  assert.equal(list.find((entry) => entry.value === "sv").label, "自定义瑞典语");
+  assert.equal(list.find((entry) => entry.value === "zh").label, "中文");
+
+  // Missing/hostile base data must not break the selector.
+  assert.equal(json(context.qtSourceLanguages(null))[0].value, "auto");
+  assert.equal(json(context.qtSourceLanguages([null, {}, { label: "x" }])).length, 1 + 28);
+});
+
+test("source language normalization falls back to auto", () => {
+  const list = json(context.qtSourceLanguages(projectLanguages));
+  assert.equal(context.qtNormalizeSourceLang("sv", list), "sv");
+  assert.equal(context.qtNormalizeSourceLang("zh", list), "zh");
+  assert.equal(context.qtNormalizeSourceLang("auto", list), "auto");
+  assert.equal(context.qtNormalizeSourceLang(" mars ", list), "auto");
+  assert.equal(context.qtNormalizeSourceLang("", list), "auto");
+  assert.equal(context.qtNormalizeSourceLang(null, list), "auto");
+  assert.equal(context.qtNormalizeSourceLang(undefined, list), "auto");
+});
+
+test("history source language labels use the Chinese table and never auto", () => {
+  const list = json(context.qtSourceLanguages(projectLanguages));
+  assert.equal(context.qtSourceLangLabel("sv", list), "瑞典语");
+  assert.equal(context.qtSourceLangLabel("zh", list), "中文");
+  assert.equal(context.qtSourceLangLabel("zh-hant", list), "繁体中文");
+  assert.equal(context.qtSourceLangLabel("en", list), "英语");
+  assert.equal(context.qtSourceLangLabel("auto", list), "");
+  assert.equal(context.qtSourceLangLabel("", list), "");
+  assert.equal(context.qtSourceLangLabel(null, list), "");
+  // Unknown codes fall back to the upper-cased code (e.g. a new detector code).
+  assert.equal(context.qtSourceLangLabel("xx", list), "XX");
+  assert.equal(context.qtSourceLangLabel("sv-se", list), "SV-SE");
+});
+
+test("preview mock accepts exactly the same extra source languages", () => {
+  // The mock keeps its own copy of the extra codes; keep both lists in sync.
+  const mockExtraSource = /var MOCK_EXTRA_SOURCE_LANGS = \[([\s\S]*?)\];/.exec(apiSource);
+  assert.notEqual(mockExtraSource, null);
+  const mockExtra = (mockExtraSource[1].match(/"([a-z]+)"/g) || []).map((value) =>
+    value.replace(/"/g, "")
+  );
+  const frontendList = json(context.qtSourceLanguages(projectLanguages));
+  const frontendExtra = frontendList
+    .map((entry) => entry.value)
+    .filter((value) => !projectLanguages.some((entry) => entry.value === value) && value !== "auto");
+  assert.deepEqual(mockExtra.slice().sort(), frontendExtra.slice().sort());
+  assert.equal(mockExtra.length, 28);
+
+  // mockSourceLangValid mirrors qtNormalizeSourceLang for the same inputs.
+  const mockContext = vm.createContext({
+    window: { LP: { LANGUAGES: projectLanguages } },
+    MOCK_EXTRA_SOURCE_LANGS: mockExtra,
+    console,
+  });
+  vm.runInContext(extract(apiSource, "mockSourceLangValid"), mockContext);
+  for (const code of ["auto", "sv", "zh", "en", "zh-hant", "yue", "xx", "", null, undefined, "SV"]) {
+    const previewValid = mockContext.mockSourceLangValid(code) === true;
+    const frontendValid = context.qtNormalizeSourceLang(code, frontendList) === String(code == null ? "" : code).trim() && String(code == null ? "" : code).trim() !== "";
+    assert.equal(previewValid, frontendValid, "source language " + JSON.stringify(code));
+  }
+});
+
+test("preview mock keeps quick word-lookup prompt and source language", async () => {
+  const mockWindow = {
+    location: { search: "" },
+    setTimeout: (callback) => setTimeout(callback, 0),
+    clearTimeout,
+    setInterval: (callback) => setInterval(callback, 0),
+    clearInterval,
+  };
+  const mockContext = vm.createContext({ window: mockWindow, console });
+  const load = (file) =>
+    vm.runInContext(fs.readFileSync(path.join(__dirname, "shared", file), "utf8"), mockContext);
+  load("constants.js");
+  load("tauri-api.js");
+  const settingsApi = mockWindow.settingsAPI;
+
+  let result = await settingsApi.updateSettings({
+    quick: { sourceLang: "sv", wordLookupPrompt: "  custom word prompt  " },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.state.settings.quick.sourceLang, "sv");
+  assert.equal(result.state.settings.quick.wordLookupPrompt, "custom word prompt");
+  result = await settingsApi.getState();
+  assert.equal(result.state.settings.quick.sourceLang, "sv");
+  assert.equal(result.state.settings.quick.wordLookupPrompt, "custom word prompt");
+
+  // Unknown source codes normalize back to "auto".
+  result = await settingsApi.updateSettings({ quick: { sourceLang: "xx" } });
+  assert.equal(result.state.settings.quick.sourceLang, "auto");
+
+  // quick_ready exposes the remembered source language and both prompt defaults.
+  const quick = await mockWindow.quickAPI.ready();
+  assert.equal(quick.quick.sourceLang, "auto");
+  const state = (await settingsApi.getState()).state;
+  assert.ok(
+    typeof state.promptDefaults.quickTranslateWordLookup === "string" &&
+      state.promptDefaults.quickTranslateWordLookup.includes("{target}")
+  );
+
+  // A quick translation with a pinned source language stores that code in the
+  // simulated history (the stream itself is accelerated in this mock window).
+  const requestId = "quick-test-" + Date.now().toString(36);
+  const translated = await mockWindow.quickAPI.translate(
+    requestId,
+    "Det här är ett test.",
+    "zh",
+    "sv"
+  );
+  assert.equal(translated.ok, true);
+  let entries = [];
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    entries = (await mockWindow.quickAPI.historyList()).entries;
+    if (entries.length) {
+      break;
+    }
+  }
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].sourceLang, "sv");
+  assert.equal(entries[0].targetLang, "zh");
+
+  // Omitting sourceLang falls back to the remembered quick.sourceLang (shell
+  // semantics: empty/invalid -> quick.sourceLang, then detect only if "auto").
+  await settingsApi.updateSettings({ quick: { sourceLang: "sv" } });
+  const fallbackRequestId = "quick-fallback-" + Date.now().toString(36);
+  const fallback = await mockWindow.quickAPI.translate(
+    fallbackRequestId,
+    "Ett till test.",
+    "zh"
+  );
+  assert.equal(fallback.ok, true);
+  let entriesAfterFallback = [];
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    entriesAfterFallback = (await mockWindow.quickAPI.historyList()).entries;
+    if (entriesAfterFallback.length >= 2) {
+      break;
+    }
+  }
+  assert.equal(entriesAfterFallback.length, 2);
+  // "Ett till test." is Latin; without the fallback the mock would store "en".
+  assert.equal(entriesAfterFallback[0].sourceLang, "sv");
 });

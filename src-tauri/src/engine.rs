@@ -1176,12 +1176,14 @@ impl EngineService {
         .await
     }
 
-    /// Streams a quick-translate panel request (contract §4). The panel keeps a
-    /// fixed, predictable behavior, so the input **never** switches to the
-    /// dictionary/word-lookup prompt: the default is
-    /// [`DEFAULT_QUICK_TRANSLATE_PROMPT`] and a non-empty `custom_prompt`
-    /// replaces it completely (with `{target}` / `{language}` rendered exactly
-    /// like the ordinary translation path).
+    /// Streams a quick-translate panel request (contract §4).
+    ///
+    /// `source_lang` may be `auto`/empty: it is resolved with the offline
+    /// detector so prompts and logs always name a concrete source. The input
+    /// shape selects between `paragraph_prompt` (sentences/paragraphs) and
+    /// `word_prompt` (single word/short term); an empty override uses the
+    /// corresponding built-in default. Both prompts support `{source}` /
+    /// `{target}` and the legacy `{language}` alias.
     ///
     /// The input is truncated (never rejected) to [`QUICK_MAX_TEXT_CHARS`] so a
     /// huge paste still translates predictably; the log action is
@@ -1189,8 +1191,10 @@ impl EngineService {
     pub async fn quick_translate_stream(
         &self,
         text: &str,
+        source_lang: &str,
         target_lang: &str,
-        custom_prompt: &str,
+        paragraph_prompt: &str,
+        word_prompt: &str,
     ) -> Result<BoxStream<'static, Result<String, EngineError>>, EngineError> {
         let settings = self.settings.get();
         let cleaned = text.trim();
@@ -1201,31 +1205,45 @@ impl EngineService {
             ));
         }
         let truncated = prompts::truncate_chars(cleaned, QUICK_MAX_TEXT_CHARS);
+        let source = crate::quicktranslate::resolve_source_lang(&truncated, source_lang);
         let target = prompts::resolve_target_lang(target_lang, &truncated);
-        let (system, user) = prompts::quick_translate_messages(&truncated, &target, custom_prompt);
+        let prompt_mode = prompts::quick_prompt_mode(&truncated);
+        let prompt_origin = if prompt_mode == "word" {
+            prompt_source(word_prompt)
+        } else {
+            prompt_source(paragraph_prompt)
+        };
+        let (system, user) = prompts::quick_translate_messages(
+            &truncated,
+            source,
+            &target,
+            paragraph_prompt,
+            word_prompt,
+        );
         let messages = vec![
             json!({"role": "system", "content": system}),
             json!({"role": "user", "content": user}),
         ];
         let config = self.chat_config(&settings, LocalRole::Translate).await?;
-        let source = prompt_source(custom_prompt);
-        let config = request_config(&config, "quick_translate", source);
+        let config = request_config(&config, "quick_translate", prompt_origin);
         self.logger.info(&format!(
-            "quick translate stream start: action=quick_translate provider={} model={} chars={} target={} prompt_source={}",
+            "quick translate stream start: action=quick_translate provider={} model={} chars={} source={} target={} prompt_mode={prompt_mode} prompt_source={}",
             if config.local { "local" } else { "online" },
             config.model,
             truncated.chars().count(),
+            source,
             target,
-            source
+            prompt_origin
         ));
         self.logged_stream(
             "quick_translate",
             &config,
             format!(
-                "input_chars={} target={} prompt_source={} prompt_version={}",
+                "input_chars={} source={} target={} prompt_mode={prompt_mode} prompt_source={} prompt_version={}",
                 truncated.chars().count(),
-                target,
                 source,
+                target,
+                prompt_origin,
                 prompts::PROMPT_VERSION
             ),
             messages,

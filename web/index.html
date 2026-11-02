@@ -407,17 +407,34 @@
 
         <div class="field field-stack">
           <div class="field-label">
-            <label for="quick-prompt">自定义提示词</label>
-            <p class="field-hint">支持 {target} 占位符；留空或与默认一致时使用内置提示词</p>
+            <label for="quick-prompt">段落 / 长句提示词</label>
+            <p class="field-hint">支持 {source} 与 {target} 占位符；留空或与默认一致时使用内置提示词</p>
           </div>
           <div class="field-control">
             <textarea class="textarea quick-prompt" id="quick-prompt" rows="6" maxlength="4000"
                       spellcheck="false"
-                      placeholder="留空使用内置默认提示词，可写 {target} 表示目标语言"></textarea>
+                      placeholder="留空使用内置默认提示词，可写 {source} / {target}"></textarea>
             <div class="skill-prompt-foot">
-              <p class="skill-prompt-hint" id="quick-prompt-hint">翻译时 {target} 会替换为目标语言；重置后使用内置默认提示词</p>
+              <p class="skill-prompt-hint" id="quick-prompt-hint">{source}/{target} 分别替换为源语言/目标语言名；自动识别源语言时 {source} 使用检测到的语言（翻译时解析）</p>
               <button type="button" class="btn btn-ghost skill-prompt-reset"
                       id="quick-prompt-reset">重置为默认</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="field field-stack">
+          <div class="field-label">
+            <label for="quick-word-prompt">单词 / 短语提示词</label>
+            <p class="field-hint">支持 {source} 与 {target} 占位符；留空或与默认一致时使用内置提示词</p>
+          </div>
+          <div class="field-control">
+            <textarea class="textarea quick-prompt" id="quick-word-prompt" rows="6" maxlength="4000"
+                      spellcheck="false"
+                      placeholder="留空使用内置默认提示词，可写 {source} / {target}"></textarea>
+            <div class="skill-prompt-foot">
+              <p class="skill-prompt-hint" id="quick-word-prompt-hint">识别为单词/短语时使用；{source}/{target} 分别替换为源语言/目标语言名；自动识别源语言时 {source} 使用检测到的语言（翻译时解析）</p>
+              <button type="button" class="btn btn-ghost skill-prompt-reset"
+                      id="quick-word-prompt-reset">重置为默认</button>
             </div>
           </div>
         </div>

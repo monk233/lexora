@@ -378,8 +378,10 @@
         quick: {
           enabled: true,
           hotkey: "Alt+Space",
+          sourceLang: "auto",
           targetLang: "zh",
           prompt: "",
+          wordLookupPrompt: "",
           pinned: false,
         },
         provider: {
@@ -458,6 +460,10 @@
           "You are a vision assistant. Explain the image in Simplified Chinese using Markdown: one sentence for the main subject, at most 3 key points and optionally one short example. Usually use 150-250 Chinese characters; simple images need less. Distinguish visible facts from inference. Do not invent unreadable text or unseen details.",
         // Quick-translate panel default prompt (quick-translate §4 提示词).
         quickTranslate: MOCK_QUICK_TRANSLATE_PROMPT,
+        // Quick panel word lookup (settings card default prompt); mirrors
+        // `DEFAULT_QUICK_WORD_TRANSLATE_PROMPT` in engine/prompts.rs.
+        quickTranslateWordLookup:
+          "You are a careful dictionary assistant. The input is a single word or a short fixed term in {source}. Answer in compact Markdown in {target} with: the headword, its pronunciation (IPA for alphabetic languages, Hanyu Pinyin with tone marks for Chinese, kana reading for Japanese), its part of speech and at most 3 common meanings, plus optionally one short example in {target}. Never invent a meaning or a pronunciation. If the word looks misspelled, first say it may be misspelled and ask whether the user meant a correct spelling. Do not translate the whole input as a sentence and do not add background or usage essays.",
       },
     };
     [
@@ -697,8 +703,10 @@
     settings.quick = {
       enabled: quickSettings.enabled !== false,
       hotkey: normalizeMockShortcut(quickSettings.hotkey) || "Alt+Space",
+      sourceLang: mockNormalizeSourceLang(quickSettings.sourceLang),
       targetLang: quickLang,
       prompt: String(quickSettings.prompt || "").trim().slice(0, 4000),
+      wordLookupPrompt: String(quickSettings.wordLookupPrompt || "").trim().slice(0, 4000),
       pinned: quickSettings.pinned === true,
     };
     mockStore.picker.pinned = false;
@@ -714,13 +722,14 @@
   }
 
   /* Built-in quick-translate prompt shown/used by the settings card and by
-   * `quick_ready.promptDefault` (quick-translate contract §4 提示词). */
+   * `quick_ready.promptDefault` (quick-translate contract §4 提示词). Mirrors
+   * `DEFAULT_QUICK_TRANSLATE_PROMPT` in src-tauri/src/engine/prompts.rs. */
   var MOCK_QUICK_TRANSLATE_PROMPT =
-    "You are a professional translator. Translate the user's text into {target}. " +
-    "Detect the source language automatically. Write the entire translation in " +
-    "{target}. Output only the translation: no explanations, labels, notes or " +
-    "source text. Preserve paragraphs, lists, Markdown structure, code and " +
-    "placeholders; leave code and placeholders unchanged.";
+    "You are a professional translator. Translate the user's text from {source} into {target}. " +
+    "The source language is a best-effort detection: still translate naturally when the text " +
+    "mixes languages. Write the entire translation in {target}. Output only the translation: no " +
+    "explanations, labels, notes or source text. Preserve paragraphs, lists, Markdown structure, " +
+    "code fences, inline code and placeholders; leave code and placeholders unchanged.";
 
   var MOCK_TRANSLATIONS = {
     zh: "翻译是把某种语言文本的含义用另一种语言完整、准确地表达出来的活动，也是跨文化交流的桥梁。",
@@ -863,6 +872,39 @@
       return entry.value === code;
     })[0];
     return match ? match.value : "zh";
+  }
+
+  /* Extra source languages accepted by the quick panel beyond the project's
+   * target-language table (mirrors quicktranslate.js `qtSourceLanguages`). */
+  var MOCK_EXTRA_SOURCE_LANGS = [
+    "sv", "no", "da", "fi", "el", "hu", "ro", "sk", "sl", "hr", "sr", "lt", "lv",
+    "et", "is", "bg", "be", "az", "uz", "ka", "hy", "sq", "ca", "cy", "ga", "mt",
+    "af", "sw",
+  ];
+
+  function mockSourceLangValid(value) {
+    var code = String(value == null ? "" : value).trim();
+    if (!code) {
+      return false;
+    }
+    if (code === "auto") {
+      return true;
+    }
+    var languages =
+      window.LP && Array.isArray(window.LP.LANGUAGES) ? window.LP.LANGUAGES : [];
+    if (
+      languages.some(function (entry) {
+        return entry.value === code;
+      })
+    ) {
+      return true;
+    }
+    return MOCK_EXTRA_SOURCE_LANGS.indexOf(code) >= 0;
+  }
+
+  function mockNormalizeSourceLang(value) {
+    var code = String(value == null ? "" : value).trim();
+    return mockSourceLangValid(code) ? code : "auto";
   }
 
   /* `<yyyymmdd-hhmmss>-<6 hex>` history id (quick-translate contract §5). */
@@ -1999,6 +2041,20 @@
         mockPublishState();
         return { ok: true, targetLang: quickRequestedLang };
       }
+      case "quick_set_source_lang": {
+        var quickRequestedSource = String(
+          args.sourceLang == null ? "" : args.sourceLang
+        ).trim();
+        if (!mockSourceLangValid(quickRequestedSource)) {
+          return {
+            ok: false,
+            error: "不支持的源语言：" + quickRequestedSource,
+          };
+        }
+        mockStore.settings.quick.sourceLang = quickRequestedSource;
+        mockPublishState();
+        return { ok: true, sourceLang: quickRequestedSource };
+      }
       case "quick_translate": {
         var quickRequestId = String(args.requestId || "");
         if (!quickRequestId) {
@@ -2017,6 +2073,15 @@
           quickText = quickChars.slice(0, 20000).join("");
         }
         var quickTargetLang = mockQuickTargetLang(args.targetLang);
+        // Mirrors the shell: empty/invalid sourceLang falls back to the
+        // remembered setting; "auto" then runs the detection below.
+        var quickSourceRequested = String(
+          args.sourceLang == null ? "" : args.sourceLang
+        ).trim();
+        var quickSourceLang =
+          quickSourceRequested && mockSourceLangValid(quickSourceRequested)
+            ? quickSourceRequested
+            : mockNormalizeSourceLang(mockStore.settings.quick.sourceLang);
         if (mockQuickActiveRequestId) {
           cancelMockTranslate(mockQuickActiveRequestId);
           mockQuickActiveRequestId = "";
@@ -2036,7 +2101,10 @@
               id: mockQuickHistoryId(),
               source: quickText,
               target: quickOutput,
-              sourceLang: mockDetectSourceLang(quickText),
+              sourceLang:
+                quickSourceLang === "auto"
+                  ? mockDetectSourceLang(quickText)
+                  : quickSourceLang,
               targetLang: quickTargetLang,
               createdAt: Date.now(),
               elapsedMs: Math.max(0, Math.round(Date.now() - quickStartedAt)),
@@ -2613,11 +2681,19 @@
         targetLang: String(targetLang == null ? "" : targetLang),
       });
     },
-    translate: function (requestId, text, targetLang) {
+    /* Remembers the pinned source language ("auto" = detect per request). */
+    setSourceLang: function (sourceLang) {
+      return safeInvoke("quick_set_source_lang", {
+        sourceLang: String(sourceLang == null ? "auto" : sourceLang),
+      });
+    },
+    translate: function (requestId, text, targetLang, sourceLang) {
       return safeInvoke("quick_translate", {
         requestId: String(requestId == null ? "" : requestId),
         text: String(text == null ? "" : text),
         targetLang: String(targetLang == null ? "" : targetLang),
+        // Empty means "use quick.sourceLang" on the shell side.
+        sourceLang: String(sourceLang == null ? "" : sourceLang),
       });
     },
     abortTranslate: function (requestId) {

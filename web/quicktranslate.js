@@ -40,6 +40,9 @@
   var API = window.quickAPI;
   var LP = window.LP || {};
   var LANGUAGES = Array.isArray(LP.LANGUAGES) ? LP.LANGUAGES.slice() : [];
+  /* Source-language selector list: "自动识别" plus every project language and
+   * the extra common source codes. Built by qtSourceLanguages() below. */
+  var SOURCE_LANGUAGES = qtSourceLanguages(LANGUAGES);
   var MAX_CHARS = 20000;
   var MAX_HISTORY = 500;
   var TOAST_MS = 4000;
@@ -68,6 +71,7 @@
   var sourceClear = document.getElementById("qt-source-clear");
   var limitHint = document.getElementById("qt-limit-hint");
   var translateButton = document.getElementById("qt-translate");
+  var sourceSelect = document.getElementById("qt-source-lang");
   var targetSelect = document.getElementById("qt-target-lang");
   var swapButton = document.getElementById("qt-swap");
   var pinButton = document.getElementById("qt-pin");
@@ -98,6 +102,7 @@
     quick: {
       enabled: true,
       hotkey: "Alt+Space",
+      sourceLang: "auto",
       targetLang: "zh",
       prompt: "",
       pinned: false,
@@ -140,6 +145,97 @@
   /* ------------------------------------------------------------------ */
   /* Pure helpers (extracted by web/quicktranslate.test.cjs)             */
   /* ------------------------------------------------------------------ */
+
+  /* Complete source-language selector list: "自动识别" first, then the project
+   * languages, then extra common source languages (Chinese labels, in the same
+   * order as the patch spec). Duplicate codes are dropped so the list stays
+   * valid if the project table ever grows into the extra set. */
+  function qtSourceLanguages(baseLanguages) {
+    var result = [{ value: "auto", label: "自动识别" }];
+    var seen = { auto: true };
+    (Array.isArray(baseLanguages) ? baseLanguages : []).forEach(function (entry) {
+      if (!entry || !entry.value || seen[entry.value]) {
+        return;
+      }
+      seen[entry.value] = true;
+      result.push({
+        value: String(entry.value),
+        label: String(entry.label || entry.value),
+      });
+    });
+    [
+      ["sv", "瑞典语"],
+      ["no", "挪威语"],
+      ["da", "丹麦语"],
+      ["fi", "芬兰语"],
+      ["el", "希腊语"],
+      ["hu", "匈牙利语"],
+      ["ro", "罗马尼亚语"],
+      ["sk", "斯洛伐克语"],
+      ["sl", "斯洛文尼亚语"],
+      ["hr", "克罗地亚语"],
+      ["sr", "塞尔维亚语"],
+      ["lt", "立陶宛语"],
+      ["lv", "拉脱维亚语"],
+      ["et", "爱沙尼亚语"],
+      ["is", "冰岛语"],
+      ["bg", "保加利亚语"],
+      ["be", "白俄罗斯语"],
+      ["az", "阿塞拜疆语"],
+      ["uz", "乌兹别克语"],
+      ["ka", "格鲁吉亚语"],
+      ["hy", "亚美尼亚语"],
+      ["sq", "阿尔巴尼亚语"],
+      ["ca", "加泰罗尼亚语"],
+      ["cy", "威尔士语"],
+      ["ga", "爱尔兰语"],
+      ["mt", "马耳他语"],
+      ["af", "南非荷兰语"],
+      ["sw", "斯瓦希里语"],
+    ].forEach(function (entry) {
+      if (seen[entry[0]]) {
+        return;
+      }
+      seen[entry[0]] = true;
+      result.push({ value: entry[0], label: entry[1] });
+    });
+    return result;
+  }
+
+  /* Resolve a stored source-language code to a selectable value ("auto" for
+   * empty/unknown codes, so a stale setting never breaks the selector). */
+  function qtNormalizeSourceLang(code, languages) {
+    var value = String(code == null ? "" : code).trim();
+    if (!value) {
+      return "auto";
+    }
+    var list = Array.isArray(languages) ? languages : [];
+    for (var index = 0; index < list.length; index += 1) {
+      var entry = list[index];
+      if (entry && entry.value === value) {
+        return value;
+      }
+    }
+    return "auto";
+  }
+
+  /* Label of a history row's detected source language. "auto" is never shown as
+   * an actual source language; unknown codes fall back to their upper-cased
+   * code so the row still describes what was detected. */
+  function qtSourceLangLabel(code, languages) {
+    var value = String(code == null ? "" : code).trim();
+    if (!value || value === "auto") {
+      return "";
+    }
+    var list = Array.isArray(languages) ? languages : [];
+    for (var index = 0; index < list.length; index += 1) {
+      var entry = list[index];
+      if (entry && entry.value === value) {
+        return String(entry.label || value);
+      }
+    }
+    return value.toUpperCase();
+  }
 
   /* Characters are counted by Unicode code point so the counter matches the
    * Rust side, which truncates the input with `chars().take(20000)`. */
@@ -577,6 +673,20 @@
     targetSelect.value = normalizeTargetCode(state.quick.targetLang);
   }
 
+  function renderSourceOptions() {
+    if (!sourceSelect) {
+      return;
+    }
+    sourceSelect.innerHTML = "";
+    SOURCE_LANGUAGES.forEach(function (language) {
+      var option = document.createElement("option");
+      option.value = String(language.value);
+      option.textContent = String(language.label);
+      sourceSelect.appendChild(option);
+    });
+    sourceSelect.value = qtNormalizeSourceLang(state.quick.sourceLang, SOURCE_LANGUAGES);
+  }
+
   function updateSourceCount() {
     var count = qtCountChars(sourceInput.value);
     sourceCount.textContent = count + " / " + MAX_CHARS + " 字符";
@@ -694,9 +804,11 @@
     translateButton.classList.toggle("is-stop", translating);
     translateButton.setAttribute("aria-label", translating ? "停止翻译" : "翻译");
     sourceClear.disabled = translating;
-    swapButton.disabled = translating;
+    sourceSelect.disabled = translating;
     targetSelect.disabled = translating;
     sourceInput.readOnly = translating;
+    // The swap button is also disabled while the source language is "auto".
+    syncSwapState();
   }
 
   function setPinUi(pinned) {
@@ -710,12 +822,32 @@
     state.quick = {
       enabled: config.enabled !== false,
       hotkey: String(config.hotkey || "Alt+Space"),
+      sourceLang: qtNormalizeSourceLang(config.sourceLang, SOURCE_LANGUAGES),
       targetLang: normalizeTargetCode(config.targetLang),
       prompt: String(config.prompt || ""),
       pinned: !!config.pinned,
     };
+    if (sourceSelect) {
+      sourceSelect.value = state.quick.sourceLang;
+    }
     targetSelect.value = state.quick.targetLang;
     setPinUi(state.quick.pinned);
+    syncSwapState();
+  }
+
+  /* Swap is only meaningful with a pinned source language; keep its disabled
+   * state and tooltip in sync with the selector and the stream state. */
+  function syncSwapState() {
+    if (!swapButton) {
+      return;
+    }
+    var auto = state.quick.sourceLang === "auto";
+    swapButton.disabled = auto || state.translating;
+    var label = auto
+      ? "自动识别时无法交换语言，请先选择源语言"
+      : "交换源语言与目标语言";
+    swapButton.title = label;
+    swapButton.setAttribute("aria-label", label);
   }
 
   /* ------------------------------------------------------------------ */
@@ -774,6 +906,60 @@
         state.quick.targetLang = previous;
         targetSelect.value = previous;
         toast(String(error || "切换目标语言失败"), "error");
+        return false;
+      }
+    );
+  }
+
+  /* Remembers the pinned source language ("auto" = detect per request). */
+  function setSourceLang(code) {
+    var next = qtNormalizeSourceLang(code, SOURCE_LANGUAGES);
+    var previous = state.quick.sourceLang;
+    if (next === previous) {
+      if (sourceSelect) {
+        sourceSelect.value = next;
+      }
+      syncSwapState();
+      return Promise.resolve(true);
+    }
+    state.quick.sourceLang = next;
+    if (sourceSelect) {
+      sourceSelect.value = next;
+    }
+    syncSwapState();
+    if (!API || typeof API.setSourceLang !== "function") {
+      return Promise.resolve(true);
+    }
+    return API.setSourceLang(next).then(
+      function (result) {
+        if (result && result.ok === false) {
+          state.quick.sourceLang = previous;
+          if (sourceSelect) {
+            sourceSelect.value = previous;
+          }
+          syncSwapState();
+          toast(result.error || "切换源语言失败", "error");
+          return false;
+        }
+        if (result && result.sourceLang) {
+          state.quick.sourceLang = qtNormalizeSourceLang(
+            result.sourceLang,
+            SOURCE_LANGUAGES
+          );
+          if (sourceSelect) {
+            sourceSelect.value = state.quick.sourceLang;
+          }
+          syncSwapState();
+        }
+        return true;
+      },
+      function (error) {
+        state.quick.sourceLang = previous;
+        if (sourceSelect) {
+          sourceSelect.value = previous;
+        }
+        syncSwapState();
+        toast(String(error || "切换源语言失败"), "error");
         return false;
       }
     );
@@ -994,7 +1180,13 @@
     updateResultCount();
     elapsedNode.textContent = "耗时 —";
     setTranslatingUi(true);
-    API.translate(requestId, text, state.quick.targetLang).then(
+    // `sourceLang` is "auto" (detect on the shell side) or the pinned code.
+    API.translate(
+      requestId,
+      text,
+      state.quick.targetLang,
+      state.quick.sourceLang
+    ).then(
       function (result) {
         if (!state.translating || state.requestId !== requestId) {
           return;
@@ -1149,10 +1341,14 @@
     if (time) {
       parts.push(time);
     }
-    var from = languageLabel(entry.sourceLang);
+    // The shell stores the actual detected source language; "auto" is never
+    // shown as a source language.
+    var from = qtSourceLangLabel(entry.sourceLang, SOURCE_LANGUAGES);
     var to = languageLabel(entry.targetLang);
     if (from && to) {
       parts.push(from + " → " + to);
+    } else if (to) {
+      parts.push(to);
     }
     return parts.join(" · ");
   }
@@ -1396,8 +1592,14 @@
     if (state.translating) {
       return;
     }
+    // Auto detection means there is no pinned source language to swap with.
+    if (state.quick.sourceLang === "auto") {
+      toast("自动识别时无法交换语言，请先选择源语言", "error");
+      return;
+    }
     stopSpeech();
-    var detected = qtDetectSourceLang(sourceInput.value);
+    var previousSource = state.quick.sourceLang;
+    var previousTarget = state.quick.targetLang;
     if (state.raw) {
       sourceInput.value = state.raw;
       state.raw = "";
@@ -1409,8 +1611,15 @@
       elapsedNode.textContent = "耗时 —";
       copyButton.disabled = true;
     }
-    setTargetLang(detected);
-    toast("目标语言已设为 " + languageLabel(detected));
+    // Swap both selectors and remember the new values.
+    setSourceLang(previousTarget);
+    setTargetLang(previousSource);
+    toast(
+      "已交换语言：" +
+        languageLabel(previousSource) +
+        " ↔ " +
+        languageLabel(previousTarget)
+    );
     sourceInput.focus();
   }
 
@@ -1523,6 +1732,11 @@
 
   function bindEvents() {
     sourceInput.addEventListener("input", updateSourceCount);
+    if (sourceSelect) {
+      sourceSelect.addEventListener("change", function () {
+        setSourceLang(sourceSelect.value);
+      });
+    }
     targetSelect.addEventListener("change", function () {
       setTargetLang(targetSelect.value);
     });
@@ -1582,6 +1796,7 @@
     limitHint.textContent =
       "支持 " + LANGUAGES.length + " 种语言，最多 " + MAX_CHARS + " 字符";
     renderTargetOptions();
+    renderSourceOptions();
     applyQuickConfig(state.quick);
     updateSourceCount();
     updateResultCount();

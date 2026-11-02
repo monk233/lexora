@@ -1764,9 +1764,27 @@ fn resolve_quick_target(requested: &str, remembered: &str) -> String {
     }
 }
 
-/// Refreshes the renderer configuration: the `quick` settings block plus the
-/// built-in English default prompt (`promptDefault`, with its `{target}`
-/// placeholder) so the panel and the settings page can show/reset it.
+/// Resolves the source language of a `quick_translate` request: an explicit
+/// supported `sourceLang` wins, empty/`auto`/unknown falls back to the
+/// remembered `quick.sourceLang`, and `auto` there is detected from the text.
+/// The result is always concrete (never `auto`) — history and prompts need it.
+fn resolve_quick_source(text: &str, requested: &str, remembered: &str) -> &'static str {
+    let requested = requested.trim().to_ascii_lowercase();
+    let chosen = if requested != "auto"
+        && !requested.is_empty()
+        && crate::settings::SOURCE_LANGS.contains(&requested.as_str())
+    {
+        requested
+    } else {
+        remembered.trim().to_ascii_lowercase()
+    };
+    crate::quicktranslate::resolve_source_lang(text, &chosen)
+}
+
+/// Refreshes the renderer configuration: the `quick` settings block (schema v10
+/// now includes `sourceLang` / `wordLookupPrompt`) plus the built-in English
+/// paragraph default prompt (`promptDefault`, with its `{source}` / `{target}`
+/// placeholders) so the panel can show/reset it.
 #[tauri::command]
 pub fn quick_ready(state: State<'_, Arc<AppState>>) -> Value {
     let settings = state.settings.get();
@@ -1901,6 +1919,31 @@ pub fn quick_set_target_lang(state: State<'_, Arc<AppState>>, target_lang: Strin
     }
 }
 
+/// Remembers the panel's source language (`auto` = detect per request). Every
+/// [`crate::settings::SOURCE_LANGS`] entry is accepted; anything else is
+/// rejected so the renderer can roll its select back.
+#[tauri::command]
+pub fn quick_set_source_lang(state: State<'_, Arc<AppState>>, source_lang: String) -> Value {
+    let language = source_lang.trim().to_ascii_lowercase();
+    if !crate::settings::SOURCE_LANGS.contains(&language.as_str()) {
+        return json!({
+            "ok": false,
+            "error": "不支持的源语言。",
+            "hint": "请从源语言列表中选择，或选择「自动识别」。",
+        });
+    }
+    match state
+        .settings
+        .update_json(json!({ "quick": { "sourceLang": language } }))
+    {
+        Ok(settings) => json!({ "ok": true, "sourceLang": settings.quick.source_lang }),
+        Err(error) => json!({
+            "ok": false,
+            "error": format!("保存源语言失败：{error}"),
+        }),
+    }
+}
+
 /// Starts a streaming quick translation. Returns immediately; chunks, errors
 /// and the final `done` (`elapsedMs` included) are pushed as
 /// `translate-event` **targeted at the quick panel** (contract §4). A completed
@@ -1913,6 +1956,7 @@ pub fn quick_translate(
     request_id: String,
     text: String,
     target_lang: String,
+    source_lang: Option<String>,
 ) -> Value {
     let text = text.trim().to_string();
     if text.is_empty() {
@@ -1924,10 +1968,20 @@ pub fn quick_translate(
     }
     let settings = state.settings.get();
     let target = resolve_quick_target(&target_lang, &settings.quick.target_lang);
-    let prompt = settings.quick.prompt;
+    let remembered_source = settings.quick.source_lang.clone();
+    let paragraph_prompt = settings.quick.prompt.clone();
+    let word_prompt = settings.quick.word_lookup_prompt.clone();
     // Contract §4: an over-long paste is truncated to 20 000 characters, never
     // rejected, and history stores the same truncated source.
     let source = crate::engine::truncate_chars(&text, crate::engine::QUICK_MAX_TEXT_CHARS);
+    // The resolved source is always concrete: explicit request language, else
+    // the remembered setting, else offline detection. History stores this value.
+    let resolved_source = resolve_quick_source(
+        &source,
+        source_lang.as_deref().unwrap_or_default(),
+        &remembered_source,
+    )
+    .to_string();
 
     // Only one stream at a time: abort the previous request (the slot is shared
     // with the picker, so a new request always wins).
@@ -1948,7 +2002,13 @@ pub fn quick_translate(
         let started = std::time::Instant::now();
         let mut answer = String::new();
         match engine
-            .quick_translate_stream(&source, &target, &prompt)
+            .quick_translate_stream(
+                &source,
+                &resolved_source,
+                &target,
+                &paragraph_prompt,
+                &word_prompt,
+            )
             .await
         {
             Ok(mut stream) => {
@@ -1990,7 +2050,7 @@ pub fn quick_translate(
                         &answer,
                         crate::engine::QUICK_MAX_TEXT_CHARS,
                     ),
-                    source_lang: crate::quicktranslate::detect_source_lang(&source).to_string(),
+                    source_lang: resolved_source.clone(),
                     target_lang: target.clone(),
                     created_at: crate::quicktranslate::now_millis(),
                     elapsed_ms,
@@ -2001,7 +2061,7 @@ pub fn quick_translate(
                         .warn(&format!("quick history write failed: {error}"));
                 }
                 task_state.log.info(&format!(
-                    "quick translate done: action=quick_translate request={rid} chars={} elapsed_ms={elapsed_ms}",
+                    "quick translate done: action=quick_translate request={rid} chars={} source={resolved_source} target={target} elapsed_ms={elapsed_ms}",
                     source.chars().count()
                 ));
                 emit(json!({
@@ -2096,7 +2156,8 @@ pub fn quick_open_settings(app: AppHandle) -> Value {
 #[cfg(test)]
 mod tests {
     use super::{
-        persist_panel_pinned, picker_surface_label, resolve_quick_target, sync_reset_autostart,
+        persist_panel_pinned, picker_surface_label, resolve_quick_source, resolve_quick_target,
+        sync_reset_autostart,
     };
 
     #[test]
@@ -2177,5 +2238,33 @@ mod tests {
             resolve_quick_target("", "nonsense"),
             crate::settings::DEFAULT_QUICK_TARGET_LANG
         );
+    }
+
+    #[test]
+    fn quick_translate_source_prefers_request_then_remembered_then_detection() {
+        let swedish = "Hej! Det är en verkligen underbar dag. Önskar dig en god morgon...";
+        // 1. An explicit, supported request language wins without detection.
+        assert_eq!(resolve_quick_source("hello world", "sv", "auto"), "sv");
+        assert_eq!(resolve_quick_source(swedish, "en", "auto"), "en");
+        // 2. Empty / `auto` / unknown request falls back to the remembered value.
+        assert_eq!(resolve_quick_source("hello world", "", "sv"), "sv");
+        assert_eq!(resolve_quick_source("hello world", "auto", "sv"), "sv");
+        assert_eq!(resolve_quick_source("hello world", "xx", "sv"), "sv");
+        // 3. `auto` in the remembered setting runs the offline detector.
+        assert_eq!(resolve_quick_source(swedish, "", "auto"), "sv");
+        assert_eq!(resolve_quick_source(swedish, "auto", "auto"), "sv");
+        // A corrupted remembered value falls back to detection, not a panic.
+        assert_eq!(resolve_quick_source(swedish, "auto", "nonsense"), "sv");
+        // Never `auto`, always a concrete SOURCE_LANGS code.
+        for (text, requested, remembered) in [
+            ("", "", "auto"),
+            ("hello", "auto", "auto"),
+            ("中文", "", "auto"),
+            (swedish, "auto", "auto"),
+        ] {
+            let code = resolve_quick_source(text, requested, remembered);
+            assert!(crate::settings::SOURCE_LANGS.contains(&code), "code={code}");
+            assert_ne!(code, "auto");
+        }
     }
 }

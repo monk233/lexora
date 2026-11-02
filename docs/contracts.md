@@ -422,13 +422,14 @@ pub struct SelectionService {
 
 - 独立窗口 label `quicktranslate`（`web/quicktranslate.html`），默认隐藏；全局快捷键默认 `Alt+Space`（设置 `quick.hotkey`，可改），按下切换显隐；`Esc` 与关闭按钮只隐藏窗口，失焦不隐藏；隐藏时中止进行中的流。
 - 窗口为**无边框透明浮层**（decorations false / transparent true / shadow false），白色圆角卡片 + 顶栏拖动；高度由渲染端按内容自适应并调用 `quick_resize`（高 clamp `[420, min(760, 屏幕可用高度-80)]`，宽固定 900，两栏内部滚动且滚动条隐藏）；顶栏空白可拖动窗口（`quick_drag_panel`）。
-- 命令：`quick_ready` / `quick_open` / `quick_hide` / `quick_pin` / `quick_set_hotkey` / `quick_set_target_lang` / `quick_translate` / `quick_abort_translate` / `quick_history_list` / `quick_history_delete` / `quick_history_clear` / `quick_copy` / `quick_open_settings` / `quick_resize` / `quick_drag_panel`。
+- 命令：`quick_ready` / `quick_open` / `quick_hide` / `quick_pin` / `quick_set_hotkey` / `quick_set_source_lang` / `quick_set_target_lang` / `quick_translate`（携带 `sourceLang`）/ `quick_abort_translate` / `quick_history_list` / `quick_history_delete` / `quick_history_clear` / `quick_copy` / `quick_open_settings` / `quick_resize` / `quick_drag_panel`。
 - 事件：`translate-event`（chunk/error/done，定向 `quicktranslate` 窗口，done 带 `elapsedMs`）、`quick-show`。
-- 设置 schema 9 新增 `quick: {enabled, hotkey, targetLang, prompt, pinned}`；目标语言 38 种（不含 auto）。
-- 翻译历史 `<data>/quick-history.json`：最多 500 条、最新在前；`quick_translate` 正常 `done` 后写入（取消/失败不写）；源语言由启发式检测（`detect_source_lang`）得出。
-- 提示词：`quick.prompt` 为空时使用 `DEFAULT_QUICK_TRANSLATE_PROMPT`，支持 `{target}` 占位符；不做单词/词条自动切换。
-- 渲染端：双栏（原文输入 / 流式 Markdown 译文）、字数、`Ctrl+Enter`、停止/重试、复制与朗读为图标按钮（悬浮显示名称）、耗时为秒（`耗时 1.1 秒`）、Pin、历史浮层（搜索/单条删除/清空/回填）。
-- 设置页卡片顺序：翻译服务 → 划词行为 → **快捷翻译 → 快捷键** → 应用与启动 → 关于；「快捷翻译」卡片含启用开关、自定义提示词（重置默认）、清空历史；**呼出快捷键统一放在「快捷键」卡片**（截图快捷键之后，录制/冲突提示/恢复默认，保存走 `quick_set_hotkey`）。
+- 设置 schema 10 新增 `quick: {enabled, hotkey, sourceLang, targetLang, prompt, wordLookupPrompt, pinned}`；目标语言 38 种（不含 auto），源语言为 `auto` + 38 种 + 常见补充语言（`SOURCE_LANGS`）。
+- 源语言：下拉默认「自动识别」，可显式选择并记忆；自动识别用离线检测（`whatlang`，低置信/短文本回退脚本启发式），历史里的 `sourceLang` 恒为实际解析语言（不再把拉丁语系统一判成英语）。
+- 翻译历史 `<data>/quick-history.json`：最多 500 条、最新在前；`quick_translate` 正常 `done` 后写入（取消/失败不写）。
+- 提示词分两套：`quick.prompt`（段落/长句）与 `quick.wordLookupPrompt`（单词/短语），空时分别使用 `DEFAULT_QUICK_TRANSLATE_PROMPT` / `DEFAULT_QUICK_WORD_TRANSLATE_PROMPT`；均支持 `{source}` / `{target}` 占位符（语言英文名），按输入自动切换词条/段落模式。
+- 渲染端：双栏（原文输入 / 流式 Markdown 译文）、源/目标语言下拉、字数、`Ctrl+Enter`、停止/重试、复制与朗读为图标按钮（悬浮显示名称）、耗时为秒（`耗时 1.1 秒`）、Pin、历史浮层（搜索/单条删除/清空/回填）。
+- 设置页卡片顺序：翻译服务 → 划词行为 → **快捷翻译 → 快捷键** → 应用与启动 → 关于；「快捷翻译」卡片含启用开关、两个提示词编辑区（段落/单词，可重置）、清空历史；**呼出快捷键统一放在「快捷键」卡片**（截图快捷键之后，录制/冲突提示/恢复默认，保存走 `quick_set_hotkey`）。
 
 ## 8. 验收
 

@@ -322,6 +322,7 @@ fn main() {
             commands::quick_drag_panel,
             commands::quick_pin,
             commands::quick_set_hotkey,
+            commands::quick_set_source_lang,
             commands::quick_set_target_lang,
             commands::quick_translate,
             commands::quick_abort_translate,
