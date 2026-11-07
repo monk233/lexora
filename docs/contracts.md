@@ -6,7 +6,7 @@
 
 把 `enterprise-ai-translator` 的划词工具抽取为独立开源 Windows 免安装应用 **Lexora**：
 
-- 完整保留划词体验：拖动选词、双击/多击选词自动弹出工具栏；翻译（流式）、总结、解释、朗读、复制；结果面板（固定/关闭/目标语言/重试，头部可拖动窗口）；菜单（本应用禁用、设置、禁用工具）；应用黑名单；技能配置/拖拽排序/提示词编辑；紧凑模式；多屏 DPI 定位；面板按内容缩放。全局快捷键已移除。
+- 完整保留划词体验：拖动选词、双击/多击选词自动弹出工具栏；翻译（流式）、总结、解释、朗读、复制；结果面板（固定/关闭/目标语言/重试/停止，头部可拖动窗口）；菜单（本应用禁用、设置、禁用工具）；应用黑名单；技能配置/拖拽排序/提示词编辑；紧凑模式；多屏 DPI 定位；面板按内容缩放。划词触发不再依赖全局快捷键（截图与呼出快捷翻译另有全局快捷键，见 §7.2 / §7.4）。
 - 双模式翻译：**在线**（任意 OpenAI 兼容 `/v1/chat/completions`，含 Ollama/LM Studio、OpenCode Go）与**本地**（内置 llama.cpp 引擎 = 按需下载，自管理 `llama-server.exe` + 用户下载/导入 GGUF）。
 - 系统托盘后台运行、单实例、可选开机自启；关闭设置窗口进托盘。
 - 免安装：`tauri build --no-bundle` 产出的单 exe（约 5–10MB）+ 可下载引擎/模型；发布资产直接是 exe（不再打 zip）。
@@ -64,7 +64,7 @@ lexora/
 
 ```jsonc
 {
-  "version": 9,                              // v1→v2 补 polish/search；v2→v3 补 screenshot；v3→v4 补 capture；v4→v5 补 captureSkills/capturePrompts；v5→v6 把本地工具（pin/形状/箭头/画笔/文字/序号/马赛克/长截图）纳入 captureSkills 并移除 copy；保留 custom；v6→v7 增加 provider.local.selectedModel，旧配置迁移为空选择；v7→v8 增加单词查询提示词 picker.prompts.wordLookup；v8→v9 增加 app.language（system|zh|en，默认 system）
+  "version": 11,                             // v1→v2 补 polish/search；v2→v3 补 screenshot；v3→v4 补 capture；v4→v5 补 captureSkills/capturePrompts；v5→v6 把本地工具（pin/形状/箭头/画笔/文字/序号/马赛克/长截图）纳入 captureSkills 并移除 copy；保留 custom；v6→v7 增加 provider.local.selectedModel，旧配置迁移为空选择；v7→v8 增加单词查询提示词 picker.prompts.wordLookup；v8→v9 增加快捷翻译面板 quick 基础字段；v9→v10 增加 quick.sourceLang / quick.wordLookupPrompt；v10→v11 增加 app.language（system|zh|en，默认 system）。合并后 schema 11 = 0.4.2 的 10 + app.language
   "picker": {
     "enabled": true,
     "skills": ["translate","summarize","explain","read","copy","search"],
@@ -108,6 +108,15 @@ lexora/
            "language": "system" },        // 界面语言：system | zh | en；system 启动时按 Windows 区域/时区解析
   "capture": {
     "regionShortcut": "Win+Shift+X"       // 截图快捷键（可改）；规范格式见 §10.3，非法值回退默认
+  },
+  "quick": {                              // 快捷翻译面板（schema 10 引入；契约见 §7.4）
+    "enabled": true,
+    "hotkey": "Alt+Space",                // 全局快捷键（规范格式；非法值回退 Alt+Space）
+    "sourceLang": "auto",                 // auto + SOURCE_LANGS（38 种目标语言 + 常见补充语言）
+    "targetLang": "zh",                   // 38 种目标语言（不含 auto）
+    "prompt": "",                         // 段落 / 长句提示词；空 = 内置默认
+    "wordLookupPrompt": "",               // 单词 / 短语提示词；空 = 内置默认
+    "pinned": false                       // 面板置顶偏好，重启后恢复
   }
 }
 ```
@@ -117,6 +126,8 @@ lexora/
 新配置和恢复默认采用上述开关与内置技能默认值（自定义技能仍保留定义与启用状态）；已保存的显式选择及顺序不变。旧配置缺失 skills/captureSkills 时沿用历史完整技能集合，缺失 compact/startAtLogin 时仍为 false；历史版本迁移保持原策略，不因新默认重新开启已关闭技能。
 
 界面语言字段：`app.language` 取 `system|zh|en`，默认 `system`。归一化接受 `zh`/`zh-CN`、`en`/`en-US`/`en-GB`（大小写与空格容错），其他值（含空字符串）回退 `system`；归一化永不失败。生效语言由 `Settings::effective_language()` 解析：显式 `zh`/`en` 直接返回；`system` 先按 Windows 用户区域（`GetUserDefaultLocaleName`，`zh*`→`zh`、`en*`→`en`，`zh-Hant`/`zh-TW` 等一律归 `zh`），区域不支持时再按时区键（`GetDynamicTimeZoneInformation`：China/Taipei/Hong Kong/Singapore Standard Time→`zh`；GMT/UTC/W. Europe/Eastern/Central/Mountain/Pacific/Tokyo/Korea Standard Time→`en`），最后回退 `en`。首批仅提供简体中文与英文两种界面，不提供繁体或日语。`system` 只在运行时解析，配置文件里始终保存原始设置值。
+
+快捷翻译字段：`quick` 块取 `{enabled, hotkey, sourceLang, targetLang, prompt, wordLookupPrompt, pinned}`。`hotkey` 归一化为规范组合键格式，非法值回退 `Alt+Space`；`sourceLang` 必须 ∈ `SOURCE_LANGS`（`auto` + 38 种目标语言 + 常见补充语言），否则回退 `auto`；`targetLang` 必须 ∈ `TARGET_LANGS` 且 ≠ `auto`，否则回退 `zh`；`prompt` / `wordLookupPrompt` trim 后截断 4000 字符；`enabled` / `pinned` 为布尔值。该块由 0.4.2 的 schema 10 引入，合并后 schema 11 = 10 + `app.language`，旧配置升级只需 `#[serde(default)]` 补默认值。详见 §7.4 与 [quick-translate.md](quick-translate.md)。
 
 规则：归一化永不失败；非法值回退默认。运行时环境变量覆盖：`LEXORA_API_KEY`（覆盖 apiKey）、`LEXORA_LLAMA_URL`（引擎下载地址覆盖）、`LEXORA_UPDATE_API`（自更新 Release API 覆盖，仅测试用；覆盖时允许本地 http）。
 
@@ -374,18 +385,19 @@ pub struct SelectionService {
 ## 7. 前端规范（T3）
 
 ### 7.1 picker（复刻现有 UI）
-- 从 `enterprise-ai-translator/electron/picker.html|picker.css|picker.js` 复制并改造：保留白主题工具栏、图标+文字、更多菜单、结果面板（标题/固定/关闭/语言选择）、loading 原文、流式译文、面板脚（朗读/复制/重试）、错误面板、toast、Escape 层级、面板固定、内容自适应。
+- 从 `enterprise-ai-translator/electron/picker.html|picker.css|picker.js` 复制并改造：保留白主题工具栏、图标+文字、更多菜单、结果面板（标题/固定/关闭/语言选择）、loading 原文、流式译文、面板脚（朗读/复制/重试/停止，纯图标 + `title`）、错误面板、toast、Escape 层级、面板固定、内容自适应。
 - 更多菜单只保留「在此应用中禁用」「划词设置…」「禁用划词工具」三项；不显示翻译服务状态块，也没有「关闭」项。
 - 技能过多溢出时，溢出技能按顺序列在菜单顶部（技能项），其后用一条分隔线与「在此应用中禁用 / 划词设置… / 禁用划词工具」配置项隔开；菜单高度超出时可滚动。
 - 工具栏宽度上限：普通模式 560px、compact 420px；超出宽度的技能收进更多菜单，避免窗口被屏幕边缘裁切。
 - API 层换成 `web/shared/tauri-api.js`：
   - 实现 `window.pickerAPI`：`ready/onData/onHidden/close/pin/resize/dragPanel/copy/openSettings/translate/abortTranslate/onTranslateEvent/assist/customSkill/status/disableInApp/disableTool` 映射到 §5.2 命令与 §5.3 事件（`listen` 返回 unlisten）。
   - 翻译：`invoke("picker_translate", {requestId,text,targetLang})` 返回错误时展示错误面板；`translate-event` 处理 chunk/error/done。
-  - 自定义技能：`invoke("picker_custom_skill", {requestId,skillId,text,programName})`，与翻译共用 `translate-event` 流与结果面板（Markdown、重试、复制、朗读）；面板标题为技能名，目标语言控件隐藏。工具栏技能按钮图标来自 `LP.skillIconSvg`（内置技能用 `LP.SKILL_MAP[id].icon`，自定义用 icon），未知元数据回退 label=id/icon=sparkles。
+  - 自定义技能：`invoke("picker_custom_skill", {requestId,skillId,text,programName})`，与翻译共用 `translate-event` 流与结果面板（Markdown、重试、复制、朗读、停止）；面板标题为技能名，目标语言控件隐藏。工具栏技能按钮图标来自 `LP.skillIconSvg`（内置技能用 `LP.SKILL_MAP[id].icon`，自定义用 icon），未知元数据回退 label=id/icon=sparkles。
   - 内置润色：`invoke("picker_polish", {requestId,text})`，与翻译共用流/面板（标题「润色」，语言控件隐藏）。
   - 内置搜索：读取 config.searchEngine，按 `LP.SEARCH_ENGINE_MAP[value].url + encodeURIComponent(text)` 生成 URL，`invoke("open_external", {url})` 后用系统浏览器打开并 `picker_close` 隐藏工具栏；无文本 toast 提示。
   - 结果区渲染 Markdown（安全子集，HTML 先转义）：标题、粗体/斜体/删除线、行内代码、代码块、有序/无序列表、引用、分隔线、表格、http(s) 链接（链接点击经 `open_external` 打开，不在 webview 内导航）；流式输出按 rAF 合并重渲染，用户向上翻阅时不强制滚到底部。
   - 朗读：仅用 `window.speechSynthesis`（Windows 系统语音）；无语音时提示「系统未安装可用的语音包：Windows 设置 → 时间和语言 → 语音」。朗读中再次点击是「停止朗读」，必须静默恢复按钮态，不提示失败（忽略 `interrupted`/`canceled` 错误）。
+  - 面板脚按钮为纯图标（朗读/复制/重试/停止），名称只通过 `title` 与 `aria-label` 提供；无重试回调时隐藏重试，无 AI 流时不启用停止。所有 AI 流（翻译/总结/解释/润色/文字自定义技能/截图技能/继续提问）进行中启用「停止」：点击后先把请求标记为终止，再调用 `picker_abort_translate`（复用 `translate_task` 取消后端模型请求），已输出内容保留并追加「已停止生成」，之后的 chunk/error/done 一律忽略，重试入口保留。
   - 结果面板可通过标题栏空白处拖动整个工具窗口（`picker_drag_panel`，每次 mousemove 发送屏幕坐标差值的逻辑像素 delta）；按钮/语言下拉区域不触发拖动。
 - 结果面板右下角提供缩放手柄：拖动调用 `picker_resize`（无最大限制；最小窗口 360×240，窗口位置 clamp 到虚拟桌面，可跨屏），尺寸写入 localStorage `lexora.panelSize`，下次打开沿用；手动调整后 `.panel` 填满窗口、内容自适应不再覆盖用户尺寸；双击手柄恢复自动大小。
 - 面板模式（picker.panelMode）：`auto`（默认）固定宽度与滚动模式最小宽度一致，为 360px；窗口随内容自动变高，最大高度为 `min(当前屏幕可用高度-80px, 760px)`，隐藏缩放手柄；resize 合并为最多每 100ms 一次，且同一面板流式期间高度只增不减，避免闪烁；达到限高后 panel-body 隐藏滚动条并随流式内容自动滚到底部，用户向上滚动时暂停跟随，接近底部后恢复；`scroll` 使用固定窗口大小、可见滚动条，可拖拽缩放并记忆尺寸（不小于 360×240）。
@@ -406,16 +418,16 @@ pub struct SelectionService {
   - 目标语言下拉从 `LP.LANGUAGES`（38 种翻译目标语言）动态生成，不再硬编码 option。
   - 菜单「划词设置…」→ `invoke("picker_open_settings")`；「在此应用中禁用」「禁用划词工具」→ 对应命令。
 - 初始尺寸 440×56，白色卡片边缘透明；`picker_ready` 在 DOM 就绪后调用一次。
-- 截图结果面板（`picker-image`，见 §10.5）：复用文字技能面板的全部结构与功能（标题/钉住/关闭、语言控件仅 translate、Markdown 流式、朗读/复制/重试、继续提问、resize grip），不新增截图专用面板；OCR 动作以纯文本渲染。
+- 截图结果面板（`picker-image`，见 §10.5）：复用文字技能面板的全部结构与功能（标题/钉住/关闭、语言控件仅 translate、Markdown 流式、朗读/复制/重试/停止、继续提问、resize grip），不新增截图专用面板；OCR 动作以纯文本渲染。
 
 ### 7.2 设置页（新建，简洁好用）
-- 单窗口、原生标题栏、单页五张卡片（无侧栏/标签页）：**翻译服务**、**划词行为**、**快捷键**、**应用与启动**、**关于**。
+- 单窗口、原生标题栏、单页六张卡片（无侧栏/标签页）：**翻译服务**、**划词行为**、**快捷翻译**、**快捷键**、**应用与启动**、**关于**；「快捷翻译」卡片的内容与顺序见 §7.4。
 - 翻译服务：
   - 分段控件「在线 API / 本地模型」立即保存 mode。
   - 在线：预设下拉（DeepSeek/OpenAI/Moonshot/智谱/OpenCode Go/Ollama/LM Studio/自定义）、服务地址、API Key（password + 显示切换）、模型名下拉（[拉取模型] 通过 `list_online_models` 拉取 `/models`，并保留「自定义模型…」手填兜底）、[测试连接]（显示延迟/模型列表/错误）、状态徽标。切换预设必须清空上一个服务商的 API Key / 模型名与模型缓存，且**不再自动填充模型名**；已知预设只填服务地址。OpenCode Go 预设（`provider.online.preset = "opencode-go"`）额外保存 `modelsBaseUrl = https://opencode.ai/inference/go/v1`（其 `/models` 与 `/chat/completions` 路径不同），发往该预设的所有请求自动附带 `x-opencode-session: lexora-<16位hex>` 请求头（进程内稳定，用于路由与 prompt caching）；客户端 `User-Agent` 固定为 `Lexora/<版本>`。`modelsBaseUrl` 为空时回退 `baseUrl`。
   - 本地：引擎下载、进度/取消与状态；已安装模型列表；唯一本地模型手动选择并保存；硬件推荐标签和理由；模型目录仅提供六种 Qwen3.5，支持并行下载及分别取消，视觉投影器随主模型下载；[导入 GGUF]、[启动]/[停止]、错误提示。未选择时所有本地 AI 任务不可用，不自动替选；切换选择需重启本地引擎。所有本地 AI 任务共用所选 Qwen3.5。停止后请求不自动启动；应用重启按 keepRunning 恢复运行状态。
 - 划词行为：启用开关、紧凑模式开关（紧跟启用开关、右对齐）、面板模式（紧跟紧凑模式：滚动/自适应，保存 `picker.panelMode`）、技能开关 + 拖拽排序（无上下箭头）…（其余同前）。**技能按「文字技能 / 图片技能」两个 Tab 分类展示（第四轮修正）：文字技能 Tab = 内置文字技能 + 「截图」入口技能 + 自定义文字技能；图片技能 Tab = 单一列表（截图工具条全部有序条目：钉在桌面 / 形状 / 箭头 / 画笔 / 文字 / 序号 / 马赛克 / 提取文字 / 翻译 / 解释图片 / 长截图 + 自定义图片技能，顺序与开关保存 `picker.captureSkills`，可全部关闭；“翻译/解释图片”可编辑系统提示词 `picker.capturePrompts`，其余条目无提示词按钮；不再有「复制」条目）；文字技能 Tab 的「截图」行不带「图片」徽标**；两个分类各自独立开关与排序，Tab 内拖动只重排该分类并保留另一分类相对顺序）、每行显示技能图标（内置用 `LP.SKILL_MAP[id].icon`，自定义用自定义图标）、技能提示词编辑（行内展开 textarea，默认填充系统默认英文提示词，支持重置默认；translate 支持 `{target}` 占位符；支持 translate/summarize/explain/polish）、自定义技能管理（[添加技能] 打开内联表单：**图标选择器默认紧凑显示当前图标预览 +「更换图标」，点击展开 200 个 Lucide 图标 + 名称搜索过滤**；名称 ≤20、提示词必填 ≤4000、变量提示 `{text}/{target}/{language}/{program}/{app}`；支持编辑、删除二次确认）、搜索配置（搜索行「配置」按钮展开 Google/百度/Bing，保存 `picker.searchEngine`）、默认目标语言（auto 显示「自动识别」，共 38 种语言）、黑名单 chip 输入（回车添加/可删除）。截图快捷键可配置（见 §10.4）。恢复默认设置保留自定义技能与已下载模型/引擎。「开机自启」「关闭窗口后驻留托盘」两个开关行与划词开关一致：标签/开关垂直居中、开关靠右。
-- 快捷键（第二轮反馈起独立成卡片，不再放在「划词行为」内）：卡片头「快捷键」+ 说明「配置 Lexora 的全局快捷键。」；内含「截图快捷键」录制器——显示当前组合（如「Win + Shift + X」），点击后提示「请按下新的快捷键…（Esc 取消）」，按下「修饰键 + 主键」即调用 `capture_set_hotkey` 保存并立即生效；Esc 取消；冲突时内联提示并保留旧值；「恢复默认」还原 `Win+Shift+X`；保存 `capture.regionShortcut`。
+- 快捷键（第二轮反馈起独立成卡片，不再放在「划词行为」内）：卡片头「快捷键」+ 说明「配置 Lexora 的全局快捷键。」；内含「截图快捷键」录制器——显示当前组合（如「Win + Shift + X」），点击后提示「请按下新的快捷键…（Esc 取消）」，按下「修饰键 + 主键」即调用 `capture_set_hotkey` 保存并立即生效；Esc 取消；冲突时内联提示并保留旧值；「恢复默认」还原 `Win+Shift+X`；保存 `capture.regionShortcut`。同一卡片在截图快捷键之后还有「呼出快捷翻译」录制器：默认显示 `Alt + Space`，录制/取消/冲突提示与截图快捷键一致（冲突时内联提示并保留旧值），「恢复默认」还原 `Alt+Space`，保存走 `quick_set_hotkey`。
 - 应用与启动：开机自启（portable 不支持时置灰说明）、关闭窗口后驻留托盘、界面语言（跟随系统 / 简体中文 / English，保存 `app.language`，选择后立即重新渲染各窗口文案，不重启）、打开数据/模型/日志/引擎目录、退出程序。
 - 关于：版本、Tauri/Rust 版本、MIT、GitHub 链接、引擎与模型状态。
 - 关于 → 检查更新：按钮调用 `check_update`；有新版本时展示版本号/更新说明（截断）/大小/发布时间，并提供「下载并更新」「稍后」；下载中显示进度条（`update-progress`），完成后提示「应用即将重启」；失败展示可操作错误与 hint。更新过程替换当前 exe 并自动重启（`--show` 打开设置）。
@@ -426,12 +438,28 @@ pub struct SelectionService {
 ### 7.3 界面多语言（i18n，无构建步骤）
 
 - 运行时 `web/shared/i18n.js`：在 `shared/constants.js` 与语言包之后、页面脚本之前加载（普通 `<script>`，不引入打包器）。暴露 `LP.t(key, params)`（当前包 → `en` 包 → key，`{name}` 插值）、`LP.i18n.init(locale)`、`LP.i18n.setLocale(locale) -> bool`（未知值返回 `false` 且不切换）、`LP.i18n.currentLocale()`、`LP.i18n.applyStatic(root)`。所有 DOM 访问都有 `typeof document` 守卫，Node 单测可直接 `vm` 加载。
-- 语言包 `web/shared/messages.zh.js` / `web/shared/messages.en.js` 挂到 `LP.messages.zh|en`；两包 key 集合必须完全一致（645 个），新增文案必须同时加入两个包；缺失 key 回退英文包再回退 key 本身。
+- 语言包 `web/shared/messages.zh.js` / `web/shared/messages.en.js` 挂到 `LP.messages.zh|en`；两包 key 集合必须完全一致（由 `web/i18n.test.cjs` 校验），新增文案必须同时加入两个包；缺失 key 回退英文包再回退 key 本身。
 - 静态文案用 `data-i18n`、`data-i18n-html`、`data-i18n-title`、`data-i18n-aria-label`、`data-i18n-placeholder` 标记，由 `init()` / `applyStatic()` 统一替换。HTML 里写死的英文文案只是初始化前的占位符（pre-init placeholder），运行期以语言包为准。
 - 动态/格式化文案（状态、错误、toast、带变量的标题）调用 `LP.t(key, params)`；语言变化后页面必须重新渲染依赖语言的动态内容（如结果面板标题、目标语言下拉选项、技能名回退文案），不能只靠首次 `applyStatic`。
 - 语言注入：设置页读 `StatePayload.app.locale`（生效语言）与 `app.languageSetting`（下拉回显）；划词/截图结果 picker 读 `picker-data.config.locale`（`picker-image` 路径回退 `data.app.locale`）；`capture-*`、`pin-*`、`longshot`、`longshot-bar` 窗口由 Rust 在 URL 追加 `lang=<zh|en>`，页面从 `<html lang>` / `location.search` 取首帧语言；语言变化时重建/刷新这些窗口或重新应用 `setLocale`。
 - 首帧猜测仅用于避免错误语言闪一下：`<html lang>` 优先于 `navigator.language`，后端语言到达后以 `init()` 覆盖。
 - 切换语言立即生效、无需重启；`system` 只在后端解析，前端只接收 `zh|en`。
+
+### 7.4 快捷翻译面板（quicktranslate）
+
+详细契约见 [quick-translate.md](quick-translate.md)。摘要：
+
+- 独立窗口 label `quicktranslate`（`web/quicktranslate.html`），默认隐藏；全局快捷键默认 `Alt+Space`（设置 `quick.hotkey`，可改），按下切换显隐；`Esc` 与关闭按钮只隐藏窗口，失焦不隐藏；隐藏时中止进行中的流。
+- 窗口为**无边框透明浮层**（decorations false / transparent true / shadow false），白色圆角卡片 + 顶栏拖动；高度由渲染端按内容自适应并调用 `quick_resize`（高 clamp `[420, min(760, 屏幕可用高度-80)]`，宽固定 900，两栏内部滚动且滚动条隐藏）；顶栏空白可拖动窗口（`quick_drag_panel`）。
+- 命令：`quick_ready` / `quick_open` / `quick_hide` / `quick_pin` / `quick_set_hotkey` / `quick_set_source_lang` / `quick_set_target_lang` / `quick_translate`（携带 `sourceLang`）/ `quick_abort_translate` / `quick_history_list` / `quick_history_delete` / `quick_history_clear` / `quick_copy` / `quick_open_settings` / `quick_resize` / `quick_drag_panel`。
+- 事件：`translate-event`（chunk/error/done，定向 `quicktranslate` 窗口，done 带 `elapsedMs`）、`quick-show`。
+- 设置 schema 11：`quick` 块由 0.4.2 的 schema 10 引入，合并后 schema 11 = 10 + `app.language`；字段为 `quick: {enabled, hotkey, sourceLang, targetLang, prompt, wordLookupPrompt, pinned}`，目标语言 38 种（不含 auto），源语言为 `auto` + 38 种 + 常见补充语言（`SOURCE_LANGS`）。
+- 源语言：下拉默认「自动识别」，可显式选择并记忆；自动识别用离线检测（`whatlang`，低置信/短文本回退脚本启发式），历史里的 `sourceLang` 恒为实际解析语言（不再把拉丁语系统一判成英语）。
+- 翻译历史 `<data>/quick-history.json`：最多 500 条、最新在前；`quick_translate` 正常 `done` 后写入（取消/失败不写）。
+- 提示词分两套：`quick.prompt`（段落/长句）与 `quick.wordLookupPrompt`（单词/短语），空时分别使用 `DEFAULT_QUICK_TRANSLATE_PROMPT` / `DEFAULT_QUICK_WORD_TRANSLATE_PROMPT`；均支持 `{source}` / `{target}` 占位符（语言英文名），按输入自动切换词条/段落模式。
+- 渲染端：双栏（原文输入 / 流式 Markdown 译文）、源/目标语言下拉、字数、`Ctrl+Enter`、停止/重试、复制与朗读为图标按钮（悬浮显示名称）、耗时为秒（`耗时 1.1 秒`）、Pin、历史浮层（搜索/单条删除/清空/回填）。
+- 设置页卡片顺序：翻译服务 → 划词行为 → **快捷翻译 → 快捷键** → 应用与启动 → 关于；「快捷翻译」卡片含启用开关、两个提示词编辑区（段落/单词，可重置）、清空历史；**呼出快捷键统一放在「快捷键」卡片**（截图快捷键之后，录制/冲突提示/恢复默认，保存走 `quick_set_hotkey`）。
+- 界面文案：快捷翻译面板（`web/quicktranslate.*`）目前固定中文，未纳入 §7.3 的首批 i18n 范围；其输出语言由目标语言下拉决定，与界面语言无关。
 
 ## 8. 验收
 
@@ -439,8 +467,8 @@ pub struct SelectionService {
 - 自动更新：mock Release（新版本 + exe 资产）下「检查更新」显示新版本信息；「下载并更新」下载到同目录临时文件、替换当前 exe 并自动重启新版本；当前版本目录不可写、下载无效、无 win-x64 资产时给出可操作错误。
 - `cargo test`（设置、SSE、catalog、日志脱敏等纯函数）通过。
 - `cargo check` 无错误；`npx tauri build --debug --no-bundle` 产出 exe。
-- 启动 exe：静默启动、托盘出现、不弹窗口；`--show` 才显示设置；拖选/双击/多击选词在某应用触发 picker；picker 菜单/面板/固定可用（菜单不含服务状态与关闭项）；全局快捷键已移除。
-- picker 不干扰操作：弹出后前台窗口仍是原应用，Delete/Ctrl+C/Ctrl+X 正常生效；未固定时按任意键、右键自动隐藏工具栏，但鼠标滚轮/触摸板滚动**不会**隐藏；结果面板可用标题栏拖动窗口位置；面板内长内容可滚动阅读；朗读中再次点击为停止且不报错。
+- 启动 exe：静默启动、托盘出现、不弹窗口；`--show` 才显示设置；拖选/双击/多击选词在某应用触发 picker；picker 菜单/面板/固定可用（菜单不含服务状态与关闭项）；划词触发不再依赖全局快捷键（截图与呼出快捷翻译的全局快捷键见 §7.2 / §7.4）。
+- picker 不干扰操作：弹出后前台窗口仍是原应用，Delete/Ctrl+C/Ctrl+X 正常生效；未固定时按任意键、右键自动隐藏工具栏，但鼠标滚轮/触摸板滚动**不会**隐藏；结果面板可用标题栏拖动窗口位置；面板内长内容可滚动阅读；朗读中再次点击为停止且不报错；AI 流进行中点击「停止」立即结束生成、保留已输出内容并显示「已停止生成」。
 - Markdown：翻译/总结/解释结果按 Markdown 渲染（标题、列表、代码块、引用、表格、链接等），HTTPS 链接通过 `open_external` 打开；HTML 注入被转义。
 - AI 输出统一流式：翻译、总结、解释、润色、自定义技能都通过 `translate-event` 增量渲染（不是等完整结果后一次性显示）。
 - 自定义技能：设置页新增/编辑/删除后，picker 工具栏立即出现对应按钮（图标+名称），点击后流式返回、面板标题为技能名；提示词变量在后端替换；空提示词/非法 id 被后端归一化丢弃；未启用技能被点击时返回明确错误；图标可从 200 个 Lucide 图标中选择（旧 12 key 兼容）。
@@ -452,10 +480,10 @@ pub struct SelectionService {
 - 提示词生效：自定义提示词保存后，下一次翻译/总结/解释请求使用自定义 system prompt；空值回退系统默认。
 - 在线模式：填 mock/真实 OpenAI 兼容服务后「测试连接」成功；picker 翻译流式显示。
 - 本地模式：安装引擎 + 下载完整 Qwen3.5、手动选择后启动成功，翻译流式返回；总结/解释可用；未选择时明确提示，切换选择后重启生效。
-- 截图（§10）：快捷键开图无黑屏 loading；选区内拖动可平移、手柄可缩放；工具条与划词工具条同为白色主题；点击提取文字/翻译/解释图片/图片技能后截图关闭、图片入剪贴板、picker 结果面板流式输出且具备朗读/复制/重试/继续提问；本地安装完整并手动选择 Qwen3.5 后可解释图片；设置页可录制截图快捷键并立即生效、冲突时提示。
+- 截图（§10）：快捷键开图无黑屏 loading；选区内拖动可平移、手柄可缩放；工具条与划词工具条同为白色主题；点击提取文字/翻译/解释图片/图片技能后截图关闭、图片入剪贴板、picker 结果面板流式输出且具备朗读/复制/重试/停止/继续提问；本地安装完整并手动选择 Qwen3.5 后可解释图片；设置页可录制截图快捷键并立即生效、冲突时提示。
 - 截图第二轮（§10.7/§10.8）：连续截图复用 overlay 窗口、无重建延迟与闪烁；提取文字默认走视觉模型（日志路径可见），视觉不可用才回退 Windows OCR；设置页快捷键为独立卡片；全屏选区内拖拽直接开始新框选。
 - 构建 release：`scripts/build-portable.ps1` 产出单个 `dist/Lexora-<version>-win-x64.exe`；双击运行后静默驻留托盘，数据写入 exe 同级 data/；Release 正文由 `scripts/release-notes.ps1` 生成排版化 changelog。
-- 界面语言（schema 9）：设置 → 应用与启动切换 English / 简体中文后，设置页、工具栏、结果面板、截图工具条、长截图与钉图文案立即更新且无残留旧语言；`system` 在中文区域显示简体中文、英文区域显示英文，无法判断回退英文；`settings.json` 中 `version` 为 9、`app.language` 保存原始设置值，v8 旧配置升级不丢提示词与技能。
+- 界面语言（schema 11）：设置 → 应用与启动切换 English / 简体中文后，设置页、工具栏、结果面板、截图工具条、长截图与钉图文案立即更新且无残留旧语言；`system` 在中文区域显示简体中文、英文区域显示英文，无法判断回退英文；`settings.json` 中 `version` 为 11、`app.language` 保存原始设置值，schema 10 及更旧配置升级不丢提示词、技能与 `quick` 块。
 - AI 语言：界面为英文时解释/总结/图片解释/追问回答与解释模式词条释义为英文，界面为中文时为简体中文；自定义提示词不含 `{answer}` 时末尾追加 `Answer language: <name>.`；`auto` 翻译目标仍为中文→英文、其他→中文，不受界面语言影响。
 
 
@@ -554,12 +582,12 @@ pub struct SelectionService {
 }
 ```
 - picker 收到后：关闭菜单/重置旧面板 → `openPanel(label)`；按 action：
-  - `ocr`：纯文本面板（loading 文案「正在识别文字…」；**流式逐块追加纯文本**，支持朗读/复制/重试/追问）；
+  - `ocr`：纯文本面板（loading 文案「正在识别文字…」；**流式逐块追加纯文本**，支持朗读/复制/重试/停止/追问）；
   - `translate`：翻译面板（**目标语言控件可用**，源语言固定显示「自动识别」）；收到 `translate-event {type:"target"}` 后把控件显示更新为实际解析出的目标语言；用户切换目标语言 → 新 requestId + `capture_retry{targetLang}` 重新翻译；
   - `explain`/`custom`：AI 面板（隐藏语言控件；流式 Markdown）。
 - 请求进行中仍有 loading；chunk 增量渲染；error 显示可操作错误 + 重试；done 后显示「继续提问」输入区；
-- 「重试」→ 新 requestId + `capture_retry`（translate 带当前目标语言）；「追问」→ `capture_followup`；关闭面板/切换技能 → abort（`picker_abort_translate` 复用 `translate_task` 机制）。
-- 面板完全复用文字技能面板（`panel-head` 标题/语言/钉住/关闭、`panel-body` Markdown、`panel-foot` 朗读/复制/重试、follow-up 浮层、resize grip），不新增截图专用面板样式。
+- 「重试」→ 新 requestId + `capture_retry`（translate 带当前目标语言）；「追问」→ `capture_followup`；「停止」→ `picker_abort_translate`（复用 `translate_task`）；关闭面板/切换技能 → abort（`picker_abort_translate` 复用 `translate_task` 机制）。
+- 面板完全复用文字技能面板（`panel-head` 标题/语言/钉住/关闭、`panel-body` Markdown、`panel-foot` 朗读/复制/重试/停止、follow-up 浮层、resize grip），不新增截图专用面板样式。
 - `picker-data` 仍会先到（`text=""`），picker 必须兼容空 text：不报错、工具栏可渲染，随后被 `picker-image` 切到面板。
 - `translate-event` 的 `type` 扩展为 `"chunk" | "target" | "error" | "done"`；`target` 携带 `targetLang`（语言代码），仅图片翻译会发。
 
@@ -579,7 +607,7 @@ pub struct SelectionService {
 - 桌面内容为动态视频/硬件合成窗口时，抓屏结果不应出现大块纯黑（若偶发，允许重抓一次，见实现说明）。
 
 ### 10.8 文字提取改用视觉模型（第二轮）
-- 「提取文字」不再直接使用 Windows OCR：优先 `engine.vision_stream(data_url, DEFAULT_OCR_PROMPT)` 转写（在线视觉模型 / 本地手动选择的 Qwen3.5），结果以纯文本面板显示（朗读/复制/重试/追问不变）。
+- 「提取文字」不再直接使用 Windows OCR：优先 `engine.vision_stream(data_url, DEFAULT_OCR_PROMPT)` 转写（在线视觉模型 / 本地手动选择的 Qwen3.5），结果以纯文本面板显示（朗读/复制/重试/停止/追问不变）。
 - 视觉不可用（在线未配置且本地无 VL 模型）**或视觉请求失败/未返回文本**时回退 Windows OCR，保证功能仍可用；日志注明走了哪条路径与回退原因。
 - 「翻译」同样优先用视觉模型转写后再翻译（缓存转写文本供重试/追问），视觉不可用时回退 Windows OCR + 文本翻译。
 - 新增 `DEFAULT_OCR_PROMPT`（engine/prompts.rs，英文，要求逐字转写、保留换行、不翻译/不总结/不加代码围栏），由 `engine.rs` 重新导出；`EngineService::can_use_vision()` 判定视觉可用性。
@@ -589,7 +617,7 @@ pub struct SelectionService {
 - 选区内按住拖动可平移；手柄可缩放；尺寸标签同步。
 - 工具条为白色主题，与划词工具条一致。
 - 点击「提取文字/翻译/解释图片/自定义图片技能」后：截图 overlay 立即关闭、图片在剪贴板、picker 弹出结果面板流式输出；无「面板 + 框选」同屏。
-- 结果面板具备朗读/复制/重试/流式/继续提问；错误有可操作提示。
+- 结果面板具备朗读/复制/重试/停止/流式/继续提问；错误有可操作提示。
 - 在线视觉模型可解释图片；本地安装完整并手动选择 Qwen3.5 后可本地解释图片；本地模式下翻译截图文字可用。
 - 设置页可录制并保存新的截图快捷键，立即生效；冲突时提示且保留旧快捷键。
 - 第三轮（§10.1/§10.3/§10.5）：截图期间设置窗口与划词工具面板保持打开、不被拍进截图；设置页工具栏技能分「文字/图片」Tab 且各自独立开关排序；提取文字流式输出；图片翻译可切换目标语言，且面板显示的目标语言与实际一致。

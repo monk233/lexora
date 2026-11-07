@@ -396,11 +396,19 @@ textarea {
   font-weight: 600;
 }
 
-/* The shortcut card holds a single field row: trim the trailing card-body
- * padding so the row is balanced between the card head and the card bottom
+/* The shortcut card ends with a field row: trim the trailing card-body padding
+ * so the last row is balanced between the card head and the card bottom
  * (other cards end with a field row that already adds its own breathing room). */
 .hotkey-card .card-body {
   padding-bottom: 4px;
+}
+
+/* ---- Quick translate prompt --------------------------------------------- */
+
+/* A little taller than the generic textarea so the built-in default prompt is
+ * readable at a glance; every other rule comes from `.textarea`. */
+.quick-prompt {
+  min-height: 128px;
 }
 
 .inline-actions {

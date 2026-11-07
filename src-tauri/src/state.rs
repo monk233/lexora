@@ -11,6 +11,7 @@ use crate::capture::CaptureService;
 use crate::engine::EngineService;
 use crate::logger::Logger;
 use crate::paths::AppPaths;
+use crate::quicktranslate::HistoryStore;
 use crate::selection::SelectionService;
 use crate::settings::SettingsStore;
 
@@ -31,6 +32,8 @@ pub struct AppState {
     pub selection: SelectionService,
     /// Screenshot sessions + overlay windows (xcap/OCR/vision).
     pub capture: CaptureService,
+    /// Quick-translate history (`<data>/quick-history.json`, contract §5).
+    pub quick_history: HistoryStore,
     pub translate_task: Mutex<Option<TranslateTask>>,
     pub started_at: std::time::Instant,
     /// Set when the process is shutting down, so late UI events are skipped.
@@ -61,6 +64,8 @@ impl AppState {
             log.clone(),
         ));
         let selection = SelectionService::new(settings.clone(), log.clone());
+        let quick_history =
+            HistoryStore::load(paths.data_dir.join(crate::quicktranslate::HISTORY_FILE_NAME));
         Arc::new(Self {
             paths,
             log,
@@ -68,6 +73,7 @@ impl AppState {
             engine,
             selection,
             capture: CaptureService::new(),
+            quick_history,
             translate_task: Mutex::new(None),
             started_at: std::time::Instant::now(),
             quitting: AtomicBool::new(false),

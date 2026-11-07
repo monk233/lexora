@@ -1,0 +1,1078 @@
+/* Lexora quick-translate window (contract §6, frameless panel).
+ *
+ * The Tauri window is transparent and undecorated (900px wide, height fitted
+ * to the content by quicktranslate.js and applied with `quick_resize`). A 6px
+ * transparent padding around .qt-shell leaves room for the floating card's
+ * shadow; the visible panel is the white 12px-radius card. Visual language is
+ * the settings/picker one: #f6f7f9 page, white cards, #e5e7eb hairline border,
+ * indigo accent (#4f46e5), Segoe UI / Microsoft YaHei UI font stack.
+ *
+ * The card fills the window height; the source textarea and the translation
+ * result scroll internally (scrollbars hidden) while the top language bar acts
+ * as the window drag handle.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --surface-muted: #f9fafb;
+  --surface-hover: #f3f4f6;
+  --surface-active: #e5e7eb;
+  --border: #e5e7eb;
+  --border-strong: #d1d5db;
+  --text: #111827;
+  --text-muted: #6b7280;
+  --text-faint: #9ca3af;
+  --primary: #4f46e5;
+  --primary-hover: #4338ca;
+  --primary-soft: #eef2ff;
+  --primary-ring: rgba(79, 70, 229, 0.16);
+  --success: #047857;
+  --success-soft: #ecfdf5;
+  --warn: #b45309;
+  --warn-soft: #fffbeb;
+  --danger: #b91c1c;
+  --danger-border: #fecaca;
+  --danger-soft: #fef2f2;
+  --toast-bg: #111827;
+  --toast-text: #ffffff;
+
+  --radius-card: 12px;
+  --radius-control: 8px;
+  --gap: 16px;
+  --win-pad: 6px;
+  --shadow-shell: 0 10px 30px -14px rgba(15, 23, 42, 0.45);
+  --shadow-overlay: 0 18px 48px -20px rgba(15, 23, 42, 0.45);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+
+    --bg: #0f1115;
+    --surface: #171a21;
+    --surface-muted: #1c2028;
+    --surface-hover: #222732;
+    --surface-active: #2a303c;
+    --border: #262b35;
+    --border-strong: #353c49;
+    --text: #e6e8ec;
+    --text-muted: #9aa3b2;
+    --text-faint: #6b7484;
+    --primary: #818cf8;
+    --primary-hover: #a5b4fc;
+    --primary-soft: #1e1b4b;
+    --primary-ring: rgba(129, 140, 248, 0.22);
+    --success: #34d399;
+    --success-soft: #052e2b;
+    --warn: #fbbf24;
+    --warn-soft: #2a2004;
+    --danger: #f87171;
+    --danger-border: #7f1d1d;
+    --danger-soft: #2c1414;
+    --toast-bg: #2a303c;
+    --toast-text: #e6e8ec;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+}
+
+body {
+  overflow: hidden;
+  background: transparent;
+  color: var(--text);
+  font-family: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+}
+
+/* hidden attribute must win over component display rules */
+[hidden] {
+  display: none !important;
+}
+
+/* ---- Frameless shell ---------------------------------------------------- */
+
+/* Transparent window padding: only the shadow paints here. */
+.qt-win {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  padding: var(--win-pad);
+  background: transparent;
+}
+
+/* The visible card; fills the window height the shell sizes with quick_resize. */
+.qt-shell {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  box-shadow: var(--shadow-shell);
+  overflow: hidden;
+}
+
+/* ---- Top bar ------------------------------------------------------------ */
+
+.qt-topbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding-right: 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  /* The empty top-bar area drags the frameless window. */
+  cursor: grab;
+  user-select: none;
+}
+
+.qt-topbar.is-dragging {
+  cursor: grabbing;
+}
+
+.qt-topbar.is-dragging * {
+  cursor: grabbing !important;
+}
+
+.qt-langbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 10px 8px 10px 16px;
+}
+
+.qt-lang-label {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+
+/* Source language selector: same control look as the target selector, slightly
+ * narrower so both fit the 900px top bar with the swap button. */
+.qt-select-source {
+  min-width: 132px;
+}
+
+.qt-lang-arrow {
+  color: var(--text-faint);
+  font-size: 13px;
+  flex: 0 0 auto;
+}
+
+.qt-select {
+  flex: 0 1 auto;
+  min-width: 120px;
+  max-width: 240px;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12.5px;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.qt-select:hover {
+  border-color: var(--text-faint);
+}
+
+.qt-select:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-ring);
+}
+
+.qt-select:disabled {
+  background: var(--surface-muted);
+  color: var(--text-faint);
+  cursor: default;
+}
+
+.qt-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+/* ---- Buttons / controls ------------------------------------------------- */
+
+.qt-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 550;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.qt-btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+.qt-btn:active:not(:disabled) {
+  background: var(--surface-active);
+}
+
+.qt-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+.qt-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.qt-btn-primary {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: #ffffff;
+}
+
+.qt-btn-primary:hover:not(:disabled) {
+  border-color: var(--primary-hover);
+  background: var(--primary-hover);
+}
+
+.qt-btn-primary.is-stop {
+  border-color: var(--danger);
+  background: var(--danger);
+}
+
+.qt-btn-primary.is-stop:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: var(--danger);
+  opacity: 0.9;
+}
+
+.qt-btn-ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.qt-btn-ghost:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.qt-btn-danger {
+  border-color: var(--border-strong);
+  color: var(--danger);
+}
+
+.qt-btn-danger:hover:not(:disabled) {
+  border-color: var(--danger-border);
+  background: var(--danger-soft);
+}
+
+.qt-btn-danger.is-armed {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: #ffffff;
+}
+
+.qt-btn-small {
+  height: 26px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.qt-btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+.qt-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.qt-icon-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.qt-icon-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.qt-icon-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+.qt-icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.qt-icon-btn:disabled:hover {
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.qt-icon-btn[aria-pressed="true"] {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+/* Card action icons (speak / copy): compact, no label, grey when disabled. */
+.qt-result-icon {
+  width: 28px;
+  height: 28px;
+}
+
+.qt-result-icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+.qt-result-icon:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.qt-result-icon:disabled:hover {
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.qt-history-toggle {
+  height: 32px;
+  padding: 0 10px;
+  gap: 6px;
+}
+
+.qt-history-toggle[aria-expanded="true"] {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.qt-input {
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.qt-input::placeholder {
+  color: var(--text-faint);
+}
+
+.qt-input:hover {
+  border-color: var(--text-faint);
+}
+
+.qt-input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-ring);
+}
+
+.qt-kbd {
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-muted);
+  color: var(--text-faint);
+  font-family: inherit;
+  font-size: 11px;
+}
+
+/* ---- Two-column body ---------------------------------------------------- */
+
+.qt-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--gap);
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 12px;
+}
+
+.qt-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.qt-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex: 0 0 auto;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.qt-card-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.qt-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.qt-count {
+  color: var(--text-faint);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.qt-count.is-over {
+  color: var(--danger);
+}
+
+.qt-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 12px 14px;
+}
+
+.qt-textarea {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 260px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.65;
+  resize: none;
+  outline: none;
+  overflow-y: auto;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+/* Both columns scroll internally; the scrollbars stay hidden (picker style). */
+.qt-textarea,
+.qt-result {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.qt-textarea::-webkit-scrollbar,
+.qt-result::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.qt-textarea::placeholder {
+  color: var(--text-faint);
+}
+
+.qt-textarea:hover {
+  border-color: var(--text-faint);
+}
+
+.qt-textarea:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-ring);
+}
+
+.qt-textarea:disabled {
+  background: var(--surface-muted);
+  color: var(--text-muted);
+}
+
+.qt-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex: 0 0 auto;
+  min-height: 32px;
+}
+
+.qt-card-foot-result {
+  justify-content: flex-start;
+}
+
+.qt-foot-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.qt-hint {
+  color: var(--text-faint);
+  font-size: 11.5px;
+  line-height: 1.5;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.qt-hint.is-error {
+  color: var(--danger);
+  white-space: normal;
+}
+
+/* ---- Result area -------------------------------------------------------- */
+
+.qt-result {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 2px 2px 4px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.qt-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 100%;
+  min-height: 120px;
+  color: var(--text-faint);
+  text-align: center;
+  user-select: none;
+}
+
+.qt-empty-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 550;
+}
+
+.qt-empty-hint {
+  margin: 0;
+  font-size: 11.5px;
+}
+
+.qt-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+
+.qt-spinner {
+  width: 13px;
+  height: 13px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: qt-spin 700ms linear infinite;
+}
+
+@keyframes qt-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Markdown rendering inside the result card (same subset as the picker). */
+.qt-result.markdown > :first-child {
+  margin-top: 0;
+}
+
+.qt-result.markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.qt-result.markdown p {
+  margin: 0 0 8px;
+}
+
+.qt-result.markdown h1,
+.qt-result.markdown h2,
+.qt-result.markdown h3,
+.qt-result.markdown h4,
+.qt-result.markdown h5,
+.qt-result.markdown h6 {
+  margin: 12px 0 6px;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.qt-result.markdown h1 {
+  font-size: 17px;
+}
+
+.qt-result.markdown h2 {
+  font-size: 15px;
+}
+
+.qt-result.markdown ul,
+.qt-result.markdown ol {
+  margin: 0 0 8px;
+  padding-left: 22px;
+}
+
+.qt-result.markdown li {
+  margin: 2px 0;
+}
+
+.qt-result.markdown blockquote {
+  margin: 0 0 8px;
+  padding: 4px 10px;
+  border-left: 3px solid var(--border-strong);
+  color: var(--text-muted);
+}
+
+.qt-result.markdown code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--surface-muted);
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+}
+
+.qt-result.markdown pre {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-muted);
+  overflow-x: auto;
+}
+
+.qt-result.markdown pre code {
+  padding: 0;
+  background: transparent;
+}
+
+.qt-result.markdown a {
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.qt-result.markdown hr {
+  margin: 10px 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+.qt-result.markdown table {
+  width: 100%;
+  margin: 0 0 8px;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.qt-result.markdown th,
+.qt-result.markdown td {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.qt-result.markdown th {
+  background: var(--surface-muted);
+  font-weight: 600;
+}
+
+.qt-result.markdown .align-center {
+  text-align: center;
+}
+
+.qt-result.markdown .align-right {
+  text-align: right;
+}
+
+/* Error block below the (possibly partial) result. */
+.qt-result-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 8px 10px;
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-control);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.qt-result-error-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.qt-result-error-hint {
+  display: block;
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.qt-result-error-retry {
+  flex: 0 0 auto;
+}
+
+/* ---- History overlay ---------------------------------------------------- */
+
+.qt-overlay {
+  position: fixed;
+  /* Match the visible shell, not the transparent window padding. */
+  inset: var(--win-pad);
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  border-radius: var(--radius-card);
+  background: rgba(15, 23, 42, 0.3);
+}
+
+.qt-history {
+  display: flex;
+  flex-direction: column;
+  width: min(560px, 100%);
+  max-height: 100%;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow-overlay);
+  overflow: hidden;
+}
+
+.qt-history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex: 0 0 auto;
+  padding: 14px 16px 10px;
+}
+
+.qt-history-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.qt-history-search {
+  flex: 0 0 auto;
+  padding: 0 16px 10px;
+}
+
+.qt-history-list {
+  flex: 1 1 auto;
+  min-height: 120px;
+  overflow-y: auto;
+  padding: 2px 8px;
+}
+
+.qt-history-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  border-radius: 10px;
+  padding: 2px;
+}
+
+.qt-history-item:hover,
+.qt-history-item:focus-within {
+  background: var(--surface-hover);
+}
+
+.qt-history-open {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.qt-history-open:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+.qt-history-meta {
+  color: var(--text-faint);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.qt-history-source,
+.qt-history-target {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.qt-history-source {
+  color: var(--text);
+  font-weight: 550;
+}
+
+.qt-history-target {
+  color: var(--text-muted);
+}
+
+.qt-history-delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  margin-top: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-faint);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 100ms ease, background 100ms ease, color 100ms ease;
+}
+
+.qt-history-item:hover .qt-history-delete,
+.qt-history-item:focus-within .qt-history-delete,
+.qt-history-delete:focus-visible {
+  opacity: 1;
+}
+
+.qt-history-delete:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.qt-history-delete:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+.qt-history-delete svg {
+  width: 14px;
+  height: 14px;
+}
+
+.qt-history-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-height: 160px;
+  color: var(--text-faint);
+  font-size: 12.5px;
+  text-align: center;
+}
+
+.qt-history-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex: 0 0 auto;
+  padding: 10px 16px 14px;
+  border-top: 1px solid var(--border);
+}
+
+/* ---- Toast -------------------------------------------------------------- */
+
+.qt-toast-stack {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: 420px;
+  pointer-events: none;
+}
+
+.qt-toast {
+  padding: 8px 12px;
+  border-radius: 9px;
+  background: var(--toast-bg);
+  color: var(--toast-text);
+  font-size: 12.5px;
+  line-height: 1.5;
+  word-break: break-word;
+  box-shadow: 0 6px 18px -8px rgba(15, 23, 42, 0.35);
+}
+
+.qt-toast[data-tone="error"] {
+  background: var(--danger);
+  color: #ffffff;
+}
+
+.qt-toast[data-tone="success"] {
+  background: var(--success);
+  color: #ffffff;
+}
+
+/* ---- Scrollbars --------------------------------------------------------- */
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: var(--border-strong);
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-faint);
+  background-clip: content-box;
+}
+
+/* ---- Compact windows ---------------------------------------------------- */
+
+@media (max-width: 760px) {
+  :root {
+    --gap: 12px;
+  }
+
+  .qt-langbar {
+    padding: 8px 6px 8px 12px;
+  }
+
+  .qt-topbar {
+    padding-right: 6px;
+  }
+
+  .qt-body {
+    padding: var(--gap);
+  }
+
+  .qt-card-head {
+    padding: 8px 10px;
+  }
+
+  .qt-card-body {
+    padding: 10px;
+  }
+
+  .qt-history-toggle span {
+    display: none;
+  }
+
+  .qt-history-toggle {
+    width: 32px;
+    padding: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qt-btn,
+  .qt-icon-btn,
+  .qt-select,
+  .qt-textarea,
+  .qt-input,
+  .qt-history-delete {
+    transition: none;
+  }
+
+  .qt-spinner {
+    animation: none;
+  }
+}

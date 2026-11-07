@@ -2,7 +2,7 @@
 
 本文档列出计划中的方向，不是承诺时间表。优先级会随反馈与真实使用情况调整，已发布内容以 [CHANGELOG](CHANGELOG.md) 为准。
 
-当前版本：**0.4.1**（2026-10-28）。
+当前版本：**0.4.2**（2026-11-02）。
 
 ## 规划总览
 
@@ -26,7 +26,7 @@
 
 ### 已实现范围（`feature/r1-localization`）
 
-- **界面语言**：`zh` / `en` 两套语言包（`web/shared/messages.zh.js` / `messages.en.js`），设置 → 应用与启动 → 界面语言（跟随系统 / 简体中文 / English），切换立即生效、无需重启；settings schema 9 新增 `app.language`（`system|zh|en`）。
+- **界面语言**：`zh` / `en` 两套语言包（`web/shared/messages.zh.js` / `messages.en.js`），设置 → 应用与启动 → 界面语言（跟随系统 / 简体中文 / English），切换立即生效、无需重启；settings schema 11（在 0.4.2 的 10 之上）新增 `app.language`（`system|zh|en`）。
 - **自动识别**：`src-tauri/src/locale.rs` 先读 Windows 区域（`GetUserDefaultLocaleName`），区域不支持时按系统时区键推断，最后回退英文；`zh-Hant` / `zh-TW` 暂映射到简体中文。
 - **AI 输出语言**：解释、总结、图片解释、追问回答与解释模式的词条释义使用本地语言；默认提示词用 `{answer}` 占位符（`PROMPT_VERSION` 12），自定义提示词无占位符时追加 `Answer language: <name>.`。
 - **与原计划的差异**：`auto` 翻译目标保持「中文→英文、其他→中文」的互补规则，不随界面语言变化（避免英文界面把英文原文译成英文）；提示词模板保留英文、未按语言各出一套默认值；日期/数字格式化沿用现状；界面首批不含繁体与日语。
@@ -67,7 +67,7 @@
 
 - 采用 [Rare UI](https://www.npmjs.com/package/@rare-ui/core)（React 设计系统，含组件与设计 token；亦提供 [shadcn registry](https://github.com/swamimalode07/rare-ui) 源码复制方式）。
 - 建立主题 token：颜色、字号、间距、圆角、阴影、动效时长；深色/浅色与系统主题跟随。
-- 重做：划词工具栏（紧凑/展开）、结果面板（标题、语言切换、流式内容、追问、朗读/复制/重试）、截图工具条与标注面板、设置页、钉图窗口。
+- 重做：划词工具栏（紧凑/展开）、结果面板（标题、语言切换、流式内容、追问、朗读/复制/重试/停止）、截图工具条与标注面板、设置页、钉图窗口。
 - 保持现有行为契约不变：非激活浮层、窗口尺寸自适应、快捷键、透明窗口、无 CDN、离线可用。
 
 ### 技术前置（需先评估）

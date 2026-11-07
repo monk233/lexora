@@ -131,6 +131,8 @@
       '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v9"></path><path d="M6.3 6.3a8 8 0 1 0 11.4 0"></path></svg>',
     refresh:
       '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.9-3M4 4v4h4"></path><path d="M4 13a8 8 0 0 0 14.9 3M20 20v-4h-4"></path></svg>',
+    stop:
+      '<svg class="icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6.5" y="6.5" width="11" height="11" rx="2"></rect></svg>',
   };
 
   function hasOwn(object, key) {
@@ -284,6 +286,7 @@
   var panelSpeak = document.getElementById("panel-speak");
   var panelCopy = document.getElementById("panel-copy");
   var panelRetry = document.getElementById("panel-retry");
+  var panelStop = document.getElementById("panel-stop");
   var panelFollowup = document.getElementById("panel-followup");
   var panelSuggestions = document.getElementById("panel-suggestions");
   var panelFollowupInput = document.getElementById("panel-followup-input");
@@ -580,23 +583,38 @@
     panelSpeak.disabled = !state.panelSpeakText;
     panelCopy.disabled = !panelBody.textContent.trim();
     panelRetry.hidden = typeof state.panelRetry !== "function";
+    // The stop button is only actionable while an AI stream is in flight
+    // (translation / assist / polish / custom skill / screenshot skill /
+    // follow-up all share this footer).
+    var streaming = !!(activeRequest && activeRequest.active);
+    if (panelStop) {
+      panelStop.disabled = !streaming;
+      panelStop.classList.toggle("is-streaming", streaming);
+    }
   }
 
-  /* Footer buttons carry their own icon; the label span keeps its data-i18n
-   * attribute so the shared runtime can refresh it in place. */
+  /* Footer buttons are icon-only: picker.js injects each SVG (the shared markup
+   * carries no label) and the accessible name comes from the language pack via
+   * title/aria-label. renderPanelFoot() is also called on locale changes so the
+   * tooltips switch language with the rest of the picker chrome. */
   function renderPanelFoot() {
-    function fill(button, icon, key) {
-      var label = LP.t(key);
-      button.innerHTML = icon;
-      var span = document.createElement("span");
-      span.setAttribute("data-i18n", key);
-      span.textContent = label;
-      button.appendChild(span);
-      button.setAttribute("aria-label", label);
-    }
-    fill(panelSpeak, skillIconSvg(builtinSkillMeta("read").icon), "picker.action.read");
-    fill(panelCopy, skillIconSvg(builtinSkillMeta("copy").icon), "picker.action.copy");
-    fill(panelRetry, ICONS.refresh, "picker.action.retry");
+    panelSpeak.innerHTML = skillIconSvg(builtinSkillMeta("read").icon);
+    panelCopy.innerHTML = skillIconSvg(builtinSkillMeta("copy").icon);
+    panelRetry.innerHTML = ICONS.refresh;
+    panelStop.innerHTML = ICONS.stop;
+    [
+      [panelSpeak, "picker.action.read"],
+      [panelCopy, "picker.action.copy"],
+      [panelRetry, "picker.action.retry"],
+      [panelStop, "picker.action.stop"],
+    ].forEach(function (entry) {
+      if (!entry[0]) {
+        return;
+      }
+      var label = LP.t(entry[1]);
+      entry[0].title = label;
+      entry[0].setAttribute("aria-label", label);
+    });
   }
 
   function setPanelRetry(callback) {
@@ -1860,6 +1878,7 @@
     };
     activeRequest = request;
     state.translating = true;
+    syncPanelFoot();
     var source = state.text;
     var stream = runAfterSuggestions(request, function () {
       return imageMode
@@ -1949,6 +1968,7 @@
     error.appendChild(retryButton);
     request.block.appendChild(error);
     setFollowupBusy(false);
+    syncPanelFoot();
     panelBody.scrollTop = panelBody.scrollHeight;
     resizePanelForContent();
   }
@@ -1963,6 +1983,44 @@
       request.active = false;
       API.abortTranslate(request.id);
     }
+  }
+
+  /* Footer "停止": aborts the in-flight AI stream and freezes the text that was
+   * already rendered. Every AI panel shares this path (translation,
+   * summarize/explain, polish, custom text skills, screenshot skills and
+   * follow-ups) because they all register `activeRequest` and stream through
+   * `translate-event`. The backend aborts the model request through
+   * `picker_abort_translate`; late chunks are ignored because the request is
+   * inactive and `activeRequest` was cleared. */
+  function stopActiveRequest() {
+    var request = activeRequest;
+    if (!request || !request.active) {
+      syncPanelFoot();
+      return;
+    }
+    request.active = false;
+    request.finishReason = "stopped";
+    request.partial = true;
+    activeRequest = null;
+    state.translating = false;
+    invalidateFollowupSuggestions();
+    if (API && typeof API.abortTranslate === "function") {
+      API.abortTranslate(request.id);
+    }
+    removeLoadingRow(request);
+    renderRequestResult(request);
+    var output = requestOutputText(request);
+    setPanelSpeakText(output);
+    setPanelCopyText(output);
+    var container = request.kind === "followup" ? request.block : request.target;
+    if (container) {
+      container.appendChild(el("p", "stop-note", LP.t("picker.note.stopped")));
+    }
+    if (request.kind === "followup") {
+      setFollowupBusy(false);
+    }
+    syncPanelFoot();
+    resizePanelForContent();
   }
 
   function removeLoadingRow(request) {
@@ -2379,6 +2437,7 @@
     };
     activeRequest = request;
     state.translating = true;
+    syncPanelFoot();
     resizePanelForContent();
 
     runAfterSuggestions(request, function () { return API.translate(request.id, state.text, targetLang); }).then(
@@ -2517,6 +2576,7 @@
     };
     activeRequest = request;
     state.translating = true;
+    syncPanelFoot();
     refreshFollowupSuggestions(request, false, true);
     resizePanelForContent();
     return request;
@@ -2678,6 +2738,7 @@
     };
     activeRequest = request;
     state.translating = true;
+    syncPanelFoot();
     resizePanelForContent();
 
     if (!API || typeof API.polish !== "function") {
@@ -2749,6 +2810,7 @@
     };
     activeRequest = request;
     state.translating = true;
+    syncPanelFoot();
     resizePanelForContent();
 
     if (!API || typeof API.customSkill !== "function") {
@@ -2863,6 +2925,7 @@
     };
     activeRequest = request;
     state.translating = true;
+    syncPanelFoot();
     resizePanelForContent();
 
     if (!API || typeof API.assist !== "function") {
@@ -2903,6 +2966,11 @@
       readButton.classList.toggle("is-active", active);
     }
     panelSpeak.classList.toggle("is-active", active);
+    // Icon-only footer: the tooltip / accessible name carries the label, and the
+    // active state announces the stop action through the language pack.
+    var label = active ? LP.t("picker.action.stop") : LP.t("picker.action.read");
+    panelSpeak.title = label;
+    panelSpeak.setAttribute("aria-label", label);
   }
 
   function clearSpeechState(utterance) {
@@ -3291,6 +3359,7 @@
       state.panelRetry();
     }
   });
+  panelStop.addEventListener("click", stopActiveRequest);
 
   document.addEventListener("keydown", function (event) {
     if (event.key !== "Escape") {
@@ -3429,6 +3498,7 @@
       populateTargetLanguages();
       syncPanelPin();
       renderPanelFoot();
+      syncSpeakUi();
       syncPanelTitle();
       if (state.menuOpen) {
         renderMenu();

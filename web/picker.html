@@ -57,16 +57,18 @@
                   data-i18n="picker.action.send">发送</button>
         </div>
       </div>
+      <!-- Icon-only footer buttons (speak / copy / retry / stop): the SVG icon
+           is injected by picker.js, the title carries the label. -->
       <div class="panel-foot" id="panel-foot">
-        <button type="button" class="panel-foot-btn" id="panel-speak">
-          <span data-i18n="picker.action.read">朗读</span>
-        </button>
-        <button type="button" class="panel-foot-btn" id="panel-copy">
-          <span data-i18n="picker.action.copy">复制</span>
-        </button>
-        <button type="button" class="panel-foot-btn" id="panel-retry">
-          <span data-i18n="picker.action.retry">重试</span>
-        </button>
+        <button type="button" class="panel-foot-btn" id="panel-speak" title="朗读" aria-label="朗读"
+                data-i18n-title="picker.action.read" data-i18n-aria-label="picker.action.read"></button>
+        <button type="button" class="panel-foot-btn" id="panel-copy" title="复制" aria-label="复制"
+                data-i18n-title="picker.action.copy" data-i18n-aria-label="picker.action.copy"></button>
+        <button type="button" class="panel-foot-btn" id="panel-retry" title="重试" aria-label="重试"
+                data-i18n-title="picker.action.retry" data-i18n-aria-label="picker.action.retry"></button>
+        <button type="button" class="panel-foot-btn panel-foot-stop" id="panel-stop"
+                title="停止" aria-label="停止" disabled
+                data-i18n-title="picker.action.stop" data-i18n-aria-label="picker.action.stop"></button>
       </div>
       <div class="panel-resize-grip" id="panel-resize-grip" role="separator"
            aria-label="调整面板大小" title="拖动调整大小 · 双击恢复自动大小"

@@ -8,7 +8,9 @@ Lexora 是 Windows 桌面划词翻译工具，使用 Tauri v2 构建：Rust 负�
 lexora.exe
 ├─ 主线程 / Tauri runtime
 │   ├─ settings 窗口（WebView2，index.html）
-│   ├─ picker 结果面板窗口（WebView2，透明置顶，picker.html）\n│   ├─ picker-toolbar 临时划词工具栏窗口（WebView2，透明置顶）
+│   ├─ picker 结果面板窗口（WebView2，透明置顶，picker.html）
+│   ├─ picker-toolbar 临时划词工具栏窗口（WebView2，透明置顶）
+│   ├─ quicktranslate 快捷翻译窗口（WebView2，透明置顶，quicktranslate.html）
 │   ├─ capture-<n> 截图 overlay 窗口（每显示器一个，隐藏复用，capture.html）
 │   ├─ longshot 长截图预览窗口（手动滚动时显示，longshot.html）
 │   ├─ pin-<id> 钉图窗口（置顶无边框，pin.html）
@@ -19,6 +21,8 @@ lexora.exe
 │   └─ 鼠标拖动/多击/外部点击判断 → channel
 ├─ 截图快捷键线程（RegisterHotKey 消息循环）
 │   └─ 全局快捷键 → start_capture（单实例截图守卫）
+├─ 快捷翻译快捷键线程（RegisterHotKey 消息循环）
+│   └─ 全局快捷键 → quicktranslate 显隐（`quick_set_hotkey` 热更新）
 ├─ 长截图抓帧线程（每次会话一个，阻塞线程内使用 xcap）
 │   └─ 定时抓选区 → 行/列重叠检测 → 双向拼接 → 预览窗口
 ├─ 取词线程（每次请求一个，可抛弃）
@@ -34,12 +38,13 @@ lexora.exe
 | `commands.rs` | 全部 `invoke` 命令；组装 `StatePayload` 广播前端 |
 | `windows.rs` | picker 面板、临时工具栏、settings 与 capture overlay 的几何、显示/隐藏和 pending payload |
 | `capture.rs` | 截图会话：热点单实例守卫、xcap 抓屏、overlay 复用、裁切/标注合成、剪贴板、技能分发、长截图 seed/拼接算法 |
+| `quicktranslate.rs` | 快捷翻译面板：全局热键（默认 `Alt+Space`）、窗口显隐与 Pin、`quick_translate` 流式任务、翻译历史存储（`quick-history.json`，上限 500）、源语言启发式检测 |
 | `longshot.rs` | 手动滚动长截图：预览窗口、后台抓帧线程、双向（行/列）拼接、方向切换、完成/取消 |
 | `pin.rs` | 钉在桌面窗口：图片 registry、DPI 适配尺寸、置顶窗口、拖动/复制/关闭 |
 | `updater.rs` | 检查 GitHub Release、下载并替换 exe、助手脚本重启（自更新） |
 | `tray.rs` | 托盘图标与菜单（显示设置、启用划词、本地引擎启停、退出） |
 | `state.rs` | `AppState`：paths、logger、settings store、engine、selection、翻译任务句柄 |
-| `settings.rs` | 设置 schema（v9）、归一化、原子持久化（`settings.json`）、`effective_language()` |
+| `settings.rs` | 设置 schema（v11）、归一化、原子持久化（`settings.json`）、`effective_language()` |
 | `locale.rs` | 界面语言检测：Windows 区域（`GetUserDefaultLocaleName`）→ 时区键（`GetDynamicTimeZoneInformation`）→ 英文兜底 |
 | `paths.rs` | 便携数据目录解析（exe 同级 `data/` 优先，回退 `%APPDATA%`） |
 | `logger.rs` | 10MB 滚动文件日志，保留一个历史分卷，API Key 脱敏 |
@@ -110,7 +115,7 @@ picker.js → invoke("picker_translate", {requestId,text,targetLang})
 
 - 引擎：llama.cpp 官方 `win-cpu-x64` 发布包（约 23MB），解压到 `<data>/engine/`。
 - 模型：GGUF 放在 `<data>/models/`；仅内置 Qwen3.5 0.8B / 2B / 4B 的 Q4_K_M、Q3_K_M 六种翻译 / 通用 / 视觉选项，均从 ModelScope 下载（Apache-2.0），也支持手动导入 GGUF。Qwen3.5 各档搭配对应的 `mmproj-F16.gguf`，本地按模型规格区分投影器文件名，避免不同规格互相覆盖。
-- 选模：翻译、通用文本和视觉任务共用用户手动选择的唯一 Qwen3.5 模型，持久化到 `settings.provider.local.selectedModel`（settings schema v9，JSON 中为 `provider.local.selectedModel`）。未选择时返回明确提示，不自动替选；CPU、内存和显存检测只用于推荐标签及理由。推荐梯度以内存与线程为主、显存可升档：显存 ≥10GB 且内存 ≥16GB、线程 ≥8，或内存 ≥32GB 且线程 ≥12 时为 4B Q4；内存 ≥24GB 且线程 ≥8 为 4B Q3；内存 ≥16GB 按线程为 2B Q4/Q3；内存 ≥8GB、线程 ≥6 为 0.8B Q4；其余为 0.8B Q3。内置引擎为 CPU 版，显存不影响实际推理速度。切换选择后需重启本地引擎。旧 Qwen2.5 文件保留，不再参与内置自动选择。
+- 选模：翻译、通用文本和视觉任务共用用户手动选择的唯一 Qwen3.5 模型，持久化到 `settings.provider.local.selectedModel`（settings schema v11，JSON 中为 `provider.local.selectedModel`）。未选择时返回明确提示，不自动替选；CPU、内存和显存检测只用于推荐标签及理由。推荐梯度以内存与线程为主、显存可升档：显存 ≥10GB 且内存 ≥16GB、线程 ≥8，或内存 ≥32GB 且线程 ≥12 时为 4B Q4；内存 ≥24GB 且线程 ≥8 为 4B Q3；内存 ≥16GB 按线程为 2B Q4/Q3；内存 ≥8GB、线程 ≥6 为 0.8B Q4；其余为 0.8B Q3。内置引擎为 CPU 版，显存不影响实际推理速度。切换选择后需重启本地引擎。旧 Qwen2.5 文件保留，不再参与内置自动选择。
 - 启动参数：`llama-server.exe -m <model> --host 127.0.0.1 --port <free> -c <ctx> -t <threads> -ngl <gpuLayers> -np 1 -b 512 -ub 256 --no-warmup --no-webui`，视觉请求追加 `--mmproj <path>`（`-c` 至少 8192）。应用同一时刻只跑一个流，因此只用 1 个 server slot；512/256 的批大小与 `--no-warmup` 用来压低常驻内存与启动峰值。实测 0.8B Q4 在 `-c 4096` 下私有内存约 0.9GB（原默认参数约 1.4GB），2B 约 1.7GB（原约 2.2GB）。
 - 内存按需加载：启动与文字/翻译任务不加载视觉投影器（省 0.2–0.7GB），首次截图视觉任务时重启并追加 `--mmproj`；之后文字请求复用该 server，不反复重启。投影器缺失时文字任务可用，视觉任务给出补下载提示。
 - 空闲自动停止与孤儿清理：无请求满 10 分钟（固定值，不提供配置；请求开始与每个流式分块都会刷新空闲计时）时停止 llama-server，保留 `keepRunning` 与「启动」记忆，下次请求或点「启动」重新加载。子进程绑定 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的 Job Object，应用崩溃即由系统回收；PID 写入 `<data>/llama-server.pid`，下次启动只在进程镜像等于本应用 `engine/llama-server.exe` 时终止残留进程。所有停止/失败路径都 kill + wait 并删除 PID 文件。
@@ -121,15 +126,15 @@ picker.js → invoke("picker_translate", {requestId,text,targetLang})
 
 ## 设置与便携
 
-`settings.json` 与模型/引擎都放在数据目录（默认 exe 同级 `data/`），解压到 U 盘或任意目录都能独立使用。数据目录不可写时回退 `%APPDATA%\Lexora`。设置 schema 为 **9**，`app.language`（`system|zh|en`，默认 `system`）保存界面语言原始设置。
+`settings.json` 与模型/引擎都放在数据目录（默认 exe 同级 `data/`），解压到 U 盘或任意目录都能独立使用。数据目录不可写时回退 `%APPDATA%\Lexora`。设置 schema 为 **11**（0.4.2 的 10 之上新增 `app.language`），`app.language`（`system|zh|en`，默认 `system`）保存界面语言原始设置，`quick` 块保存快捷翻译面板设置。
 
 ## 界面语言与 i18n
 
 界面语言的解析与注入分为检测、下发、渲染与提示词四层，全程不引入前端构建步骤：
 
-1. **检测（Rust `locale.rs`）**：`settings.app.language` 为 `system` 时，先读 Windows 用户区域（`GetUserDefaultLocaleName`，`zh*`→`zh`、`en*`→`en`，`zh-Hant`/`zh-TW` 等一律归 `zh`），区域不支持再读时区键（`GetDynamicTimeZoneInformation`：China/Taipei/Hong Kong/Singapore Standard Time→`zh`；GMT/UTC/W. Europe/Eastern/Central/Mountain/Pacific/Tokyo/Korea Standard Time→`en`），仍无法判断回退 `en`。`Settings::effective_language()` 把 `system` 解析为 `zh|en`，显式 `zh`/`en` 直接生效；归一化接受 `zh`/`zh-CN`、`en`/`en-US`/`en-GB`，其他值回退 `system`（迁移不丢历史设置，v8→v9 只补默认值）。
+1. **检测（Rust `locale.rs`）**：`settings.app.language` 为 `system` 时，先读 Windows 用户区域（`GetUserDefaultLocaleName`，`zh*`→`zh`、`en*`→`en`，`zh-Hant`/`zh-TW` 等一律归 `zh`），区域不支持再读时区键（`GetDynamicTimeZoneInformation`：China/Taipei/Hong Kong/Singapore Standard Time→`zh`；GMT/UTC/W. Europe/Eastern/Central/Mountain/Pacific/Tokyo/Korea Standard Time→`en`），仍无法判断回退 `en`。`Settings::effective_language()` 把 `system` 解析为 `zh|en`，显式 `zh`/`en` 直接生效；归一化接受 `zh`/`zh-CN`、`en`/`en-US`/`en-GB`，其他值回退 `system`（迁移不丢历史设置，v10→v11 只补默认值）。
 2. **下发（Rust → 前端）**：`StatePayload.app.locale` 为生效语言，`app.languageSetting` 为原始设置（设置页下拉回显）。picker 从 `picker-data.config.locale` 初始化（截图结果面板同源）；`capture-*`、`pin-*`、`longshot`、`longshot-bar` 窗口在 URL 追加 `lang=<zh|en>`，首帧即用正确语言，避免闪一下错误语言。
-3. **渲染（`web/shared/i18n.js`，无构建步骤）**：纯静态 JS，在 `shared/constants.js` 与语言包之后、页面脚本之前以普通 `<script>` 加载；`LP.t(key, params)` 依次查当前包、`en` 包、key 本身，`LP.i18n.init/setLocale/applyStatic` 替换 `data-i18n*` 标记的静态文案；语言包 `messages.zh.js` / `messages.en.js` key 集合一致（645 个）。切换语言后各窗口重渲染依赖语言的动态内容（面板标题、目标语言下拉、toast 等），无需重启。所有窗口仍是无 bundler 的静态资源。
+3. **渲染（`web/shared/i18n.js`，无构建步骤）**：纯静态 JS，在 `shared/constants.js` 与语言包之后、页面脚本之前以普通 `<script>` 加载；`LP.t(key, params)` 依次查当前包、`en` 包、key 本身，`LP.i18n.init/setLocale/applyStatic` 替换 `data-i18n*` 标记的静态文案；语言包 `messages.zh.js` / `messages.en.js` key 集合一致（由 `web/i18n.test.cjs` 校验）。切换语言后各窗口重渲染依赖语言的动态内容（面板标题、目标语言下拉、toast 等），无需重启。所有窗口仍是无 bundler 的静态资源；快捷翻译面板（`quicktranslate.html`）暂未接入语言包，文案固定中文。
 4. **提示词的语言**：`engine/prompts.rs` 的默认总结/解释/图片解释/追问提示词用 `{answer}` 占位符，渲染为 `effective_language()` 对应的英文语言名（`zh`→`Simplified Chinese`、`en`→`English`）；自定义提示词含 `{answer}` 时替换，否则末尾追加 `Answer language: <name>.`。解释模式的单词查询释义使用本地语言，翻译目标仍由下拉/`auto` 决定（中文→英文、其他→中文，与界面语言无关）。`PROMPT_VERSION` 为 `12`，模型日志按解析结果记录模式/来源/版本，不记录正文。
 
 ## 安全与隐私
@@ -148,7 +153,7 @@ picker.js → invoke("picker_translate", {requestId,text,targetLang})
 - 混合 DPI 多屏等场景见 `docs/spike-report.md` 的遗留风险。
 
 
-## 提示词、读音与生成边界（schema 9）
+## 提示词、读音与生成边界（schema 11）
 
 `engine/prompts.rs` 的 `resolve_text_prompt()` 统一解析文本翻译/解释的提示词来源、模式和版本（`PROMPT_VERSION` = 12），日志直接使用解析结果。翻译使用两套提示词、由算法按输入形态自动切换：`picker.prompts.translate` 处理普通翻译，`picker.prompts.wordLookup` 处理被 `single_word_kind()` 判定为单个词或短语的输入（空值各自回退内置默认）。解释技能同样对候选词使用单词提示词，但词条释义语言取本地语言（`effective_language()`），而不是固定简体中文；其余解释走 `picker.prompts.explain`。没有单词查询模式字段，也没有离线读音模块。`default_prompts()` 暴露 translate/wordLookup/summarize/explain/polish 及截图动作默认提示词。
 
