@@ -41,6 +41,10 @@ pub const QUICK_LABEL: &str = "quicktranslate";
 /// Event pushed to the panel when it is shown; the renderer focuses its input
 /// and refreshes its configuration.
 pub const EVENT_SHOW: &str = "quick-show";
+/// Event pushed to the panel when the effective UI language changes
+/// (`payload = { "locale": "zh" | "en" }`). It is emitted even while the panel
+/// is hidden, so the next show already renders in the new language.
+pub const EVENT_LOCALE: &str = "quick-locale";
 /// Stream event name shared with the picker (`chunk` / `done` / `error`), but
 /// always emitted **to the quick panel only** (contract §4).
 pub const EVENT_TRANSLATE: &str = "translate-event";

@@ -2,9 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **后续更新（2026-11-07，合并 0.4.2 后补记）**：R1 范围已扩展到 0.4.2 引入的快捷翻译面板与设置页「快捷翻译」卡片——面板文案纳入语言包，`quick_ready` 返回 `locale`，设置页切换语言时向面板推送 `quick-locale` 事件。R1 最终实现范围与剩余限制见 [ROADMAP](../../../ROADMAP.md) 与 [CHANGELOG](../../../CHANGELOG.md)。
+
 **Goal:** 界面支持中英双语，首次启动按系统区域/时区自动选择本地语言，并让 AI 默认以本地语言输出（翻译目标 auto、解释/总结/词条/追问的语言）。
 
-**Architecture:** Rust 侧新增 `locale` 模块负责系统区域与时区检测，`app.language`（`system|zh|en`）持久化到 settings schema v9；`StatePayload.app` 暴露有效语言。前端新增无构建的 `web/shared/i18n.js` 与 `messages.{zh,en}.js` 语言包，通过 `data-i18n` 与 `LP.t()` 迁移各窗口文案；页面在 `get_state` 返回后调用 `LP.i18n.setLocale()`。AI 侧把固定中文的输出语言改为 `{answer}` 占位符，由设置中的有效语言决定；`auto` 目标语言改为「本地语言优先」。
+**Architecture:** Rust 侧新增 `locale` 模块负责系统区域与时区检测，`app.language`（`system|zh|en`）持久化到 settings schema v9；`StatePayload.app` 暴露有效语言。前端新增无构建的 `web/shared/i18n.js` 与 `messages.{zh,en}.js` 语言包，通过 `data-i18n` 与 `LP.t()` 迁移各窗口文案；页面在 `get_state` 返回后调用 `LP.i18n.setLocale()`。AI 侧把硬编码中文的输出语言改为 `{answer}` 占位符，由设置中的有效语言决定；`auto` 目标语言改为「本地语言优先」。
 
 **Tech Stack:** Tauri v2（Rust）、无构建静态 HTML/CSS/JS、`windows` crate 0.62（`Win32_Globalization`、`Win32_System_Time`）、`node:test` 前端测试、`cargo test`。
 

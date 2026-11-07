@@ -21,13 +21,32 @@ function extract(source, name) {
 const quickSource = fs.readFileSync(path.join(__dirname, "quicktranslate.js"), "utf8");
 const apiSource = fs.readFileSync(path.join(__dirname, "shared", "tauri-api.js"), "utf8");
 
-const context = vm.createContext({ MAX_CHARS: 20000, console });
+/* Project tables + the real i18n runtime so the localized helpers
+ * (qtFormatElapsed, qtSourceLanguages, qtSourceLangLabel) resolve the packs
+ * instead of a hardcoded label table. */
+const sharedContext = vm.createContext({ window: {}, console });
+for (const file of ["constants.js", "messages.zh.js", "messages.en.js", "i18n.js", "lang.js"]) {
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "shared", file), "utf8"), sharedContext);
+}
+const LP = sharedContext.window.LP;
+LP.i18n.init("zh");
+
+const context = vm.createContext({ MAX_CHARS: 20000, console, LP });
+
+/* The extra source-language table is a top-level const of the page script; the
+ * extracted helpers read it from the shared scope. */
+const extraSourceMatch = /var EXTRA_SOURCE_LANGS = \[([\s\S]*?)\];/.exec(quickSource);
+assert.notEqual(extraSourceMatch, null, "missing EXTRA_SOURCE_LANGS");
+vm.runInContext("var EXTRA_SOURCE_LANGS = [" + extraSourceMatch[1] + "];", context);
 
 for (const name of [
+  "tr",
+  "languageLabel",
   "qtCountChars",
   "qtDetectSourceLang",
   "qtFilterHistory",
   "qtFormatElapsed",
+  "qtElapsedText",
   "qtFormatHistoryTime",
   "qtMakeRequestId",
   "qtNormalizeInput",
@@ -39,11 +58,6 @@ for (const name of [
 }
 
 /* Project target-language table (38 entries), loaded from the real shared file. */
-const sharedContext = vm.createContext({ window: {}, console });
-vm.runInContext(
-  fs.readFileSync(path.join(__dirname, "shared", "constants.js"), "utf8"),
-  sharedContext
-);
 const projectLanguages = Array.from(sharedContext.window.LP.LANGUAGES, (entry) => ({
   value: entry.value,
   label: entry.label,
@@ -177,7 +191,8 @@ test("character counter counts code points like the Rust side", () => {
   assert.equal(context.qtCountChars(12345), 5);
 });
 
-test("elapsed formatting shows seconds with one decimal or a dash", () => {
+test("elapsed formatting shows localized seconds with one decimal or a dash", () => {
+  LP.i18n.init("zh");
   assert.equal(context.qtFormatElapsed(842), "0.8 秒");
   assert.equal(context.qtFormatElapsed(842.6), "0.8 秒");
   assert.equal(context.qtFormatElapsed(1100), "1.1 秒");
@@ -193,6 +208,16 @@ test("elapsed formatting shows seconds with one decimal or a dash", () => {
   assert.equal(context.qtFormatElapsed(""), "—");
   assert.equal(context.qtFormatElapsed(-5), "—");
   assert.equal(context.qtFormatElapsed("abc"), "—");
+  // The footer sentence and the unit both come from the active pack.
+  assert.equal(context.qtElapsedText(1100), "耗时 1.1 秒");
+  assert.equal(context.qtElapsedText(null), "耗时 —");
+  assert.equal(context.qtElapsedText(0), "耗时 —");
+  LP.i18n.init("en");
+  assert.equal(context.qtFormatElapsed(1100), "1.1s");
+  assert.equal(context.qtFormatElapsed(0), "—");
+  assert.equal(context.qtElapsedText(1100), "Took 1.1s");
+  assert.equal(context.qtElapsedText(null), "Took —");
+  LP.i18n.init("zh");
 });
 
 test("history time formatting uses the local 2026/11/02 10:15 shape", () => {
@@ -234,6 +259,7 @@ test("input normalization trims and truncates to 20000 code points", () => {
 });
 
 test("source language selector list covers auto + project + extra languages", () => {
+  LP.i18n.init("zh");
   const list = json(context.qtSourceLanguages(projectLanguages));
   assert.equal(list.length, 1 + projectLanguages.length + 28);
   assert.deepEqual(list[0], { value: "auto", label: "自动识别" });
@@ -243,7 +269,7 @@ test("source language selector list covers auto + project + extra languages", ()
   assert.ok(values.every((value) => typeof value === "string" && value.length > 0));
   assert.ok(
     list.every((entry) => /[\u4e00-\u9fff]/.test(entry.label)),
-    "every label is Chinese"
+    "every zh label is Chinese"
   );
 
   const byValue = Object.fromEntries(list.map((entry) => [entry.value, entry.label]));
@@ -293,7 +319,28 @@ test("source language selector list covers auto + project + extra languages", ()
   }
 });
 
-test("source language list drops duplicates and keeps base labels", () => {
+test("source and history language labels follow the UI language", () => {
+  LP.i18n.init("zh");
+  assert.equal(context.qtSourceLangLabel("sv", context.qtSourceLanguages(projectLanguages)), "瑞典语");
+  LP.i18n.init("en");
+  const enList = json(context.qtSourceLanguages(projectLanguages));
+  assert.equal(enList[0].label, "Auto detect");
+  assert.equal(enList.find((entry) => entry.value === "zh").label, "Chinese");
+  assert.equal(enList.find((entry) => entry.value === "en").label, "English");
+  assert.equal(enList.find((entry) => entry.value === "sv").label, "Swedish");
+  assert.ok(
+    enList.every((entry) => !/[\u4e00-\u9fff]/.test(entry.label)),
+    "no Chinese labels in the English pack"
+  );
+  assert.equal(context.qtSourceLangLabel("sv", enList), "Swedish");
+  assert.equal(context.qtSourceLangLabel("zh-hant", enList), "Traditional Chinese");
+  // Unknown detector codes still fall back to the upper-cased code.
+  assert.equal(context.qtSourceLangLabel("xx", enList), "XX");
+  LP.i18n.init("zh");
+});
+
+test("source language list drops duplicates and re-resolves pack labels", () => {
+  LP.i18n.init("zh");
   const base = [
     { value: "auto", label: "不应出现" },
     { value: "sv", label: "自定义瑞典语" },
@@ -302,7 +349,8 @@ test("source language list drops duplicates and keeps base labels", () => {
   const list = json(context.qtSourceLanguages(base));
   assert.equal(list.filter((entry) => entry.value === "auto").length, 1);
   assert.equal(list.filter((entry) => entry.value === "sv").length, 1);
-  assert.equal(list.find((entry) => entry.value === "sv").label, "自定义瑞典语");
+  // Labels come from the active pack, not from the caller's metadata.
+  assert.equal(list.find((entry) => entry.value === "sv").label, "瑞典语");
   assert.equal(list.find((entry) => entry.value === "zh").label, "中文");
 
   // Missing/hostile base data must not break the selector.
@@ -321,7 +369,8 @@ test("source language normalization falls back to auto", () => {
   assert.equal(context.qtNormalizeSourceLang(undefined, list), "auto");
 });
 
-test("history source language labels use the Chinese table and never auto", () => {
+test("history source language labels use the active table and never auto", () => {
+  LP.i18n.init("zh");
   const list = json(context.qtSourceLanguages(projectLanguages));
   assert.equal(context.qtSourceLangLabel("sv", list), "瑞典语");
   assert.equal(context.qtSourceLangLabel("zh", list), "中文");
@@ -444,4 +493,221 @@ test("preview mock keeps quick word-lookup prompt and source language", async ()
   assert.equal(entriesAfterFallback.length, 2);
   // "Ett till test." is Latin; without the fallback the mock would store "en".
   assert.equal(entriesAfterFallback[0].sourceLang, "sv");
+});
+
+test("preview mock exposes the UI locale and emits quick-locale", async () => {
+  const mockWindow = {
+    location: { search: "" },
+    setTimeout: (callback) => setTimeout(callback, 0),
+    clearTimeout,
+    setInterval: (callback) => setInterval(callback, 0),
+    clearInterval,
+  };
+  const mockContext = vm.createContext({ window: mockWindow, console });
+  const load = (file) =>
+    vm.runInContext(fs.readFileSync(path.join(__dirname, "shared", file), "utf8"), mockContext);
+  load("constants.js");
+  load("tauri-api.js");
+  const quickApi = mockWindow.quickAPI;
+
+  // quick_ready carries the effective UI language (defaults to zh in the mock).
+  assert.equal((await quickApi.ready()).locale, "zh");
+
+  // The settings page switching the language emits `quick-locale` to this
+  // window; the next quick_ready already reports the new locale.
+  const events = [];
+  quickApi.onLocale((payload) => events.push(payload));
+  assert.equal(mockWindow.__mockQuickLocale("en"), "en");
+  assert.equal(events.length, 1);
+  assert.equal(events[0].locale, "en");
+  assert.equal((await quickApi.ready()).locale, "en");
+
+  // Unknown locales normalize back to zh.
+  assert.equal(mockWindow.__mockQuickLocale("bogus"), "zh");
+  assert.equal(events.at(-1).locale, "zh");
+  assert.equal((await quickApi.ready()).locale, "zh");
+});
+
+test("applyLocale initializes once, switches on change and ignores junk", () => {
+  const context = vm.createContext({ console, LP, localeInitialized: false });
+  vm.runInContext(extract(quickSource, "applyLocale"), context);
+  LP.i18n.init("zh");
+  // First call initializes the shared runtime even when the guess matches.
+  assert.equal(context.applyLocale("zh"), false);
+  assert.equal(context.localeInitialized, true);
+  assert.equal(context.applyLocale("en"), true);
+  assert.equal(LP.i18n.currentLocale(), "en");
+  assert.equal(context.applyLocale("en"), false);
+  // Locale-looking tags are normalized; unknown/empty values are ignored.
+  assert.equal(context.applyLocale("zh-CN"), true);
+  assert.equal(LP.i18n.currentLocale(), "zh");
+  assert.equal(context.applyLocale("bogus"), false);
+  assert.equal(context.applyLocale(null), false);
+  assert.equal(context.applyLocale(""), false);
+  LP.i18n.init("zh");
+});
+
+/* ---- Chrome rendering in both locales ---------------------------------- */
+
+/* Minimal DOM node the extracted renderers can build into. */
+function fakeElement(tag) {
+  const node = {
+    tagName: String(tag || "").toUpperCase(),
+    className: "",
+    textContent: "",
+    _html: "",
+    children: [],
+    attrs: {},
+    disabled: false,
+    title: "",
+    value: "",
+    classList: { toggle() {}, add() {}, remove() {} },
+    setAttribute(name, value) {
+      node.attrs[name] = String(value);
+    },
+    getAttribute(name) {
+      return Object.prototype.hasOwnProperty.call(node.attrs, name)
+        ? node.attrs[name]
+        : null;
+    },
+    appendChild(child) {
+      node.children.push(child);
+      return child;
+    },
+    addEventListener() {},
+  };
+  Object.defineProperty(node, "innerHTML", {
+    get() {
+      return node._html;
+    },
+    set(value) {
+      node._html = String(value);
+      if (!value) {
+        node.children.length = 0;
+      }
+    },
+  });
+  return node;
+}
+
+function renderHarness(extra) {
+  const context = vm.createContext(
+    Object.assign(
+      {
+        console,
+        LP,
+        MAX_CHARS: 20000,
+        document: { createElement: fakeElement },
+      },
+      extra
+    )
+  );
+  for (const name of ["tr", "languageLabel", "qtCountChars", "normalizeTargetCode"]) {
+    vm.runInContext(extract(quickSource, name), context);
+  }
+  return context;
+}
+
+test("empty and loading result copy follows the UI language", () => {
+  const resultNode = fakeElement("div");
+  const context = renderHarness({
+    resultNode,
+    state: { raw: "" },
+    updateResultCount() {},
+    scheduleWindowResize() {},
+  });
+  for (const name of ["renderEmptyResult", "renderLoading"]) {
+    vm.runInContext(extract(quickSource, name), context);
+  }
+
+  LP.i18n.init("zh");
+  context.renderEmptyResult();
+  assert.equal(resultNode.getAttribute("data-state"), "empty");
+  const empty = resultNode.children[0];
+  assert.equal(empty.className, "qt-empty");
+  assert.equal(empty.children[0].textContent, "译文会显示在这里");
+  assert.equal(empty.children[1].textContent, "按 Ctrl+Enter 或点击「翻译」");
+
+  context.renderLoading();
+  assert.equal(resultNode.getAttribute("data-state"), "loading");
+  assert.equal(resultNode.children[0].children[1].textContent, "正在翻译…");
+
+  LP.i18n.init("en");
+  context.renderEmptyResult();
+  assert.equal(resultNode.children[0].children[0].textContent, "The translation will appear here");
+  assert.equal(resultNode.children[0].children[1].textContent, "Press Ctrl+Enter or click Translate");
+  context.renderLoading();
+  assert.equal(resultNode.children[0].children[1].textContent, "Translating…");
+  LP.i18n.init("zh");
+});
+
+test("counters and target options follow the UI language", () => {
+  const sourceCount = fakeElement("span");
+  const resultCount = fakeElement("span");
+  const copyButton = fakeElement("button");
+  const speakButton = fakeElement("button");
+  const targetSelect = fakeElement("select");
+  const context = renderHarness({
+    sourceCount,
+    resultCount,
+    copyButton,
+    speakButton,
+    targetSelect,
+    sourceInput: { value: "abc" },
+    LANGUAGES: LP.LANGUAGES.slice(),
+    state: { raw: "你好", quick: { targetLang: "zh" } },
+    syncSpeakUi() {},
+  });
+  for (const name of ["updateSourceCount", "updateResultCount", "renderTargetOptions"]) {
+    vm.runInContext(extract(quickSource, name), context);
+  }
+
+  LP.i18n.init("zh");
+  context.updateSourceCount();
+  assert.equal(sourceCount.textContent, "3 / 20000 字符");
+  context.updateResultCount();
+  assert.equal(resultCount.textContent, "2 字符");
+  assert.equal(copyButton.disabled, false);
+  context.renderTargetOptions();
+  const zhTarget = targetSelect.children;
+  assert.equal(zhTarget.length, LP.LANGUAGES.length);
+  assert.equal(zhTarget.find((option) => option.value === "zh").textContent, "中文");
+  assert.equal(zhTarget.find((option) => option.value === "en").textContent, "英语");
+
+  LP.i18n.init("en");
+  context.updateSourceCount();
+  assert.equal(sourceCount.textContent, "3 / 20000 characters");
+  context.updateResultCount();
+  assert.equal(resultCount.textContent, "2 characters");
+  context.renderTargetOptions();
+  const enTarget = targetSelect.children;
+  assert.equal(enTarget.find((option) => option.value === "zh").textContent, "Chinese");
+  assert.equal(enTarget.find((option) => option.value === "en").textContent, "English");
+  assert.ok(
+    enTarget.every((option) => !/[\u4e00-\u9fff]/.test(option.textContent)),
+    "no Chinese target labels in the English UI"
+  );
+  LP.i18n.init("zh");
+});
+
+test("panel chrome strings resolve in both packs", () => {
+  LP.i18n.init("zh");
+  for (const [key, zh, en] of [
+    ["quick.windowTitle", "Lexora 快捷翻译", "Lexora Quick Translate"],
+    ["quick.action.swap", "交换源语言与目标语言", "Swap source and target languages"],
+    ["quick.elapsedNone", "耗时 —", "Took —"],
+    ["quick.elapsed", "耗时 1.1 秒", "Took 1.1s"],
+    ["quick.history.summary", "共 3 条", "3 entries"],
+    ["quick.history.summaryFiltered", "共 3 条，匹配 3 条", "3 entries, 3 match"],
+    ["quick.toast.swapped", "已交换语言：中文 ↔ 英语", "Languages swapped: Chinese ↔ English"],
+  ]) {
+    assert.equal(LP.t(key, { time: "1.1 秒", count: 3, total: 3, from: "中文", to: "英语" }), zh, key);
+    LP.i18n.init("en");
+    assert.equal(
+      LP.t(key, { time: "1.1s", count: 3, total: 3, from: "Chinese", to: "English" }),
+      en,
+      key
+    );
+    LP.i18n.init("zh");
+  }
 });

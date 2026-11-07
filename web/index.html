@@ -401,15 +401,15 @@
     <section class="card" aria-labelledby="card-quick-title">
       <div class="card-head">
         <div class="card-head-text">
-          <h2 id="card-quick-title">快捷翻译</h2>
-          <p>按快捷键呼出翻译面板，再次按下隐藏。</p>
+          <h2 id="card-quick-title" data-i18n="settings.quick.title">快捷翻译</h2>
+          <p data-i18n="settings.quick.desc">按快捷键呼出翻译面板，再次按下隐藏。</p>
         </div>
       </div>
       <div class="card-body">
         <div class="field field-switch">
           <div class="field-label">
-            <span class="field-name">启用快捷翻译</span>
-            <p class="field-hint">关闭后快捷键不注册，面板不显示</p>
+            <span class="field-name" data-i18n="settings.quick.enabled">启用快捷翻译</span>
+            <p class="field-hint" data-i18n="settings.quick.enabledHint">关闭后快捷键不注册，面板不显示</p>
           </div>
           <div class="field-control">
             <label class="switch">
@@ -421,45 +421,50 @@
 
         <div class="field field-stack">
           <div class="field-label">
-            <label for="quick-prompt">段落 / 长句提示词</label>
-            <p class="field-hint">支持 {source} 与 {target} 占位符；留空或与默认一致时使用内置提示词</p>
+            <label for="quick-prompt" data-i18n="settings.quick.promptLabel">段落 / 长句提示词</label>
+            <p class="field-hint" data-i18n="settings.quick.promptHint">支持 {source} 与 {target} 占位符；留空或与默认一致时使用内置提示词</p>
           </div>
           <div class="field-control">
             <textarea class="textarea quick-prompt" id="quick-prompt" rows="6" maxlength="4000"
                       spellcheck="false"
-                      placeholder="留空使用内置默认提示词，可写 {source} / {target}"></textarea>
+                      placeholder="留空使用内置默认提示词，可写 {source} / {target}"
+                      data-i18n-placeholder="settings.quick.promptPlaceholder"></textarea>
             <div class="skill-prompt-foot">
-              <p class="skill-prompt-hint" id="quick-prompt-hint">{source}/{target} 分别替换为源语言/目标语言名；自动识别源语言时 {source} 使用检测到的语言（翻译时解析）</p>
+              <p class="skill-prompt-hint" id="quick-prompt-hint"
+                 data-i18n="settings.quick.promptHintDetail">{source}/{target} 分别替换为源语言/目标语言名；自动识别源语言时 {source} 使用检测到的语言（翻译时解析）</p>
               <button type="button" class="btn btn-ghost skill-prompt-reset"
-                      id="quick-prompt-reset">重置为默认</button>
+                      id="quick-prompt-reset" data-i18n="settings.quick.resetPrompt">重置为默认</button>
             </div>
           </div>
         </div>
 
         <div class="field field-stack">
           <div class="field-label">
-            <label for="quick-word-prompt">单词 / 短语提示词</label>
-            <p class="field-hint">支持 {source} 与 {target} 占位符；留空或与默认一致时使用内置提示词</p>
+            <label for="quick-word-prompt" data-i18n="settings.quick.wordPromptLabel">单词 / 短语提示词</label>
+            <p class="field-hint" data-i18n="settings.quick.promptHint">支持 {source} 与 {target} 占位符；留空或与默认一致时使用内置提示词</p>
           </div>
           <div class="field-control">
             <textarea class="textarea quick-prompt" id="quick-word-prompt" rows="6" maxlength="4000"
                       spellcheck="false"
-                      placeholder="留空使用内置默认提示词，可写 {source} / {target}"></textarea>
+                      placeholder="留空使用内置默认提示词，可写 {source} / {target}"
+                      data-i18n-placeholder="settings.quick.promptPlaceholder"></textarea>
             <div class="skill-prompt-foot">
-              <p class="skill-prompt-hint" id="quick-word-prompt-hint">识别为单词/短语时使用；{source}/{target} 分别替换为源语言/目标语言名；自动识别源语言时 {source} 使用检测到的语言（翻译时解析）</p>
+              <p class="skill-prompt-hint" id="quick-word-prompt-hint"
+                 data-i18n="settings.quick.wordPromptHintDetail">识别为单词/短语时使用；{source}/{target} 分别替换为源语言/目标语言名；自动识别源语言时 {source} 使用检测到的语言（翻译时解析）</p>
               <button type="button" class="btn btn-ghost skill-prompt-reset"
-                      id="quick-word-prompt-reset">重置为默认</button>
+                      id="quick-word-prompt-reset" data-i18n="settings.quick.resetPrompt">重置为默认</button>
             </div>
           </div>
         </div>
 
         <div class="field field-switch">
           <div class="field-label">
-            <span class="field-name">翻译历史</span>
-            <p class="field-hint">最多保留 500 条</p>
+            <span class="field-name" data-i18n="settings.quick.history">翻译历史</span>
+            <p class="field-hint" data-i18n="settings.quick.historyHint">最多保留 500 条</p>
           </div>
           <div class="field-control">
-            <button type="button" class="btn btn-danger" id="quick-history-clear">清空历史</button>
+            <button type="button" class="btn btn-danger" id="quick-history-clear"
+                    data-i18n="settings.quick.clearHistory">清空历史</button>
           </div>
         </div>
       </div>

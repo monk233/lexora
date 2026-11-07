@@ -1,7 +1,7 @@
 # 快捷翻译面板（Quick Translate）—— 功能契约
 
-> 状态：已实现（v0.4.2）。本文件是三层实现（Rust shell / quicktranslate 渲染端 / 设置页）的接口来源。
-> 与现有约定一致的风格：中文用户文案、英文代码注释、`camelCase` IPC 字段。
+> 状态：已实现（v0.4.2）；面板与设置页「快捷翻译」卡片的界面文案已纳入语言包（§7.3），随界面语言切换。本文件是三层实现（Rust shell / quicktranslate 渲染端 / 设置页）的接口来源。
+> 与现有约定一致的风格：用户可见文案走语言包（`web/shared/messages.*.js`）、英文代码注释、`camelCase` IPC 字段。
 
 ## 1. 目标
 
@@ -28,6 +28,7 @@
   - 隐藏时中止进行中的流（`abort_translate`）。
 - **Tauri capabilities**：`src-tauri/capabilities/default.json` 的 `windows` 必须包含 `quicktranslate`（需要 `core:event:default` 才能监听 `translate-event` / `quick-show`；缺失时命令仍会执行但渲染端永远收不到流事件，表现为面板一直停在「正在翻译…」）。
 - Pin：`always_on_top` 切换；Pin 状态写入 `quick.pinned`，下次呼出恢复。
+- 界面语言：面板文案来自语言包；`quick_ready` 返回生效语言 `locale`（`zh|en`），设置页切换语言时 Rust 向本窗口推送事件 `quick-locale`（`{locale:"zh"|"en"}`，窗口隐藏时也送达），面板收到后重渲染；首帧先按 `<html lang>` / `navigator.language` 猜测，拿到 `quick_ready.locale` 后覆盖（§7.3）。
 
 ## 3. 设置字段（settings schema 11，`quick` 块自 schema 10 引入）
 
@@ -60,7 +61,7 @@
 
 | 命令 | 参数 | 返回 | 说明 |
 |---|---|---|---|
-| `quick_ready` | 无 | `{ok, quick:{enabled,hotkey,sourceLang,targetLang,prompt,wordLookupPrompt,pinned}, promptDefault, promptDefaults}` | 渲染端启动/显示时刷新配置；`promptDefault`/`promptDefaults` 为内置默认英文提示词（含 `{source}`/`{target}` 占位符） |
+| `quick_ready` | 无 | `{ok, locale, quick:{enabled,hotkey,sourceLang,targetLang,prompt,wordLookupPrompt,pinned}, promptDefault}` | 渲染端启动/显示时刷新配置；`locale` 为生效界面语言（`zh`/`en`）；`promptDefault` 为面板段落模式的内置默认英文提示词（含 `{source}`/`{target}` 占位符）。设置页的两个默认提示词来自 `get_state` 的 `promptDefaults.quickTranslate` / `promptDefaults.quickTranslateWordLookup` |
 | `quick_open` | 无 | `{ok}` | 显示 + 聚焦（设置页/测试用，热键内部也走同一逻辑） |
 | `quick_hide` | 无 | `{ok}` | 隐藏窗口；前端 Esc / 关闭后调用 |
 | `quick_resize` | `width,height`（逻辑像素） | `{ok,width,height}` | 渲染端自适应尺寸；宽 clamp `[640,1600]`、高 clamp `[420, min(760, 屏幕工作区高度-80)]`，位置 clamp 到虚拟屏幕 |
@@ -91,7 +92,8 @@
   - `{requestId, type:"done", elapsedMs}`（`elapsedMs` 为本轮耗时，毫秒，整数）
   - `{requestId, type:"error", message, hint}`
 - `quick-show`：`{}`，窗口被显示时发送；前端收到后聚焦输入框并刷新配置。
-- 设置变更（`quick.pinned`/`targetLang` 等）不需要推送事件。
+- `quick-locale`：`{locale:"zh"|"en"}`，界面语言变化后发送（窗口隐藏时也送达）；前端收到后调用 `LP.i18n.setLocale` 并重渲染依赖语言的文案。
+- 除界面语言（`quick-locale`）外，设置变更（`quick.pinned`/`targetLang` 等）不需要推送事件。
 
 ### 提示词
 
@@ -129,11 +131,13 @@
 
 ## 6. 前端 `web/quicktranslate.html|css|js`
 
+> 用户可见文案（含本节引用的「原文」「译文」「翻译历史」等）均来自语言包，随界面语言切换；本节以中文文案描述，英文界面显示对应英文。
+
 ### 布局（参考截图，沿用项目视觉）
 
 - 外层 `.qt-win`：透明 padding 6px；`.qt-shell` 白色圆角卡片（border + 轻阴影），flex column 填满窗口。
 - 顶部工具栏（同时是窗口拖动条）：`语言` 标签 + 源语言 `<select id="qt-source-lang">`（`自动识别` + `SOURCE_LANGUAGES`，默认 `quick.sourceLang`）+ `→` + 目标语言 `<select>`（38 种，默认 `quick.targetLang`）+ 交换按钮；右侧 Pin 图标按钮 + 「历史」按钮（图标 + 文字）+ 关闭 ×（`quick_hide`）。空白区域可拖动窗口，按钮/下拉不触发拖动。
-- 源语言列表 = `auto` + 现有 38 种目标语言 + 常见补充（sv/no/da/fi/el/hu/ro/sk/sl/hr/sr/lt/lv/et/is/bg/be/az/uz/ka/hy/sq/ca/cy/ga/mt/af/sw），中文 label；历史/检测结果显示按同一 label 表（未知代码回退大写代码）。
+- 源语言列表 = `auto` + 现有 38 种目标语言 + 常见补充（sv/no/da/fi/el/hu/ro/sk/sl/hr/sr/lt/lv/et/is/bg/be/az/uz/ka/hy/sq/ca/cy/ga/mt/af/sw），名称来自语言包（`language.<code>` key，未知代码回退大写代码）；历史/检测结果显示按同一 label 表。
 - 主体两栏（`.qt-body`，grid `1fr 1fr`，gap 16，min 宽度 640 时仍两栏）：
   - 左卡片「原文」：右上 `0 / 20000 字符` + `清空`；`textarea`（maxlength 20000）；底部左「支持 38 种语言，最多 20000 字符」，右「Ctrl+Enter」提示 + 主按钮「翻译」。
   - 右卡片「译文」：右上 `0 字符` + 朗读图标按钮 + 复制图标按钮（均 `title` 提供名称）；结果区（流式 Markdown，复用 `shared/markdown.js` 的 `LP.renderMarkdown`）；底部「耗时 —」（单位为秒，如 `耗时 1.1 秒`）。
@@ -145,7 +149,7 @@
 
 ### 行为
 
-- `quick_ready` 获取配置 → 初始化源/目标语言/Pin/提示词；订阅 `translate-event` / `quick-show`。
+- `quick_ready` 获取配置 → 初始化源/目标语言/Pin/提示词，并按返回的 `locale` 初始化语言包；订阅 `translate-event` / `quick-show` / `quick-locale`。
 - 点「翻译」或 `Ctrl+Enter`：空输入 toast；启动流式（`quick_translate` 携带当前源语言与目标语言）；按钮变「停止」（点击调用 `quick_abort_translate(requestId)`）；流式期间禁用再次翻译。
 - chunk 追加渲染（rAF 合并，参考 picker 的 `renderTranslationDraft` 思路）；done：写回按钮、显示 `耗时 1.1 秒`、刷新历史缓存、保持输入焦点；error：显示错误提示 + 可重试。
 - 内容/流式变化时按节流（~120ms）计算并上报窗口高度（`quick_resize`），窗口高度只随内容增长/回落到内容高度并受上下限约束。
@@ -182,6 +186,7 @@
   - 「单词 / 短语提示词」textarea（`quick-word-prompt` + `quick-word-prompt-reset`）：默认 `state.promptDefaults.quickTranslateWordLookup`；
   - 均支持 `{source}` / `{target}` 占位符（自动识别时 `{source}` 用检测结果）；保存 `quick.prompt` / `quick.wordLookupPrompt`（防抖，重置为默认 = 存空串并回填默认）；提示「留空或与默认一致时使用内置提示词」。
 - 历史记录：说明「最多保留 500 条」；危险按钮「清空历史」（二次确认）→ `quick_history_clear`；无需列表。
+- 卡片内所有用户可见文案来自语言包，随界面语言即时切换；设置页切换语言后卡片立即重渲染，无需重启。
 
 「快捷键」卡片（统一放所有全局快捷键；说明「配置 Lexora 的全局快捷键。」）：
 
@@ -202,4 +207,5 @@
 7. 历史：自动记录，最多 500；搜索、单条删除、清空；点击回填。
 8. 设置页：卡片顺序为「翻译服务/划词行为/快捷翻译/快捷键/应用与启动/关于」；呼出快捷键在「快捷键」卡片内录制（含冲突提示）；快捷翻译卡片内两个提示词（段落/单词）可编辑、重置与生效，说明含 `{source}`/`{target}`；清空历史可用。
 9. 关闭启用开关后热键不响应；重新开启立即生效。
-10. `cargo test` 与相关 `node --test web/*.test.cjs` 通过。
+10. 设置 → 应用与启动切换界面语言后，快捷翻译面板与设置页「快捷翻译」卡片文案立即切换为对应语言（面板隐藏时再次呼出不出现旧语言），源/目标语言名称同步切换。
+11. `cargo test` 与相关 `node --test web/*.test.cjs` 通过。

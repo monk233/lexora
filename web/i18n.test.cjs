@@ -194,6 +194,132 @@ test("every pin.js literal lookup exists in both packs", () => {
   }
 });
 
+test("quicktranslate page loads the shared i18n runtime", () => {
+  const source = fs.readFileSync(path.join(__dirname, "quicktranslate.html"), "utf8");
+  for (const file of ["constants.js", "messages.zh.js", "messages.en.js", "i18n.js", "lang.js"]) {
+    assert.ok(
+      source.includes(`src="shared/${file}"`),
+      `quicktranslate.html must load shared/${file}`
+    );
+  }
+  // The runtime must load before the page script that calls LP.t.
+  const runtimeIndex = source.indexOf('src="shared/i18n.js"');
+  const pageIndex = source.indexOf('src="quicktranslate.js"');
+  assert.ok(runtimeIndex >= 0 && pageIndex > runtimeIndex, "i18n runtime before quicktranslate.js");
+});
+
+test("every quicktranslate.html data-i18n key exists in both packs", () => {
+  const LP = loadI18n();
+  const source = fs.readFileSync(path.join(__dirname, "quicktranslate.html"), "utf8");
+  const keys = Array.from(source.matchAll(/data-i18n(?:-[a-z-]+)?="([^"]+)"/g)).map((match) => match[1]);
+  assert.ok(keys.length > 20, `expected the quick panel to tag its static copy (found ${keys.length})`);
+  for (const key of new Set(keys)) {
+    assert.ok(LP.messages.zh[key] !== undefined, `missing zh key ${key} (quicktranslate.html)`);
+    assert.ok(LP.messages.en[key] !== undefined, `missing en key ${key} (quicktranslate.html)`);
+  }
+});
+
+test("every quicktranslate.js literal lookup exists in both packs", () => {
+  const LP = loadI18n();
+  const source = fs.readFileSync(path.join(__dirname, "quicktranslate.js"), "utf8");
+  const keys = Array.from(source.matchAll(/LP\.t\("([^"]+)"(?!\s*\+)/g)).map((match) => match[1]);
+  // The panel looks keys up through its `tr()` wrapper, which delegates to
+  // LP.t; the wrapper itself is asserted below.
+  assert.ok(source.includes("typeof LP.t === \"function\""), "tr() must delegate to LP.t");
+  const trKeys = Array.from(source.matchAll(/tr\("([^"]+)"(?!\s*\+)/g)).map((match) => match[1]);
+  const scoped = keys.concat(trKeys).filter((key) => /^(?:quick|common)\./.test(key));
+  assert.ok(scoped.length > 40, `expected the quick panel to use message keys (found ${scoped.length})`);
+  for (const key of new Set(scoped)) {
+    assert.ok(LP.messages.zh[key] !== undefined, `missing zh key ${key} (quicktranslate.js)`);
+    assert.ok(LP.messages.en[key] !== undefined, `missing en key ${key} (quicktranslate.js)`);
+  }
+});
+
+test("quicktranslate.js has no user-visible Chinese literals", () => {
+  const source = fs.readFileSync(path.join(__dirname, "quicktranslate.js"), "utf8");
+  const code = source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n")
+    .map((line) => line.replace(/\/\/.*$/, ""))
+    .join("\n");
+  // The panel must get every visible string from the packs (comments and the
+  // language-code tables are stripped above and may stay as-is).
+  const match = /[\u4e00-\u9fff]/.exec(code);
+  assert.equal(match, null, `Chinese literal left in quicktranslate.js: ${match && match[0]}`);
+});
+
+test("every quicktranslate.html Chinese string is bound to a message key", () => {
+  const source = fs.readFileSync(path.join(__dirname, "quicktranslate.html"), "utf8");
+  const html = source.replace(/<!--[\s\S]*?-->/g, "");
+  // Text nodes: the Chinese pre-init placeholder may stay, but only inside an
+  // element (or subtree) that carries a data-i18n* attribute.
+  const voidTags = /^<(?:meta|link|input|br|img|hr|source|wbr|area|base|col|embed|param|track)\b/i;
+  const stack = [];
+  const untaggedText = [];
+  for (const token of html.split(/(<[^>]*>)/)) {
+    if (!token) {
+      continue;
+    }
+    if (token.startsWith("<")) {
+      if (/^<\//.test(token)) {
+        stack.pop();
+      } else if (!/\/>$/.test(token) && !voidTags.test(token)) {
+        stack.push(/data-i18n(?:-[a-z-]+)?="/.test(token));
+      }
+      continue;
+    }
+    if (/[\u4e00-\u9fff]/.test(token) && !stack.some(Boolean)) {
+      untaggedText.push(token.trim());
+    }
+  }
+  assert.deepEqual(untaggedText, [], "untagged Chinese copy in quicktranslate.html");
+  // Attribute copy (title / aria-label / placeholder) needs the matching
+  // data-i18n-<attribute> key on the same tag.
+  for (const [tag] of html.matchAll(/<[a-z][^>]*>/gi)) {
+    if (!/[\u4e00-\u9fff]/.test(tag)) {
+      continue;
+    }
+    for (const attribute of ["title", "aria-label", "placeholder"]) {
+      const pattern = new RegExp(`(?:^|\\s)${attribute}="[^"]*[\\u4e00-\\u9fff][^"]*"`);
+      if (!pattern.test(tag)) {
+        continue;
+      }
+      assert.ok(
+        tag.includes(`data-i18n-${attribute}=`),
+        `untagged ${attribute} in quicktranslate.html: ${tag}`
+      );
+    }
+  }
+});
+
+test("quick settings card in index.html is fully tagged for translation", () => {
+  const LP = loadI18n();
+  const html = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
+  const marker = 'aria-labelledby="card-quick-title"';
+  const markerIndex = html.indexOf(marker);
+  assert.notEqual(markerIndex, -1, "missing card-quick-title");
+  const start = html.lastIndexOf("<section", markerIndex);
+  const end = html.indexOf("</section>", markerIndex);
+  const card = html.slice(start, end);
+  const keys = Array.from(card.matchAll(/data-i18n(?:-[a-z-]+)?="([^"]+)"/g)).map((match) => match[1]);
+  assert.ok(keys.length >= 15, `expected the quick card to tag its copy (found ${keys.length})`);
+  for (const key of new Set(keys)) {
+    assert.ok(key.startsWith("settings.quick."), `quick card key outside its namespace: ${key}`);
+    assert.ok(LP.messages.zh[key] !== undefined, `missing zh key ${key} (quick card)`);
+    assert.ok(LP.messages.en[key] !== undefined, `missing en key ${key} (quick card)`);
+  }
+  // Every Chinese text node of the card must sit inside an element that carries
+  // a data-i18n* attribute; comments are the only allowed Chinese leftovers.
+  const untagged = card
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(
+      /<([a-z0-9]+)\b[^>]*data-i18n(?:-[a-z-]+)?="[^"]+"[^>]*>[\s\S]*?<\/\1>/g,
+      ""
+    );
+  const leftover = /[\u4e00-\u9fff]/.exec(untagged);
+  assert.equal(leftover, null, `untagged Chinese copy in the quick card: ${leftover && leftover[0]}`);
+});
+
 test("every pin.html and longshot.html data-i18n key exists in both packs", () => {
   const LP = loadI18n();
   const minimumKeys = { "pin.html": 40, "longshot.html": 2 };

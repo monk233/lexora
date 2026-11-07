@@ -1923,7 +1923,7 @@
     quickPromptDrafts[slot] = null;
     saveQuickPromptValue(slot, "");
     setInputValue(byId(meta.input), quickPromptDefault(slot));
-    toast("已重置为默认提示词", "success");
+    toast(LP.t("settings.toast.promptReset"), "success");
   }
 
   function renderQuickPrompt(slot) {
@@ -1934,11 +1934,25 @@
     setInputValue(byId(meta.input), quickPromptEditorValue(slot));
   }
 
+  /* The clear button may be in its armed ("确认清空") state when the UI language
+   * switches; re-apply both the idle and the armed label from the packs. */
+  function renderQuickHistoryClear() {
+    var button = byId("quick-history-clear");
+    if (!button) {
+      return;
+    }
+    if (button.getAttribute("data-armed") === "1") {
+      button.setAttribute("data-label", LP.t("settings.quick.clearHistory"));
+      button.textContent = LP.t("settings.quick.confirmClear");
+    }
+  }
+
   function renderQuick() {
     setChecked(byId("quick-enabled"), quickSettings().enabled);
     renderHotkey("quick");
     renderQuickPrompt("paragraph");
     renderQuickPrompt("word");
+    renderQuickHistoryClear();
   }
 
   function bindQuickPrompt(slot) {
@@ -1999,20 +2013,23 @@
     if (!fn) {
       return Promise.resolve({
         ok: false,
-        error: "当前版本不支持快捷翻译接口",
-        hint: "请更新应用后重试。",
+        error: LP.t("settings.quick.error.apiUnsupported"),
+        hint: LP.t("settings.quick.hint.updateApp"),
       });
     }
     try {
       return Promise.resolve(
         fn.apply(window.quickAPI, args || [])
       ).catch(function (error) {
-        return { ok: false, error: (error && error.message) || "操作失败" };
+        return {
+          ok: false,
+          error: (error && error.message) || LP.t("settings.quick.error.actionFailed"),
+        };
       });
     } catch (error) {
       return Promise.resolve({
         ok: false,
-        error: (error && error.message) || "操作失败",
+        error: (error && error.message) || LP.t("settings.quick.error.actionFailed"),
       });
     }
   }
@@ -2020,9 +2037,14 @@
   function clearQuickHistory() {
     quickApiCall("historyClear", []).then(function (result) {
       if (result && result.ok) {
-        toast("已清空翻译历史", "success");
+        toast(LP.t("settings.quick.toast.historyCleared"), "success");
       } else {
-        toast("清空失败：" + ((result && result.error) || "未知错误"), "error");
+        toast(
+          LP.t("settings.quick.error.clearFailed", {
+            error: (result && result.error) || LP.t("common.unknownError"),
+          }),
+          "error"
+        );
       }
     });
   }
@@ -4833,7 +4855,11 @@
       resetQuickPrompt("word");
     });
     byId("quick-history-clear").addEventListener("click", function () {
-      armDanger(byId("quick-history-clear"), "确认清空", clearQuickHistory);
+      armDanger(
+        byId("quick-history-clear"),
+        LP.t("settings.quick.confirmClear"),
+        clearQuickHistory
+      );
     });
     byId("panel-mode-scroll").addEventListener("click", function () {
       selectPanelMode("scroll");

@@ -538,7 +538,7 @@ function renderQuickHarness(quick, promptDefaults) {
     setInputValue(node, value) { node.value = value; calls.values.push(value); },
     renderHotkey(target) { calls.hotkey.push(target); },
   });
-  for (const name of ["quickSettings", "quickPromptDefault", "quickPromptCustomValue", "quickPromptEditorValue", "renderQuickPrompt", "renderQuick"]) {
+  for (const name of ["quickSettings", "quickPromptDefault", "quickPromptCustomValue", "quickPromptEditorValue", "renderQuickPrompt", "renderQuickHistoryClear", "renderQuick"]) {
     vm.runInContext(extract(name), context);
   }
   context.renderQuick();
@@ -560,6 +560,8 @@ function quickSaveHarness(promptDefaults) {
     quickPromptTimers: { paragraph: null, word: null },
     window: { clearTimeout() {} },
     byId: (id) => nodes[id] || null,
+    /* Localized copy: the stub returns the key, so assertions check the key. */
+    LP: { t: (key) => key },
     save(patch) { saves.push(JSON.parse(JSON.stringify(patch))); },
     setInputValue(node, value) { if (node) node.value = value; },
     toast(message) { toasts.push(message); },
@@ -650,8 +652,7 @@ test("shortcut card owns both shortcut rows; quick card keeps its own controls",
     shortcutsCard.indexOf('id="capture-hotkey"') < shortcutsCard.indexOf('id="quick-hotkey"'),
     "capture shortcut row keeps its place above the quick translate row"
   );
-  // The shortcuts card is localized (i18n R1): both rows carry message keys,
-  // while the quick-translate card keeps master's untranslated Chinese copy.
+  // Both cards are localized (i18n R1): each visible label carries a message key.
   assert.match(shortcutsCard, /data-i18n="settings.card.shortcuts.desc"/);
   assert.match(shortcutsCard, /data-i18n="settings.field.captureHotkey"/);
   assert.match(shortcutsCard, /data-i18n="settings.field.quickHotkey"/);
@@ -667,12 +668,25 @@ test("shortcut card owns both shortcut rows; quick card keeps its own controls",
   for (const id of ["quick-prompt", "quick-word-prompt"]) {
     assert.ok(!shortcutsCard.includes('id="' + id + '"'), id + " must not live in the shortcuts card");
   }
-  assert.match(quickCard, /段落 \/ 长句提示词/);
-  assert.match(quickCard, /单词 \/ 短语提示词/);
-  assert.match(quickCard, /\{source\} 与 \{target\} 占位符/);
-  assert.match(quickCard, /自动识别源语言时 \{source\} 使用检测到的语言/);
-  assert.match(quickCard, /按快捷键呼出翻译面板，再次按下隐藏/);
-  assert.match(quickCard, /最多保留 500 条/);
+  // The quick card is localized (i18n R1): static copy comes from the packs.
+  for (const key of [
+    "settings.quick.title",
+    "settings.quick.desc",
+    "settings.quick.enabled",
+    "settings.quick.enabledHint",
+    "settings.quick.promptLabel",
+    "settings.quick.promptHint",
+    "settings.quick.promptHintDetail",
+    "settings.quick.wordPromptLabel",
+    "settings.quick.wordPromptHintDetail",
+    "settings.quick.resetPrompt",
+    "settings.quick.history",
+    "settings.quick.historyHint",
+    "settings.quick.clearHistory",
+  ]) {
+    assert.match(quickCard, new RegExp('data-i18n="' + key.replace(/\./g, "\\.") + '"'), key);
+  }
+  assert.match(quickCard, /data-i18n-placeholder="settings\.quick\.promptPlaceholder"/);
 });
 
 test("quick card wiring targets quickAPI and update_settings", () => {
@@ -762,7 +776,7 @@ test("quick prompt reset clears custom values and restores both defaults", () =>
   ]);
   assert.equal(h.nodes["quick-prompt"].value, "Default {target}");
   assert.equal(h.nodes["quick-word-prompt"].value, "Word default {source}");
-  assert.deepEqual(h.toasts, ["已重置为默认提示词", "已重置为默认提示词"]);
+  assert.deepEqual(h.toasts, ["settings.toast.promptReset", "settings.toast.promptReset"]);
 });
 
 test("quick hotkey recorder saves through quickAPI.setHotkey", async () => {
@@ -790,7 +804,10 @@ test("quick hotkey recorder degrades when quickAPI is unavailable", async () => 
   const h = quickHotkeyHarness(null, false);
   h.context.submitHotkey("quick", "Ctrl+Alt+Q");
   await new Promise(setImmediate);
-  assert.match(h.nodes["quick-hotkey-error"].textContent, /当前版本不支持快捷翻译接口/);
+  assert.match(
+    h.nodes["quick-hotkey-error"].textContent,
+    /settings\.quick\.error\.apiUnsupported/
+  );
   assert.equal(h.context.state.settings.quick.hotkey, "Alt+Space");
 });
 
@@ -801,13 +818,15 @@ test("quick history clear calls quickAPI.historyClear and toasts", async () => {
     Promise, Object,
     QUICK_API_ALIASES: { historyClear: ["historyClear", "quickHistoryClear"] },
     window: { quickAPI: { historyClear() { calls.push("clear"); return Promise.resolve({ ok: true }); } } },
+    /* Localized copy: the stub returns the key, so assertions check the key. */
+    LP: { t: (key) => key },
     toast(message, tone) { toasts.push([message, tone]); },
   });
   for (const name of ["quickApiMethod", "quickApiCall", "clearQuickHistory"]) vm.runInContext(extract(name), context);
   context.clearQuickHistory();
   await new Promise(setImmediate);
   assert.deepEqual(calls, ["clear"]);
-  assert.deepEqual(toasts, [["已清空翻译历史", "success"]]);
+  assert.deepEqual(toasts, [["settings.quick.toast.historyCleared", "success"]]);
 });
 
 test("quick prompt debounce saves after 500ms per editor", () => {

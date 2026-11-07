@@ -442,6 +442,8 @@ pub struct SelectionService {
 - 静态文案用 `data-i18n`、`data-i18n-html`、`data-i18n-title`、`data-i18n-aria-label`、`data-i18n-placeholder` 标记，由 `init()` / `applyStatic()` 统一替换。HTML 里写死的英文文案只是初始化前的占位符（pre-init placeholder），运行期以语言包为准。
 - 动态/格式化文案（状态、错误、toast、带变量的标题）调用 `LP.t(key, params)`；语言变化后页面必须重新渲染依赖语言的动态内容（如结果面板标题、目标语言下拉选项、技能名回退文案），不能只靠首次 `applyStatic`。
 - 语言注入：设置页读 `StatePayload.app.locale`（生效语言）与 `app.languageSetting`（下拉回显）；划词/截图结果 picker 读 `picker-data.config.locale`（`picker-image` 路径回退 `data.app.locale`）；`capture-*`、`pin-*`、`longshot`、`longshot-bar` 窗口由 Rust 在 URL 追加 `lang=<zh|en>`，页面从 `<html lang>` / `location.search` 取首帧语言；语言变化时重建/刷新这些窗口或重新应用 `setLocale`。
+- 快捷翻译窗口（`quicktranslate`）：`quick_ready` 返回 `locale`（`zh|en`，已解析 `system`），面板启动/显示刷新配置时据此调用 `LP.i18n.init(locale)`；首帧先按 `<html lang>`（其次 `navigator.language`）猜测，后端语言到达后覆盖。设置页切换语言后，Rust 向该窗口 `emit_to("quicktranslate", "quick-locale", {locale})`，窗口隐藏时也送达，面板收到后立即 `setLocale` 并重渲染依赖语言的动态文案（不改写已输入的原文/译文）。
+- 语言名统一走 `LP.languageLabel(code)`（`language.<code>` key）：翻译目标 38 种、快捷翻译源语言下拉额外 28 种（`SOURCE_LANGS` 超出 `TARGET_LANGS` 的部分）都在两个语言包中有对应名称，未知代码回退大写代码；语言变化后下拉选项与历史/检测结果显示随之刷新。
 - 首帧猜测仅用于避免错误语言闪一下：`<html lang>` 优先于 `navigator.language`，后端语言到达后以 `init()` 覆盖。
 - 切换语言立即生效、无需重启；`system` 只在后端解析，前端只接收 `zh|en`。
 
@@ -451,15 +453,15 @@ pub struct SelectionService {
 
 - 独立窗口 label `quicktranslate`（`web/quicktranslate.html`），默认隐藏；全局快捷键默认 `Alt+Space`（设置 `quick.hotkey`，可改），按下切换显隐；`Esc` 与关闭按钮只隐藏窗口，失焦不隐藏；隐藏时中止进行中的流。
 - 窗口为**无边框透明浮层**（decorations false / transparent true / shadow false），白色圆角卡片 + 顶栏拖动；高度由渲染端按内容自适应并调用 `quick_resize`（高 clamp `[420, min(760, 屏幕可用高度-80)]`，宽固定 900，两栏内部滚动且滚动条隐藏）；顶栏空白可拖动窗口（`quick_drag_panel`）。
-- 命令：`quick_ready` / `quick_open` / `quick_hide` / `quick_pin` / `quick_set_hotkey` / `quick_set_source_lang` / `quick_set_target_lang` / `quick_translate`（携带 `sourceLang`）/ `quick_abort_translate` / `quick_history_list` / `quick_history_delete` / `quick_history_clear` / `quick_copy` / `quick_open_settings` / `quick_resize` / `quick_drag_panel`。
-- 事件：`translate-event`（chunk/error/done，定向 `quicktranslate` 窗口，done 带 `elapsedMs`）、`quick-show`。
+- 命令：`quick_ready` / `quick_open` / `quick_hide` / `quick_pin` / `quick_set_hotkey` / `quick_set_source_lang` / `quick_set_target_lang` / `quick_translate`（携带 `sourceLang`）/ `quick_abort_translate` / `quick_history_list` / `quick_history_delete` / `quick_history_clear` / `quick_copy` / `quick_open_settings` / `quick_resize` / `quick_drag_panel`；`quick_ready` 额外返回生效语言 `locale`（见 §7.3）。
+- 事件：`translate-event`（chunk/error/done，定向 `quicktranslate` 窗口，done 带 `elapsedMs`）、`quick-show`、`quick-locale`（`{locale:"zh"|"en"}`，界面语言切换时推送，窗口隐藏时也送达）。
 - 设置 schema 11：`quick` 块由 0.4.2 的 schema 10 引入，合并后 schema 11 = 10 + `app.language`；字段为 `quick: {enabled, hotkey, sourceLang, targetLang, prompt, wordLookupPrompt, pinned}`，目标语言 38 种（不含 auto），源语言为 `auto` + 38 种 + 常见补充语言（`SOURCE_LANGS`）。
 - 源语言：下拉默认「自动识别」，可显式选择并记忆；自动识别用离线检测（`whatlang`，低置信/短文本回退脚本启发式），历史里的 `sourceLang` 恒为实际解析语言（不再把拉丁语系统一判成英语）。
 - 翻译历史 `<data>/quick-history.json`：最多 500 条、最新在前；`quick_translate` 正常 `done` 后写入（取消/失败不写）。
 - 提示词分两套：`quick.prompt`（段落/长句）与 `quick.wordLookupPrompt`（单词/短语），空时分别使用 `DEFAULT_QUICK_TRANSLATE_PROMPT` / `DEFAULT_QUICK_WORD_TRANSLATE_PROMPT`；均支持 `{source}` / `{target}` 占位符（语言英文名），按输入自动切换词条/段落模式。
-- 渲染端：双栏（原文输入 / 流式 Markdown 译文）、源/目标语言下拉、字数、`Ctrl+Enter`、停止/重试、复制与朗读为图标按钮（悬浮显示名称）、耗时为秒（`耗时 1.1 秒`）、Pin、历史浮层（搜索/单条删除/清空/回填）。
+- 渲染端：双栏（原文输入 / 流式 Markdown 译文）、源/目标语言下拉、字数、`Ctrl+Enter`、停止/重试、复制与朗读为图标按钮（悬浮显示名称）、耗时为秒并按界面语言格式化（`耗时 1.1 秒` / `Took 1.1s`）、Pin、历史浮层（搜索/单条删除/清空/回填）。
 - 设置页卡片顺序：翻译服务 → 划词行为 → **快捷翻译 → 快捷键** → 应用与启动 → 关于；「快捷翻译」卡片含启用开关、两个提示词编辑区（段落/单词，可重置）、清空历史；**呼出快捷键统一放在「快捷键」卡片**（截图快捷键之后，录制/冲突提示/恢复默认，保存走 `quick_set_hotkey`）。
-- 界面文案：快捷翻译面板（`web/quicktranslate.*`）目前固定中文，未纳入 §7.3 的首批 i18n 范围；其输出语言由目标语言下拉决定，与界面语言无关。
+- 界面文案：快捷翻译面板与设置页「快捷翻译」卡片的用户可见文案均由 `web/shared/messages.zh.js` / `messages.en.js` 提供，与 §7.3 其他窗口一致，随界面语言即时切换、无需重启；面板通过 `quick_ready.locale` 初始化、监听 `quick-locale` 事件重渲染，源/目标语言名称取自 `language.<code>` key。其**输出语言**仍由目标语言下拉决定，与界面语言无关。
 
 ## 8. 验收
 
@@ -483,7 +485,7 @@ pub struct SelectionService {
 - 截图（§10）：快捷键开图无黑屏 loading；选区内拖动可平移、手柄可缩放；工具条与划词工具条同为白色主题；点击提取文字/翻译/解释图片/图片技能后截图关闭、图片入剪贴板、picker 结果面板流式输出且具备朗读/复制/重试/停止/继续提问；本地安装完整并手动选择 Qwen3.5 后可解释图片；设置页可录制截图快捷键并立即生效、冲突时提示。
 - 截图第二轮（§10.7/§10.8）：连续截图复用 overlay 窗口、无重建延迟与闪烁；提取文字默认走视觉模型（日志路径可见），视觉不可用才回退 Windows OCR；设置页快捷键为独立卡片；全屏选区内拖拽直接开始新框选。
 - 构建 release：`scripts/build-portable.ps1` 产出单个 `dist/Lexora-<version>-win-x64.exe`；双击运行后静默驻留托盘，数据写入 exe 同级 data/；Release 正文由 `scripts/release-notes.ps1` 生成排版化 changelog。
-- 界面语言（schema 11）：设置 → 应用与启动切换 English / 简体中文后，设置页、工具栏、结果面板、截图工具条、长截图与钉图文案立即更新且无残留旧语言；`system` 在中文区域显示简体中文、英文区域显示英文，无法判断回退英文；`settings.json` 中 `version` 为 11、`app.language` 保存原始设置值，schema 10 及更旧配置升级不丢提示词、技能与 `quick` 块。
+- 界面语言（schema 11）：设置 → 应用与启动切换 English / 简体中文后，`system` 在中文区域显示简体中文、英文区域显示英文，无法判断回退英文；设置页（含「快捷翻译」卡片）、工具栏、结果面板、截图工具条、长截图、钉图与快捷翻译面板文案立即更新且无残留旧语言；`settings.json` 中 `version` 为 11、`app.language` 保存原始设置值，schema 10 及更旧配置升级不丢提示词、技能与 `quick` 块。
 - AI 语言：界面为英文时解释/总结/图片解释/追问回答与解释模式词条释义为英文，界面为中文时为简体中文；自定义提示词不含 `{answer}` 时末尾追加 `Answer language: <name>.`；`auto` 翻译目标仍为中文→英文、其他→中文，不受界面语言影响。
 
 

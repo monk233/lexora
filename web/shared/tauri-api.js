@@ -1277,6 +1277,23 @@
   };
   window.__mockQuickFailNext = false;
 
+  /* Quick-translate console helper for the browser preview: simulate the
+   * settings page switching the UI language while the quick window is open.
+   * Updates the mock locale, then emits the `quick-locale` payload the shell
+   * would send to this window. */
+  window.__mockQuickLocale = function (locale) {
+    if (!mockStore) {
+      initMockStore();
+    }
+    var next = String(locale == null ? "" : locale).trim().toLowerCase() === "en" ? "en" : "zh";
+    mockStore.app.locale = next;
+    if (mockStore.settings && mockStore.settings.app) {
+      mockStore.settings.app.language = next;
+    }
+    mockEmit("quick-locale", { locale: next });
+    return next;
+  };
+
   var MOCK_NAMED_KEYS = {
     printscreen: "PrintScreen",
     print: "PrintScreen",
@@ -2012,6 +2029,9 @@
           ok: true,
           quick: clone(mockStore.settings.quick),
           promptDefault: MOCK_QUICK_TRANSLATE_PROMPT,
+          /* Effective UI language (i18n R1): the quick window initializes the
+           * shared runtime from here and follows quick-locale afterwards. */
+          locale: mockStore.app.locale === "en" ? "en" : "zh",
         };
       case "quick_open":
         return { ok: true };
@@ -2734,6 +2754,15 @@
     /* Emitted when the shell shows the window (hotkey or quick_open). */
     onShow: function (callback) {
       return subscribe("quick-show", function (payload) {
+        if (typeof callback === "function") {
+          callback(payload);
+        }
+      });
+    },
+    /* Emitted whenever the settings page switches the UI language (i18n R1);
+     * payload is `{ locale: "zh" | "en" }` and the window may be hidden. */
+    onLocale: function (callback) {
+      return subscribe("quick-locale", function (payload) {
         if (typeof callback === "function") {
           callback(payload);
         }

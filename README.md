@@ -27,7 +27,7 @@ Lexora 是 Windows 划词翻译工具。在浏览器、Word、PDF、IDE 等任�
 - **划选触发**：拖动选词、双击单词、三击段落均可唤起工具栏；`Delete`、`Ctrl+C` 等操作仍作用于原应用，继续操作时工具栏自动隐藏。
 - **翻译、总结、解释、润色、朗读、复制、搜索**：流式输出，结果按 Markdown 渲染（标题、列表、代码块、表格、链接），可固定、拖动、滚动；AI 回答生成途中可点「停止」立即中止请求与输出并保留已生成内容；结果面板底部按钮为纯图标（朗读/复制/重试/停止），悬浮显示名称；搜索默认 Google，可切换百度 / Bing。
 - **快捷翻译面板**：全局快捷键（默认 `Alt+Space`，可改）呼出独立翻译窗口，左侧输入原文、右侧流式 Markdown 译文；自动识别源语言、38 种目标语言、`Ctrl+Enter` 翻译、复制译文与耗时显示；窗口可 Pin 置顶，重启后恢复；最近 500 条翻译历史支持搜索、单条删除与清空，点击回填；设置页可自定义提示词与清空历史。
-- **界面语言**：简体中文 / English 两套界面文案，首次启动按 Windows 区域与时区自动识别（繁体区域暂用简体中文），设置 → 应用与启动可手动切换，立即生效、无需重启；解释、总结、图片解释与追问回答使用界面语言，翻译目标「自动识别」仍按语言互补规则解析。快捷翻译面板暂固定中文。
+- **界面语言**：简体中文 / English 两套界面文案，首次启动按 Windows 区域与时区自动识别（繁体区域暂用简体中文），设置 → 应用与启动可手动切换，立即生效、无需重启；解释、总结、图片解释与追问回答使用界面语言，翻译目标「自动识别」仍按语言互补规则解析；仅 Rust 后端诊断/错误提示仍为中文。快捷翻译面板与设置页「快捷翻译」卡片同样跟随界面语言即时切换。
 - **双引擎**：云端支持任意 OpenAI 兼容接口（DeepSeek / OpenAI / Moonshot / 智谱 / OpenCode Go / Ollama / LM Studio / 自建服务），可拉取模型列表；本地在应用内安装 llama.cpp 引擎，所有本地 AI 任务（翻译、通用文本与视觉理解）共用用户手动选择的 Qwen3.5（0.8B / 2B / 4B，各有 Q4_K_M / Q3_K_M），断网可用，支持并行下载。
 - **技能可配置**：技能可拖拽排序、增删；内置润色与自定义技能均可改提示词；自定义技能可选 200 个图标、自定义名称与提示词，提示词支持 `{text}`、`{target}`、`{program}` 等变量。
 - **截图工具**：点击工具栏「截图」或按自定义快捷键（默认 Win+Shift+X）框选屏幕；可复制图片、提取文字（视觉模型优先，回退本地 OCR）、翻译、解释图片；结果在划词面板中流式显示，支持朗读/复制/重试/停止/追问。自定义技能支持文本/图片两类。
@@ -147,7 +147,9 @@ Tauri v2 + Rust（窗口、托盘、全局输入钩子、Windows UI Automation �
 
 - Works with any OpenAI-compatible endpoint, or offline with llama.cpp + GGUF models (one manually selected Qwen3.5 0.8B / 2B / 4B model in Q4_K_M or Q3_K_M for translation, general text and vision tasks, with its mmproj-F16 projector). Models are downloaded from ModelScope; hardware recommendations never select a model. Changing the selection requires restarting the local engine.
 - Results stream in and render as Markdown; the panel can be pinned, moved, resized, and scrolled; search uses Google, Baidu, or Bing.
+- Quick-translate panel: `Alt+Space` (rebindable) opens a frameless streaming translation window with source/target language selection, offline source detection, a last-500 history, pinning and stop/retry.
 - Screenshot tools: capture, copy, OCR, translate and explain regions; local annotations (shapes, arrow, pen, text, numbers, mosaic) that can be selected, moved, resized, rotated and undone; pin-to-desktop windows; long screenshots with manual or optional automatic scrolling and a live preview.
+- UI in Simplified Chinese or English, picked from the Windows region and time zone on first start and swappable in Settings without a restart; explanations, summaries, image explanations and follow-up answers use the UI language, while translation targets keep the language-complementary `auto` rule. Only Rust backend diagnostics/errors still return Chinese.
 - 38 translation languages.
 - Reorder, rename, re-icon and re-prompt every skill, including custom skills with `{text}`, `{target}` and `{program}` variables.
 - One portable ~10.5 MB exe, tray-resident, optional start-at-login, no installer, no admin rights.

@@ -40,14 +40,20 @@
   var API = window.quickAPI;
   var LP = window.LP || {};
   var LANGUAGES = Array.isArray(LP.LANGUAGES) ? LP.LANGUAGES.slice() : [];
+  /* Extra common source languages beyond the project's target-language table
+   * (mirrored by MOCK_EXTRA_SOURCE_LANGS in shared/tauri-api.js). Only codes
+   * live here; the visible names come from language.<code> in the packs. */
+  var EXTRA_SOURCE_LANGS = [
+    "sv", "no", "da", "fi", "el", "hu", "ro", "sk", "sl", "hr", "sr", "lt", "lv",
+    "et", "is", "bg", "be", "az", "uz", "ka", "hy", "sq", "ca", "cy", "ga", "mt",
+    "af", "sw",
+  ];
   /* Source-language selector list: "自动识别" plus every project language and
    * the extra common source codes. Built by qtSourceLanguages() below. */
   var SOURCE_LANGUAGES = qtSourceLanguages(LANGUAGES);
   var MAX_CHARS = 20000;
   var MAX_HISTORY = 500;
   var TOAST_MS = 4000;
-  var NO_VOICE_MESSAGE =
-    "系统未安装可用的语音包：可在 Windows 设置 → 时间和语言 → 语音 中添加";
 
   /* Frameless window: fixed 900px width, content-driven height. */
   var WINDOW_WIDTH = 900;
@@ -119,6 +125,9 @@
     historyQuery: "",
     historyClearArmed: false,
     clearTimer: null,
+    /* Last rendered error (message/hint) so a locale switch can retranslate the
+     * retry button and fallback title without losing the backend's wording. */
+    error: null,
   };
 
   /* Window drag (top bar) and adaptive resize bookkeeping. */
@@ -146,12 +155,33 @@
   /* Pure helpers (extracted by web/quicktranslate.test.cjs)             */
   /* ------------------------------------------------------------------ */
 
-  /* Complete source-language selector list: "自动识别" first, then the project
-   * languages, then extra common source languages (Chinese labels, in the same
-   * order as the patch spec). Duplicate codes are dropped so the list stays
-   * valid if the project table ever grows into the extra set. */
+  /* Message lookup with a graceful fallback: an older cached i18n.js must never
+   * crash the panel, it simply shows the keys. */
+  function tr(key, params) {
+    return typeof LP.t === "function" ? LP.t(key, params) : String(key);
+  }
+
+  /* Localized language name from the active pack (shared/lang.js). Falls back
+   * to the shared table for a code the pack does not know yet. */
+  function languageLabel(code) {
+    var key = String(code == null ? "" : code).trim();
+    if (!key) {
+      return "";
+    }
+    if (typeof LP.languageLabel === "function") {
+      return LP.languageLabel(key);
+    }
+    var labels = LP.LANG_LABELS || {};
+    return labels[key] || key;
+  }
+
+  /* Complete source-language selector list: the auto-detect entry first, then
+   * the project languages, then the extra common source languages (same order
+   * as the patch spec). Labels are resolved through the active pack, so a
+   * locale switch just rebuilds the options. Duplicate codes are dropped so the
+   * list stays valid if the project table ever grows into the extra set. */
   function qtSourceLanguages(baseLanguages) {
-    var result = [{ value: "auto", label: "自动识别" }];
+    var result = [{ value: "auto", label: tr("quick.lang.auto") }];
     var seen = { auto: true };
     (Array.isArray(baseLanguages) ? baseLanguages : []).forEach(function (entry) {
       if (!entry || !entry.value || seen[entry.value]) {
@@ -160,44 +190,15 @@
       seen[entry.value] = true;
       result.push({
         value: String(entry.value),
-        label: String(entry.label || entry.value),
+        label: languageLabel(entry.value),
       });
     });
-    [
-      ["sv", "瑞典语"],
-      ["no", "挪威语"],
-      ["da", "丹麦语"],
-      ["fi", "芬兰语"],
-      ["el", "希腊语"],
-      ["hu", "匈牙利语"],
-      ["ro", "罗马尼亚语"],
-      ["sk", "斯洛伐克语"],
-      ["sl", "斯洛文尼亚语"],
-      ["hr", "克罗地亚语"],
-      ["sr", "塞尔维亚语"],
-      ["lt", "立陶宛语"],
-      ["lv", "拉脱维亚语"],
-      ["et", "爱沙尼亚语"],
-      ["is", "冰岛语"],
-      ["bg", "保加利亚语"],
-      ["be", "白俄罗斯语"],
-      ["az", "阿塞拜疆语"],
-      ["uz", "乌兹别克语"],
-      ["ka", "格鲁吉亚语"],
-      ["hy", "亚美尼亚语"],
-      ["sq", "阿尔巴尼亚语"],
-      ["ca", "加泰罗尼亚语"],
-      ["cy", "威尔士语"],
-      ["ga", "爱尔兰语"],
-      ["mt", "马耳他语"],
-      ["af", "南非荷兰语"],
-      ["sw", "斯瓦希里语"],
-    ].forEach(function (entry) {
-      if (seen[entry[0]]) {
+    EXTRA_SOURCE_LANGS.forEach(function (code) {
+      if (seen[code]) {
         return;
       }
-      seen[entry[0]] = true;
-      result.push({ value: entry[0], label: entry[1] });
+      seen[code] = true;
+      result.push({ value: code, label: languageLabel(code) });
     });
     return result;
   }
@@ -220,8 +221,9 @@
   }
 
   /* Label of a history row's detected source language. "auto" is never shown as
-   * an actual source language; unknown codes fall back to their upper-cased
-   * code so the row still describes what was detected. */
+   * an actual source language; only codes known to the selector get a localized
+   * name, unknown codes fall back to their upper-cased code so the row still
+   * describes what was detected. */
   function qtSourceLangLabel(code, languages) {
     var value = String(code == null ? "" : code).trim();
     if (!value || value === "auto") {
@@ -231,7 +233,7 @@
     for (var index = 0; index < list.length; index += 1) {
       var entry = list[index];
       if (entry && entry.value === value) {
-        return String(entry.label || value);
+        return languageLabel(value);
       }
     }
     return value.toUpperCase();
@@ -297,8 +299,8 @@
     });
   }
 
-  /* "1.1 秒" (one decimal); zero/unknown shows a dash. The footer prefixes it
-   * with "耗时 ". */
+  /* "1.1 秒" / "1.1s" (one decimal, localized); zero/unknown shows a dash. The
+   * footer prefixes it with the localized "耗时 " / "Took " label. */
   function qtFormatElapsed(milliseconds) {
     if (milliseconds === null || milliseconds === undefined || milliseconds === "") {
       return "—";
@@ -307,7 +309,19 @@
     if (!isFinite(value) || value <= 0) {
       return "—";
     }
-    return (value / 1000).toFixed(1) + " 秒";
+    return tr("quick.elapsedSeconds", { seconds: (value / 1000).toFixed(1) });
+  }
+
+  /* Footer text: "耗时 1.1 秒" / "Took 1.1s", or the localized placeholder. */
+  function qtElapsedText(milliseconds) {
+    if (milliseconds === null || milliseconds === undefined || milliseconds === "") {
+      return tr("quick.elapsedNone");
+    }
+    var value = Number(milliseconds);
+    if (!isFinite(value) || value <= 0) {
+      return tr("quick.elapsedNone");
+    }
+    return tr("quick.elapsed", { time: qtFormatElapsed(value) });
   }
 
   /* History rows show "2026/11/02 10:15"; empty when the stamp is unusable. */
@@ -352,15 +366,6 @@
   /* ------------------------------------------------------------------ */
   /* Small UI helpers                                                    */
   /* ------------------------------------------------------------------ */
-
-  function languageLabel(code) {
-    var key = String(code == null ? "" : code);
-    if (!key) {
-      return "";
-    }
-    var labels = LP.LANG_LABELS || {};
-    return labels[key] || key;
-  }
 
   function normalizeTargetCode(code) {
     var value = String(code == null ? "" : code);
@@ -667,7 +672,7 @@
     LANGUAGES.forEach(function (language) {
       var option = document.createElement("option");
       option.value = String(language.value);
-      option.textContent = String(language.label);
+      option.textContent = languageLabel(language.value);
       targetSelect.appendChild(option);
     });
     targetSelect.value = normalizeTargetCode(state.quick.targetLang);
@@ -681,7 +686,12 @@
     SOURCE_LANGUAGES.forEach(function (language) {
       var option = document.createElement("option");
       option.value = String(language.value);
-      option.textContent = String(language.label);
+      /* Labels are re-resolved per render: SOURCE_LANGUAGES was built on the
+       * first paint, so its labels may belong to the previous locale. */
+      option.textContent =
+        language.value === "auto"
+          ? tr("quick.lang.auto")
+          : languageLabel(language.value);
       sourceSelect.appendChild(option);
     });
     sourceSelect.value = qtNormalizeSourceLang(state.quick.sourceLang, SOURCE_LANGUAGES);
@@ -689,12 +699,17 @@
 
   function updateSourceCount() {
     var count = qtCountChars(sourceInput.value);
-    sourceCount.textContent = count + " / " + MAX_CHARS + " 字符";
+    sourceCount.textContent = tr("quick.source.count", {
+      count: count,
+      limit: MAX_CHARS,
+    });
     sourceCount.classList.toggle("is-over", count > MAX_CHARS);
   }
 
   function updateResultCount() {
-    resultCount.textContent = qtCountChars(state.raw) + " 字符";
+    resultCount.textContent = tr("quick.result.count", {
+      count: qtCountChars(state.raw),
+    });
     copyButton.disabled = !state.raw;
     speakButton.disabled = !state.raw;
     syncSpeakUi();
@@ -707,10 +722,10 @@
     wrapper.className = "qt-empty";
     var title = document.createElement("p");
     title.className = "qt-empty-title";
-    title.textContent = "译文会显示在这里";
+    title.textContent = tr("quick.empty.title");
     var hint = document.createElement("p");
     hint.className = "qt-empty-hint";
-    hint.textContent = "按 Ctrl+Enter 或点击「翻译」";
+    hint.textContent = tr("quick.empty.hint");
     wrapper.appendChild(title);
     wrapper.appendChild(hint);
     resultNode.appendChild(wrapper);
@@ -727,7 +742,7 @@
     spinner.className = "qt-spinner";
     spinner.setAttribute("aria-hidden", "true");
     var label = document.createElement("span");
-    label.textContent = "正在翻译…";
+    label.textContent = tr("quick.loading");
     wrapper.appendChild(spinner);
     wrapper.appendChild(label);
     resultNode.appendChild(wrapper);
@@ -770,22 +785,28 @@
   }
 
   function renderError(message, hint) {
+    /* Remember the backend wording: a locale switch rebuilds this block with the
+     * same message/hint and the freshly localized title/retry label. */
+    state.error = {
+      message: String(message == null ? "" : message),
+      hint: String(hint == null ? "" : hint),
+    };
     resultError.innerHTML = "";
     var text = document.createElement("div");
     text.className = "qt-result-error-text";
     var messageNode = document.createElement("span");
-    messageNode.textContent = String(message == null ? "" : message) || "翻译失败";
+    messageNode.textContent = state.error.message || tr("quick.error.title");
     text.appendChild(messageNode);
-    if (hint) {
+    if (state.error.hint) {
       var hintNode = document.createElement("span");
       hintNode.className = "qt-result-error-hint";
-      hintNode.textContent = String(hint);
+      hintNode.textContent = state.error.hint;
       text.appendChild(hintNode);
     }
     var retry = document.createElement("button");
     retry.type = "button";
     retry.className = "qt-btn qt-btn-small qt-result-error-retry";
-    retry.textContent = "重试";
+    retry.textContent = tr("quick.error.retry");
     retry.addEventListener("click", function () {
       startTranslate();
     });
@@ -795,14 +816,23 @@
   }
 
   function clearError() {
+    state.error = null;
+    if (!resultError) {
+      return;
+    }
     resultError.hidden = true;
     resultError.innerHTML = "";
   }
 
   function setTranslatingUi(translating) {
-    translateButton.textContent = translating ? "停止" : "翻译";
+    translateButton.textContent = translating
+      ? tr("quick.action.stop")
+      : tr("quick.action.translate");
     translateButton.classList.toggle("is-stop", translating);
-    translateButton.setAttribute("aria-label", translating ? "停止翻译" : "翻译");
+    translateButton.setAttribute(
+      "aria-label",
+      translating ? tr("quick.action.stopAria") : tr("quick.action.translateAria")
+    );
     sourceClear.disabled = translating;
     sourceSelect.disabled = translating;
     targetSelect.disabled = translating;
@@ -813,8 +843,11 @@
 
   function setPinUi(pinned) {
     pinButton.setAttribute("aria-pressed", pinned ? "true" : "false");
-    pinButton.title = pinned ? "取消置顶" : "置顶显示";
-    pinButton.setAttribute("aria-label", pinned ? "取消置顶" : "置顶显示");
+    pinButton.title = pinned ? tr("quick.action.unpin") : tr("quick.action.pin");
+    pinButton.setAttribute(
+      "aria-label",
+      pinned ? tr("quick.action.unpin") : tr("quick.action.pin")
+    );
   }
 
   function applyQuickConfig(quick) {
@@ -843,9 +876,7 @@
     }
     var auto = state.quick.sourceLang === "auto";
     swapButton.disabled = auto || state.translating;
-    var label = auto
-      ? "自动识别时无法交换语言，请先选择源语言"
-      : "交换源语言与目标语言";
+    var label = auto ? tr("quick.action.swapDisabled") : tr("quick.action.swap");
     swapButton.title = label;
     swapButton.setAttribute("aria-label", label);
   }
@@ -854,6 +885,81 @@
   /* Config / language                                                   */
   /* ------------------------------------------------------------------ */
 
+  /* Set once the shared runtime has applied its static pass, so a later locale
+   * read never runs a full init again. */
+  var localeInitialized = false;
+
+  /* Applies the UI language from quick_ready()/the quick-locale event and
+   * reports whether it changed. Any actual change re-renders the dynamic chrome
+   * (see refreshLocaleChrome) while the streamed translation text is kept. */
+  function applyLocale(locale) {
+    var raw = String(locale == null ? "" : locale).trim().toLowerCase();
+    var value = "";
+    if (raw.indexOf("zh") === 0) {
+      value = "zh";
+    } else if (raw.indexOf("en") === 0) {
+      value = "en";
+    }
+    if (!value) {
+      return false;
+    }
+    if (!LP.i18n || typeof LP.i18n.init !== "function") {
+      return false;
+    }
+    var previous =
+      typeof LP.i18n.currentLocale === "function" ? LP.i18n.currentLocale() : "";
+    if (!localeInitialized) {
+      LP.i18n.init(value);
+      localeInitialized = true;
+    } else if (!LP.i18n.setLocale(value)) {
+      /* Same locale: no static pass, so the rendered copy stays untouched. */
+      return false;
+    }
+    var next =
+      typeof LP.i18n.currentLocale === "function" ? LP.i18n.currentLocale() : previous;
+    return previous !== next;
+  }
+
+  /* Re-renders every localized piece quicktranslate.js builds itself. The
+   * translation content (state.raw) and the in-flight stream are never reset:
+   * only chrome, counters, tooltips and the history list are refreshed. */
+  function refreshLocaleChrome() {
+    if (!sourceInput || !targetSelect || !resultNode) {
+      return;
+    }
+    if (limitHint) {
+      limitHint.textContent = tr("quick.source.limitHint", {
+        count: LANGUAGES.length,
+        limit: MAX_CHARS,
+      });
+    }
+    renderTargetOptions();
+    renderSourceOptions();
+    updateSourceCount();
+    var dataState = resultNode.getAttribute("data-state");
+    if (dataState === "empty") {
+      renderEmptyResult();
+    } else if (dataState === "loading") {
+      renderLoading();
+    } else {
+      updateResultCount();
+      if (resultError && !resultError.hidden) {
+        renderError(state.error ? state.error.message : "", state.error ? state.error.hint : "");
+      }
+    }
+    if (elapsedNode) {
+      elapsedNode.textContent = qtElapsedText(state.elapsedMs);
+    }
+    setTranslatingUi(state.translating);
+    setPinUi(state.quick.pinned);
+    syncSwapState();
+    syncSpeakUi();
+    syncHistoryClearLabel();
+    if (state.historyOpen) {
+      renderHistory();
+    }
+  }
+
   function refreshConfig() {
     if (!API || typeof API.ready !== "function") {
       return Promise.resolve();
@@ -861,17 +967,23 @@
     return API.ready().then(
       function (result) {
         if (!result || result.ok === false) {
-          toast((result && result.error) || "读取快捷翻译配置失败", "error");
+          toast((result && result.error) || tr("quick.toast.readConfigFailed"), "error");
           return;
         }
         state.ready = true;
         applyQuickConfig(result.quick);
+        /* quick_ready carries the effective UI language (R1): the first payload
+         * initializes the shared runtime, later ones switch it. A changed locale
+         * re-renders the chrome without touching the translation text. */
+        if (applyLocale(result.locale)) {
+          refreshLocaleChrome();
+        }
         if (result.promptDefault) {
           state.promptDefault = String(result.promptDefault);
         }
       },
       function (error) {
-        toast(String(error || "读取快捷翻译配置失败"), "error");
+        toast(String(error || tr("quick.toast.readConfigFailed")), "error");
       }
     );
   }
@@ -893,7 +1005,7 @@
         if (result && result.ok === false) {
           state.quick.targetLang = previous;
           targetSelect.value = previous;
-          toast(result.error || "切换目标语言失败", "error");
+          toast(result.error || tr("quick.toast.setTargetFailed"), "error");
           return false;
         }
         if (result && result.targetLang) {
@@ -905,7 +1017,7 @@
       function (error) {
         state.quick.targetLang = previous;
         targetSelect.value = previous;
-        toast(String(error || "切换目标语言失败"), "error");
+        toast(String(error || tr("quick.toast.setTargetFailed")), "error");
         return false;
       }
     );
@@ -938,7 +1050,7 @@
             sourceSelect.value = previous;
           }
           syncSwapState();
-          toast(result.error || "切换源语言失败", "error");
+          toast(result.error || tr("quick.toast.setSourceFailed"), "error");
           return false;
         }
         if (result && result.sourceLang) {
@@ -959,7 +1071,7 @@
           sourceSelect.value = previous;
         }
         syncSwapState();
-        toast(String(error || "切换源语言失败"), "error");
+        toast(String(error || tr("quick.toast.setSourceFailed")), "error");
         return false;
       }
     );
@@ -977,7 +1089,7 @@
     speakButton.classList.toggle("is-active", active);
     speakButton.setAttribute("aria-pressed", active ? "true" : "false");
     // Icon-only button: the label lives in the tooltip / accessible name.
-    var label = active ? "停止朗读" : "朗读";
+    var label = active ? tr("quick.result.speakStop") : tr("quick.result.speak");
     speakButton.title = label;
     speakButton.setAttribute("aria-label", label);
     if (!active) {
@@ -1071,7 +1183,7 @@
   function speak(text) {
     var value = String(text || "").trim();
     if (!value) {
-      toast("没有可朗读的文本", "error");
+      toast(tr("quick.toast.noText"), "error");
       return;
     }
     if (speech.speaking) {
@@ -1080,7 +1192,7 @@
     }
     var synth = window.speechSynthesis;
     if (!synth || typeof window.SpeechSynthesisUtterance !== "function") {
-      toast(NO_VOICE_MESSAGE, "error");
+      toast(tr("quick.toast.noVoice"), "error");
       return;
     }
     if (speech.loading) {
@@ -1090,7 +1202,7 @@
     getVoices().then(function (voices) {
       speech.loading = false;
       if (!voices || !voices.length) {
-        toast(NO_VOICE_MESSAGE, "error");
+        toast(tr("quick.toast.noVoice"), "error");
         return;
       }
       var voice = pickVoice(voices, value);
@@ -1116,7 +1228,7 @@
         // A user stop or a replaced utterance ends silently; only a genuine
         // failure of the utterance we started is worth reporting.
         if (wasCurrent && !cancelled) {
-          toast("朗读失败，请检查 Windows 的语音设置", "error");
+          toast(tr("quick.toast.speechFailed"), "error");
         }
       };
       speech.cancelRequested = false;
@@ -1128,7 +1240,7 @@
         synth.speak(utterance);
       } catch (error) {
         clearSpeechState(utterance);
-        toast("朗读失败，请检查 Windows 的语音设置", "error");
+        toast(tr("quick.toast.speechFailed"), "error");
       }
     });
   }
@@ -1137,7 +1249,7 @@
   function speakResult() {
     var value = String(state.raw || "").trim();
     if (!value) {
-      toast("没有可朗读的文本", "error");
+      toast(tr("quick.toast.noText"), "error");
       return;
     }
     if (speech.speaking) {
@@ -1157,12 +1269,12 @@
       return;
     }
     if (!API || typeof API.translate !== "function") {
-      toast("翻译接口不可用", "error");
+      toast(tr("quick.toast.translateUnavailable"), "error");
       return;
     }
     var text = qtNormalizeInput(sourceInput.value);
     if (!text) {
-      toast("请先输入要翻译的内容", "error");
+      toast(tr("quick.toast.emptyInput"), "error");
       sourceInput.focus();
       return;
     }
@@ -1178,7 +1290,7 @@
     clearError();
     renderLoading();
     updateResultCount();
-    elapsedNode.textContent = "耗时 —";
+    elapsedNode.textContent = qtElapsedText(null);
     setTranslatingUi(true);
     // `sourceLang` is "auto" (detect on the shell side) or the pinned code.
     API.translate(
@@ -1193,7 +1305,7 @@
         }
         if (!result || result.ok === false) {
           failTranslate(
-            (result && result.error) || "翻译服务没有响应",
+            (result && result.error) || tr("quick.toast.noResponse"),
             (result && result.hint) || ""
           );
         }
@@ -1202,7 +1314,7 @@
         if (!state.translating || state.requestId !== requestId) {
           return;
         }
-        failTranslate(String(error || "翻译服务没有响应"), "");
+        failTranslate(String(error || tr("quick.toast.noResponse")), "");
       }
     );
   }
@@ -1233,10 +1345,10 @@
     } else {
       renderEmptyResult();
     }
-    elapsedNode.textContent = "耗时 —";
+    elapsedNode.textContent = qtElapsedText(null);
     copyButton.disabled = !state.raw;
     if (notify) {
-      toast("已停止翻译");
+      toast(tr("quick.toast.stopped"));
     }
   }
 
@@ -1253,7 +1365,7 @@
         : Math.max(0, Date.now() - state.startedAt);
     setTranslatingUi(false);
     renderResult();
-    elapsedNode.textContent = "耗时 " + qtFormatElapsed(state.elapsedMs);
+    elapsedNode.textContent = qtElapsedText(state.elapsedMs);
     copyButton.disabled = !state.raw;
     sourceInput.focus();
     // The shell already stored this round; only the in-memory list needs a refresh.
@@ -1271,11 +1383,11 @@
       renderEmptyResult();
     }
     renderError(message, hint);
-    elapsedNode.textContent = "耗时 —";
+    elapsedNode.textContent = qtElapsedText(null);
     copyButton.disabled = !state.raw;
     // The error block adds a row below the result area.
     scheduleWindowResize();
-    toast(String(message == null ? "" : message) || "翻译失败", "error");
+    toast(String(message == null ? "" : message) || tr("quick.error.title"), "error");
     sourceInput.focus();
   }
 
@@ -1302,7 +1414,7 @@
       return;
     }
     if (event.type === "error") {
-      failTranslate(event.message || "翻译失败", event.hint || "");
+      failTranslate(event.message || tr("quick.error.title"), event.hint || "");
     }
   }
 
@@ -1360,7 +1472,7 @@
     if (value.length > 120) {
       value = value.slice(0, 120) + "…";
     }
-    return value || "（空）";
+    return value || tr("quick.history.emptyText");
   }
 
   function historyItem(entry) {
@@ -1371,7 +1483,7 @@
     var open = document.createElement("button");
     open.type = "button";
     open.className = "qt-history-open";
-    open.title = "回填这条翻译";
+    open.title = tr("quick.history.backfill");
 
     var meta = document.createElement("span");
     meta.className = "qt-history-meta";
@@ -1395,8 +1507,8 @@
     var remove = document.createElement("button");
     remove.type = "button";
     remove.className = "qt-history-delete";
-    remove.title = "删除这条";
-    remove.setAttribute("aria-label", "删除这条翻译历史");
+    remove.title = tr("quick.history.delete");
+    remove.setAttribute("aria-label", tr("quick.history.deleteAria"));
     remove.innerHTML =
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" ' +
       'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
@@ -1420,19 +1532,25 @@
     if (!entries.length) {
       var empty = document.createElement("div");
       empty.className = "qt-history-empty";
-      empty.textContent = state.history.length ? "没有匹配的记录" : "暂无翻译历史";
+      empty.textContent = state.history.length
+        ? tr("quick.history.noMatch")
+        : tr("quick.history.empty");
       historyList.appendChild(empty);
     } else {
       entries.forEach(function (entry) {
         historyList.appendChild(historyItem(entry));
       });
     }
-    historySummary.textContent = state.history.length
-      ? "共 " +
-        state.history.length +
-        " 条" +
-        (state.historyQuery ? "，匹配 " + entries.length + " 条" : "")
-      : "暂无翻译历史";
+    if (state.history.length) {
+      historySummary.textContent = state.historyQuery
+        ? tr("quick.history.summaryFiltered", {
+            total: state.history.length,
+            count: entries.length,
+          })
+        : tr("quick.history.summary", { count: state.history.length });
+    } else {
+      historySummary.textContent = tr("quick.history.empty");
+    }
     historyClear.disabled = !state.history.length;
     if (!state.history.length) {
       resetHistoryClearArmed();
@@ -1485,7 +1603,7 @@
     } else {
       renderEmptyResult();
     }
-    elapsedNode.textContent = "耗时 " + qtFormatElapsed(state.elapsedMs);
+    elapsedNode.textContent = qtElapsedText(state.elapsedMs);
     copyButton.disabled = !state.raw;
     if (entry.targetLang) {
       setTargetLang(entry.targetLang);
@@ -1503,19 +1621,30 @@
     API.historyDelete(String(entry.id)).then(
       function (result) {
         if (result && result.ok === false) {
-          toast(result.error || "删除失败", "error");
+          toast(result.error || tr("quick.toast.deleteFailed"), "error");
           return;
         }
         state.history = state.history.filter(function (item) {
           return !item || item.id !== entry.id;
         });
         renderHistory();
-        toast("已删除这条历史");
+        toast(tr("quick.toast.deleted"));
       },
       function (error) {
-        toast(String(error || "删除失败"), "error");
+        toast(String(error || tr("quick.toast.deleteFailed")), "error");
       }
     );
+  }
+
+  /* Keeps the clear button label in sync with the armed state and the current
+   * locale. */
+  function syncHistoryClearLabel() {
+    if (!historyClear) {
+      return;
+    }
+    historyClear.textContent = state.historyClearArmed
+      ? tr("quick.history.confirmClear")
+      : tr("quick.history.clear");
   }
 
   function resetHistoryClearArmed() {
@@ -1526,7 +1655,7 @@
     }
     if (historyClear) {
       historyClear.classList.remove("is-armed");
-      historyClear.textContent = "清空历史";
+      historyClear.textContent = tr("quick.history.clear");
     }
   }
 
@@ -1537,7 +1666,7 @@
     if (!state.historyClearArmed) {
       state.historyClearArmed = true;
       historyClear.classList.add("is-armed");
-      historyClear.textContent = "确认清空";
+      historyClear.textContent = tr("quick.history.confirmClear");
       if (state.clearTimer) {
         window.clearTimeout(state.clearTimer);
       }
@@ -1551,15 +1680,15 @@
     API.historyClear().then(
       function (result) {
         if (result && result.ok === false) {
-          toast(result.error || "清空失败", "error");
+          toast(result.error || tr("quick.toast.clearFailed"), "error");
           return;
         }
         state.history = [];
         renderHistory();
-        toast("历史已清空", "success");
+        toast(tr("quick.toast.cleared"), "success");
       },
       function (error) {
-        toast(String(error || "清空失败"), "error");
+        toast(String(error || tr("quick.toast.clearFailed")), "error");
       }
     );
   }
@@ -1577,13 +1706,13 @@
     API.hide().then(
       function (result) {
         if (!API.live) {
-          toast("浏览器预览模式：打包后的应用会隐藏窗口");
+          toast(tr("quick.toast.previewHide"));
         } else if (result && result.ok === false) {
-          toast(result.error || "隐藏窗口失败", "error");
+          toast(result.error || tr("quick.toast.hideFailed"), "error");
         }
       },
       function (error) {
-        toast(String(error || "隐藏窗口失败"), "error");
+        toast(String(error || tr("quick.toast.hideFailed")), "error");
       }
     );
   }
@@ -1594,7 +1723,7 @@
     }
     // Auto detection means there is no pinned source language to swap with.
     if (state.quick.sourceLang === "auto") {
-      toast("自动识别时无法交换语言，请先选择源语言", "error");
+      toast(tr("quick.action.swapDisabled"), "error");
       return;
     }
     stopSpeech();
@@ -1608,17 +1737,17 @@
       clearError();
       renderEmptyResult();
       updateSourceCount();
-      elapsedNode.textContent = "耗时 —";
+      elapsedNode.textContent = qtElapsedText(null);
       copyButton.disabled = true;
     }
     // Swap both selectors and remember the new values.
     setSourceLang(previousTarget);
     setTargetLang(previousSource);
     toast(
-      "已交换语言：" +
-        languageLabel(previousSource) +
-        " ↔ " +
-        languageLabel(previousTarget)
+      tr("quick.toast.swapped", {
+        from: languageLabel(previousSource),
+        to: languageLabel(previousTarget),
+      })
     );
     sourceInput.focus();
   }
@@ -1636,26 +1765,26 @@
         if (result && result.ok === false) {
           state.quick.pinned = previous;
           setPinUi(previous);
-          toast(result.error || "置顶切换失败", "error");
+          toast(result.error || tr("quick.toast.pinFailed"), "error");
           return;
         }
         if (result && typeof result.pinned === "boolean") {
           state.quick.pinned = result.pinned;
           setPinUi(result.pinned);
         }
-        toast(state.quick.pinned ? "已置顶显示" : "已取消置顶");
+        toast(state.quick.pinned ? tr("quick.toast.pinned") : tr("quick.toast.unpinned"));
       },
       function (error) {
         state.quick.pinned = previous;
         setPinUi(previous);
-        toast(String(error || "置顶切换失败"), "error");
+        toast(String(error || tr("quick.toast.pinFailed")), "error");
       }
     );
   }
 
   function copyResult() {
     if (!state.raw) {
-      toast("还没有可复制的译文", "error");
+      toast(tr("quick.toast.copyEmpty"), "error");
       return;
     }
     if (!API || typeof API.copy !== "function") {
@@ -1664,13 +1793,13 @@
     API.copy(state.raw).then(
       function (result) {
         if (result && result.ok === false) {
-          toast(result.error || "复制失败", "error");
+          toast(result.error || tr("quick.toast.copyFailed"), "error");
           return;
         }
-        toast("已复制译文", "success");
+        toast(tr("quick.toast.copied"), "success");
       },
       function (error) {
-        toast(String(error || "复制失败"), "error");
+        toast(String(error || tr("quick.toast.copyFailed")), "error");
       }
     );
   }
@@ -1688,7 +1817,7 @@
     clearError();
     updateSourceCount();
     renderEmptyResult();
-    elapsedNode.textContent = "耗时 —";
+    elapsedNode.textContent = qtElapsedText(null);
     copyButton.disabled = true;
     sourceInput.focus();
   }
@@ -1697,10 +1826,23 @@
     if (state.historyOpen) {
       closeHistory();
     }
+    /* Re-reads quick_ready on every show: the summon may happen long after the
+     * window was hidden and the UI language (or the quick settings) changed. */
     refreshConfig().then(function () {
       scheduleWindowResize();
       sourceInput.focus();
     });
+  }
+
+  /* quick-locale (R1): the settings page broadcasts a language switch to this
+   * window, which may be hidden. Refresh the chrome in place and keep whatever
+   * translation text (or in-flight stream) is currently shown. */
+  function handleLocaleEvent(payload) {
+    var locale = payload && typeof payload === "object" ? payload.locale : payload;
+    if (applyLocale(locale)) {
+      refreshLocaleChrome();
+      scheduleWindowResize();
+    }
   }
 
   function handleKeydown(event) {
@@ -1793,15 +1935,17 @@
     if (!sourceInput || !targetSelect || !resultNode) {
       return;
     }
-    limitHint.textContent =
-      "支持 " + LANGUAGES.length + " 种语言，最多 " + MAX_CHARS + " 字符";
+    limitHint.textContent = tr("quick.source.limitHint", {
+      count: LANGUAGES.length,
+      limit: MAX_CHARS,
+    });
     renderTargetOptions();
     renderSourceOptions();
     applyQuickConfig(state.quick);
     updateSourceCount();
     updateResultCount();
     renderEmptyResult();
-    elapsedNode.textContent = "耗时 —";
+    elapsedNode.textContent = qtElapsedText(null);
     setPinUi(false);
     setTranslatingUi(false);
     syncSpeakUi();
@@ -1813,6 +1957,9 @@
       if (typeof API.onShow === "function") {
         API.onShow(handleShow);
       }
+      if (typeof API.onLocale === "function") {
+        API.onLocale(handleLocaleEvent);
+      }
     }
     scheduleWindowResize();
     refreshConfig().then(function () {
@@ -1822,7 +1969,7 @@
       sourceInput.focus();
     });
     if (!API) {
-      toast("前端桥接脚本未加载，界面处于只读预览", "error");
+      toast(tr("quick.toast.bridgeMissing"), "error");
     }
   }
 

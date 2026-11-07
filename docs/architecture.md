@@ -10,7 +10,7 @@ lexora.exe
 │   ├─ settings 窗口（WebView2，index.html）
 │   ├─ picker 结果面板窗口（WebView2，透明置顶，picker.html）
 │   ├─ picker-toolbar 临时划词工具栏窗口（WebView2，透明置顶）
-│   ├─ quicktranslate 快捷翻译窗口（WebView2，透明置顶，quicktranslate.html）
+│   ├─ quicktranslate 快捷翻译窗口（WebView2，透明置顶，quicktranslate.html；监听 `quick-locale`）
 │   ├─ capture-<n> 截图 overlay 窗口（每显示器一个，隐藏复用，capture.html）
 │   ├─ longshot 长截图预览窗口（手动滚动时显示，longshot.html）
 │   ├─ pin-<id> 钉图窗口（置顶无边框，pin.html）
@@ -38,7 +38,7 @@ lexora.exe
 | `commands.rs` | 全部 `invoke` 命令；组装 `StatePayload` 广播前端 |
 | `windows.rs` | picker 面板、临时工具栏、settings 与 capture overlay 的几何、显示/隐藏和 pending payload |
 | `capture.rs` | 截图会话：热点单实例守卫、xcap 抓屏、overlay 复用、裁切/标注合成、剪贴板、技能分发、长截图 seed/拼接算法 |
-| `quicktranslate.rs` | 快捷翻译面板：全局热键（默认 `Alt+Space`）、窗口显隐与 Pin、`quick_translate` 流式任务、翻译历史存储（`quick-history.json`，上限 500）、源语言启发式检测 |
+| `quicktranslate.rs` | 快捷翻译面板：全局热键（默认 `Alt+Space`）、窗口显隐与 Pin、`quick_translate` 流式任务、翻译历史存储（`quick-history.json`，上限 500）、源语言启发式检测、界面语言变化时向面板推送 `quick-locale` |
 | `longshot.rs` | 手动滚动长截图：预览窗口、后台抓帧线程、双向（行/列）拼接、方向切换、完成/取消 |
 | `pin.rs` | 钉在桌面窗口：图片 registry、DPI 适配尺寸、置顶窗口、拖动/复制/关闭 |
 | `updater.rs` | 检查 GitHub Release、下载并替换 exe、助手脚本重启（自更新） |
@@ -133,8 +133,8 @@ picker.js → invoke("picker_translate", {requestId,text,targetLang})
 界面语言的解析与注入分为检测、下发、渲染与提示词四层，全程不引入前端构建步骤：
 
 1. **检测（Rust `locale.rs`）**：`settings.app.language` 为 `system` 时，先读 Windows 用户区域（`GetUserDefaultLocaleName`，`zh*`→`zh`、`en*`→`en`，`zh-Hant`/`zh-TW` 等一律归 `zh`），区域不支持再读时区键（`GetDynamicTimeZoneInformation`：China/Taipei/Hong Kong/Singapore Standard Time→`zh`；GMT/UTC/W. Europe/Eastern/Central/Mountain/Pacific/Tokyo/Korea Standard Time→`en`），仍无法判断回退 `en`。`Settings::effective_language()` 把 `system` 解析为 `zh|en`，显式 `zh`/`en` 直接生效；归一化接受 `zh`/`zh-CN`、`en`/`en-US`/`en-GB`，其他值回退 `system`（迁移不丢历史设置，v10→v11 只补默认值）。
-2. **下发（Rust → 前端）**：`StatePayload.app.locale` 为生效语言，`app.languageSetting` 为原始设置（设置页下拉回显）。picker 从 `picker-data.config.locale` 初始化（截图结果面板同源）；`capture-*`、`pin-*`、`longshot`、`longshot-bar` 窗口在 URL 追加 `lang=<zh|en>`，首帧即用正确语言，避免闪一下错误语言。
-3. **渲染（`web/shared/i18n.js`，无构建步骤）**：纯静态 JS，在 `shared/constants.js` 与语言包之后、页面脚本之前以普通 `<script>` 加载；`LP.t(key, params)` 依次查当前包、`en` 包、key 本身，`LP.i18n.init/setLocale/applyStatic` 替换 `data-i18n*` 标记的静态文案；语言包 `messages.zh.js` / `messages.en.js` key 集合一致（由 `web/i18n.test.cjs` 校验）。切换语言后各窗口重渲染依赖语言的动态内容（面板标题、目标语言下拉、toast 等），无需重启。所有窗口仍是无 bundler 的静态资源；快捷翻译面板（`quicktranslate.html`）暂未接入语言包，文案固定中文。
+2. **下发（Rust → 前端）**：`StatePayload.app.locale` 为生效语言，`app.languageSetting` 为原始设置（设置页下拉回显）。picker 从 `picker-data.config.locale` 初始化（截图结果面板同源）；`capture-*`、`pin-*`、`longshot`、`longshot-bar` 窗口在 URL 追加 `lang=<zh|en>`，首帧即用正确语言，避免闪一下错误语言；快捷翻译面板从 `quick_ready.locale` 初始化，界面语言变化时由 Rust 推送事件 `quick-locale`（`{locale:"zh"|"en"}`，窗口隐藏时也送达），面板收到后重渲染。
+3. **渲染（`web/shared/i18n.js`，无构建步骤）**：纯静态 JS，在 `shared/constants.js` 与语言包之后、页面脚本之前以普通 `<script>` 加载；`LP.t(key, params)` 依次查当前包、`en` 包、key 本身，`LP.i18n.init/setLocale/applyStatic` 替换 `data-i18n*` 标记的静态文案；语言包 `messages.zh.js` / `messages.en.js` key 集合一致（由 `web/i18n.test.cjs` 校验）。切换语言后各窗口重渲染依赖语言的动态内容（面板标题、目标语言下拉、toast 等），无需重启。所有窗口仍是无 bundler 的静态资源；快捷翻译面板（`quicktranslate.html`）与设置页「快捷翻译」卡片同样使用语言包与 `LP.t`/`data-i18n`，面板从 `quick_ready.locale` 初始化、收到 `quick-locale` 后调用 `setLocale` 并重建下拉/历史/状态等动态文案，隐藏期间收到事件也在下次显示前完成切换。
 4. **提示词的语言**：`engine/prompts.rs` 的默认总结/解释/图片解释/追问提示词用 `{answer}` 占位符，渲染为 `effective_language()` 对应的英文语言名（`zh`→`Simplified Chinese`、`en`→`English`）；自定义提示词含 `{answer}` 时替换，否则末尾追加 `Answer language: <name>.`。解释模式的单词查询释义使用本地语言，翻译目标仍由下拉/`auto` 决定（中文→英文、其他→中文，与界面语言无关）。`PROMPT_VERSION` 为 `12`，模型日志按解析结果记录模式/来源/版本，不记录正文。
 
 ## 安全与隐私

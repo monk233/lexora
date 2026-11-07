@@ -176,6 +176,7 @@ pub fn update_settings(
     patch: Value,
 ) -> Result<Value, String> {
     let previous = state.settings.get();
+    let previous_language = previous.effective_language();
     let previous_shortcut = previous.capture.region_shortcut;
     let settings = state.settings.update_json(patch)?;
     state.selection.apply_settings(&settings);
@@ -190,6 +191,11 @@ pub fn update_settings(
         || settings.quick.enabled != previous.quick.enabled
     {
         sync_quick_hotkey(&app, &settings);
+    }
+    // The panel lives outside the settings window: push the resolved language
+    // when the patch actually switched it (raw `system` may resolve the same).
+    if previous_language != settings.effective_language() {
+        notify_quick_locale(&app, settings.effective_language());
     }
     // Switching the local model restarts a running engine automatically so the
     // new weights are loaded without asking the user to press 重启.
@@ -218,6 +224,7 @@ pub fn update_settings(
 #[tauri::command]
 pub fn reset_settings(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<Value, String> {
     let previous = state.settings.get();
+    let previous_language = previous.effective_language();
     let previous_shortcut = previous.capture.region_shortcut;
     let settings = state.settings.reset();
     let autostart_result = sync_reset_autostart(
@@ -234,6 +241,9 @@ pub fn reset_settings(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result
         || settings.quick.enabled != previous.quick.enabled
     {
         sync_quick_hotkey(&app, &settings);
+    }
+    if previous_language != settings.effective_language() {
+        notify_quick_locale(&app, settings.effective_language());
     }
     crate::tray::refresh(&app);
     broadcast_state(&app, &state);
@@ -281,6 +291,17 @@ fn sync_capture_hotkey(
 /// whenever nothing changed; failures are only logged (contract §3).
 fn sync_quick_hotkey(app: &AppHandle, settings: &crate::settings::Settings) {
     crate::quicktranslate::sync_hotkey(app, settings);
+}
+
+/// Pushes the effective UI language to the quick-translate panel after a
+/// settings change. `emit_to` delivers to the panel's webview regardless of
+/// window visibility, so a hidden panel re-renders before its next `quick-show`.
+fn notify_quick_locale(app: &AppHandle, locale: &str) {
+    let _ = app.emit_to(
+        crate::quicktranslate::QUICK_LABEL,
+        crate::quicktranslate::EVENT_LOCALE,
+        json!({ "locale": locale }),
+    );
 }
 
 #[tauri::command]
@@ -1796,6 +1817,7 @@ pub fn quick_ready(state: State<'_, Arc<AppState>>) -> Value {
     let settings = state.settings.get();
     json!({
         "ok": true,
+        "locale": settings.effective_language(),
         "quick": settings.quick,
         "promptDefault": crate::engine::DEFAULT_QUICK_TRANSLATE_PROMPT,
     })

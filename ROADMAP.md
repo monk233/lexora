@@ -10,7 +10,7 @@
 | --- | --- | --- | --- |
 | R1 | 多语言支持、时区自动识别与本地语言输出 | 已实现（`feature/r1-localization`，[实施计划](docs/superpowers/plans/2026-10-29-r1-localization.md)） | — |
 | R2 | 使用 Rare UI 重新设计工具面板 | 评估中 | 前端构建链选型 |
-| R3 | 历史记录 | 计划中 | R1（多语言文案）可并行 |
+| R3 | 历史记录 | 计划中（0.4.2 快捷翻译自带的历史不覆盖本项） | R1（多语言文案）可并行 |
 | R4 | 快速聊天（快捷键呼出） | 计划中 | R1、R3 |
 | R5 | 网页翻译（浏览器扩展） | 计划中 | R1、本地 HTTP 服务 |
 
@@ -27,10 +27,11 @@
 ### 已实现范围（`feature/r1-localization`）
 
 - **界面语言**：`zh` / `en` 两套语言包（`web/shared/messages.zh.js` / `messages.en.js`），设置 → 应用与启动 → 界面语言（跟随系统 / 简体中文 / English），切换立即生效、无需重启；settings schema 11（在 0.4.2 的 10 之上）新增 `app.language`（`system|zh|en`）。
+- **快捷翻译界面本地化（合并 0.4.2 后补齐）**：快捷翻译面板（`quicktranslate`）与设置页「快捷翻译」卡片文案已纳入语言包，随界面语言即时切换、无需重启，所有 web 窗口文案至此全部跟随界面语言。`quick_ready` 返回生效语言 `locale`；设置页切换语言时 Rust 向 quick 窗口推送 Tauri 事件 `quick-locale`（payload `{locale:"zh"|"en"}`，窗口隐藏时也送达），面板收到后重渲染。面板首帧先按 `<html lang>` / `navigator.language` 猜测，后端语言到达后覆盖；源/目标语言名（含源语言下拉额外 28 种语言）也来自语言包（`language.<code>` key）。
 - **自动识别**：`src-tauri/src/locale.rs` 先读 Windows 区域（`GetUserDefaultLocaleName`），区域不支持时按系统时区键推断，最后回退英文；`zh-Hant` / `zh-TW` 暂映射到简体中文。
 - **AI 输出语言**：解释、总结、图片解释、追问回答与解释模式的词条释义使用本地语言；默认提示词用 `{answer}` 占位符（`PROMPT_VERSION` 12），自定义提示词无占位符时追加 `Answer language: <name>.`。
 - **与原计划的差异**：`auto` 翻译目标保持「中文→英文、其他→中文」的互补规则，不随界面语言变化（避免英文界面把英文原文译成英文）；提示词模板保留英文、未按语言各出一套默认值；日期/数字格式化沿用现状；界面首批不含繁体与日语。
-- **已知限制**：Rust 侧诊断/错误提示（本地引擎状态、下载错误、硬件推荐理由）尚未本地化，英文界面会原样显示中文；前端界面文案与 AI 回答语言已完整本地化，后续迭代补齐后端文案。
+- **已知限制**：仅 Rust 侧诊断/错误提示（本地引擎状态、下载错误、硬件推荐理由等后端错误/状态文案）尚未本地化，英文界面会原样显示中文；所有 web 窗口的界面文案（含快捷翻译面板与设置页「快捷翻译」卡片）与 AI 回答语言已完整本地化，后续迭代补齐后端文案。
 
 ### 范围
 
@@ -41,7 +42,7 @@
 
 ### 涉及模块
 
-`web/index.html`、`web/settings.js`、`web/shared/constants.js`、`src-tauri/src/settings.rs`（新增 `app.language` 字段与迁移）、`src-tauri/src/engine/prompts.rs`（默认提示词按语言选择）、`src-tauri/src/engine/hardware.rs` 等含固定中文文案的模块、文档。
+`web/index.html`、`web/settings.js`、`web/quicktranslate.html|js`、`web/shared/constants.js`、`src-tauri/src/settings.rs`（新增 `app.language` 字段与迁移）、`src-tauri/src/engine/prompts.rs`（默认提示词按语言选择）、`src-tauri/src/engine/hardware.rs` 等原含硬编码中文文案的模块、文档。
 
 ### 验收
 
@@ -95,6 +96,8 @@
 ### 目标
 
 保存划词翻译与 AI 任务的结果，支持检索、收藏、复用与清理，默认全部本地存储。
+
+> **与 0.4.2 快捷翻译历史的关系**：0.4.2 的快捷翻译面板自带最近 500 条快捷翻译历史（见 [quick-translate.md](docs/quick-translate.md)），只覆盖快捷翻译的最近记录，不含本项要求的完整任务记录、检索分页、收藏、导出与容量/保留策略，因此不视为 R3 已交付，R3 仍为计划中。
 
 ### 范围
 
