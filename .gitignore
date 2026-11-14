@@ -3,6 +3,7 @@ src-tauri/target/
 src-tauri/gen/
 node_modules/
 dist/
+frontend/dist/
 *.log
 *.tmp
 *.part

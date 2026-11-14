@@ -2,7 +2,7 @@
 /**
  * Minimal OpenAI-compatible mock server used by the end-to-end checks.
  *
- *   node tests/mock-openai-server.js [port]
+ *   node tests/mock-openai-server.cjs [port]
  *
  * Endpoints:
  *   GET  /v1/models

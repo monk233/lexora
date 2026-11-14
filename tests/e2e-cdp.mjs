@@ -4,7 +4,7 @@
  *
  * Prerequisites:
  *   - `npx tauri build --debug --no-bundle` produced src-tauri/target/debug/lexora.exe
- *   - `node tests/mock-openai-server.js 8770` is already running
+ *   - `node tests/mock-openai-server.cjs 8770` is already running
  *
  * The script starts Lexora with a temporary data directory whose settings
  * point at the mock OpenAI server, then uses CDP `Runtime.evaluate` to invoke the

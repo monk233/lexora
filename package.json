@@ -2,6 +2,7 @@
   "name": "lexora",
   "version": "0.4.3",
   "private": true,
+  "type": "module",
   "description": "Lexora — 轻量划词翻译工具：选中任意文本即可翻译、总结、解释、朗读；支持在线 OpenAI 兼容 API 与本地 GGUF 离线模型。",
   "license": "MIT",
   "author": "Lexora contributors",
@@ -17,9 +18,36 @@
     "build:debug": "tauri build --debug --no-bundle",
     "fetch:llama": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch-llama.ps1",
     "icons:skills": "node scripts/make_skill_icons.mjs",
-    "build:portable": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-portable.ps1"
+    "build:portable": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-portable.ps1",
+    "dev:web": "vite --config frontend/vite.config.ts",
+    "build:web": "tsc --noEmit -p frontend/tsconfig.json && vite build --config frontend/vite.config.ts",
+    "test:web": "vitest run --config frontend/vitest.config.ts",
+    "preview:web": "vite preview --config frontend/vite.config.ts"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "2.12.4"
+    "@tauri-apps/cli": "2.12.4",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@types/node": "^26.6.6",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^6.3.0",
+    "autoprefixer": "^10.6.2",
+    "jsdom": "^31.0.1",
+    "postcss": "^8.5.33",
+    "tailwindcss": "3.4",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.0"
+  },
+  "dependencies": {
+    "@rare-ui/core": "0.1.1",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "1.72.0",
+    "react": "18.3",
+    "react-dom": "18.3",
+    "tailwind-merge": "^3.7.0",
+    "tailwindcss-animate": "^1.0.7"
   }
 }
