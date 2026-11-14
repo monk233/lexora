@@ -66,6 +66,15 @@ jobs:
           Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$version"
           Add-Content -Path $env:GITHUB_OUTPUT -Value "tag=$expectedTag"
 
+      - name: Build web frontend
+        run: npm run build:web
+
+      - name: Test web frontend
+        run: npm run test:web
+
+      - name: Check rare-ui imports
+        run: npm run lint:imports
+
       - name: Build portable exe
         shell: pwsh
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-portable.ps1

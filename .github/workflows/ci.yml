@@ -51,6 +51,15 @@ jobs:
         working-directory: src-tauri
         run: cargo check --all-targets
 
+      - name: Build web frontend
+        run: npm run build:web
+
+      - name: Test web frontend
+        run: npm run test:web
+
+      - name: Check rare-ui imports
+        run: npm run lint:imports
+
       - name: Cargo test
         working-directory: src-tauri
         run: cargo test
