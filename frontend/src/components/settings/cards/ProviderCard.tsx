@@ -2,7 +2,8 @@
  *
  * Owns the provider-mode segmented control (`role="tab"`, matching the legacy
  * aria contract), the engine-derived service badge, and the panel switch. The
- * local panel is a Task 5 placeholder: this task only ships the online side.
+ * online and local halves live in `provider/OnlinePanel` and
+ * `provider/LocalPanel`; this file only owns the shared header and mode state.
  */
 import { Badge, type BadgeTone } from "@/components/ui/badge";
 import { SectionCard } from "@/components/settings/SectionCard";
@@ -12,6 +13,7 @@ import { useT } from "@/lib/i18n";
 import type { EngineStatus } from "@/lib/settings/types";
 
 import { OnlinePanel } from "./provider/OnlinePanel";
+import { LocalPanel } from "./provider/LocalPanel";
 
 /** Engine status → header badge copy, verbatim legacy branch order
  * (`web/settings.js:559-595`). */
@@ -74,7 +76,7 @@ export function ProviderCard() {
           ]}
           onChange={(next) => form.save({ provider: { mode: next } })}
         />
-        {mode === "online" ? <OnlinePanel /> : <div data-testid="provider-local" />}
+        {mode === "online" ? <OnlinePanel /> : <LocalPanel />}
       </div>
     </SectionCard>
   );

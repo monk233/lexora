@@ -70,6 +70,9 @@ export interface SettingsFormApi {
   settings: Settings | null;
   status: SaveStatus;
   loadError: string | null;
+  /** The bridge this window was mounted with. Cards call one-shot commands
+   * through it so the injected fake API also drives their tests. */
+  api: SettingsApi;
   save(patch: SettingsPatch): void;
   flushSaveQueue(): Promise<FlushResult>;
   /** Replace the whole state with a command result (`reset_settings`). */
@@ -399,6 +402,7 @@ export function SettingsFormProvider(props: {
       settings,
       status,
       loadError,
+      api: apiRef.current,
       save,
       flushSaveQueue,
       applyState: commitState,

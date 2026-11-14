@@ -2,7 +2,7 @@
  *
  * The card owns the `role="tab"` segmented control that flips
  * `provider.mode`, the engine-derived service badge, and the panel switch.
- * The local panel is a Task 5 placeholder on purpose.
+ * Both panels are covered by their own suites (OnlinePanel / LocalPanel).
  */
 import { act, fireEvent, screen } from "@testing-library/react";
 import { expect, test } from "vitest";
