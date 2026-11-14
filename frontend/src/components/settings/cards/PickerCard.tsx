@@ -167,7 +167,7 @@ export function PickerCard() {
     let skills = (Array.isArray(picker.skills) ? picker.skills : DEFAULT_TEXT_SKILLS)
       .map(String)
       .filter((skillId) => skillId !== id);
-    if (skills.length === 0) skills = DEFAULT_TEXT_SKILLS.slice();
+    if (custom.kind !== "image" && skills.length === 0) skills = DEFAULT_TEXT_SKILLS.slice();
     /* Remove the id from both toolbars so a delete never leaves a dangling
      * action behind, whichever category the skill lived in. */
     const captureSkills = (Array.isArray(picker.captureSkills) ? picker.captureSkills : [])
@@ -182,14 +182,16 @@ export function PickerCard() {
     });
   };
 
-  /* One sibling label is enough for the editor's non-blocking duplicate hint:
-   * the editor compares it against the live draft on every keystroke. */
-  const siblingLabel =
+  /* The editor only needs the labels of same-kind siblings (minus its own id
+   * when editing) so it can hint on any duplicate, not just the first one. */
+  const siblingLabels =
     editor === null
-      ? undefined
-      : customSkills.find(
-          (skill) => skill.id !== editor.draft.id && skill.kind === editor.draft.kind
-        )?.label;
+      ? []
+      : customSkills
+          .filter(
+            (skill) => skill.id !== editor.draft.id && skill.kind === editor.draft.kind
+          )
+          .map((skill) => skill.label);
 
   return (
     <SectionCard
@@ -307,7 +309,7 @@ export function PickerCard() {
                 key={`${editor.draft.id}:${editor.editing ? "edit" : "new"}`}
                 draft={editor.draft}
                 editing={editor.editing}
-                existingLabel={siblingLabel}
+                existingLabels={siblingLabels}
                 onSave={saveCustomSkill}
                 onCancel={() => setEditor(null)}
                 onDelete={editor.editing ? () => deleteCustomSkill(editor.draft.id) : undefined}

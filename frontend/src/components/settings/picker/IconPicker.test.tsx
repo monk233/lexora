@@ -87,6 +87,32 @@ test("reopening resets the search and focuses the search field", () => {
   expect(screen.getAllByRole("radio")).toHaveLength(202);
 });
 
+test("clicking a key that is also a legacy alias keeps the clicked key", () => {
+  const onChange = renderPicker("sparkles");
+
+  /* `pen`, `globe` and `book` are both gallery keys and legacy aliases; the
+   * picker must store the graph the user actually clicked. */
+  for (const key of ["pen", "globe", "book"]) {
+    openPicker();
+    const radio = screen
+      .getAllByRole("radio")
+      .find((node) => node.getAttribute("title") === key);
+    if (!radio) throw new Error(`${key} icon missing from the gallery`);
+    fireEvent.click(radio);
+    expect(onChange).toHaveBeenLastCalledWith(key);
+  }
+});
+
+test("a stored key that exists in the gallery is shown as selected", () => {
+  renderPicker("pen");
+  openPicker();
+
+  const selected = screen
+    .getByRole("radiogroup")
+    .querySelector('[aria-checked="true"]');
+  expect(selected?.getAttribute("title")).toBe("pen");
+});
+
 test("the expanded gallery is a labelled radiogroup with the selected icon checked", () => {
   renderPicker("rocket");
   openPicker();

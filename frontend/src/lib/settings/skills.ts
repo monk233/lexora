@@ -171,9 +171,17 @@ export function newCustomSkillId(now: number = Date.now(), random: () => number 
   return `custom-${stamp}${suffix}`;
 }
 
-/** Map a stored icon key through the legacy aliases; unknown keys fall back. */
+/**
+ * Map a stored icon key through the legacy aliases; unknown keys fall back.
+ *
+ * A key that exists in the generated gallery wins: `pen`, `globe` and `book`
+ * are gallery entries *and* v0.1.x alias names, so alias-first resolution made
+ * those three icons impossible to pick (the picker stored a different graph).
+ * The aliases therefore only apply to names the gallery no longer has.
+ */
 export function normalizeIconKey(icon: string): string {
   const name = String(icon ?? "");
+  if (ICON_KEYS.has(name)) return name;
   const resolved = LEGACY_SKILL_ICON_ALIASES[name] ?? name;
   return ICON_KEYS.has(resolved) ? resolved : "sparkles";
 }

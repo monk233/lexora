@@ -45,6 +45,14 @@ test("generates unique custom ids matching the backend pattern", () => {
   expect(newCustomSkillId(1760000000000, () => 0.25)).not.toBe(id);
 });
 
+test("a key that exists in the gallery wins over a legacy alias", () => {
+  /* `pen`/`globe`/`book` are real Lucide keys as well as v0.1.x aliases:
+   * remapping them made those three gallery entries unselectable. */
+  expect(normalizeIconKey("pen")).toBe("pen");
+  expect(normalizeIconKey("globe")).toBe("globe");
+  expect(normalizeIconKey("book")).toBe("book");
+});
+
 test("maps legacy icon keys and falls back to sparkles", () => {
   expect(normalizeIconKey("zap")).toBe("zap");
   expect(normalizeIconKey("wand")).toBe("wand-sparkles");

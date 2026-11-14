@@ -65,8 +65,8 @@ export interface CustomSkillEditorProps {
   draft: CustomSkillDraft;
   /** true → delete button + `settings.editor.editTitle`. */
   editing: boolean;
-  /** Non-blocking duplicate-name hint (a different skill already uses it). */
-  existingLabel?: string;
+  /** Non-blocking duplicate-name hint: every same-kind sibling label. */
+  existingLabels?: string[];
   onSave: (draft: CustomSkillDraft) => void;
   onCancel: () => void;
   onDelete?: () => void;
@@ -80,7 +80,7 @@ const TEXTAREA_CLASS =
 export function CustomSkillEditor({
   draft,
   editing,
-  existingLabel,
+  existingLabels,
   onSave,
   onCancel,
   onDelete,
@@ -142,10 +142,14 @@ export function CustomSkillEditor({
     }
   };
 
-  const duplicate =
-    Boolean(existingLabel) &&
-    value.label.trim().length > 0 &&
-    value.label.trim().toLowerCase() === String(existingLabel).trim().toLowerCase();
+  /* Any same-kind sibling may own the name, not only the first one. */
+  const draftLabel = value.label.trim();
+  const duplicateLabel =
+    draftLabel.length === 0
+      ? undefined
+      : (existingLabels ?? []).find(
+          (label) => label.trim().toLowerCase() === draftLabel.toLowerCase()
+        );
 
   return (
     <div
@@ -221,9 +225,9 @@ export function CustomSkillEditor({
             setErrors((previous) => ({ ...previous, label: undefined }));
           }}
         />
-        {duplicate ? (
+        {duplicateLabel !== undefined ? (
           <p className="text-xs text-amber-600">
-            {t("settings.hint.skillNameDuplicate", { label: String(existingLabel) })}
+            {t("settings.hint.skillNameDuplicate", { label: duplicateLabel })}
           </p>
         ) : null}
         {errors.label ? (

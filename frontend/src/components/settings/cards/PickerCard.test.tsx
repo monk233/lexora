@@ -348,3 +348,280 @@ test("deleting the last custom text skill restores the builtin defaults", async 
     "explain",
   ]);
 });
+
+type CustomSkillPatch = {
+  picker: {
+    customSkills?: Array<Record<string, unknown>>;
+    skills?: string[];
+    captureSkills?: string[];
+  };
+};
+
+/** Only the one-shot custom-skill writes (`picker` patch carrying the array). */
+function savedSkillPatches(api: FakeSettingsApi): CustomSkillPatch[] {
+  return updateCalls(api).filter((call): call is CustomSkillPatch => {
+    const picker = (call as { picker?: Record<string, unknown> } | null)?.picker;
+    return Boolean(picker && "customSkills" in picker);
+  });
+}
+
+test("creating a text custom skill writes picker.skills and shows the new row", async () => {
+  const { api } = await renderSettingsWindow();
+
+  fireEvent.click(screen.getByRole("button", { name: /添加技能/ }));
+  const editor = screen.getByTestId("custom-skill-editor");
+  const name = within(editor).getByLabelText(zh("settings.field.name"));
+  expect(name).toHaveFocus();
+  fireEvent.change(name, { target: { value: "文字速递" } });
+  fireEvent.change(within(editor).getByLabelText(zh("settings.field.prompt")), {
+    target: { value: "Translate {text} into {target}." },
+  });
+  fireEvent.click(
+    within(editor).getByRole("button", { name: zh("settings.action.changeIcon") })
+  );
+  const rocket = screen
+    .getAllByRole("radio")
+    .find((node) => node.getAttribute("title") === "rocket");
+  if (!rocket) throw new Error("rocket icon missing from the gallery");
+  fireEvent.click(rocket);
+
+  fireEvent.click(within(editor).getByRole("button", { name: zh("settings.action.save") }));
+  await act(async () => {});
+
+  /* One write, carrying the new array plus both toolbar orders. */
+  const saves = savedSkillPatches(api);
+  expect(saves).toHaveLength(1);
+  const patch = saves[0]!;
+  const stored = patch.picker.customSkills ?? [];
+  expect(stored).toHaveLength(1);
+  expect(stored[0]).toMatchObject({
+    label: "文字速递",
+    icon: "rocket",
+    kind: "text",
+    prompt: "Translate {text} into {target}.",
+  });
+  const id = String(stored[0]!.id);
+  expect(patch.picker.skills).toContain(id);
+  expect(patch.picker.captureSkills ?? []).not.toContain(id);
+
+  expect(screen.getByRole("tab", { name: /文字技能/ })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  expect(screen.queryByTestId("custom-skill-editor")).toBeNull();
+  const list = screen.getByTestId("skill-list-text");
+  expect(within(list).getByTestId(`skill-row-${id}`)).toBeTruthy();
+  expect(within(list).getByText("文字速递")).toBeTruthy();
+  expect(screen.getByText(zh("settings.toast.skillAdded", { label: "文字速递" }))).toBeTruthy();
+});
+
+test("editing a custom text skill replaces the stored entry and toasts skillSaved", async () => {
+  const { api } = await renderSettingsWindow({
+    state: makeState({
+      settings: {
+        picker: {
+          skills: [
+            "translate",
+            "summarize",
+            "explain",
+            "read",
+            "copy",
+            "search",
+            "custom-txt",
+          ],
+          customSkills: [
+            { id: "custom-txt", label: "旧名字", icon: "zap", kind: "text", prompt: "旧提示" },
+          ],
+        },
+      },
+    }),
+  });
+
+  fireEvent.click(screen.getByRole("button", { name: zh("settings.action.editSkill") }));
+  const editor = screen.getByTestId("custom-skill-editor");
+  expect(within(editor).getByLabelText(zh("settings.field.name"))).toHaveValue("旧名字");
+  expect(within(editor).getByLabelText(zh("settings.field.prompt"))).toHaveValue("旧提示");
+  expect(screen.getByText(zh("settings.editor.editTitle"))).toBeTruthy();
+
+  fireEvent.change(within(editor).getByLabelText(zh("settings.field.name")), {
+    target: { value: "新名字" },
+  });
+  fireEvent.change(within(editor).getByLabelText(zh("settings.field.prompt")), {
+    target: { value: "新提示词" },
+  });
+  fireEvent.click(within(editor).getByRole("button", { name: zh("settings.action.save") }));
+  await act(async () => {});
+
+  const saves = savedSkillPatches(api);
+  expect(saves).toHaveLength(1);
+  const patch = saves[0]!;
+  /* Replaced in place: one entry, same id, new copy. */
+  expect(patch.picker.customSkills).toEqual([
+    { id: "custom-txt", label: "新名字", icon: "zap", kind: "text", prompt: "新提示词" },
+  ]);
+  expect(patch.picker.skills?.filter((id) => id === "custom-txt")).toHaveLength(1);
+  expect(patch.picker.captureSkills ?? []).not.toContain("custom-txt");
+  expect(screen.getByText(zh("settings.toast.skillSaved", { label: "新名字" }))).toBeTruthy();
+  expect(screen.queryByTestId("custom-skill-editor")).toBeNull();
+  expect(within(screen.getByTestId("skill-list-text")).getByText("新名字")).toBeTruthy();
+});
+
+test("switching an edited text skill to image moves its id to captureSkills", async () => {
+  const { api } = await renderSettingsWindow({
+    state: makeState({
+      settings: {
+        picker: {
+          skills: [
+            "translate",
+            "summarize",
+            "explain",
+            "read",
+            "copy",
+            "search",
+            "custom-txt",
+          ],
+          customSkills: [
+            { id: "custom-txt", label: "转图", icon: "zap", kind: "text", prompt: "看图写话" },
+          ],
+        },
+      },
+    }),
+  });
+
+  fireEvent.click(screen.getByRole("button", { name: zh("settings.action.editSkill") }));
+  const editor = screen.getByTestId("custom-skill-editor");
+  fireEvent.click(
+    within(editor).getByRole("button", { name: zh("settings.skillKind.imageAria") })
+  );
+  fireEvent.click(within(editor).getByRole("button", { name: zh("settings.action.save") }));
+  await act(async () => {});
+
+  const saves = savedSkillPatches(api);
+  expect(saves).toHaveLength(1);
+  const patch = saves[0]!;
+  expect(patch.picker.customSkills).toEqual([
+    { id: "custom-txt", label: "转图", icon: "zap", kind: "image", prompt: "看图写话" },
+  ]);
+  expect(patch.picker.skills ?? []).not.toContain("custom-txt");
+  expect(patch.picker.captureSkills).toContain("custom-txt");
+  expect(screen.getByText(zh("settings.toast.skillSaved", { label: "转图" }))).toBeTruthy();
+  expect(screen.getByRole("tab", { name: /图片技能/ })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  const list = screen.getByTestId("skill-list-image");
+  expect(within(list).getByTestId("skill-row-custom-txt")).toBeTruthy();
+});
+
+test("switching an edited image skill to text moves its id back to picker.skills", async () => {
+  const { api } = await renderSettingsWindow({
+    state: makeState({
+      settings: {
+        picker: {
+          captureSkills: ["ocr", "custom-img"],
+          customSkills: [
+            { id: "custom-img", label: "转文字", icon: "zap", kind: "image", prompt: "读图" },
+          ],
+        },
+      },
+    }),
+  });
+
+  fireEvent.click(screen.getByRole("tab", { name: /图片技能/ }));
+  fireEvent.click(screen.getByRole("button", { name: zh("settings.action.editSkill") }));
+  const editor = screen.getByTestId("custom-skill-editor");
+  fireEvent.click(
+    within(editor).getByRole("button", { name: zh("settings.skillKind.textAria") })
+  );
+  fireEvent.click(within(editor).getByRole("button", { name: zh("settings.action.save") }));
+  await act(async () => {});
+
+  const saves = savedSkillPatches(api);
+  expect(saves).toHaveLength(1);
+  const patch = saves[0]!;
+  expect(patch.picker.customSkills).toEqual([
+    { id: "custom-img", label: "转文字", icon: "zap", kind: "text", prompt: "读图" },
+  ]);
+  expect(patch.picker.captureSkills ?? []).not.toContain("custom-img");
+  expect(patch.picker.skills).toContain("custom-img");
+  expect(screen.getByText(zh("settings.toast.skillSaved", { label: "转文字" }))).toBeTruthy();
+  expect(screen.getByRole("tab", { name: /文字技能/ })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  expect(
+    within(screen.getByTestId("skill-list-text")).getByTestId("skill-row-custom-img")
+  ).toBeTruthy();
+});
+
+test("the duplicate label hint scans every same-kind sibling", async () => {
+  await renderSettingsWindow({
+    state: makeState({
+      settings: {
+        picker: {
+          customSkills: [
+            { id: "custom-a", label: "重复甲", icon: "zap", kind: "text", prompt: "a" },
+            { id: "custom-b", label: "重复乙", icon: "zap", kind: "text", prompt: "b" },
+            { id: "custom-c", label: "重复丙", icon: "zap", kind: "text", prompt: "c" },
+            { id: "custom-img", label: "仅图片", icon: "zap", kind: "image", prompt: "d" },
+          ],
+        },
+      },
+    }),
+  });
+
+  fireEvent.click(screen.getByRole("button", { name: /添加技能/ }));
+  const editor = screen.getByTestId("custom-skill-editor");
+  const name = within(editor).getByLabelText(zh("settings.field.name"));
+
+  /* The 2nd and 3rd siblings are as relevant as the first. */
+  fireEvent.change(name, { target: { value: "重复乙" } });
+  expect(
+    within(editor).getByText(zh("settings.hint.skillNameDuplicate", { label: "重复乙" }))
+  ).toBeTruthy();
+
+  fireEvent.change(name, { target: { value: "重复丙" } });
+  expect(
+    within(editor).getByText(zh("settings.hint.skillNameDuplicate", { label: "重复丙" }))
+  ).toBeTruthy();
+
+  /* A different-kind sibling never triggers the hint. */
+  fireEvent.change(name, { target: { value: "仅图片" } });
+  expect(within(editor).queryByText(/已存在|same name|duplicate/i)).toBeNull();
+  expect(
+    within(editor).queryByText(zh("settings.hint.skillNameDuplicate", { label: "仅图片" }))
+  ).toBeNull();
+});
+
+test("deleting the last custom image skill leaves picker.skills untouched", async () => {
+  const { api } = await renderSettingsWindow({
+    state: makeState({
+      settings: {
+        picker: {
+          /* A stale image id sitting in the text array must not resurrect the
+           * text defaults; only deleting a text skill restores them. */
+          skills: ["custom-img"],
+          captureSkills: ["ocr", "custom-img"],
+          customSkills: [
+            { id: "custom-img", label: "自定义图片", icon: "zap", kind: "image", prompt: "看图" },
+          ],
+        },
+      },
+    }),
+  });
+
+  fireEvent.click(screen.getByRole("tab", { name: /图片技能/ }));
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: zh("settings.aria.deleteSkill", { name: "自定义图片" }),
+    })
+  );
+  fireEvent.click(
+    screen.getByRole("button", { name: zh("settings.action.confirmDeleteAgain") })
+  );
+  await act(async () => {});
+
+  const patch = savedSkillPatches(api).at(-1)!;
+  expect(patch.picker.skills).toEqual([]);
+  expect(patch.picker.captureSkills).toEqual(["ocr"]);
+});

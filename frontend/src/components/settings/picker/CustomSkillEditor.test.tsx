@@ -27,7 +27,7 @@ function renderEditor(
   overrides: Partial<CustomSkillDraft> = {},
   options: {
     editing?: boolean;
-    existingLabel?: string;
+    existingLabels?: string[];
     onSave?: (draft: CustomSkillDraft) => void;
     onCancel?: () => void;
     onDelete?: () => void;
@@ -41,7 +41,7 @@ function renderEditor(
       <CustomSkillEditor
         draft={{ ...DRAFT, ...overrides }}
         editing={options.editing ?? false}
-        existingLabel={options.existingLabel}
+        existingLabels={options.existingLabels}
         onSave={onSave}
         onCancel={onCancel}
         onDelete={onDelete}
@@ -222,7 +222,7 @@ test("the delete button is hidden for a new skill", () => {
 test("a duplicate name only shows a non-blocking hint", () => {
   const { onSave } = renderEditor(
     { label: "Same", prompt: "Do it" },
-    { existingLabel: "Same" }
+    { existingLabels: ["Other", "Same"] }
   );
 
   expect(screen.getByText(zh("settings.hint.skillNameDuplicate", { label: "Same" }))).toBeTruthy();
