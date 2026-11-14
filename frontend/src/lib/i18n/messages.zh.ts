@@ -511,6 +511,7 @@ export const messages: Record<string, string> = {
     "settings.action.captureHotkeyTitle": "点击后录制新的组合键",
     "settings.action.quickHotkeyTitle": "点击后录制新的组合键",
     "settings.action.restoreDefault": "恢复默认",
+    "settings.hotkey.restoreAriaWithValue": "恢复默认（{shortcut}）",
     "settings.hotkey.recording": "请按下新的快捷键…（Esc 取消）",
     "settings.hotkey.recordingTitle": "按下组合键后立即保存，Esc 取消",
     "settings.hotkey.recordingAria": "正在录制截图快捷键，按 Esc 取消",

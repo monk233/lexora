@@ -12,6 +12,7 @@ import { useEffect, useRef, useState } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { toast } from "@/components/ui/use-toast";
 import { SectionCard } from "@/components/settings/SectionCard";
+import { HotkeyCard } from "@/components/settings/cards/HotkeyCard";
 import { PickerCard } from "@/components/settings/cards/PickerCard";
 import { ProviderCard } from "@/components/settings/cards/ProviderCard";
 import { QuickTranslateCard } from "@/components/settings/cards/QuickTranslateCard";
@@ -100,13 +101,7 @@ function SettingsShell() {
             <ProviderCard />
             <PickerCard />
             <QuickTranslateCard />
-            <SectionCard
-              id="shortcuts"
-              title={t("settings.card.shortcuts.title")}
-              description={t("settings.card.shortcuts.desc")}
-            >
-              {null}
-            </SectionCard>
+            <HotkeyCard />
             <SectionCard
               id="app"
               title={t("settings.card.app.title")}

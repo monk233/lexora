@@ -511,6 +511,7 @@ export const messages: Record<string, string> = {
     "settings.action.captureHotkeyTitle": "Click to record a new shortcut",
     "settings.action.quickHotkeyTitle": "Click to record a new combination",
     "settings.action.restoreDefault": "Restore default",
+    "settings.hotkey.restoreAriaWithValue": "Restore default ({shortcut})",
     "settings.hotkey.recording": "Press the new shortcut… (Esc to cancel)",
     "settings.hotkey.recordingTitle": "Saves as soon as the combination is pressed; Esc to cancel",
     "settings.hotkey.recordingAria": "Recording the screenshot shortcut, press Esc to cancel",
