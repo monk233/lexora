@@ -18,7 +18,7 @@ npm install
 npx tauri dev
 ```
 
-`tauri dev` 直接读取 `web/` 静态前端（无 dev server），修改后刷新窗口即可看到效果；Rust 改动会触发重编译。
+`tauri dev` 会通过 `beforeDevCommand` 自动执行 `npm run dev:web` 启动 Vite dev server（`http://localhost:5173`），窗口从该地址加载前端并热更新；Rust 改动会触发重编译。
 
 调试运行（不打包）：
 
@@ -28,6 +28,19 @@ npx tauri build --debug --no-bundle
 ```
 
 数据目录（开发模式）：`<repo>/data`；日志：`data/logs/main.log`（本地引擎日志 `data/logs/llama.log`）。
+
+### 前端源码
+
+前端源码在 `frontend/`（Vite + React 18 + TypeScript，Tailwind 3.4，基础组件为 shadcn/ui 源码）：
+
+```powershell
+npm run dev:web      # 前端单独调试（http://localhost:5173）
+npm run build:web    # 产物 frontend/dist，tauri build 前会自动执行
+npm run test:web     # Vitest
+npm run lint:imports # 禁止 Rare UI 根入口导入
+```
+
+入口为 `frontend/` 下的 7 个 HTML，产物输出到 `frontend/dist`，`tauri.conf.json` 的 `build.frontendDist` 为 `"../frontend/dist"`。窗口与入口并非一一对应：`picker.html` 同时供 `picker` 与 `picker-toolbar`（`?surface=toolbar`），`capture`、`pin` 是多实例（`capture-<n>`、`pin-<id>`）。应用的所有窗口目前都从这份构建产物加载 React 外壳，但窗口内容仍是占位脚手架——`frontend/src/windows/*.tsx` 只渲染窗口名（如 `SettingsWindow` 只渲染 `settings`），窗口内容的迁移属于 P2–P5。`web/` 下 41 个旧静态文件仅作为遗留参考实现保留，`src-tauri` 已无任何 `web/` 引用，应用不再加载它们。
 
 ### 本地联调离线翻译（不下载大模型）
 
@@ -69,13 +82,13 @@ npx tauri build --no-bundle
 ```powershell
 cd src-tauri
 cargo fmt --check          # 格式检查
-cargo test                 # 单元测试（当前 242 passed / 2 ignored）
+cargo test                 # 单元测试（当前 371 passed / 3 ignored）
 cargo check --all-targets  # 编译检查
 ```
 
 单元测试覆盖设置归一化与迁移（v6）、SSE 解析、错误映射、模型目录、截图快捷键盘映射、标注几何/裁剪/变换、长截图双向拼接与尺寸上限、pin 显示尺寸等纯逻辑，不联网、不依赖桌面。
 
-前端 JS 语法检查（无构建步骤，发布前建议执行）：
+遗留 `web/` 静态页的 JS 语法检查（这些文件已不再被应用加载，仅作遗留参考；当前前端验证用上面的 `npm run lint:imports`、`npm run test:web`、`npm run build:web`）：
 
 ```powershell
 node --check web/capture.js
@@ -102,7 +115,7 @@ $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=9420"
 
 ## 发布流程（维护者）
 
-1. 同步版本号：`package.json`、`package-lock.json`（根与根包）、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`（仅 `lexora` 包）、`src-tauri/tauri.conf.json` 六个版本字段保持一致（当前 `0.4.0`）。
+1. 同步版本号：`package.json`、`package-lock.json`（根与根包）、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`（仅 `lexora` 包）、`src-tauri/tauri.conf.json` 六个版本字段保持一致（当前 `0.4.3`）。
 2. 在 `CHANGELOG.md` 中把 `## [Unreleased]` 整理为 `## [<version>] - YYYY-MM-DD` 小节（Keep a Changelog 风格）。Release 正文由该小节生成；缺少时退化为按 conventional-commit 类型分组的提交列表。
 3. 更新文档：`docs/user-guide.md`（用户功能）、`docs/building.md`（构建变化）、`docs/contracts.md`（行为契约有改动时）。
 4. 本地构建并冒烟：`cargo fmt --check && cargo test`、`node --check`、`scripts/build-portable.ps1`，启动新 exe 手动验证关键流程。
@@ -122,7 +135,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release-notes.ps1 -V
 
 ## 常见问题
 
-- **`tauri build` 报找不到 web 资源**：确认仓库根目录存在 `web/index.html`、`web/picker.html`、`web/capture.html`、`web/longshot.html`、`web/pin.html`，且 `tauri.conf.json` 的 `build.frontendDist` 为 `"../web"`。
+- **`tauri build` 报找不到 web 资源**：前端产物在 `frontend/dist`，由 `npm run build:web` 生成，`tauri build` 会先自动执行（`beforeBuildCommand`）。确认 `frontend/` 下存在 7 个入口 HTML（`index.html`、`picker.html`、`capture.html`、`longshot.html`、`longshot-bar.html`、`pin.html`、`quicktranslate.html`），构建成功后 `frontend/dist` 中应有同名文件，且 `tauri.conf.json` 的 `build.frontendDist` 为 `"../frontend/dist"`。
 - **构建失败 `failed to remove ...lexora.exe (os error 5)`**：旧 exe 仍在运行，先退出 Lexora / 结束残留 `llama-server`。
 - **WebView2 远程调试端口没起来**：必须在启动 exe 前设置 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`（进程环境变量），启动后设置无效。
 - **首次编译慢**：Tauri/Rust 依赖首次编译需数分钟，后续增量构建很快。

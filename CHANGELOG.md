@@ -11,9 +11,10 @@
 
 ### Changed
 
-- 设置页、划词工具栏、结果面板、截图工具条、长截图预览/控制栏与钉图窗口的用户可见文案迁移到语言包（`web/shared/messages.zh.js` / `messages.en.js`，key 集合一致），前端保持无构建步骤；语言变化后各窗口立即重渲染依赖语言的动态文案（语言为 `system` 时由后端解析为 `zh|en` 后下发）。
+- 设置页、划词工具栏、结果面板、截图工具条、长截图预览/控制栏与钉图窗口的用户可见文案迁移到语言包（`web/shared/messages.zh.js` / `messages.en.js`，key 集合一致），该无构建步骤实现仅适用于遗留 `web/` 静态页（应用已不再加载，React 侧对应 `frontend/src/lib/i18n`）；语言变化后各窗口立即重渲染依赖语言的动态文案（语言为 `system` 时由后端解析为 `zh|en` 后下发）。
 - Rust 后端诊断/错误文案仍为中文（仅影响后端错误与状态提示），前端界面至此全部本地化：快捷翻译面板与设置页「快捷翻译」卡片的用户可见文案纳入语言包，随界面语言即时切换、无需重启；`quick_ready` 返回生效语言 `locale`，设置页切换语言时向 `quicktranslate` 窗口推送事件 `quick-locale`（payload `{locale:"zh"|"en"}`，窗口隐藏时也送达），面板收到后重渲染；源/目标语言名称（含源语言下拉额外 28 种语言）同样取自语言包（`language.<code>` key）。settings schema 保持 **11**，提示词版本保持 **12**。
 - 提示词版本升为 12：默认总结/解释/图片解释/追问系统提示词使用 `{answer}`；提示词模板本身仍为英文，由占位符或 `Answer language` 后缀驱动输出语言。日志继续记录模式、来源与版本，不记录正文。
+- 前端改为从 `frontend/` 构建：React 18 + Vite + TypeScript + Tailwind 3.4，产物输出 `frontend/dist`（`tauri build` 前自动执行 `npm run build:web`），`tauri.conf.json` 的 `build.frontendDist` 指向该产物，应用的全部窗口（settings、picker、picker-toolbar、quicktranslate，以及 Rust 动态创建的 capture-* / longshot / longshot-bar / pin-*）都从这份构建产物加载；基础组件采用 shadcn/ui 源码作为组件层；Rare UI 固定 `@rare-ui/core@0.1.1`，只允许按白名单 subpath 引入（`npm run lint:imports` 校验，禁止根入口导入）。窗口内容目前仍是占位脚手架：`frontend/src/windows/*.tsx` 只渲染窗口名，窗口内容的迁移属于 P2–P5，本版不改变各窗口的实际功能；旧 `web/` 静态页仅作为遗留参考实现保留（`src-tauri` 已无引用、应用不再加载），其中的实现无构建步骤。
 
 ## [0.4.2] - 2026-11-02
 

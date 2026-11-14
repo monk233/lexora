@@ -53,7 +53,7 @@ CDP 量化实测，n=3：**中位数 486 ms**（min 482 ms / max 498 ms，均指
 
 1. **9333 必须先空闲**：开跑前 `Get-NetTCPConnection -LocalPort 9333 -State Listen` 必须无监听（测量脚本每次启动前断言，端口被占则该次作废）。
 2. CDP 端口由环境变量 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9333` 打开，端口写死 9333。
-3. 数据隔离：`LEXORA_DATA_DIR=%TEMP%\lexora-r2-baseline`。脚本只对该目录做 `New-Item -Force`，**从不清理**，而应用每次运行都会往里写 settings / 日志，所以只有 run 1 是真正"无本地数据"的目录，run 2..N 会被前次运行写脏、不是真正的首次启动路径。该目录内始终无模型、无历史，对数值的影响可忽略，但不能把它当作"保证首次启动"的前提。
+3. 数据隔离：`LEXORA_DATA_DIR=%TEMP%\lexora-r2-baseline`。脚本只对该目录做 `New-Item -Force`，**从不清理**，而应用每次运行都会往里写 settings / 日志。记录本节的 n=3 序列时，目录内 `logs/main.log` 已累计记录 **13 次启动**（时间 12:26:34–12:34:04，每条为 `=== Lexora 0.4.3 starting ... --show ===`），即 n=3 序列之前该目录已被多次启动复用、记录期间继续复用同一目录，因此**记录中的任何一次运行（含 run 1）都不是真正的首次启动**，该目录是复用的、未被清理。该目录内始终无模型、无历史，对数值的影响可忽略，但不能把它当作"保证首次启动"的前提。
 4. **exe 必须带 `--show` 启动**：`src-tauri/src/main.rs` 的 `wants_settings_window()` 只识别 `--show`。`tauri.conf.json` 声明了 4 个窗口且都没有 `create: false`（tauri-utils 默认 `create: true`），tauri 启动时会按配置创建这些窗口；`visible: false` 只影响显示与否，不影响窗口被创建。默认运行状态下 `settings` 窗口隐藏，带 `--show` 才显示它，这正是本次测量的条件。反向也成立：不带 `--show` 的隐藏窗口仍可能以 CDP target 出现（Task 4 的 dev 运行为 `force_show=false`，CDP 仍列出了设置页 `http://localhost:5174/` 以及 picker / toolbar / quicktranslate），所以不能靠"没有 target"来判断窗口是否存在；`--show` 的作用是固定测量条件、保证可复现。
 
 停表判据（三条同时满足，且只认设置页那个 target）：
