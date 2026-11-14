@@ -256,6 +256,56 @@ test("custom model mode focuses the input and never writes an empty model", asyn
   ).toBe(false);
 });
 
+test("clearing the custom model then blurring cancels the pending draft", async () => {
+  vi.useFakeTimers();
+  const { api } = await renderSettingsWindow({
+    state: makeState({ settings: { provider: { online: { model: "deepseek-chat" } } } }),
+  });
+
+  openSelect(field("settings.field.modelName"));
+  fireEvent.click(
+    screen.getByRole("option", { name: field("settings.action.customModel") })
+  );
+
+  const input = screen.getByLabelText(field("settings.field.customModelName"));
+  fireEvent.change(input, { target: { value: "gpt-4o-custom" } });
+  await act(async () => {
+    vi.advanceTimersByTime(500);
+  });
+  expect(updateCalls(api)).toContainEqual({
+    provider: { online: { model: "gpt-4o-custom" } },
+  });
+
+  const callsBeforeClear = updateCalls(api).length;
+
+  fireEvent.change(input, { target: { value: "" } });
+  fireEvent.blur(input);
+  expect(screen.queryByLabelText(field("settings.field.customModelName"))).toBeNull();
+
+  /* The 500ms debounce armed by the empty change must not fire after the blur. */
+  await act(async () => {
+    vi.advanceTimersByTime(600);
+  });
+  const lateModelPatches = updateCalls(api)
+    .slice(callsBeforeClear)
+    .filter((patch) => {
+      const model = (patch as { provider?: { online?: { model?: unknown } } }).provider
+        ?.online?.model;
+      return typeof model === "string" && model !== "";
+    });
+  expect(lateModelPatches).toEqual([]);
+
+  /* Picking custom mode again pre-fills the stored model, not an empty draft. */
+  openSelect(field("settings.field.modelName"));
+  fireEvent.click(
+    screen.getByRole("option", { name: field("settings.action.customModel") })
+  );
+  const reopened = screen.getByLabelText(
+    field("settings.field.customModelName")
+  ) as HTMLInputElement;
+  expect(reopened.value).toBe("gpt-4o-custom");
+});
+
 test("shows the latency badge, model count and missing-model warning", async () => {
   const spy = vi.spyOn(settingsApi, "testOnline").mockResolvedValue({
     ok: true,

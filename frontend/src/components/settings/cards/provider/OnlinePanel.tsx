@@ -42,6 +42,9 @@ import type { SettingsPatch } from "@/lib/settings/types";
 export const MODEL_NONE = "__none__";
 export const MODEL_CUSTOM = "__custom__";
 
+/** Draft id of the custom-model input; also used to cancel that draft. */
+const CUSTOM_MODEL_FIELD = "online-model-custom";
+
 export interface ModelOption {
   value: string;
   label: string;
@@ -152,7 +155,7 @@ export function OnlinePanel() {
     build: (value) => ({ provider: { online: { apiKey: value } } }),
   });
   const customField = useSettingsTextField({
-    id: "online-model-custom",
+    id: CUSTOM_MODEL_FIELD,
     value: savedModel,
     build: (value) => ({
       provider: { online: { model: value.trim() || savedModel } },
@@ -213,8 +216,11 @@ export function OnlinePanel() {
   const handleCustomBlur = (): void => {
     const trimmed = customField.value.trim();
     if (!trimmed || trimmed === savedModel.trim()) {
-      /* Empty / unchanged custom name: leave custom mode without writing a
-       * model value (the draft's build already falls back to the saved model). */
+      /* Empty / unchanged custom name: cancel the pending debounce before
+       * leaving custom mode, so no late timer can write the stored model back
+       * (C05). Cancelling also drops the field's draft/focus markers, so the
+       * next custom-mode visit starts from the stored model again. */
+      form.cancelDraft(CUSTOM_MODEL_FIELD);
       setCustomMode(false);
       return;
     }

@@ -74,6 +74,8 @@ export interface SettingsFormApi {
    * through it so the injected fake API also drives their tests. */
   api: SettingsApi;
   save(patch: SettingsPatch): void;
+  /** Drop a pending draft and its debounce timer without writing anything. */
+  cancelDraft(id: string): void;
   flushSaveQueue(): Promise<FlushResult>;
   /** Replace the whole state with a command result (`reset_settings`). */
   applyState(next: StatePayload): void;
@@ -100,6 +102,7 @@ interface SettingsFormContextValue extends SettingsFormApi {
     debounceMs: number
   ): void;
   flushDraft(id: string): void;
+  cancelDraft(id: string): void;
   flushAllDrafts(): void;
   focusField(id: string): void;
   blurField(id: string): void;
@@ -255,6 +258,26 @@ export function SettingsFormProvider(props: {
     for (const id of Array.from(draftsRef.current.keys())) flushDraft(id);
   }, [flushDraft]);
 
+  /* A caller may decide the typed value must never be saved (e.g. the custom
+   * model field was cleared): drop the draft and its timer, and forget the
+   * focus/composition markers so the field falls back to the stored value next
+   * time it is shown. Nothing is written to the backend. */
+  const cancelDraft = useCallback(
+    (id: string) => {
+      const entry = draftsRef.current.get(id);
+      composingRef.current.delete(id);
+      focusedRef.current.delete(id);
+      if (!entry) return;
+      if (entry.timer !== null) {
+        clearTimeout(entry.timer);
+        entry.timer = null;
+      }
+      draftsRef.current.delete(id);
+      notifyDrafts();
+    },
+    [notifyDrafts]
+  );
+
   const focusField = useCallback((id: string) => {
     focusedRef.current.add(id);
   }, []);
@@ -404,6 +427,7 @@ export function SettingsFormProvider(props: {
       loadError,
       api: apiRef.current,
       save,
+      cancelDraft,
       flushSaveQueue,
       applyState: commitState,
       refresh,
@@ -424,6 +448,7 @@ export function SettingsFormProvider(props: {
       status,
       loadError,
       save,
+      cancelDraft,
       flushSaveQueue,
       commitState,
       refresh,
