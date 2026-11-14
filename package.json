@@ -20,7 +20,7 @@
     "icons:skills": "node scripts/make_skill_icons.mjs",
     "build:portable": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-portable.ps1",
     "dev:web": "vite --config frontend/vite.config.ts",
-    "build:web": "tsc --noEmit -p frontend/tsconfig.json && vite build --config frontend/vite.config.ts",
+    "build:web": "npm run lint:imports && tsc --noEmit -p frontend/tsconfig.json && vite build --config frontend/vite.config.ts",
     "test:web": "vitest run --config frontend/vitest.config.ts",
     "preview:web": "vite preview --config frontend/vite.config.ts",
     "lint:imports": "node scripts/check-rare-imports.mjs"
