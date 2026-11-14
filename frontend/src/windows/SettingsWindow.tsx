@@ -14,6 +14,7 @@ import { toast } from "@/components/ui/use-toast";
 import { SectionCard } from "@/components/settings/SectionCard";
 import { PickerCard } from "@/components/settings/cards/PickerCard";
 import { ProviderCard } from "@/components/settings/cards/ProviderCard";
+import { QuickTranslateCard } from "@/components/settings/cards/QuickTranslateCard";
 import { Topbar } from "@/components/settings/Topbar";
 import { useColorScheme } from "@/hooks/useColorScheme";
 import { SettingsFormProvider, useSettingsForm } from "@/hooks/useSettingsForm";
@@ -98,13 +99,7 @@ function SettingsShell() {
           <>
             <ProviderCard />
             <PickerCard />
-            <SectionCard
-              id="quick"
-              title={t("settings.quick.title")}
-              description={t("settings.quick.desc")}
-            >
-              {null}
-            </SectionCard>
+            <QuickTranslateCard />
             <SectionCard
               id="shortcuts"
               title={t("settings.card.shortcuts.title")}

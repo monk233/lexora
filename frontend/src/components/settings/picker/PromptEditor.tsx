@@ -30,6 +30,9 @@ export interface PromptEditorProps {
   /** Receives the normalized value; return the patch to persist it. */
   onSave: (value: string) => SettingsPatch | void;
   onReset: () => void;
+  /** Reset-button copy; defaults to `common.reset`. The quick-translate card
+   * passes its own key even though the two strings are currently identical. */
+  resetLabel?: string;
   /** `false` inside a row whose own button already discloses the editor. */
   collapsible?: boolean;
 }
@@ -45,6 +48,7 @@ export function PromptEditor({
   defaultPrompt,
   onSave,
   onReset,
+  resetLabel,
   collapsible = true,
 }: PromptEditorProps) {
   const form = useSettingsForm();
@@ -65,7 +69,9 @@ export function PromptEditor({
   };
 
   const reset = () => {
-    form.flushDraft(id);
+    /* Reset discards the uncommitted draft: the caller writes the empty
+     * override, so flushing the discarded text first would only race it. */
+    form.cancelDraft(id);
     onReset();
   };
 
@@ -106,7 +112,7 @@ export function PromptEditor({
               className="shrink-0 text-xs font-semibold text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
               onClick={reset}
             >
-              {t("common.reset")}
+              {resetLabel ?? t("common.reset")}
             </button>
           </div>
         </>
