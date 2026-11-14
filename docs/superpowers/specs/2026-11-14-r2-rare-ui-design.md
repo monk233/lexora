@@ -145,14 +145,16 @@ Tauri 配置变化：
 
 ### 6.1 组件分工
 
+**Rare UI 0.1.1 的实际入口限制（已核实 `package.json#exports`）**：只暴露 `.`、`./styles.css`、`./charts`、`./video`、`./datepicker`、`./carousel` 六个入口；**基础组件（Button、Switch、Select、Dialog 等）只能从根入口引入**，会连带整个包与全部 Radix 依赖。因此“禁止根入口引入”这条规则等价于“Rare UI 不用于基础组件”。
+
 | 类别 | 采用 |
 | --- | --- |
-| Button、Input、Select、Switch、Checkbox、Radio、Tabs、Tooltip、Dialog、Popover、DropdownMenu、ScrollArea、Slider、Progress、Toast、Label、Separator | shadcn（源码入库） |
-| charts、carousel、datepicker、video、avatar 等复合组件 | Rare UI 按 subpath，仅在需要时引入 |
+| Button、Input、Select、Switch、Checkbox、Radio、Tabs、Tooltip、Dialog、Popover、DropdownMenu、ScrollArea、Slider、Progress、Toast、Label、Separator、Avatar | shadcn（源码入库） |
+| charts、carousel、datepicker、video | Rare UI 按 subpath，**仅当确实需要时**引入（当前功能清单尚未出现这四类需求） |
 | 图标 | `lucide-react` |
 | 动效 | Rare UI 自带 `motion`；shadcn 侧用 Tailwind 动画类 |
 
-禁止同一功能同时存在两套实现；禁止根入口 `import { X } from "@rare-ui/core"`，只允许 subpath，并加 lint 限制。
+补充说明：按现有功能清单（设置页、划词面板、截图标注、长截图、钉图、快捷翻译），**当前没有图表/轮播/日期选择/视频需求**，Rare UI 在本项目中的实际使用面可能为零。保留其依赖与锁定是按既定决策，但不得为了“用上 Rare UI”而把基础组件从根入口引入。禁止同一功能同时存在两套实现。
 
 ## 7. CSP 与开发模式
 
