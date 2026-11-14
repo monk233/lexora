@@ -1,6 +1,6 @@
 # Lexora 工程契约（Tauri v2 版）
 
-本文件是并行开发期间的唯一接口契约。**实现必须与本文一致**；需要调整先通知 Lead 改本文件，再改代码。Electron 版设计稿（设置页字段、picke r行为）仍适用，技术栈已切换为 **Tauri v2 + Rust + 原生 HTML/CSS/JS**。
+本文件是并行开发期间的唯一接口契约。**实现必须与本文一致**；需要调整先通知 Lead 改本文件，再改代码。Electron 版设计稿（设置页字段、picke r行为）仍适用，技术栈已切换为 **Tauri v2 + Rust**；前端自 R2 起从 `frontend/` 的 React 18 + Vite 构建产物加载（窗口内容仍为占位骨架，P2–P5 迁移），`web/` 的原生 HTML/CSS/JS 仅为遗留参考实现。
 
 ## 1. 目标与决策
 
@@ -38,7 +38,7 @@ lexora/
 │     ├─ win32.rs               [Lead]   光标/工作区/DPI FFI
 │     ├─ engine.rs (+ engine/…) [T1]     翻译引擎公开接口 + 内部实现
 │     └─ selection.rs(+selection/…)[T2]  全局钩子 + UIA 取词 + 触发
-├─ web/                         [T3]     静态前端（无打包器）
+├─ web/                         [T3]     静态前端（遗留参考，无打包器）
 │  ├─ index.html settings.css settings.js
 │  ├─ picker.html picker.css picker.js
 │  └─ shared/{constants.js,i18n.js,messages.zh.js,messages.en.js,skill-icons.js,lang.js,markdown.js,tauri-api.js}
@@ -50,7 +50,7 @@ lexora/
 ```
 
 - 只改自己名下文件；跨文件需求发消息给 Lead。
-- 不引入前端框架/打包器；前端为原生 HTML/CSS/JS。
+- `web/` 遗留参考实现不引入前端框架/打包器，页面为原生 HTML/CSS/JS；应用实际加载 `frontend/` 的 React 构建产物（R2 进行中，窗口内容暂为占位）。
 - 新增 Rust 依赖先找 Lead（Cargo.toml 由 Lead 维护）。
 - 编译并行期：`cargo check` 可能因他人未完成文件报错，只处理自己文件的错误，其余忽略并在汇报中注明。
 

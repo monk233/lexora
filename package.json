@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22.22.0"
+    "node": ">=22.22.2 <23 || >=24.15.0 <25 || >=26"
   },
   "description": "Lexora — 轻量划词翻译工具：选中任意文本即可翻译、总结、解释、朗读；支持在线 OpenAI 兼容 API 与本地 GGUF 离线模型。",
   "license": "MIT",
