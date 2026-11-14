@@ -5,14 +5,19 @@ import * as React from "react"
 
 import type { ToastActionElement, ToastProps } from "@/components/ui/toast"
 
-const TOAST_LIMIT = 1
-const TOAST_REMOVE_DELAY = 1000000
+/* Settings inventory C72: the toast stack keeps at most four entries and
+ * every entry disappears on its own after 3.6 seconds. */
+const TOAST_LIMIT = 4
+const TOAST_REMOVE_DELAY = 3600
+
+export type ToastTone = "info" | "success" | "error"
 
 type ToasterToast = ToastProps & {
   id: string
   title?: React.ReactNode
   description?: React.ReactNode
   action?: ToastActionElement
+  tone?: ToastTone
 }
 
 const actionTypes = {
@@ -160,6 +165,10 @@ function toast({ ...props }: Toast) {
       },
     },
   })
+
+  /* Self-dismissal is time-boxed from creation (not from a manual dismiss), so
+   * the toast leaves the stack 3.6s after it appeared. */
+  addToRemoveQueue(id)
 
   return {
     id: id,
