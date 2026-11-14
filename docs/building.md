@@ -5,7 +5,7 @@
 | 依赖 | 说明 |
 | --- | --- |
 | Windows 10/11 x64 | 目标平台（验证：Windows 11 26100，3840×2160 @150% DPI） |
-| Node.js ≥ 20 | Tauri CLI 与前端脚本（验证：v26） |
+| Node.js 22.22+（或 24.15+ / 26+） | Tauri CLI 与前端脚本；`test:web` 依赖 vitest 5 / jsdom 31，Node 20 无法运行（验证：v26.8） |
 | Rust stable（1.80+） | `rustup` 安装，默认 `x86_64-pc-windows-msvc`（验证：1.97） |
 | Visual Studio Build Tools | 勾选「使用 C++ 的桌面开发」（MSVC + Windows SDK） |
 | WebView2 Runtime | Win11 / 新版 Win10 自带；老系统需单独安装 |
@@ -118,7 +118,7 @@ $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=9420"
 1. 同步版本号：`package.json`、`package-lock.json`（根与根包）、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`（仅 `lexora` 包）、`src-tauri/tauri.conf.json` 六个版本字段保持一致（当前 `0.4.3`）。
 2. 在 `CHANGELOG.md` 中把 `## [Unreleased]` 整理为 `## [<version>] - YYYY-MM-DD` 小节（Keep a Changelog 风格）。Release 正文由该小节生成；缺少时退化为按 conventional-commit 类型分组的提交列表。
 3. 更新文档：`docs/user-guide.md`（用户功能）、`docs/building.md`（构建变化）、`docs/contracts.md`（行为契约有改动时）。
-4. 本地构建并冒烟：`cargo fmt --check && cargo test`、`node --check`、`scripts/build-portable.ps1`，启动新 exe 手动验证关键流程。
+4. 本地构建并冒烟：`cargo fmt --check && cargo test`、`npm run lint:imports`、`npm run test:web`、`npm run build:web`、`scripts/build-portable.ps1`，启动新 exe 手动验证关键流程。（遗留 `web/` 静态页若仍有改动，另跑上文第 91 行一节的 `node --check`，该检查只覆盖已不再被应用加载的参考实现。）
 5. 提交后打 tag 并推送：
    ```powershell
    git tag v<version>

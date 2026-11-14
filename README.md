@@ -99,7 +99,7 @@ Lexora 是 Windows 划词翻译工具。在浏览器、Word、PDF、IDE 等任�
 
 ## 从源码构建
 
-环境：Windows 10/11 x64、Node.js ≥ 20、Rust stable、Visual Studio Build Tools（C++ 桌面开发）、WebView2 Runtime。
+环境：Windows 10/11 x64、Node.js 22.22+（或 24.15+ / 26+）、Rust stable、Visual Studio Build Tools（C++ 桌面开发）、WebView2 Runtime。
 
 ```powershell
 npm install
@@ -120,7 +120,7 @@ npx tauri build --debug --no-bundle
 
 ## 技术栈
 
-Tauri v2 + Rust（窗口、托盘、全局输入钩子、Windows UI Automation 取词、xcap 截图/长截图拼接）+ 原生 HTML/CSS/JS（WebView2 渲染）+ llama.cpp（本地推理）。前端零构建、零框架，整个应用为约 10.5 MB 的单文件。
+Tauri v2 + Rust（窗口、托盘、全局输入钩子、Windows UI Automation 取词、xcap 截图/长截图拼接）+ Vite + React 18 + TypeScript + Tailwind CSS 3.4（WebView2 渲染）+ llama.cpp（本地推理）。前端源码在 `frontend/`，构建产物输出 `frontend/dist`，样式 token 的唯一来源是 `frontend/src/styles/globals.css`；7 个窗口入口 HTML 仍沿用原有文件名（`index.html`、`picker.html`、`capture.html`、`longshot.html`、`longshot-bar.html`、`pin.html`、`quicktranslate.html`），窗口内容目前是占位骨架，功能迁移见后续阶段。遗留的零构建 `web/` 静态页仅作为参考实现保留，应用不再加载它们。整个应用为约 10.5 MB 的单文件。
 
 ## 致谢
 
@@ -154,7 +154,7 @@ Tauri v2 + Rust（窗口、托盘、全局输入钩子、Windows UI Automation �
 - Reorder, rename, re-icon and re-prompt every skill, including custom skills with `{text}`, `{target}` and `{program}` variables.
 - One portable ~10.5 MB exe, tray-resident, optional start-at-login, no installer, no admin rights.
 
-Build from source on Windows with Node.js ≥ 20, Rust, and VS Build Tools:
+Build from source on Windows with Node.js 22.22+ (or 24.15+ / 26+), Rust, and VS Build Tools:
 
 ```powershell
 npm install

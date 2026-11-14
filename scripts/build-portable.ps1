@@ -71,7 +71,7 @@ if (-not (Test-Path $cliPath)) {
             Fail "npm 安装失败（exit code $LASTEXITCODE）"
         }
     } else {
-        Fail '未找到 npm，请先安装 Node.js 20+。'
+        Fail '未找到 npm，请先安装 Node.js 22.22+（或 24.15+ / 26+）。'
     }
 } else {
     Write-Ok 'node_modules 已存在，跳过 npm install'
