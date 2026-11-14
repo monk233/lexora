@@ -12,6 +12,8 @@ import { useEffect, useRef, useState } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { toast } from "@/components/ui/use-toast";
 import { SectionCard } from "@/components/settings/SectionCard";
+import { AboutCard } from "@/components/settings/cards/AboutCard";
+import { AppCard } from "@/components/settings/cards/AppCard";
 import { HotkeyCard } from "@/components/settings/cards/HotkeyCard";
 import { PickerCard } from "@/components/settings/cards/PickerCard";
 import { ProviderCard } from "@/components/settings/cards/ProviderCard";
@@ -102,20 +104,8 @@ function SettingsShell() {
             <PickerCard />
             <QuickTranslateCard />
             <HotkeyCard />
-            <SectionCard
-              id="app"
-              title={t("settings.card.app.title")}
-              description={t("settings.card.app.desc")}
-            >
-              {null}
-            </SectionCard>
-            <SectionCard
-              id="about"
-              title={t("settings.card.about.title")}
-              description={t("settings.card.about.desc")}
-            >
-              {null}
-            </SectionCard>
+            <AppCard />
+            <AboutCard />
           </>
         ) : null}
       </main>
