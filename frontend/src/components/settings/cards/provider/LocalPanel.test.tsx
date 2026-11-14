@@ -460,6 +460,98 @@ test("renders the verifying stage without a cancel button", async () => {
   expect(row.queryByRole("button", { name: zh("common.cancel") })).toBeNull();
 });
 
+/* ---- Download completion: a terminal snapshot clears the row ------------ */
+
+const MODEL_ID = "qwen3.5-0.8b-q3-k-m";
+
+function installedCatalog(): CatalogEntry[] {
+  return CATALOG.map((entry) =>
+    entry.id === MODEL_ID ? { ...entry, installed: true } : entry
+  );
+}
+
+test("drops a finished download once the backend snapshot no longer lists it", async () => {
+  const { api } = await renderLocal({ catalog: CATALOG });
+  fireEvent.click(screen.getByRole("button", { name: zh("settings.action.downloadModel") }));
+  await act(async () => {});
+
+  /* Two downloads in flight at the same time: the engine and one model. */
+  act(() => {
+    api.emitDownload(progress({ kind: "engine", filename: "llama.cpp.zip" }));
+    api.emitDownload(
+      progress({
+        kind: "model",
+        id: MODEL_ID,
+        filename: "qwen3.5-0.8b-q3-k-m.gguf",
+        percent: 80,
+      })
+    );
+  });
+  await act(async () => {});
+
+  expect(screen.getByTestId("engine-progress-text").textContent).toBe("1 KB / 4 KB · 25%");
+  expect(
+    within(catalogRow(MODEL_ID)).getByTestId("catalog-progress-text").textContent
+  ).toBe("80%");
+  expect(screen.getAllByRole("button", { name: zh("common.cancel") })).toHaveLength(2);
+
+  /* Both enter the verifying stage; only the engine keeps a cancel button. */
+  act(() => {
+    api.emitDownload(progress({ kind: "engine", status: "verifying", percent: 100 }));
+    api.emitDownload(
+      progress({
+        kind: "model",
+        id: MODEL_ID,
+        filename: "qwen3.5-0.8b-q3-k-m.gguf",
+        status: "verifying",
+        percent: 100,
+      })
+    );
+  });
+  await act(async () => {});
+  expect(screen.getByTestId("engine-progress-text").textContent).toBe(
+    zh("settings.status.verifying")
+  );
+
+  /* The model finished: the backend snapshot lists only the engine task, so
+   * the model override must be dropped while the engine row stays live. */
+  act(() => {
+    api.emitState(
+      localState({
+        catalog: installedCatalog(),
+        downloads: [progress({ kind: "engine", status: "verifying", percent: 100 })],
+      })
+    );
+  });
+  await act(async () => {});
+
+  const finished = within(catalogRow(MODEL_ID));
+  expect(finished.getByText(zh("settings.badge.installed"))).toBeTruthy();
+  expect(finished.queryByTestId("catalog-progress-text")).toBeNull();
+  expect(finished.queryByRole("button", { name: zh("common.cancel") })).toBeNull();
+  expect(screen.getByTestId("engine-progress-text").textContent).toBe(
+    zh("settings.status.verifying")
+  );
+
+  /* The engine then finishes too: an empty snapshot clears its row. */
+  act(() => {
+    api.emitState(
+      localState({
+        engine: { engineAvailable: true },
+        catalog: installedCatalog(),
+        downloads: [],
+      })
+    );
+  });
+  await act(async () => {});
+
+  expect(screen.getByTestId("engine-title").textContent).toBe(
+    zh("settings.engine.installed")
+  );
+  expect(screen.queryByTestId("engine-progress")).toBeNull();
+  expect(screen.queryByRole("button", { name: zh("common.cancel") })).toBeNull();
+});
+
 /* ---- C24: import a GGUF ------------------------------------------------ */
 
 test("imports a GGUF file, toasts and refreshes the model list", async () => {

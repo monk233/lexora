@@ -57,6 +57,32 @@ function mergeDownloads(
   return merged;
 }
 
+const NO_DOWNLOADS: DownloadProgress[] = [];
+
+/**
+ * Drops overrides whose download the latest backend snapshot no longer lists.
+ *
+ * A finished download has no terminal `download-progress` event: the reporter
+ * removes the task (`DownloadReporter::finish`, engine.rs:545-553) and the
+ * window then receives a `state-changed` whose `downloads` no longer contains
+ * it. Keeping the override would leave the row stuck at "verifying" with a
+ * cancel button forever. Keys still present in the snapshot (a concurrent
+ * engine download, several models at once) are kept, so every live row stays.
+ */
+function pruneOverrides(
+  overrides: Record<string, DownloadProgress>,
+  base: DownloadProgress[]
+): Record<string, DownloadProgress> {
+  const live = new Set(base.map(downloadKey));
+  const next: Record<string, DownloadProgress> = {};
+  let dropped = false;
+  for (const [key, value] of Object.entries(overrides)) {
+    if (live.has(key)) next[key] = value;
+    else dropped = true;
+  }
+  return dropped ? next : overrides;
+}
+
 /** The engine treats a user cancellation as a no-op, not as an error (C31). */
 function isCancellation(message: string | undefined): boolean {
   return /取消|cancel/i.test(String(message ?? ""));
@@ -139,8 +165,17 @@ export function LocalPanel() {
     return off;
   }, [api]);
 
+  /* Each new snapshot is authoritative about which downloads still exist, so a
+   * payload that no longer lists a task drops its override. The merge below
+   * still shows an override before any snapshot mentions it: the backend only
+   * broadcasts `state-changed` when a task starts and when it ends. */
+  const baseDownloads = form.state?.downloads ?? NO_DOWNLOADS;
+  useEffect(() => {
+    setProgressOverrides((previous) => pruneOverrides(previous, baseDownloads));
+  }, [baseDownloads]);
+
   const downloads = useMemo(
-    () => mergeDownloads(form.state?.downloads ?? [], progressOverrides),
+    () => mergeDownloads(form.state?.downloads ?? NO_DOWNLOADS, progressOverrides),
     [form.state?.downloads, progressOverrides]
   );
 
