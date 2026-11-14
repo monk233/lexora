@@ -79,6 +79,8 @@ test("shows tab counts and switches lists", async () => {
   });
 
   expect(screen.getByRole("tab", { name: /文字技能/ })).toBeTruthy();
+  /* Legacy semantics: every text row counts, enabled or not. */
+  expect(screen.getByRole("tab", { name: /文字技能/ })).toHaveTextContent("(8)");
   expect(screen.getByRole("tab", { name: /图片技能.*2/ })).toBeTruthy();
   expect(screen.queryByTestId("skill-list-image")).toBeNull();
 
@@ -90,6 +92,30 @@ test("shows tab counts and switches lists", async () => {
     "aria-controls",
     "skill-list-image"
   );
+});
+
+test("disabling a text skill does not change the text tab count", async () => {
+  const { api } = await renderSettingsWindow();
+
+  const textTab = () => screen.getByRole("tab", { name: /文字技能/ });
+  const rowSwitches = () =>
+    within(screen.getByTestId("skill-list-text")).getAllByRole("switch");
+
+  expect(rowSwitches()).toHaveLength(8);
+  expect(textTab()).toHaveTextContent("(8)");
+
+  fireEvent.click(
+    screen.getByRole("switch", {
+      name: zh("settings.aria.enableSkill", { name: zh("skill.summarize") }),
+    })
+  );
+  await act(async () => {});
+
+  expect(updateCalls(api)).toContainEqual({
+    picker: { skills: ["translate", "explain", "read", "copy", "search"] },
+  });
+  expect(rowSwitches()).toHaveLength(8);
+  expect(textTab()).toHaveTextContent("(8)");
 });
 
 test("target language list has 39 options with auto first", async () => {
@@ -164,6 +190,7 @@ test("capture skills may all be disabled and then show the empty hint", async ()
 
   fireEvent.click(screen.getByRole("tab", { name: /图片技能/ }));
   expect(screen.getByText(zh("settings.hint.captureEmpty"))).toBeTruthy();
+  expect(screen.getByRole("tab", { name: /图片技能/ })).toHaveTextContent("(0)");
 
   fireEvent.click(
     screen.getByRole("switch", {
@@ -173,6 +200,7 @@ test("capture skills may all be disabled and then show the empty hint", async ()
   await act(async () => {});
   expect(updateCalls(api)).toContainEqual({ picker: { captureSkills: ["ocr"] } });
   expect(screen.queryByText(zh("settings.hint.captureEmpty"))).toBeNull();
+  expect(screen.getByRole("tab", { name: /图片技能/ })).toHaveTextContent("(1)");
 });
 
 test("saving a custom image skill enables it in captureSkills and switches tab", async () => {

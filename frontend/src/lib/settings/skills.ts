@@ -109,6 +109,20 @@ export const DEFAULT_CAPTURE_SKILLS: string[] = IMAGE_SKILLS.filter(
   (skill) => skill.id !== "number" && skill.id !== "longshot"
 ).map((skill) => skill.id);
 
+/**
+ * Text-tab badge: every text row the list renders, enabled or not
+ * (`web/settings.js:2323-2325` then `textOrder.length` at `:2384-2386`).
+ * Custom image skills live in the screenshot toolbar and never count here,
+ * unlike the image badge which counts enabled `captureSkills` only.
+ */
+export function countTextSkills(customSkills: CustomSkill[]): number {
+  const ids = new Set(TEXT_SKILLS.map((skill) => skill.id));
+  for (const skill of customSkills) {
+    if (skill.kind !== "image") ids.add(skill.id);
+  }
+  return ids.size;
+}
+
 /** Old settings may reference the 12 hand-drawn v0.1.x icons. */
 export const LEGACY_SKILL_ICON_ALIASES: Readonly<Record<string, string>> = {
   sparkles: "sparkles",

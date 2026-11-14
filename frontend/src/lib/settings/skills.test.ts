@@ -11,6 +11,7 @@ import {
   DEFAULT_TEXT_SKILLS,
   IMAGE_SKILLS,
   TEXT_SKILLS,
+  countTextSkills,
   mergeCategoryOrder,
   newCustomSkillId,
   normalizeIconKey,
@@ -95,6 +96,16 @@ test("default enabled lists mirror the Rust defaults", () => {
     "translate",
     "explain",
   ]);
+});
+
+test("countTextSkills counts every text row and ignores image skills", () => {
+  const custom: CustomSkill[] = [
+    { id: "custom-txt", label: "Mine", icon: "zap", kind: "text", prompt: "p" },
+    { id: "custom-img", label: "Shot", icon: "rocket", kind: "image", prompt: "p" },
+  ];
+  /* Legacy `textOrder.length`: enabled or disabled does not enter the count. */
+  expect(countTextSkills([])).toBe(TEXT_SKILLS.length);
+  expect(countTextSkills(custom)).toBe(TEXT_SKILLS.length + 1);
 });
 
 test("prompt slots are declared only for editable skills", () => {

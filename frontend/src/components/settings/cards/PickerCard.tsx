@@ -1,7 +1,8 @@
 /* Picker behavior card (C32–C44, C45–C47, assertions 19–31).
  *
  * Card order mirrors the contract §7.2: enable switch → compact switch (right
- * aligned) → panel mode → text/image tabs with enabled counts → skill list →
+ * aligned) → panel mode → text/image tabs (text badge counts every text row,
+ * image badge counts enabled capture actions) → skill list →
  * add-skill button + inline custom-skill editor → default target language →
  * application blacklist.
  *
@@ -33,7 +34,7 @@ import { useT } from "@/lib/i18n";
 import {
   DEFAULT_TEXT_SKILLS,
   IMAGE_SKILLS,
-  TEXT_SKILLS,
+  countTextSkills,
   newCustomSkillId,
 } from "@/lib/settings/skills";
 import type { CustomSkill } from "@/lib/settings/types";
@@ -68,17 +69,13 @@ export function PickerCard() {
   if (!picker) return null;
 
   const customSkills = picker.customSkills ?? [];
-  const textIds = new Set([
-    ...TEXT_SKILLS.map((meta) => meta.id),
-    ...customSkills.filter((skill) => skill.kind !== "image").map((skill) => skill.id),
-  ]);
+  /* Text count follows the legacy tab badge: every text row, not only enabled
+   * ones. Image count stays the enabled capture actions (assertion 21). */
+  const textCount = countTextSkills(customSkills);
   const imageIds = new Set([
     ...IMAGE_IDS,
     ...customSkills.filter((skill) => skill.kind === "image").map((skill) => skill.id),
   ]);
-  const enabledTextCount = new Set(
-    (picker.skills ?? []).map(String).filter((id) => textIds.has(id))
-  ).size;
   const enabledImageCount = new Set(
     (picker.captureSkills ?? []).map(String).filter((id) => imageIds.has(id))
   ).size;
@@ -268,7 +265,7 @@ export function PickerCard() {
                   ariaControls: "skill-list-text",
                   badge: (
                     <span className="text-[11px] font-normal text-muted-foreground">
-                      ({enabledTextCount})
+                      ({textCount})
                     </span>
                   ),
                 },
