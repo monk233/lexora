@@ -12,6 +12,7 @@ import { useEffect, useRef, useState } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { toast } from "@/components/ui/use-toast";
 import { SectionCard } from "@/components/settings/SectionCard";
+import { PickerCard } from "@/components/settings/cards/PickerCard";
 import { ProviderCard } from "@/components/settings/cards/ProviderCard";
 import { Topbar } from "@/components/settings/Topbar";
 import { useColorScheme } from "@/hooks/useColorScheme";
@@ -96,13 +97,7 @@ function SettingsShell() {
         {ready ? (
           <>
             <ProviderCard />
-            <SectionCard
-              id="picker"
-              title={t("settings.card.picker.title")}
-              description={t("settings.card.picker.desc")}
-            >
-              {null}
-            </SectionCard>
+            <PickerCard />
             <SectionCard
               id="quick"
               title={t("settings.quick.title")}

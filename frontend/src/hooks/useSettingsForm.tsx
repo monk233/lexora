@@ -74,6 +74,8 @@ export interface SettingsFormApi {
    * through it so the injected fake API also drives their tests. */
   api: SettingsApi;
   save(patch: SettingsPatch): void;
+  /** Persist one pending draft now (used before collapsing an editor). */
+  flushDraft(id: string): void;
   /** Drop a pending draft and its debounce timer without writing anything. */
   cancelDraft(id: string): void;
   flushSaveQueue(): Promise<FlushResult>;
@@ -231,7 +233,11 @@ export function SettingsFormProvider(props: {
       const sent = entry.lastSent !== value;
       if (sent) {
         entry.lastSent = value;
-        save(entry.build(value));
+        /* A builder may persist on its own (the prompt editors call their
+         * caller's `onSave` and only return the patch when the caller hands one
+         * back). An empty patch is not a write, so never enqueue it. */
+        const patch = entry.build(value);
+        if (Object.keys(patch).length > 0) save(patch);
       }
       void queueRef.current?.flush().then((result) => {
         const current = draftsRef.current.get(id);
