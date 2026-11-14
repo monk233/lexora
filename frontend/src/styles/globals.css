@@ -1,0 +1,60 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 220 20% 97%;
+  --foreground: 221 39% 11%;
+  --card: 0 0% 100%;
+  --card-foreground: 221 39% 11%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 221 39% 11%;
+  --primary: 243 75% 59%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 220 14% 96%;
+  --secondary-foreground: 221 39% 11%;
+  --muted: 220 14% 96%;
+  --muted-foreground: 220 9% 46%;
+  --accent: 226 100% 97%;
+  --accent-foreground: 243 75% 59%;
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 220 13% 91%;
+  --input: 220 13% 91%;
+  --ring: 243 75% 59%;
+  --radius: 12px;
+}
+
+html.dark {
+  --background: 220 17% 7%;
+  --foreground: 220 14% 91%;
+  --card: 222 18% 11%;
+  --card-foreground: 220 14% 91%;
+  --popover: 222 18% 11%;
+  --popover-foreground: 220 14% 91%;
+  --primary: 234 89% 74%;
+  --primary-foreground: 225 22% 7%;
+  --secondary: 220 9% 18%;
+  --secondary-foreground: 220 14% 91%;
+  --muted: 220 9% 18%;
+  --muted-foreground: 220 12% 65%;
+  --accent: 243 47% 20%;
+  --accent-foreground: 234 89% 74%;
+  --destructive: 0 91% 71%;
+  --destructive-foreground: 225 22% 7%;
+  --border: 220 9% 18%;
+  --input: 220 9% 18%;
+  --ring: 234 89% 74%;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: theme("fontFamily.ui");
+  -webkit-font-smoothing: antialiased;
+}
