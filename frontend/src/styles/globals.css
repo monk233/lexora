@@ -58,3 +58,25 @@ body {
   font-family: theme("fontFamily.ui");
   -webkit-font-smoothing: antialiased;
 }
+
+/* Settings window shell (Task 3): keep the native body scroll so the sticky
+ * topbar works (inventory risk 6). The 820px floor is scoped to the settings
+ * root instead of `body`: `globals.css` is shared with the 440px picker window
+ * and a global `body { min-width: 820px }` would force horizontal scrolling
+ * there. */
+body {
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+}
+
+.settings-window {
+  min-width: 820px;
+}
+
+:root {
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
+}

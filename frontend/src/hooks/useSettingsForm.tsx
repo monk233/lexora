@@ -147,9 +147,12 @@ export function SettingsFormProvider(props: {
   const queueRef = useRef<SaveQueue | null>(null);
 
   /* Read through a ref: the queue is created once, but the locale prop may
-   * change when the user switches language. */
-  const localeRef = useRef<Locale>(props.locale ?? currentLocale());
-  localeRef.current = props.locale ?? currentLocale();
+   * change when the user switches language. When the shell mounts this provider
+   * above `I18nProvider` it passes no prop, so the *current* document language
+   * is resolved at failure time (the i18n layer keeps `<html lang>` in sync). */
+  const localePropRef = useRef<Locale | undefined>(props.locale);
+  localePropRef.current = props.locale;
+  const resolveLocale = useCallback((): Locale => localePropRef.current ?? currentLocale(), []);
 
   const commitState = useCallback((next: StatePayload | null) => {
     stateRef.current = next;
@@ -169,15 +172,15 @@ export function SettingsFormProvider(props: {
   const handleFailure = useCallback(
     async (error: string): Promise<void> => {
       toast({
-        description: translate(localeRef.current, "settings.error.saveFailed", { error }),
-        variant: "destructive",
+        description: translate(resolveLocale(), "settings.error.saveFailed", { error }),
+        tone: "error",
       });
       /* Roll the optimistic value back to the backend state (inventory §4.7).
        * The queue awaits this promise, so the stale snapshot can never land
        * after a newer patch's response. */
       await refresh();
     },
-    [refresh]
+    [refresh, resolveLocale]
   );
 
   if (queueRef.current === null) {
@@ -188,7 +191,7 @@ export function SettingsFormProvider(props: {
       onFailure: handleFailure,
       /* M1: no hardcoded copy in the queue; the hook injects localized text. */
       get failureMessage() {
-        return translate(localeRef.current, "settings.error.unknown");
+        return translate(resolveLocale(), "settings.error.unknown");
       },
     });
   }
@@ -347,7 +350,7 @@ export function SettingsFormProvider(props: {
     const offToast = api.onToast((payload) => {
       toast({
         description: payload.message,
-        variant: payload.type === "error" ? "destructive" : "default",
+        tone: payload.type,
       });
     });
     return () => {
