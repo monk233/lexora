@@ -1,12 +1,18 @@
-/* Picker behavior card (C32–C36, C45–C47, assertions 19–28).
+/* Picker behavior card (C32–C44, C45–C47, assertions 19–31).
  *
  * Card order mirrors the contract §7.2: enable switch → compact switch (right
  * aligned) → panel mode → text/image tabs with enabled counts → skill list →
- * default target language → application blacklist. The image tab's rows,
- * custom-skill editor and the "add skill" action belong to Task 7; this card
- * only mounts the tab and its empty list container.
+ * add-skill button + inline custom-skill editor → default target language →
+ * application blacklist.
+ *
+ * The image tab lists the screenshot toolbar actions plus custom image skills;
+ * it may be empty (the toolbar then only offers confirm/cancel), and an
+ * explicit `[]` is saved as-is. Saving/deleting a custom skill keeps
+ * `picker.skills` and `picker.captureSkills` in sync with the skill kind in one
+ * `update_settings` patch (legacy `saveCustomSkill` / `deleteCustomSkill`).
  */
 import { useState } from "react";
+import { Plus } from "lucide-react";
 
 import { Field } from "@/components/settings/Field";
 import { SectionCard } from "@/components/settings/SectionCard";
@@ -19,15 +25,32 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { toast } from "@/components/ui/use-toast";
+import { Button } from "@/components/ui/button";
 import { useSettingsForm } from "@/hooks/useSettingsForm";
 import { LANGUAGES } from "@/lib/constants";
 import { useT } from "@/lib/i18n";
-import { IMAGE_SKILLS, TEXT_SKILLS } from "@/lib/settings/skills";
+import {
+  DEFAULT_TEXT_SKILLS,
+  IMAGE_SKILLS,
+  TEXT_SKILLS,
+  newCustomSkillId,
+} from "@/lib/settings/skills";
+import type { CustomSkill } from "@/lib/settings/types";
 
 import { BlacklistInput } from "../picker/BlacklistInput";
+import {
+  CustomSkillEditor,
+  type CustomSkillDraft,
+} from "../picker/CustomSkillEditor";
 import { SkillList } from "../picker/SkillList";
 
 type SkillTab = "text" | "image";
+
+interface EditorState {
+  draft: CustomSkillDraft;
+  editing: boolean;
+}
 
 const TARGET_LANGS: string[] = [
   "auto",
@@ -39,6 +62,7 @@ export function PickerCard() {
   const form = useSettingsForm();
   const { t } = useT();
   const [tab, setTab] = useState<SkillTab>("text");
+  const [editor, setEditor] = useState<EditorState | null>(null);
 
   const picker = form.settings?.picker;
   if (!picker) return null;
@@ -64,6 +88,111 @@ export function PickerCard() {
     ? picker.defaultTargetLang
     : "auto";
   const blacklist = Array.isArray(picker.blacklist) ? picker.blacklist : [];
+
+  const openNewSkill = () => {
+    setEditor({
+      draft: {
+        id: newCustomSkillId(),
+        label: "",
+        icon: "sparkles",
+        kind: tab,
+        prompt: "",
+      },
+      editing: false,
+    });
+  };
+
+  const openEditSkill = (id: string) => {
+    const custom = customSkills.find((skill) => skill.id === id);
+    if (!custom) {
+      toast({ description: t("settings.error.skillMissing"), tone: "error" });
+      void form.refresh();
+      return;
+    }
+    setEditor({
+      draft: {
+        id: custom.id,
+        label: custom.label,
+        icon: custom.icon,
+        kind: custom.kind === "image" ? "image" : "text",
+        prompt: custom.prompt,
+      },
+      editing: true,
+    });
+  };
+
+  const saveCustomSkill = (draft: CustomSkillDraft) => {
+    const stored = customSkills.slice();
+    const index = stored.findIndex((skill) => skill.id === draft.id);
+    if (editor?.editing && index < 0) {
+      toast({ description: t("settings.error.skillMissing"), tone: "error" });
+      setEditor(null);
+      void form.refresh();
+      return;
+    }
+    if (index >= 0) stored[index] = draft;
+    else stored.push(draft);
+
+    let skills = (Array.isArray(picker.skills) ? picker.skills : DEFAULT_TEXT_SKILLS).map(
+      String
+    );
+    let captureSkills = (Array.isArray(picker.captureSkills) ? picker.captureSkills : []).map(
+      String
+    );
+    /* An id already in its container keeps its position; edits never reorder. */
+    if (draft.kind === "image") {
+      skills = skills.filter((id) => id !== draft.id);
+      if (!captureSkills.includes(draft.id)) captureSkills = [...captureSkills, draft.id];
+    } else {
+      captureSkills = captureSkills.filter((id) => id !== draft.id);
+      if (!skills.includes(draft.id)) skills = [...skills, draft.id];
+    }
+
+    form.save({ picker: { customSkills: stored, skills, captureSkills } });
+    toast({
+      description: t(editor?.editing ? "settings.toast.skillSaved" : "settings.toast.skillAdded", {
+        label: draft.label,
+      }),
+      tone: "success",
+    });
+    setEditor(null);
+    setTab(draft.kind);
+  };
+
+  const deleteCustomSkill = (id: string) => {
+    const custom = customSkills.find((skill) => skill.id === id);
+    if (!custom) {
+      toast({ description: t("settings.error.skillMissing"), tone: "error" });
+      void form.refresh();
+      return;
+    }
+    const remaining: CustomSkill[] = customSkills.filter((skill) => skill.id !== id);
+    let skills = (Array.isArray(picker.skills) ? picker.skills : DEFAULT_TEXT_SKILLS)
+      .map(String)
+      .filter((skillId) => skillId !== id);
+    if (skills.length === 0) skills = DEFAULT_TEXT_SKILLS.slice();
+    /* Remove the id from both toolbars so a delete never leaves a dangling
+     * action behind, whichever category the skill lived in. */
+    const captureSkills = (Array.isArray(picker.captureSkills) ? picker.captureSkills : [])
+      .map(String)
+      .filter((skillId) => skillId !== id);
+
+    if (editor?.draft.id === id) setEditor(null);
+    form.save({ picker: { customSkills: remaining, skills, captureSkills } });
+    toast({
+      description: t("settings.toast.skillDeleted", { label: custom.label }),
+      tone: "success",
+    });
+  };
+
+  /* One sibling label is enough for the editor's non-blocking duplicate hint:
+   * the editor compares it against the live draft on every keystroke. */
+  const siblingLabel =
+    editor === null
+      ? undefined
+      : customSkills.find(
+          (skill) => skill.id !== editor.draft.id && skill.kind === editor.draft.kind
+        )?.label;
 
   return (
     <SectionCard
@@ -156,7 +285,37 @@ export function PickerCard() {
               ]}
               onChange={setTab}
             />
-            <SkillList kind={tab} onOpenSearch={() => {}} onEditCustom={() => {}} />
+            <SkillList
+              kind={tab}
+              onOpenSearch={() => {}}
+              onEditCustom={openEditSkill}
+              onDeleteCustom={deleteCustomSkill}
+              editingId={editor?.draft.id}
+            />
+            {tab === "image" ? (
+              enabledImageCount === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  {t("settings.hint.captureEmpty")}
+                </p>
+              ) : null
+            ) : null}
+            <div className="flex items-center gap-2">
+              <Button type="button" variant="outline" size="sm" onClick={openNewSkill}>
+                <Plus className="h-4 w-4" aria-hidden="true" />
+                {t("settings.action.addSkill")}
+              </Button>
+            </div>
+            {editor ? (
+              <CustomSkillEditor
+                key={`${editor.draft.id}:${editor.editing ? "edit" : "new"}`}
+                draft={editor.draft}
+                editing={editor.editing}
+                existingLabel={siblingLabel}
+                onSave={saveCustomSkill}
+                onCancel={() => setEditor(null)}
+                onDelete={editor.editing ? () => deleteCustomSkill(editor.draft.id) : undefined}
+              />
+            ) : null}
           </div>
         </Field>
 

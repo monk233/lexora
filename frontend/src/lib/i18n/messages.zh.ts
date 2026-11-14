@@ -776,6 +776,7 @@ export const messages: Record<string, string> = {
 
     "settings.hint.customKind.text": "文本技能处理选中文字：点击后直接执行提示词。",
     "settings.hint.customKind.image": "选中文字后进入截图，对框选区域执行提示词（需视觉模型）。",
+    "settings.hint.skillNameDuplicate": "已有同名技能「{label}」，仍可保存",
     "settings.varsHint.text": "变量：<code>{text}</code> 选中文本、<code>{target}</code>/<code>{language}</code> 目标语言、<code>{program}</code>/<code>{app}</code> 当前应用",
     "settings.varsHint.image": "变量：<code>{target}</code>/<code>{language}</code> 目标语言、<code>{program}</code>/<code>{app}</code> 当前应用（图片内容由截图提供）",
 

@@ -776,6 +776,7 @@ export const messages: Record<string, string> = {
 
     "settings.hint.customKind.text": "Text skills process the selected text: clicking runs the prompt directly.",
     "settings.hint.customKind.image": "After selecting text, opens the screenshot overlay and runs the prompt on the selected area (requires a vision model).",
+    "settings.hint.skillNameDuplicate": "A skill named “{label}” already exists; you can still save",
     "settings.varsHint.text": "Variables: <code>{text}</code> selected text, <code>{target}</code>/<code>{language}</code> target language, <code>{program}</code>/<code>{app}</code> current app",
     "settings.varsHint.image": "Variables: <code>{target}</code>/<code>{language}</code> target language, <code>{program}</code>/<code>{app}</code> current app (the image comes from the screenshot)",
 

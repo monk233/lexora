@@ -26,20 +26,30 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-async function renderSkillList(overrides: DeepPartial<StatePayload> = {}) {
+async function renderSkillList(
+  overrides: DeepPartial<StatePayload> = {},
+  kind: "text" | "image" = "text"
+) {
   document.documentElement.lang = "zh";
   const state = makeState(overrides);
   const api = createFakeSettingsApi(state);
+  const onEditCustom = vi.fn();
+  const onDeleteCustom = vi.fn();
   const view = render(
     <SettingsFormProvider api={api}>
       <I18nProvider initialLocale="zh">
-        <SkillList kind="text" onOpenSearch={() => {}} onEditCustom={() => {}} />
+        <SkillList
+          kind={kind}
+          onOpenSearch={() => {}}
+          onEditCustom={onEditCustom}
+          onDeleteCustom={onDeleteCustom}
+        />
         <Toaster />
       </I18nProvider>
     </SettingsFormProvider>
   );
   await act(async () => {});
-  return { api, ...view };
+  return { api, onEditCustom, onDeleteCustom, ...view };
 }
 
 function advance(ms: number): Promise<void> {
@@ -232,4 +242,152 @@ test("disabling the picker greys the list without hiding rows", async () => {
   const list = screen.getByTestId("skill-list-text");
   expect(list.getAttribute("data-picker-disabled")).toBe("true");
   expect(list.className).toContain("opacity-60");
+});
+
+test("image tab orders enabled actions first, then hidden built-ins and custom image skills", async () => {
+  await renderSkillList(
+    {
+      settings: {
+        picker: {
+          captureSkills: ["ocr", "pin"],
+          customSkills: [
+            { id: "custom-img", label: "自定义图片", icon: "rocket", kind: "image", prompt: "看图说话" },
+            { id: "custom-txt", label: "自定义文字", icon: "zap", kind: "text", prompt: "写点字" },
+          ],
+        },
+      },
+    },
+    "image"
+  );
+
+  expect(rowIds()).toEqual([
+    "ocr",
+    "pin",
+    "shape",
+    "arrow",
+    "pen",
+    "text",
+    "number",
+    "mosaic",
+    "translate",
+    "explain",
+    "longshot",
+    "custom-img",
+  ]);
+  expect(within(row("custom-img")).getByText("自定义图片")).toBeTruthy();
+  expect(within(row("custom-img")).getByText(zh("settings.skillKind.image"))).toBeTruthy();
+  expect(within(row("custom-img")).getByText("看图说话")).toBeTruthy();
+});
+
+test("the image list can disable every action and re-enable one afterwards", async () => {
+  const { api } = await renderSkillList(
+    { settings: { picker: { captureSkills: ["ocr"] } } },
+    "image"
+  );
+
+  fireEvent.click(switchFor("ocr", "capture.ocr"));
+  expect(updateCalls(api)).toContainEqual({ picker: { captureSkills: [] } });
+
+  fireEvent.click(switchFor("ocr", "capture.ocr"));
+  await act(async () => {});
+  expect(updateCalls(api)).toContainEqual({ picker: { captureSkills: ["ocr"] } });
+  expect(screen.queryByText(zh("settings.toast.keepOneSkill"))).toBeNull();
+});
+
+test("enabling a hidden image action appends it to the stored order", async () => {
+  const { api } = await renderSkillList(
+    { settings: { picker: { captureSkills: ["pin"] } } },
+    "image"
+  );
+
+  fireEvent.click(switchFor("ocr", "capture.ocr"));
+  expect(updateCalls(api)).toContainEqual({ picker: { captureSkills: ["pin", "ocr"] } });
+});
+
+test("the image translate row edits both capture prompts", async () => {
+  const { api } = await renderSkillList({}, "image");
+
+  const promptButtons = screen.getAllByRole("button", {
+    name: zh("settings.action.editPrompt"),
+  });
+  expect(promptButtons).toHaveLength(2);
+  expect(
+    within(row("explain")).getByRole("button", { name: zh("settings.action.editPrompt") })
+  ).toBeTruthy();
+
+  fireEvent.click(
+    within(row("translate")).getByRole("button", { name: zh("settings.action.editPrompt") })
+  );
+  const areas = within(row("translate")).getAllByRole("textbox");
+  expect(areas).toHaveLength(2);
+  expect((areas[0] as HTMLTextAreaElement).value).toBe("Translate the screenshot into {target}.");
+  expect((areas[1] as HTMLTextAreaElement).value).toBe(
+    "Explain the word in the screenshot."
+  );
+
+  fireEvent.change(areas[0]!, { target: { value: "看截图翻译" } });
+  await advance(500);
+  expect(updateCalls(api)).toContainEqual({
+    picker: { capturePrompts: { translate: "看截图翻译" } },
+  });
+
+  fireEvent.change(areas[1]!, { target: { value: "查截图里的单词" } });
+  await advance(500);
+  expect(updateCalls(api)).toContainEqual({
+    picker: { capturePrompts: { wordLookup: "查截图里的单词" } },
+  });
+});
+
+test("custom image rows edit on Enter and delete after a second Delete", async () => {
+  const { onEditCustom, onDeleteCustom } = await renderSkillList(
+    {
+      settings: {
+        picker: {
+          captureSkills: ["ocr", "custom-img"],
+          customSkills: [
+            { id: "custom-img", label: "自定义图片", icon: "rocket", kind: "image", prompt: "看图" },
+          ],
+        },
+      },
+    },
+    "image"
+  );
+
+  const target = row("custom-img");
+  fireEvent.keyDown(target, { key: "Enter" });
+  expect(onEditCustom).toHaveBeenCalledWith("custom-img");
+
+  fireEvent.keyDown(target, { key: "Delete" });
+  expect(onDeleteCustom).not.toHaveBeenCalled();
+  fireEvent.keyDown(target, { key: "Delete" });
+  expect(onDeleteCustom).toHaveBeenCalledWith("custom-img");
+});
+
+test("the row delete button requires a second click", async () => {
+  const { onDeleteCustom } = await renderSkillList(
+    {
+      settings: {
+        picker: {
+          captureSkills: ["ocr", "custom-img"],
+          customSkills: [
+            { id: "custom-img", label: "自定义图片", icon: "rocket", kind: "image", prompt: "看图" },
+          ],
+        },
+      },
+    },
+    "image"
+  );
+
+  fireEvent.click(
+    within(row("custom-img")).getByRole("button", {
+      name: zh("settings.aria.deleteSkill", { name: "自定义图片" }),
+    })
+  );
+  expect(onDeleteCustom).not.toHaveBeenCalled();
+  fireEvent.click(
+    within(row("custom-img")).getByRole("button", {
+      name: zh("settings.action.confirmDeleteAgain"),
+    })
+  );
+  expect(onDeleteCustom).toHaveBeenCalledWith("custom-img");
 });
