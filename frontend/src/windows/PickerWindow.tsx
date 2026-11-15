@@ -7,13 +7,16 @@
  */
 import { useEffect, useMemo, useState } from "react";
 
+import { FollowupBar } from "@/components/picker/FollowupBar";
 import { PickerMenu } from "@/components/picker/PickerMenu";
 import { PickerPanel } from "@/components/picker/PickerPanel";
 import { PickerToolbar } from "@/components/picker/PickerToolbar";
 import { PanelBody } from "@/components/picker/PanelBody";
 import { usePickerBridge, type PickerApi } from "@/hooks/usePickerBridge";
 import { usePickerSession } from "@/hooks/usePickerSession";
+
 import { useT } from "@/lib/i18n";
+import { renderMarkdown } from "@/lib/markdown";
 import { payloadSkills, type PickerSkill, type PickerSurface } from "@/lib/picker/model";
 
 export interface PickerWindowProps {
@@ -137,9 +140,36 @@ export function PickerWindow({ surface, api }: PickerWindowProps = {}) {
           loadingKey={panel.loadingKey}
           onRetry={session.retry}
         />
+        {session.rounds.map((round, index) => (
+          <div key={`${index}-${round.question}`} data-testid="followup-round" className="mt-2 border-t pt-2">
+            <p className="mb-1 text-xs text-muted-foreground">{round.question}</p>
+            <div
+              className="text-sm"
+              dangerouslySetInnerHTML={{ __html: renderMarkdown(round.answer) }}
+            />
+          </div>
+        ))}
+        {session.asking && session.followupText ? (
+          <div
+            data-testid="followup-stream"
+            className="mt-2 border-t pt-2 text-sm"
+            dangerouslySetInnerHTML={{ __html: renderMarkdown(session.followupText) }}
+          />
+        ) : null}
+        {(session.phase === "done" ||
+          session.phase === "stopped" ||
+          session.phase === "repetition") &&
+        (bridge.payload?.config?.suggestionsAvailable === true || bridge.image) ? (
+          <FollowupBar
+            suggestions={session.suggestions}
+            busy={session.asking}
+            onSubmit={session.ask}
+          />
+        ) : null}
       </PickerPanel>
       <span className="sr-only">{t("picker.aria.toolbar")}</span>
     </div>
   );
 }
+
 

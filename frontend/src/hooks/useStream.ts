@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTauriEvent } from "./useTauriEvent";
 
 export type StreamEvent =
@@ -47,6 +47,20 @@ export function useStream<TState>({
   // chunk would otherwise resurrect `"streaming"`. `armedRef` distinguishes
   // those two idle states; `start()` re-arms the stream.
   const armedRef = useRef(true);
+  const initialRef = useRef(initial);
+  initialRef.current = initial;
+  const lastRequestId = useRef(requestId);
+
+  /* A new request id means a new stream: terminal states from the previous
+   * request must not swallow the new one (picker follow-ups reuse the hook). */
+  useEffect(() => {
+    if (lastRequestId.current === requestId) return;
+    lastRequestId.current = requestId;
+    statusRef.current = "idle";
+    armedRef.current = true;
+    setStatus("idle");
+    setState(initialRef.current);
+  }, [requestId]);
 
   const setPhase = useCallback((next: StreamStatus) => {
     statusRef.current = next;
@@ -94,3 +108,4 @@ export function useStream<TState>({
     [state, status, start, abort, stop]
   );
 }
+
