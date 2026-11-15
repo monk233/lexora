@@ -26,6 +26,13 @@ export interface PickerApi {
   onImage(callback: (image: unknown) => void): () => void;
   onTranslateEvent(callback: (event: unknown) => void): () => void;
   onRunSkill(callback: (skillId: unknown) => void): () => void;
+  resize(width: number, height: number): Promise<unknown> | null;
+  runToolbarSkill?(skill: string): Promise<unknown>;
+  close?(): Promise<unknown>;
+  pin?(pinned: boolean, remember?: boolean): Promise<unknown>;
+  panelState?(open: boolean): Promise<unknown>;
+  activate?(active: boolean): Promise<unknown>;
+  dragPanel?(dx: number, dy: number): Promise<unknown>;
   [command: string]: unknown;
 }
 

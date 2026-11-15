@@ -4,8 +4,9 @@
  *  - `picker` (result panel) — Task 4+ replaces the placeholder body;
  *  - `picker-toolbar` (capsule, `?surface=toolbar`) — Task 3 replaces it.
  */
+import { PickerToolbar } from "@/components/picker/PickerToolbar";
 import { usePickerBridge, type PickerApi } from "@/hooks/usePickerBridge";
-import type { PickerSurface } from "@/lib/picker/model";
+import { payloadSkills, type PickerSurface } from "@/lib/picker/model";
 
 export interface PickerWindowProps {
   surface?: PickerSurface;
@@ -16,15 +17,21 @@ export function PickerWindow({ surface, api }: PickerWindowProps = {}) {
   const bridge = usePickerBridge({ surface, api });
 
   if (bridge.surface === "toolbar") {
+    const skills = payloadSkills(bridge.payload);
     return (
       <div
         data-testid="surface"
         data-surface="toolbar"
-        className="pointer-events-none h-full w-full bg-transparent"
+        className="h-full w-full bg-transparent p-[2px]"
       >
-        <div className="pointer-events-auto inline-flex items-center rounded-xl border bg-card px-2 py-1 text-sm shadow-float">
-          toolbar
-        </div>
+        <PickerToolbar
+          skills={skills}
+          compact={bridge.payload?.config?.compact === true}
+          api={bridge.api}
+          onRun={(skillId) => {
+            void bridge.api.runToolbarSkill?.(skillId);
+          }}
+        />
       </div>
     );
   }

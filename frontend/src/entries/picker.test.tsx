@@ -1,15 +1,19 @@
-import { render, screen } from "@testing-library/react";
+/* Picker entry surfaces (P0 scaffold test, kept as the smoke gate for P3). */
 import { describe, expect, test } from "vitest";
-import { PickerWindow } from "../windows/PickerWindow";
+import { screen } from "@testing-library/react";
+
+import { PickerWindow } from "@/windows/PickerWindow";
+import { createFakePickerApi, renderPicker } from "@/test/picker-harness";
 
 describe("PickerWindow", () => {
   test("renders panel surface by default", () => {
-    render(<PickerWindow surface="panel" />);
-    expect(screen.getByTestId("surface")).toHaveTextContent("panel");
+    renderPicker(<PickerWindow api={createFakePickerApi()} />);
+    expect(screen.getByTestId("surface").getAttribute("data-surface")).toBe("panel");
   });
 
   test("renders toolbar surface when asked", () => {
-    render(<PickerWindow surface="toolbar" />);
-    expect(screen.getByTestId("surface")).toHaveTextContent("toolbar");
+    renderPicker(<PickerWindow surface="toolbar" api={createFakePickerApi()} />);
+    expect(screen.getByTestId("surface").getAttribute("data-surface")).toBe("toolbar");
+    expect(screen.getByRole("toolbar")).toBeTruthy();
   });
 });
