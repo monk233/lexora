@@ -1,6 +1,6 @@
 # 快捷翻译面板（Quick Translate）—— 功能契约
 
-> 状态：已实现（v0.4.2）；面板与设置页「快捷翻译」卡片的界面文案已纳入语言包（§7.3），随界面语言切换。本文件是三层实现（Rust shell / quicktranslate 渲染端 / 设置页）的接口来源。
+> 状态：已实现（v0.4.2；R2 迁移后位于 `frontend/src/windows/QuickTranslateWindow.tsx` 与 `frontend/src/lib/quick/model.ts`，旧 `web/quicktranslate.*` 已删除）；面板与设置页「快捷翻译」卡片的界面文案已纳入语言包（§7.3），随界面语言切换。本文件是三层实现（Rust shell / quicktranslate 渲染端 / 设置页）的接口来源。
 > 与现有约定一致的风格：用户可见文案走语言包（`web/shared/messages.*.js`）、英文代码注释、`camelCase` IPC 字段。
 
 ## 1. 目标

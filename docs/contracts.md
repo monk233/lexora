@@ -383,6 +383,8 @@ pub struct SelectionService {
 - `release.yml`：tag `v*` 触发；校验 tag 与 `tauri.conf.json` 版本一致，构建单 exe、生成 release notes、上传 exe 到 GitHub Release。
 
 ## 7. 前端规范（T3）
+> **R2 迁移状态（0.4.4）**：本节描述的前端契约已全部由 `frontend/` 的 React 实现承载（设置页、picker、快捷翻译、钉图、截图、长截图）；`web/` 旧实现与迁移脚本已删除。下方出现的 `web/...` 路径是契约形成时的历史位置，对应的行为与命令/事件名保持不变。
+
 
 ### 7.1 picker（复刻现有 UI）
 - 从 `enterprise-ai-translator/electron/picker.html|picker.css|picker.js` 复制并改造：保留白主题工具栏、图标+文字、更多菜单、结果面板（标题/固定/关闭/语言选择）、loading 原文、流式译文、面板脚（朗读/复制/重试/停止，纯图标 + `title`）、错误面板、toast、Escape 层级、面板固定、内容自适应。

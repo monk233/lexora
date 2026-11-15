@@ -31,7 +31,9 @@ afterEach(() => {
 });
 
 function openImage(api: ReturnType<typeof createFakePickerApi>, action: string, label: string) {
-  api.emitData({ text: "", config: { skills: ["translate"] } });
+  act(() => {
+    api.emitData({ text: "", config: { skills: ["translate"] } });
+  });
   act(() => {
     api.emitImage({
       requestId: "capture-1",

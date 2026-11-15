@@ -88,16 +88,12 @@ cargo check --all-targets  # 编译检查
 
 单元测试覆盖设置归一化与迁移（v6）、SSE 解析、错误映射、模型目录、截图快捷键盘映射、标注几何/裁剪/变换、长截图双向拼接与尺寸上限、pin 显示尺寸等纯逻辑，不联网、不依赖桌面。
 
-遗留 `web/` 静态页的 JS 语法检查（这些文件已不再被应用加载，仅作遗留参考；当前前端验证用上面的 `npm run lint:imports`、`npm run test:web`、`npm run build:web`）：
+前端已全部迁移到 `frontend/`（React + Vite + TypeScript），旧 `web/` 目录与其迁移脚本已删除。前端验证统一使用：
 
 ```powershell
-node --check web/capture.js
-node --check web/capture-annotate.js
-node --check web/longshot.js
-node --check web/pin.js
-node --check web/settings.js
-node --check web/picker.js
-node --check web/shared/tauri-api.js
+npm run lint:imports   # Rare UI subpath guard
+npm run test:web       # Vitest（React 组件与共享逻辑）
+npm run build:web      # tsc --noEmit + vite build → frontend/dist
 ```
 
 ### 自动化冒烟（WebView2 CDP）
@@ -142,3 +138,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release-notes.ps1 -V
 - **Rust crate 下载慢**：可配置国内 crates.io 镜像（rsproxy），见 `docs/contracts.md` 环境说明。
 - **Windows 构建要求合法 .ico**：图标由 `scripts/make_icons.py` 生成（需要 Pillow），仓库已内置生成结果。
 - **`data/` 数据目录**：便携版是 exe 同级 `data/`；开发/调试可用 `LEXORA_DATA_DIR` 指向临时目录做隔离测试。
+

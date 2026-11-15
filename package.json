@@ -1,6 +1,6 @@
 {
   "name": "lexora",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "private": true,
   "type": "module",
   "engines": {
@@ -67,3 +67,4 @@
     "tailwindcss-animate": "^1.0.7"
   }
 }
+

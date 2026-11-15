@@ -64,7 +64,7 @@ R2 起前端是 Vite + React 18 + TypeScript（strict）应用，构建产物在
 - **入口即窗口**：`frontend/` 下 7 个入口 HTML 都由 `frontend/dist` 提供——`index.html`→settings，`picker.html`→picker 与 picker-toolbar（`?surface=toolbar`），`quicktranslate.html`→quicktranslate，其余入口对应 Rust 动态创建的 `capture-*` / `pin-*` 等窗口（`capture.html`、`longshot.html`、`longshot-bar.html`、`pin.html` 仍按原文件名加载）；每个入口挂载 `src/entries/*.tsx`，页面组件在 `src/windows/`。
 - **共享层**：`src/lib/` 放与窗口无关的能力——`i18n/index.tsx`（Provider + `messages.zh.ts` / `messages.en.ts`）、`markdown`（安全渲染）、`stream-guard`（流式重复段/周期检测）、`tauri-api`（ESM 封装 `window.__TAURI__` 的 invoke/listen，浏览器预览时回退 mock）、`constants`；`src/hooks/` 提供 `useTauriEvent`（窗口事件订阅）与 `useStream`（流式回答状态机，含终态保护）。
 - **样式与组件**：单一 token 来源是 `frontend/src/styles/globals.css`（Tailwind 3.4 + CSS 变量）；组件层是 `src/components/ui` 下的 shadcn/ui 源码。Rare UI 固定 `@rare-ui/core@0.1.1`，只允许按白名单 subpath 引入，`npm run lint:imports` 在构建前校验，禁止根入口导入。
-- **与 `web/` 的关系**：`tauri.conf.json` 的 `build.frontendDist` 已是 `"../frontend/dist"`，全部 7 个入口页面都从 React 构建产物加载——`tauri.conf.json` 声明 settings、picker、picker-toolbar、quicktranslate 四个窗口，`capture-*`、`longshot`、`longshot-bar`、`pin-*` 由 Rust 动态创建，指向的仍是上述同名入口文件。但窗口内容目前只是占位脚手架：`frontend/src/windows/*.tsx` 仅渲染窗口名（如 `SettingsWindow` 只渲染 `settings`），窗口内容的迁移属于 P2–P5。`web/` 下的旧静态页仅作为遗留参考实现保留，`src-tauri` 已无任何 `web/` 引用，应用运行时不再加载它们；下方 i18n 一节第 3 层描述的就是这套遗留实现。React 侧已提供 `src/lib/i18n`（`I18nProvider` + 语言包，测试覆盖），但当前没有任何入口挂载它——接入入口属于 P2–P5。
+- **实现状态（R2 完成，0.4.4）**：`tauri.conf.json` 的 `build.frontendDist` 为 `"../frontend/dist"`，全部 7 个入口页面都从 React 构建产物加载——`tauri.conf.json` 声明 settings、picker、picker-toolbar、quicktranslate 四个窗口，`capture-*`、`longshot`、`longshot-bar`、`pin-*` 由 Rust 动态创建，指向上述同名入口文件。设置页、划词工具条与结果面板、快捷翻译、钉图（含标注编辑）、截图 overlay（含标注画布）、长截图预览与控制条均已迁移到 React；旧 `web/` 目录与一次性迁移脚本已在 P6 删除。标注 canvas 逻辑以 `frontend/src/lib/annotation-editor.js` 形式逐字保留，React 只负责外壳与工具条。
 
 ## 截图 / 标注 / 长截图数据流
 
@@ -173,3 +173,4 @@ picker.js → invoke("picker_translate", {requestId,text,targetLang})
 `engine.rs` 对本地和在线调用统一计算有效输出预算：默认解释/图片解释 512、总结 768 tokens，均与用户配置上限取较小值；翻译（含单词/短语）、润色、自定义提示词、自由追问、OCR 沿用用户上限，不修改持久化配置。日志增加 `effective_max_tokens`、模式、来源和提示词版本，不记录提示词或回答正文。
 
 循环保护在 `web/picker.js` 累计流式正文后执行，因而支持跨 chunk 检测。连续重复段落/列表项至少 3 次，或尾部周期重复至少 4 次时中止；周期扫描尾部窗口约 4096 字符、周期最长 1024 字符。翻译（含单词/短语）与其他 AI 技能都受保护；翻译/润色允许原文已有的合法重复。行内代码、代码围栏、缩进代码、表格、引用不参与检测，OCR 豁免。命中时保留首份内容并取消后端请求，前端标记 `finishReason: repetition`、`partial: true`，显示“检测到重复输出，已停止”，过滤迟到事件。这是前端启发式保护，并非 Rust 全链路新增的结束原因协议，也不保证识别全部循环。自动化测试验证预算和检测规则，不能证明真实模型的释义、读音或生成质量。
+
