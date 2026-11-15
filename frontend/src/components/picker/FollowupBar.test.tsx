@@ -1,9 +1,9 @@
 /* Follow-up rounds (Task 6). */
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { PickerWindow } from "@/windows/PickerWindow";
-import { createFakePickerApi, renderPicker } from "@/test/picker-harness";
+import { createFakePickerApi, renderPickerWindow } from "@/test/picker-harness";
 
 const streamListeners = vi.hoisted(() => [] as ((payload: unknown) => void)[]);
 
@@ -25,6 +25,10 @@ function emitStream(event: unknown) {
   for (const listener of [...streamListeners]) listener(event);
 }
 
+beforeEach(() => {
+  document.documentElement.lang = "zh-CN";
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
   streamListeners.length = 0;
@@ -32,7 +36,7 @@ afterEach(() => {
 
 async function openPanel() {
   const api = createFakePickerApi();
-  renderPicker(<PickerWindow api={api} />);
+  renderPickerWindow(<PickerWindow api={api} />);
   act(() => {
     api.emitData({
       text: "Hello",
@@ -85,7 +89,7 @@ test("sending a question starts a follow-up request and appends the round", asyn
 
 test("the follow-up bar is hidden without suggestion support", async () => {
   const api = createFakePickerApi();
-  renderPicker(<PickerWindow api={api} />);
+  renderPickerWindow(<PickerWindow api={api} />);
   act(() => {
     api.emitData({
       text: "Hello",
@@ -104,3 +108,5 @@ test("the follow-up bar is hidden without suggestion support", async () => {
   );
   expect(screen.queryByTestId("followup-bar")).toBeNull();
 });
+
+

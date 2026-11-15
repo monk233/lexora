@@ -195,9 +195,15 @@ export function createFakePickerApi(options: FakePickerOptions = {}): FakePicker
   return api as unknown as FakePickerApi;
 }
 
+/** Renders a component that mounts its own I18nProvider (e.g. PickerWindow). */
+export function renderPickerWindow(ui: ReactElement): RenderResult {
+  return render(ui);
+}
+
 export function renderPicker(
   ui: ReactElement,
   { locale = "zh" }: { locale?: Locale } = {}
 ): RenderResult & { api?: FakePickerApi } {
   return render(<I18nProvider initialLocale={locale}>{ui}</I18nProvider>);
 }
+

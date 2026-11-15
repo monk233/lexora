@@ -1,9 +1,9 @@
 /* Screenshot payloads (Task 7): picker-image opens the shared result panel. */
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { PickerWindow } from "@/windows/PickerWindow";
-import { createFakePickerApi, renderPicker } from "@/test/picker-harness";
+import { createFakePickerApi, renderPickerWindow } from "@/test/picker-harness";
 
 const streamListeners = vi.hoisted(() => [] as ((payload: unknown) => void)[]);
 
@@ -24,6 +24,10 @@ vi.mock("@/lib/tauri-api.js", () => ({
 function emitStream(event: unknown) {
   for (const listener of [...streamListeners]) listener(event);
 }
+
+beforeEach(() => {
+  document.documentElement.lang = "zh-CN";
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -47,7 +51,7 @@ function openImage(api: ReturnType<typeof createFakePickerApi>, action: string, 
 
 test("an OCR payload opens a plain-text panel without the language selector", async () => {
   const api = createFakePickerApi();
-  renderPicker(<PickerWindow api={api} />);
+  renderPickerWindow(<PickerWindow api={api} />);
   openImage(api, "ocr", "提取文字");
 
   await waitFor(() => expect(screen.getByTestId("picker-panel")).toBeTruthy());
@@ -65,7 +69,7 @@ test("an OCR payload opens a plain-text panel without the language selector", as
 
 test("a translate payload shows the language selector and follows the resolved target", async () => {
   const api = createFakePickerApi();
-  renderPicker(<PickerWindow api={api} />);
+  renderPickerWindow(<PickerWindow api={api} />);
   openImage(api, "translate", "翻译");
 
   await waitFor(() => expect(screen.getByLabelText("目标语言")).toBeTruthy());
@@ -80,7 +84,7 @@ test("a translate payload shows the language selector and follows the resolved t
 
 test("retry on an image panel goes through capture_retry", async () => {
   const api = createFakePickerApi();
-  renderPicker(<PickerWindow api={api} />);
+  renderPickerWindow(<PickerWindow api={api} />);
   openImage(api, "explain", "解释图片");
 
   await waitFor(() => expect(screen.getByTestId("picker-panel")).toBeTruthy());
@@ -94,3 +98,5 @@ test("retry on an image panel goes through capture_retry", async () => {
     expect(api.calls.some((call) => call.method === "captureRetry")).toBe(true)
   );
 });
+
+

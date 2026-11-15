@@ -26,6 +26,8 @@ export interface PickerConfig {
   searchEngine?: string;
   suggestionsAvailable?: boolean;
   panelMode?: "auto" | "scroll";
+  /** Effective UI locale pushed with the payload. */
+  locale?: string;
   [key: string]: unknown;
 }
 
@@ -130,3 +132,4 @@ export function payloadSkills(payload: PickerPayload | null): PickerSkill[] {
     kind: id === "screenshot" ? "image" : "text",
   }));
 }
+

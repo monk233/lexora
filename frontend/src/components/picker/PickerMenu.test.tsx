@@ -1,9 +1,9 @@
 /* Overflow menu + dismissal semantics (Tasks 9/10). */
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { PickerWindow } from "@/windows/PickerWindow";
-import { createFakePickerApi, renderPicker } from "@/test/picker-harness";
+import { createFakePickerApi, renderPickerWindow } from "@/test/picker-harness";
 
 const streamListeners = vi.hoisted(() => [] as ((payload: unknown) => void)[]);
 
@@ -25,6 +25,10 @@ function emitStream(event: unknown) {
   for (const listener of [...streamListeners]) listener(event);
 }
 
+beforeEach(() => {
+  document.documentElement.lang = "zh-CN";
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
   streamListeners.length = 0;
@@ -32,7 +36,7 @@ afterEach(() => {
 
 test("the more menu lists configuration entries and runs them", async () => {
   const api = createFakePickerApi();
-  renderPicker(<PickerWindow api={api} />);
+  renderPickerWindow(<PickerWindow api={api} />);
   api.emitData({ text: "hi", programName: "Notepad", config: { skills: ["translate"] } });
 
   fireEvent.click(await screen.findByRole("button", { name: "更多" }));
@@ -50,7 +54,7 @@ test("the more menu lists configuration entries and runs them", async () => {
 
 test("Escape closes the open panel through picker_close", async () => {
   const api = createFakePickerApi();
-  renderPicker(<PickerWindow api={api} />);
+  renderPickerWindow(<PickerWindow api={api} />);
   api.emitData({ text: "hello", config: { skills: ["translate"], defaultTargetLang: "auto" } });
 
   fireEvent.click(await screen.findByLabelText("翻译"));
@@ -67,7 +71,7 @@ test("Escape closes the open panel through picker_close", async () => {
 
 test("the toolbar surface keeps rendering after a panel would close", async () => {
   const api = createFakePickerApi();
-  renderPicker(<PickerWindow surface="toolbar" api={api} />);
+  renderPickerWindow(<PickerWindow surface="toolbar" api={api} />);
   api.emitData({ text: "hi", config: { skills: ["translate"] } });
 
   await waitFor(() => expect(screen.getByRole("toolbar")).toBeTruthy());
@@ -76,3 +80,5 @@ test("the toolbar surface keeps rendering after a panel would close", async () =
   });
   expect(api.calls.some((call) => call.method === "close")).toBe(false);
 });
+
+

@@ -5,10 +5,10 @@
  * stays the fake from the harness.
  */
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { PickerWindow } from "@/windows/PickerWindow";
-import { createFakePickerApi, renderPicker } from "@/test/picker-harness";
+import { createFakePickerApi, renderPickerWindow } from "@/test/picker-harness";
 
 const streamListeners = vi.hoisted(() => [] as ((payload: unknown) => void)[]);
 
@@ -30,6 +30,10 @@ function emitStream(event: unknown) {
   for (const listener of [...streamListeners]) listener(event);
 }
 
+beforeEach(() => {
+  document.documentElement.lang = "zh-CN";
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
   streamListeners.length = 0;
@@ -37,7 +41,7 @@ afterEach(() => {
 
 function setup(text = "Hello world") {
   const api = createFakePickerApi();
-  renderPicker(<PickerWindow api={api} />);
+  renderPickerWindow(<PickerWindow api={api} />);
   api.emitData({
     text,
     programName: "Notepad",
@@ -141,7 +145,7 @@ test("copy sends the streamed text to the bridge", async () => {
 
 test("the toolbar surface delegates panel skills to the shell", async () => {
   const api = createFakePickerApi();
-  renderPicker(<PickerWindow surface="toolbar" api={api} />);
+  renderPickerWindow(<PickerWindow surface="toolbar" api={api} />);
   api.emitData({ text: "Hello", config: { skills: ["translate"], defaultTargetLang: "auto" } });
 
   fireEvent.click(await screen.findByLabelText("翻译"));
@@ -150,4 +154,6 @@ test("the toolbar surface delegates panel skills to the shell", async () => {
   );
   expect(api.calls.some((call) => call.method === "translate")).toBe(false);
 });
+
+
 

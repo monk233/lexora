@@ -52,7 +52,7 @@ type Bridge = ReturnType<typeof useCaptureBridge>;
 
 function CaptureBody({ bridge }: { bridge: Bridge }) {
   const { t } = useT();
-  const { api, index, monitor } = bridge;
+  const { api, index, monitor, armedSeq } = bridge;
   const [rect, setRect] = useState<CaptureRect | null>(null);
   const [annotating, setAnnotating] = useState(false);
   const [tool, setTool] = useState("");
@@ -69,6 +69,16 @@ function CaptureBody({ bridge }: { bridge: Bridge }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const shotRef = useRef<HTMLImageElement | null>(null);
   const editorRef = useRef<ReturnType<typeof CaptureAnnotate.create> | null>(null);
+
+  /* A new capture reuses this window: reset the previous selection/annotations
+   * whenever Rust arms a new session (contract §10.1). */
+  useEffect(() => {
+    if (armedSeq === 0) return;
+    setRect(null);
+    setAnnotating(false);
+    setTool("");
+    editorRef.current?.clear();
+  }, [armedSeq]);
 
   /* Escape cancels the whole capture session. */
   useEffect(() => {
@@ -330,3 +340,4 @@ function CaptureBody({ bridge }: { bridge: Bridge }) {
     </div>
   );
 }
+

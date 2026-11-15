@@ -20,7 +20,7 @@ import {
   readStoredPanelSize,
 } from "@/hooks/usePanelAutosize";
 
-import { useT } from "@/lib/i18n";
+import { I18nProvider, normalizeLocale, useT } from "@/lib/i18n";
 import { renderMarkdown } from "@/lib/markdown";
 import { payloadSkills, type PickerSkill, type PickerSurface } from "@/lib/picker/model";
 
@@ -31,6 +31,26 @@ export interface PickerWindowProps {
 
 export function PickerWindow({ surface, api }: PickerWindowProps = {}) {
   const bridge = usePickerBridge({ surface, api });
+  const [initialLocale] = useState(() =>
+    normalizeLocale(document.documentElement.lang || navigator.language)
+  );
+  return (
+    <I18nProvider initialLocale={initialLocale}>
+      <PickerLocaleSync locale={bridge.payload?.config?.locale} />
+      <PickerSurfaces bridge={bridge} />
+    </I18nProvider>
+  );
+}
+
+function PickerLocaleSync({ locale }: { locale?: string }) {
+  const { setLocale } = useT();
+  useEffect(() => {
+    if (locale) setLocale(normalizeLocale(locale));
+  }, [locale, setLocale]);
+  return null;
+}
+
+function PickerSurfaces({ bridge }: { bridge: ReturnType<typeof usePickerBridge> }) {
   const session = usePickerSession({
     api: bridge.api,
     payload: bridge.payload,
@@ -191,6 +211,7 @@ export function PickerWindow({ surface, api }: PickerWindowProps = {}) {
     </div>
   );
 }
+
 
 
 

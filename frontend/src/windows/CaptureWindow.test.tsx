@@ -1,5 +1,5 @@
 /* Capture overlay (P5a): screenshot, selection, action bar. */
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { CaptureWindow } from "@/windows/CaptureWindow";
@@ -16,6 +16,8 @@ afterEach(() => {
 interface FakeCaptureApi extends CaptureApi {
   calls: { method: string; args: unknown[] }[];
 }
+
+let armedCallback: ((payload?: unknown) => void) | null = null;
 
 function createFakeCaptureApi(monitor: unknown = {
   ok: true,
@@ -54,6 +56,12 @@ function createFakeCaptureApi(monitor: unknown = {
     close: async () => {
       record("close");
       return { ok: true };
+    },
+    onArmed: (callback: (payload?: unknown) => void) => {
+      armedCallback = callback;
+      return () => {
+        armedCallback = null;
+      };
     },
   } as FakeCaptureApi;
 }
@@ -124,3 +132,17 @@ test("a failed monitor shows the error state", async () => {
   await waitFor(() => expect(screen.getByTestId("capture-error")).toBeTruthy());
   expect(screen.getByText("截图失败")).toBeTruthy();
 });
+
+test("a new capture-armed session re-fetches the shot and reports ready", async () => {
+  const api = createFakeCaptureApi();
+  render(<CaptureWindow index={0} api={api} />);
+  await waitFor(() => expect(api.calls.filter((call) => call.method === "ready")).toHaveLength(1));
+
+  await act(async () => {
+    armedCallback?.({ index: 0 });
+  });
+
+  await waitFor(() => expect(api.calls.filter((call) => call.method === "ready")).toHaveLength(2));
+  expect(api.calls.filter((call) => call.method === "monitor").length).toBeGreaterThanOrEqual(2);
+});
+

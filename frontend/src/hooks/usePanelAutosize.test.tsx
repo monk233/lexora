@@ -4,7 +4,11 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { PANEL_SIZE_KEY, readStoredPanelSize, storePanelSize, availablePanelHeight } from "@/hooks/usePanelAutosize";
 import { PickerWindow } from "@/windows/PickerWindow";
-import { createFakePickerApi, renderPicker } from "@/test/picker-harness";
+import { createFakePickerApi, renderPickerWindow } from "@/test/picker-harness";
+
+beforeEach(() => {
+  document.documentElement.lang = "zh-CN";
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -17,7 +21,7 @@ beforeEach(() => {
 
 async function openPanel(config: Record<string, unknown> = {}) {
   const api = createFakePickerApi();
-  renderPicker(<PickerWindow api={api} />);
+  renderPickerWindow(<PickerWindow api={api} />);
   act(() => {
     api.emitData({ text: "Hello", config: { skills: ["translate"], defaultTargetLang: "auto", ...config } });
   });
@@ -55,3 +59,5 @@ test("the stored key is the documented one", () => {
   storePanelSize({ width: 400, height: 300 });
   expect(localStorage.getItem(PANEL_SIZE_KEY)).toContain("400");
 });
+
+
