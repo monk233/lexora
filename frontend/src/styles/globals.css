@@ -83,6 +83,8 @@ html.dark {
 
 /* Picker window (P3): the window is transparent with rounded cards on top, so
  * the shared body background must not paint it (see entries/picker.tsx). */
-body[data-window="picker"] {
+body[data-window="picker"],
+body[data-window="capture"] {
   background: transparent;
 }
+
