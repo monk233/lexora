@@ -14,6 +14,7 @@ import { useT } from "@/lib/i18n";
 import {
   DEFAULT_SKILL_IDS,
   payloadSkills,
+  type PickerImage,
   type PickerPayload,
   type PickerSurface,
 } from "@/lib/picker/model";
@@ -60,15 +61,18 @@ function makeRequestId(): string {
 export interface PickerSessionOptions {
   api: PickerApi;
   payload: PickerPayload | null;
+  image?: PickerImage | null;
   surface: PickerSurface;
 }
 
-export function usePickerSession({ api, payload, surface }: PickerSessionOptions) {
+export function usePickerSession({ api, payload, image, surface }: PickerSessionOptions) {
   const { t, locale } = useT();
   const [panel, setPanel] = useState<PanelView | null>(null);
   const [requestId, setRequestId] = useState("");
   const panelRef = useRef<PanelView | null>(null);
   panelRef.current = panel;
+  const imageRef = useRef<PickerImage | null>(null);
+  imageRef.current = image ?? null;
 
   const reduce = useCallback((state: StreamState, event: StreamEvent): StreamState => {
     switch (event.type) {
@@ -244,19 +248,59 @@ export function usePickerSession({ api, payload, surface }: PickerSessionOptions
     if (view) void api.abortTranslate?.(view.requestId);
   }, [api, stream]);
 
+  /* Screenshot payloads open the same panel (contracts §10.5): the shell has
+   * already started the request, so only the panel view and request id are set. */
+  useEffect(() => {
+    if (!image) return;
+    const view: PanelView = {
+      skill: image.action === "custom" ? image.skillId || "custom" : image.action,
+      title: image.label || image.action,
+      showLanguage: image.action === "translate",
+      loadingKey:
+        image.action === "ocr"
+          ? "picker.loading.ocr"
+          : image.action === "translate"
+            ? "picker.loading.translate"
+            : image.action === "explain"
+              ? "picker.loading.explain"
+              : "picker.loading.processing",
+      requestId: image.requestId,
+      targetLang: image.targetLang || "auto",
+      source: "",
+      pinned: false,
+    };
+    setPanel(view);
+    setRequestId(image.requestId);
+  }, [image]);
+
   const retry = useCallback(() => {
     const view = panelRef.current;
     if (!view) return;
+    const current = imageRef.current;
+    if (current) {
+      const nextId = makeRequestId();
+      setPanel({ ...view, requestId: nextId });
+      setRequestId(nextId);
+      void api.captureRetry?.(nextId, view.showLanguage ? view.targetLang : "");
+      return;
+    }
     open(view.skill, { targetLang: view.targetLang });
-  }, [open]);
+  }, [api, open]);
 
   const setTargetLang = useCallback(
     (lang: string) => {
       const view = panelRef.current;
       if (!view) return;
+      if (imageRef.current) {
+        const nextId = makeRequestId();
+        setPanel({ ...view, targetLang: lang, requestId: nextId });
+        setRequestId(nextId);
+        void api.captureRetry?.(nextId, lang);
+        return;
+      }
       open(view.skill, { targetLang: lang });
     },
-    [open]
+    [api, open]
   );
 
   const pin = useCallback(
@@ -300,3 +344,4 @@ export function usePickerSession({ api, payload, surface }: PickerSessionOptions
     },
   };
 }
+

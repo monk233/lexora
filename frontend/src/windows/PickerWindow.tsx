@@ -26,6 +26,7 @@ export function PickerWindow({ surface, api }: PickerWindowProps = {}) {
   const session = usePickerSession({
     api: bridge.api,
     payload: bridge.payload,
+    image: bridge.image,
     surface: bridge.surface,
   });
   const { t } = useT();
