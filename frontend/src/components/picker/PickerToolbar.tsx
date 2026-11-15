@@ -26,6 +26,7 @@ export interface PickerToolbarProps {
   compact?: boolean;
   onRun: (skillId: string) => void;
   onMore?: () => void;
+  onOverflowChange?: (skills: PickerSkill[]) => void;
   api: PickerApi;
   /** `false` while a menu/panel is open: never shrink the window then. */
   canResize?: boolean;
@@ -41,6 +42,7 @@ export function PickerToolbar({
   compact = false,
   onRun,
   onMore,
+  onOverflowChange,
   api,
   canResize = true,
 }: PickerToolbarProps) {
@@ -115,6 +117,11 @@ export function PickerToolbar({
     return () => window.cancelAnimationFrame(frame);
   }, [reportSize, cutoff, skills]);
 
+  useEffect(() => {
+    onOverflowChange?.(skills.slice(cutoff));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cutoff]);
+
   const visible = skills.slice(0, cutoff);
   const overflow = skills.slice(cutoff);
 
@@ -165,4 +172,6 @@ export function PickerToolbar({
     </div>
   );
 }
+
+
 
