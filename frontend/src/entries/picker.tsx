@@ -1,8 +1,14 @@
+/* Picker entry: `picker.html` serves both surfaces.
+ *
+ * `?surface=toolbar` is the standalone capsule shown while a pinned panel is
+ * open; otherwise this is the result panel window.
+ */
 import { createRoot } from "react-dom/client";
-import { PickerWindow, type PickerSurface } from "../windows/PickerWindow";
+
+import { PickerWindow } from "../windows/PickerWindow";
+import { detectSurface } from "../lib/picker/model";
 import "../styles/globals.css";
 
-const surface: PickerSurface =
-  new URLSearchParams(location.search).get("surface") === "toolbar" ? "toolbar" : "panel";
+const surface = detectSurface();
 
 createRoot(document.getElementById("root")!).render(<PickerWindow surface={surface} />);
