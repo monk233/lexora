@@ -54,6 +54,13 @@ export function PickerToolbar({
   const [cutoff, setCutoff] = useState(skills.length);
 
   const maxWidth = compact ? COMPACT_MAX_TOOLBAR_WIDTH : MAX_TOOLBAR_WIDTH;
+  /* The window is 440x56 logical when shown (Rust re-applies its base size on
+   * every show), so the capsule must fit that width until our resize lands. */
+  const windowBudget =
+    typeof window !== "undefined" && window.innerWidth > 0
+      ? window.innerWidth - TOOLBAR_CHROME
+      : maxWidth;
+  const budget = Math.min(maxWidth, windowBudget);
 
   /* Built-in skills keep their label in the i18n packs (`skill.<id>`); custom
    * skills carry their label from the payload. Unknown ids fall back to the
@@ -93,7 +100,7 @@ export function PickerToolbar({
     for (let index = 0; index < nodes.length; index += 1) {
       const width = (nodes[index] as HTMLElement).getBoundingClientRect().width;
       const candidate = used + (index ? TOOLBAR_BUTTON_GAP : 0) + width;
-      if (candidate + fixed > maxWidth) {
+      if (candidate + fixed > budget) {
         next = index;
         break;
       }
@@ -112,9 +119,16 @@ export function PickerToolbar({
     void api.resize(Math.max(width, 1), Math.max(height, 1));
   }, [api, canResize, maxWidth]);
 
+  /* Report once after paint and again shortly after: Rust applies its 440x56 base
+   * size when it shows the window (after `picker-data`), so the first report can
+   * be overwritten — the delayed one lands after the show. */
   useEffect(() => {
     const frame = window.requestAnimationFrame(reportSize);
-    return () => window.cancelAnimationFrame(frame);
+    const timer = window.setTimeout(reportSize, 160);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+    };
   }, [reportSize, cutoff, skills]);
 
   useEffect(() => {
@@ -131,7 +145,7 @@ export function PickerToolbar({
       role="toolbar"
       aria-label={t("picker.aria.toolbar")}
       data-compact={compact ? "true" : "false"}
-      className="inline-flex items-center gap-[2px] rounded-xl border bg-card px-1.5 py-1 shadow-float"
+      className={compact ? "inline-flex items-center gap-[1px] rounded-lg border bg-card px-1 py-0.5 shadow-float" : "inline-flex items-center gap-[2px] rounded-xl border bg-card px-1.5 py-1 shadow-float"}
     >
       <div ref={buttonsRef} className="contents">
         {visible.map((skill) => (
@@ -142,7 +156,7 @@ export function PickerToolbar({
             data-kind={skill.kind === "image" ? "image" : "text"}
             title={labelFor(skill)}
             aria-label={labelFor(skill)}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs font-medium hover:bg-accent"
+            className={compact ? "inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px] font-medium hover:bg-accent" : "inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs font-medium hover:bg-accent"}
             onClick={() => onRun(skill.id)}
           >
             <span
@@ -154,7 +168,7 @@ export function PickerToolbar({
           </button>
         ))}
       </div>
-      <span ref={dividerRef} aria-hidden="true" className="mx-1 h-5 w-px bg-border" />
+      <span ref={dividerRef} aria-hidden="true" className={compact ? "mx-0.5 h-4 w-px bg-border" : "mx-1 h-5 w-px bg-border"} />
       <button
         ref={moreRef}
         type="button"
@@ -162,7 +176,7 @@ export function PickerToolbar({
         data-overflow-count={overflow.length}
         title={t("picker.toolbar.more")}
         aria-label={t("picker.toolbar.more")}
-        className="inline-flex h-8 w-8 items-center justify-center rounded-md hover:bg-accent"
+        className={compact ? "inline-flex h-6 w-6 items-center justify-center rounded-md hover:bg-accent" : "inline-flex h-8 w-8 items-center justify-center rounded-md hover:bg-accent"}
         onClick={() => onMore?.()}
       >
         <span aria-hidden="true" className="text-base leading-none">
@@ -172,6 +186,8 @@ export function PickerToolbar({
     </div>
   );
 }
+
+
 
 
 
