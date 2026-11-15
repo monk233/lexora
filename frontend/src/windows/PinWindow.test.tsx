@@ -50,6 +50,10 @@ function createFakePinApi(dataUrl = "data:image/png;base64,AAAA"): FakePinApi {
       record("editWindow", id, editing);
       return { ok: true };
     },
+    exportAnnotations: async (id: string, annotations: unknown[], apply: boolean) => {
+      record("exportAnnotations", id, annotations, apply);
+      return { ok: true };
+    },
     onClose: () => () => undefined,
   } as FakePinApi;
 }
@@ -107,3 +111,19 @@ test("a failed load shows the error state", async () => {
   await waitFor(() => expect(screen.getByTestId("pin-error")).toBeTruthy());
 });
 
+
+test("edit mode arms the annotation canvas and exports on confirm", async () => {
+  const api = createFakePinApi();
+  render(<PinWindow id="pin-6" api={api} />);
+  await screen.findByTestId("pin-image");
+
+  fireEvent.click(screen.getByLabelText("编辑"));
+  await waitFor(() => expect(screen.getByTestId("pin-annotations").hidden).toBe(false));
+
+  fireEvent.click(screen.getByRole("button", { name: "确认" }));
+  await waitFor(() =>
+    expect(api.calls.some((call) => call.method === "exportAnnotations")).toBe(true)
+  );
+  const call = api.calls.find((entry) => entry.method === "exportAnnotations");
+  expect(call?.args[2]).toBe(true);
+});
