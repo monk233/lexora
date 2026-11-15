@@ -1,16 +1,23 @@
-/* Capture overlay window (P5a).
+/* Capture overlay window (P5).
  *
- * Covers one monitor with the frozen screenshot and lets the user drag a
- * selection. The action bar offers the capture skills (copy / pin / long-shot /
- * OCR / translate / explain) plus close; the annotation canvas and its palette
- * are migrated separately (P5b) and will drive the same selection rectangle.
+ * Covers one monitor with the frozen screenshot, lets the user drag a selection,
+ * and (P5b) paints annotations through the ported canvas engine
+ * (`lib/annotation-editor`). The action bar offers copy / pin / long-shot / OCR /
+ * translate / explain / close; the annotation toolbar appears once a selection
+ * exists and drives the engine's tool/option/history API.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { AnnotationToolbar } from "@/components/capture/AnnotationToolbar";
 import { useCaptureBridge, type CaptureApi } from "@/hooks/useCaptureBridge";
 import { I18nProvider, normalizeLocale, useT } from "@/lib/i18n";
+import {
+  CaptureAnnotate,
+  type AnnotationHistoryState,
+  type AnnotationOptions,
+} from "@/lib/annotation-editor";
 import {
   MIN_SELECTION,
   clampRect,
@@ -47,9 +54,21 @@ function CaptureBody({ bridge }: { bridge: Bridge }) {
   const { t } = useT();
   const { api, index, monitor } = bridge;
   const [rect, setRect] = useState<CaptureRect | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [annotating, setAnnotating] = useState(false);
+  const [tool, setTool] = useState("");
+  const [options, setOptions] = useState<AnnotationOptions>(CaptureAnnotate.DEFAULT_OPTIONS);
+  const [history, setHistory] = useState<AnnotationHistoryState>({
+    canUndo: false,
+    canRedo: false,
+    hasAnnotations: false,
+  });
   const drag = useRef<{ startX: number; startY: number } | null>(null);
   const moving = useRef<{ x: number; y: number } | null>(null);
+  const rectRef = useRef<CaptureRect | null>(null);
+  rectRef.current = rect;
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const shotRef = useRef<HTMLImageElement | null>(null);
+  const editorRef = useRef<ReturnType<typeof CaptureAnnotate.create> | null>(null);
 
   /* Escape cancels the whole capture session. */
   useEffect(() => {
@@ -60,9 +79,39 @@ function CaptureBody({ bridge }: { bridge: Bridge }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [api]);
 
+  /* Build the annotation engine once the screenshot is painted. */
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const image = shotRef.current;
+    if (!canvas || !image || !monitor?.dataUrl) return;
+    const editor = CaptureAnnotate.create({
+      canvas,
+      image,
+      getSelection: () => rectRef.current ?? { x: 0, y: 0, width: 0, height: 0 },
+      onHistoryChange: (state) => setHistory(state),
+    });
+    editor.setSourceSize(monitor.width ?? image.naturalWidth, monitor.height ?? image.naturalHeight);
+    editorRef.current = editor;
+    return () => {
+      editorRef.current = null;
+    };
+  }, [monitor]);
+
+  /* The canvas only receives pointer events while a drawing tool is armed, so
+   * the selection drag keeps working until the user picks a tool. */
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    canvas.hidden = !annotating;
+    canvas.style.pointerEvents = annotating ? "auto" : "none";
+    if (annotating) editorRef.current?.setTool(tool || null);
+    else editorRef.current?.setTool(null);
+  }, [annotating, tool]);
+
   const onMouseDown = useCallback(
     (event: React.MouseEvent<HTMLDivElement>) => {
       if (event.button !== 0) return;
+      if (annotating) return;
       if (rect && rectContains(rect, event.clientX, event.clientY)) {
         moving.current = { x: event.clientX, y: event.clientY };
         return;
@@ -70,11 +119,12 @@ function CaptureBody({ bridge }: { bridge: Bridge }) {
       drag.current = { startX: event.clientX, startY: event.clientY };
       setRect({ x: event.clientX, y: event.clientY, width: 0, height: 0 });
     },
-    [rect]
+    [annotating, rect]
   );
 
   useEffect(() => {
     const move = (event: MouseEvent) => {
+      if (annotating) return;
       const start = drag.current;
       if (start) {
         setRect(rectFromPoints(start.startX, start.startY, event.clientX, event.clientY));
@@ -104,19 +154,23 @@ function CaptureBody({ bridge }: { bridge: Bridge }) {
       window.removeEventListener("mousemove", move);
       window.removeEventListener("mouseup", up);
     };
-  }, [rect]);
+  }, [annotating, rect]);
 
   const readyRect = rect && rect.width >= MIN_SELECTION && rect.height >= MIN_SELECTION ? rect : null;
+  const annotations = useMemo(
+    () => (editorRef.current ? editorRef.current.getAnnotations() : []),
+    [history, readyRect]
+  );
 
   const copy = useCallback(() => {
     if (!readyRect) return;
-    void api.copy?.(index, physicalRect(readyRect), [], undefined);
-  }, [api, index, readyRect]);
+    void api.copy?.(index, physicalRect(readyRect), annotations, undefined);
+  }, [annotations, api, index, readyRect]);
 
   const pin = useCallback(() => {
     if (!readyRect) return;
-    void api.pin?.(index, physicalRect(readyRect), [], undefined);
-  }, [api, index, readyRect]);
+    void api.pin?.(index, physicalRect(readyRect), annotations, undefined);
+  }, [annotations, api, index, readyRect]);
 
   const longshot = useCallback(() => {
     if (!readyRect) return;
@@ -133,11 +187,24 @@ function CaptureBody({ bridge }: { bridge: Bridge }) {
         action,
         "",
         "auto",
-        [],
+        annotations,
         undefined
       );
     },
-    [api, index, readyRect]
+    [annotations, api, index, readyRect]
+  );
+
+  const setToolAndArm = useCallback((next: string) => {
+    setTool(next);
+    setAnnotating(true);
+  }, []);
+
+  const setOption = useCallback(
+    <K extends keyof AnnotationOptions>(key: K, value: AnnotationOptions[K]) => {
+      setOptions((current) => ({ ...current, [key]: value }));
+      editorRef.current?.setOption(key, value);
+    },
+    []
   );
 
   if (monitor && monitor.ok === false) {
@@ -157,7 +224,7 @@ function CaptureBody({ bridge }: { bridge: Bridge }) {
   }
 
   const position = readyRect
-    ? toolbarPosition(readyRect, window.innerHeight, 44)
+    ? toolbarPosition(readyRect, window.innerHeight, 92)
     : { top: 0, left: 0 };
 
   return (
@@ -168,6 +235,7 @@ function CaptureBody({ bridge }: { bridge: Bridge }) {
     >
       {monitor?.dataUrl ? (
         <img
+          ref={shotRef}
           src={monitor.dataUrl}
           alt=""
           draggable={false}
@@ -175,6 +243,14 @@ function CaptureBody({ bridge }: { bridge: Bridge }) {
           className="pointer-events-none absolute inset-0 h-full w-full object-fill"
         />
       ) : null}
+
+      <canvas
+        ref={canvasRef}
+        data-testid="capture-annotations"
+        hidden
+        className="absolute inset-0 h-full w-full"
+        style={{ zIndex: 11 }}
+      />
 
       {readyRect ? (
         <div
@@ -186,47 +262,63 @@ function CaptureBody({ bridge }: { bridge: Bridge }) {
             width: readyRect.width,
             height: readyRect.height,
             boxShadow: "0 0 0 9999px rgba(0,0,0,0.35)",
+            zIndex: 10,
           }}
         />
       ) : null}
 
       {readyRect ? (
         <div
-          data-testid="capture-toolbar"
-          role="toolbar"
-          aria-label={t("capture.toolbar.aria")}
-          className="absolute z-10 flex items-center gap-1 rounded-lg border bg-card px-1.5 py-1 shadow-lg"
+          className="absolute z-20 flex flex-col gap-1"
           style={{ top: position.top, left: Math.max(0, position.left) }}
           onMouseDown={(event) => event.stopPropagation()}
         >
-          <Button type="button" size="sm" onClick={copy}>
-            {t("skill.copy")}
-          </Button>
-          <Button type="button" variant="outline" size="sm" onClick={pin}>
-            {t("capture.pin")}
-          </Button>
-          <Button type="button" variant="outline" size="sm" onClick={longshot}>
-            {t("capture.longshot")}
-          </Button>
-          <Button type="button" variant="outline" size="sm" onClick={() => runSkill("ocr")}>
-            {t("capture.ocr")}
-          </Button>
-          <Button type="button" variant="outline" size="sm" onClick={() => runSkill("translate")}>
-            {t("capture.translate")}
-          </Button>
-          <Button type="button" variant="outline" size="sm" onClick={() => runSkill("explain")}>
-            {t("capture.explain")}
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7"
-            aria-label={t("common.close")}
-            onClick={() => void api.close?.()}
+          <AnnotationToolbar
+            tool={tool}
+            options={options}
+            canUndo={history.canUndo}
+            canRedo={history.canRedo}
+            onTool={setToolAndArm}
+            onOption={setOption}
+            onUndo={() => editorRef.current?.undo()}
+            onRedo={() => editorRef.current?.redo()}
+            onClear={() => editorRef.current?.clear()}
+          />
+          <div
+            data-testid="capture-toolbar"
+            role="toolbar"
+            aria-label={t("capture.toolbar.aria")}
+            className="flex items-center gap-1 rounded-lg border bg-card px-1.5 py-1 shadow-lg"
           >
-            <X className="h-4 w-4" />
-          </Button>
+            <Button type="button" size="sm" onClick={copy}>
+              {t("skill.copy")}
+            </Button>
+            <Button type="button" variant="outline" size="sm" onClick={pin}>
+              {t("capture.pin")}
+            </Button>
+            <Button type="button" variant="outline" size="sm" onClick={longshot}>
+              {t("capture.longshot")}
+            </Button>
+            <Button type="button" variant="outline" size="sm" onClick={() => runSkill("ocr")}>
+              {t("capture.ocr")}
+            </Button>
+            <Button type="button" variant="outline" size="sm" onClick={() => runSkill("translate")}>
+              {t("capture.translate")}
+            </Button>
+            <Button type="button" variant="outline" size="sm" onClick={() => runSkill("explain")}>
+              {t("capture.explain")}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              aria-label={t("common.close")}
+              onClick={() => void api.close?.()}
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
       ) : (
         <div className="pointer-events-none absolute inset-x-0 top-4 flex justify-center">
@@ -235,13 +327,6 @@ function CaptureBody({ bridge }: { bridge: Bridge }) {
           </span>
         </div>
       )}
-
-      {error ? (
-        <p role="alert" className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded bg-destructive px-3 py-1 text-xs text-destructive-foreground">
-          {error}
-        </p>
-      ) : null}
     </div>
   );
 }
-
