@@ -10,5 +10,8 @@ import { detectSurface } from "../lib/picker/model";
 import "../styles/globals.css";
 
 const surface = detectSurface();
+/* Transparent window: the shared body background must not paint it. */
+document.body.dataset.window = "picker";
 
 createRoot(document.getElementById("root")!).render(<PickerWindow surface={surface} />);
+
