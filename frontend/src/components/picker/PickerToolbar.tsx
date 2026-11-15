@@ -53,6 +53,16 @@ export function PickerToolbar({
 
   const maxWidth = compact ? COMPACT_MAX_TOOLBAR_WIDTH : MAX_TOOLBAR_WIDTH;
 
+  /* Built-in skills keep their label in the i18n packs (`skill.<id>`); custom
+   * skills carry their label from the payload. Unknown ids fall back to the
+   * skill id rather than leaking a "skill.xxx" key. */
+  const labelFor = (skill: PickerSkill): string => {
+    if (skill.label) return skill.label;
+    const key = `skill.${skill.id}`;
+    const text = t(key);
+    return text === key ? skill.id : text;
+  };
+
   /* Measure exactly like the legacy renderer: the budget covers the buttons,
    * the gaps, the divider, the "more" button and the toolbar chrome. */
   useLayoutEffect(() => {
@@ -123,8 +133,8 @@ export function PickerToolbar({
             type="button"
             data-skill={skill.id}
             data-kind={skill.kind === "image" ? "image" : "text"}
-            title={skill.label || skill.id}
-            aria-label={skill.label || skill.id}
+            title={labelFor(skill)}
+            aria-label={labelFor(skill)}
             className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs font-medium hover:bg-accent"
             onClick={() => onRun(skill.id)}
           >
@@ -133,7 +143,7 @@ export function PickerToolbar({
               className="h-4 w-4 [&>svg]:h-4 [&>svg]:w-4"
               dangerouslySetInnerHTML={{ __html: iconSvg(skill.icon) }}
             />
-            <span>{skill.label || skill.id}</span>
+            <span>{labelFor(skill)}</span>
           </button>
         ))}
       </div>
@@ -155,3 +165,4 @@ export function PickerToolbar({
     </div>
   );
 }
+

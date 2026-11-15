@@ -33,6 +33,44 @@ export interface PickerApi {
   panelState?(open: boolean): Promise<unknown>;
   activate?(active: boolean): Promise<unknown>;
   dragPanel?(dx: number, dy: number): Promise<unknown>;
+  copy?(text: string): Promise<unknown>;
+  openSettings?(): Promise<unknown>;
+  openExternal?(url: string): Promise<unknown>;
+  translate?(requestId: string, text: string, targetLang: string): Promise<unknown>;
+  abortTranslate?(requestId: string): Promise<unknown>;
+  assist?(requestId: string, action: string, text: string): Promise<unknown>;
+  customSkill?(
+    requestId: string,
+    skillId: string,
+    text: string,
+    programName: string
+  ): Promise<unknown>;
+  polish?(requestId: string, text: string): Promise<unknown>;
+  followup?(
+    requestId: string,
+    text: string,
+    previousAnswer: string,
+    question: string,
+    history: unknown[]
+  ): Promise<unknown>;
+  captureRetry?(requestId: string, targetLang: string): Promise<unknown>;
+  captureFollowup?(
+    requestId: string,
+    question: string,
+    previousAnswer: string,
+    history: unknown[]
+  ): Promise<unknown>;
+  generateFollowups?(
+    requestId: string,
+    skill: string,
+    source: string,
+    initialAnswer: string,
+    history: unknown[]
+  ): Promise<unknown>;
+  cancelFollowups?(requestId: string): Promise<unknown>;
+  status?(): Promise<unknown>;
+  disableInApp?(programName: string): Promise<unknown>;
+  disableTool?(): Promise<unknown>;
   [command: string]: unknown;
 }
 

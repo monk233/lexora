@@ -17,7 +17,10 @@ export interface PickerSkill {
 }
 
 export interface PickerConfig {
-  skills?: PickerSkill[];
+  /** Enabled skill ids, backend order (selection.rs sends strings). */
+  skills?: string[];
+  /** Metadata for custom skills only. */
+  customSkills?: PickerSkill[];
   compact?: boolean;
   defaultTargetLang?: string;
   searchEngine?: string;
@@ -53,17 +56,77 @@ export function detectSurface(search: string = window.location.search): PickerSu
   return new URLSearchParams(search).get("surface") === "toolbar" ? "toolbar" : "panel";
 }
 
-/** Skills from the payload config, normalized for rendering. */
+/** Built-in skill icons (web/shared/constants.js SKILLS[].icon). */
+export const BUILTIN_SKILL_ICONS: Record<string, string> = {
+  translate: "languages",
+  summarize: "list",
+  explain: "lightbulb",
+  polish: "wand-sparkles",
+  read: "volume-2",
+  copy: "copy",
+  screenshot: "scan-eye",
+  search: "search",
+};
+
+/** Default toolbar order (contracts §7.1; web/shared/constants.js DEFAULT_SKILLS). */
+export const DEFAULT_SKILL_IDS = [
+  "translate",
+  "summarize",
+  "explain",
+  "polish",
+  "read",
+  "copy",
+  "screenshot",
+  "search",
+] as const;
+
+/**
+ * Skills from the payload config, normalized for rendering.
+ *
+ * The shell sends `config.skills` as a string-id array (selection.rs; legacy
+ * picker.js:3482-3490), with metadata for custom skills in
+ * `config.customSkills`. Built-in labels/icons are resolved from i18n /
+ * BUILTIN_SKILL_ICONS by the renderer.
+ */
 export function payloadSkills(payload: PickerPayload | null): PickerSkill[] {
-  const skills = payload?.config?.skills;
-  if (!Array.isArray(skills)) return [];
-  return skills
-    .filter((skill): skill is PickerSkill => !!skill && typeof skill.id === "string")
-    .map((skill) => ({
-      id: skill.id,
-      label: typeof skill.label === "string" ? skill.label : undefined,
-      icon: typeof skill.icon === "string" ? skill.icon : undefined,
-      custom: skill.custom === true,
-      kind: skill.kind === "image" ? "image" : "text",
-    }));
+  const config = payload?.config;
+  const custom = Array.isArray(config?.customSkills) ? config.customSkills : [];
+  const metaById = new Map<string, PickerSkill>();
+  for (const entry of custom) {
+    if (!entry || typeof entry.id !== "string") continue;
+    const label = typeof entry.label === "string" && entry.label.trim() ? entry.label.trim() : "";
+    metaById.set(entry.id, {
+      id: entry.id,
+      label: label || undefined,
+      icon: typeof entry.icon === "string" && entry.icon.trim() ? entry.icon.trim() : undefined,
+      custom: true,
+      kind: entry.kind === "image" ? "image" : "text",
+    });
+  }
+
+  const ids = Array.isArray(config?.skills) ? config.skills : [];
+  const seen = new Set<string>();
+  const skills: PickerSkill[] = [];
+  for (const raw of ids) {
+    const id = typeof raw === "string" ? raw.trim() : "";
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const meta = metaById.get(id);
+    skills.push(
+      meta ?? {
+        id,
+        icon: BUILTIN_SKILL_ICONS[id],
+        custom: false,
+        kind: "text",
+      }
+    );
+  }
+
+  if (skills.length > 0) return skills;
+  return DEFAULT_SKILL_IDS.map((id) => ({
+    id,
+    icon: BUILTIN_SKILL_ICONS[id],
+    custom: false,
+    kind: id === "screenshot" ? "image" : "text",
+  }));
 }
