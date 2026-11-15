@@ -5,7 +5,7 @@
  * panel surface shows the capsule first and swaps to the result panel once a
  * skill starts, which is the legacy single-window behaviour (contracts §7.1).
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { FollowupBar } from "@/components/picker/FollowupBar";
 import { PickerMenu } from "@/components/picker/PickerMenu";
@@ -75,7 +75,20 @@ function PickerSurfaces({ bridge }: { bridge: ReturnType<typeof usePickerBridge>
   }, [bridge.api, bridge.payload, panelOpen]);
   const [menuOpen, setMenuOpen] = useState(false);
   const [overflow, setOverflow] = useState<PickerSkill[]>([]);
+  const [toolbarSize, setToolbarSize] = useState({ width: 440, height: 52 });
+  const prevMenuOpen = useRef(false);
   const skills = useMemo(() => payloadSkills(bridge.payload), [bridge.payload]);
+
+  /* The overflow menu lives inside the picker window: grow the window while it is
+   * open (the menu is ~240px wide and needs room below the capsule). */
+  useEffect(() => {
+    if (bridge.surface === "toolbar" || session.panel) return;
+    if (menuOpen === prevMenuOpen.current) return;
+    prevMenuOpen.current = menuOpen;
+    const width = Math.max(toolbarSize.width, 260);
+    const height = menuOpen ? toolbarSize.height + 340 : toolbarSize.height;
+    void (bridge.api.resize(width, height) as Promise<unknown> | null);
+  }, [bridge.api, bridge.surface, menuOpen, session.panel, toolbarSize]);
 
   /* Close the panel on Escape; the toolbar surface leaves dismissal to Rust. */
   useEffect(() => {
@@ -99,6 +112,7 @@ function PickerSurfaces({ bridge }: { bridge: ReturnType<typeof usePickerBridge>
         }}
         onMore={() => setMenuOpen((open) => !open)}
         onOverflowChange={setOverflow}
+        onSizeChange={setToolbarSize}
         canResize={!session.panel && !menuOpen}
       />
       {menuOpen ? (
@@ -211,6 +225,9 @@ function PickerSurfaces({ bridge }: { bridge: ReturnType<typeof usePickerBridge>
     </div>
   );
 }
+
+
+
 
 
 

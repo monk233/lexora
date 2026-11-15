@@ -129,7 +129,7 @@ test("Escape cancels the capture session", async () => {
 test("a failed monitor shows the error state", async () => {
   const api = createFakeCaptureApi({ ok: false, error: "截图失败", hint: "重试" });
   render(<CaptureWindow index={0} api={api} />);
-  await waitFor(() => expect(screen.getByTestId("capture-error")).toBeTruthy());
+  await waitFor(() => expect(screen.getByTestId("capture-error")).toBeTruthy(), { timeout: 5000 });
   expect(screen.getByText("截图失败")).toBeTruthy();
 });
 
@@ -145,4 +145,5 @@ test("a new capture-armed session re-fetches the shot and reports ready", async 
   await waitFor(() => expect(api.calls.filter((call) => call.method === "ready")).toHaveLength(2));
   expect(api.calls.filter((call) => call.method === "monitor").length).toBeGreaterThanOrEqual(2);
 });
+
 

@@ -27,6 +27,7 @@ export interface PickerToolbarProps {
   onRun: (skillId: string) => void;
   onMore?: () => void;
   onOverflowChange?: (skills: PickerSkill[]) => void;
+  onSizeChange?: (size: { width: number; height: number }) => void;
   api: PickerApi;
   /** `false` while a menu/panel is open: never shrink the window then. */
   canResize?: boolean;
@@ -43,6 +44,7 @@ export function PickerToolbar({
   onRun,
   onMore,
   onOverflowChange,
+  onSizeChange,
   api,
   canResize = true,
 }: PickerToolbarProps) {
@@ -116,8 +118,9 @@ export function PickerToolbar({
     const rect = toolbar.getBoundingClientRect();
     const width = Math.min(Math.ceil(rect.width + TOOLBAR_CHROME), maxWidth);
     const height = Math.ceil(rect.height + TOOLBAR_CHROME);
+    onSizeChange?.({ width, height });
     void api.resize(Math.max(width, 1), Math.max(height, 1));
-  }, [api, canResize, maxWidth]);
+  }, [api, canResize, maxWidth, onSizeChange]);
 
   /* Report once after paint and again shortly after: Rust applies its 440x56 base
    * size when it shows the window (after `picker-data`), so the first report can
@@ -156,7 +159,11 @@ export function PickerToolbar({
             data-kind={skill.kind === "image" ? "image" : "text"}
             title={labelFor(skill)}
             aria-label={labelFor(skill)}
-            className={compact ? "inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px] font-medium hover:bg-accent" : "inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs font-medium hover:bg-accent"}
+            className={
+              compact
+                ? "inline-flex h-6 w-6 items-center justify-center rounded-md hover:bg-accent"
+                : "inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs font-medium hover:bg-accent"
+            }
             onClick={() => onRun(skill.id)}
           >
             <span
@@ -164,7 +171,7 @@ export function PickerToolbar({
               className="h-4 w-4 [&>svg]:h-4 [&>svg]:w-4"
               dangerouslySetInnerHTML={{ __html: iconSvg(skill.icon) }}
             />
-            <span>{labelFor(skill)}</span>
+            {compact ? null : <span>{labelFor(skill)}</span>}
           </button>
         ))}
       </div>
@@ -186,6 +193,8 @@ export function PickerToolbar({
     </div>
   );
 }
+
+
 
 
 
