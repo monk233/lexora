@@ -14,6 +14,11 @@ import { PickerToolbar } from "@/components/picker/PickerToolbar";
 import { PanelBody } from "@/components/picker/PanelBody";
 import { usePickerBridge, type PickerApi } from "@/hooks/usePickerBridge";
 import { usePickerSession } from "@/hooks/usePickerSession";
+import {
+  AUTO_PANEL_WIDTH,
+  availablePanelHeight,
+  readStoredPanelSize,
+} from "@/hooks/usePanelAutosize";
 
 import { useT } from "@/lib/i18n";
 import { renderMarkdown } from "@/lib/markdown";
@@ -33,6 +38,21 @@ export function PickerWindow({ surface, api }: PickerWindowProps = {}) {
     surface: bridge.surface,
   });
   const { t } = useT();
+  const panelOpen = session.panel !== null;
+
+  /* Size the window once the panel opens: auto mode uses the narrow column and
+   * grows later; scroll mode reuses the stored user size. */
+  useEffect(() => {
+    if (!panelOpen) return;
+    const stored = readStoredPanelSize();
+    const mode = bridge.payload?.config?.panelMode;
+    if (mode === "scroll" && stored) {
+      void (bridge.api.resize(stored.width, stored.height) as Promise<unknown> | null);
+      return;
+    }
+    const height = Math.min(520, availablePanelHeight());
+    void (bridge.api.resize(AUTO_PANEL_WIDTH, height) as Promise<unknown> | null);
+  }, [bridge.api, bridge.payload, panelOpen]);
   const [menuOpen, setMenuOpen] = useState(false);
   const [overflow, setOverflow] = useState<PickerSkill[]>([]);
   const skills = useMemo(() => payloadSkills(bridge.payload), [bridge.payload]);
@@ -171,5 +191,6 @@ export function PickerWindow({ surface, api }: PickerWindowProps = {}) {
     </div>
   );
 }
+
 
 
