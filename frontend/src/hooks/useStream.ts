@@ -7,7 +7,7 @@ export type StreamEvent =
   | { requestId: string; type: "error"; message?: string; hint?: string }
   | { requestId: string; type: "done"; elapsedMs?: number };
 
-export type StreamStatus = "idle" | "streaming" | "done" | "error";
+export type StreamStatus = "idle" | "streaming" | "done" | "error" | "stopped";
 
 interface Options<TState> {
   requestId: string;
@@ -59,7 +59,7 @@ export function useStream<TState>({
       (event: StreamEvent) => {
         if (!event || event.requestId !== requestId) return;
         const phase = statusRef.current;
-        if (phase === "done" || phase === "error") return;
+        if (phase === "done" || phase === "error" || phase === "stopped") return;
         if (phase === "idle" && !armedRef.current) return;
         const next: StreamStatus =
           event.type === "done" ? "done" : event.type === "error" ? "error" : "streaming";
@@ -82,5 +82,15 @@ export function useStream<TState>({
     setState(initial);
   }, [initial, setPhase]);
 
-  return useMemo(() => ({ state, status, start, abort }), [state, status, start, abort]);
+  /* Stop keeps the partial output (docs/contracts.md:400): the picker appends
+   * "已停止生成" itself, and every late chunk/error/done is ignored from here. */
+  const stop = useCallback(() => {
+    armedRef.current = false;
+    setPhase("stopped");
+  }, [setPhase]);
+
+  return useMemo(
+    () => ({ state, status, start, abort, stop }),
+    [state, status, start, abort, stop]
+  );
 }

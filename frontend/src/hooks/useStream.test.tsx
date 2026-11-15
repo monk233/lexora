@@ -120,3 +120,30 @@ test("ignores events with a different requestId", () => {
   expect(result.current.state).toEqual(initial);
   expect(result.current.status).toBe("idle");
 });
+
+test("stop keeps the partial output and ignores late events", () => {
+  const { result } = renderStream("r7");
+
+  act(() => handler?.({ requestId: "r7", type: "chunk", text: "partial" }));
+  act(() => result.current.stop());
+
+  expect(result.current.status).toBe("stopped");
+  expect(result.current.state.text).toBe("partial");
+
+  act(() => handler?.({ requestId: "r7", type: "chunk", text: "late" }));
+  act(() => handler?.({ requestId: "r7", type: "done" }));
+  expect(result.current.state.text).toBe("partial");
+  expect(result.current.status).toBe("stopped");
+});
+
+test("stop then start accepts the next request's events again", () => {
+  const { result } = renderStream("r8");
+
+  act(() => handler?.({ requestId: "r8", type: "chunk", text: "first" }));
+  act(() => result.current.stop());
+  act(() => result.current.start());
+
+  act(() => handler?.({ requestId: "r8", type: "chunk", text: "second" }));
+  expect(result.current.state.text).toBe("firstsecond");
+  expect(result.current.status).toBe("streaming");
+});
