@@ -22,7 +22,7 @@ use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetSystemMetricsForDpi, MDT_EF
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetDoubleClickTime, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
     KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_WHEEL, MOUSEINPUT,
-    VIRTUAL_KEY, VK_C, VK_CONTROL,
+    VIRTUAL_KEY, VK_C, VK_CONTROL, VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, GetAncestor, GetCursorPos, GetForegroundWindow, GetSystemMetrics,
@@ -458,9 +458,12 @@ pub fn clear_clipboard() -> bool {
     result
 }
 
-/// Synthesizes a plain Ctrl+C into the foreground application through
-/// `SendInput`, i.e. exactly what a real key press would do.
-pub fn send_copy_shortcut() -> bool {
+/// Synthesizes a copy shortcut into the foreground application through
+/// `SendInput`, i.e. exactly what a real key press would do. `shift` selects
+/// `Ctrl+Shift+C`, which is what terminals (Windows Terminal, JetBrains
+/// terminals, mintty) use for copy: plain `Ctrl+C` would interrupt their
+/// running command.
+pub fn send_copy_shortcut(shift: bool) -> bool {
     fn key(vk: VIRTUAL_KEY, released: bool) -> INPUT {
         INPUT {
             r#type: INPUT_KEYBOARD,
@@ -479,12 +482,16 @@ pub fn send_copy_shortcut() -> bool {
             },
         }
     }
-    let inputs = [
-        key(VK_CONTROL, false),
-        key(VK_C, false),
-        key(VK_C, true),
-        key(VK_CONTROL, true),
-    ];
+    let mut inputs = vec![key(VK_CONTROL, false)];
+    if shift {
+        inputs.push(key(VK_SHIFT, false));
+    }
+    inputs.push(key(VK_C, false));
+    inputs.push(key(VK_C, true));
+    if shift {
+        inputs.push(key(VK_SHIFT, true));
+    }
+    inputs.push(key(VK_CONTROL, true));
     unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) == inputs.len() as u32 }
 }
 

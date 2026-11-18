@@ -86,7 +86,7 @@ lexora.exe
 2. `rdev` 钩子判断「位移 ≥ 拖动阈值 的左键抬起」或多击（同一位置、间隔 ≤ 双击时间），向取词通道投递请求（回调内只做轻量判断，窗口可见性一律读原子量，绝不调用 Tauri 窗口 API）。拖动/双击容差取系统 `SM_CXDRAG` / `SM_CXDOUBLECLK` 在该显示器 DPI 下的物理像素值。
 3. 过滤：功能开关、自身进程、黑名单、同文本 400ms 去重；捕获进行中的新触发不丢弃，取词线程每次处理前把队列抽干只保留最新一次。
 4. 独立线程创建 UIA COM 客户端（连接/事务超时 1.5s/1s），读取焦点元素的 TextPattern 选区；只有「有 TextPattern 但选区为空」才重试 2 次（间隔 150ms，等待应用提交选区），「无 TextPattern」立即结束；主线程 `recv_timeout(1.5s)` 看门狗，超时放弃。
-5. UIA 取不到文本时（Firefox、微信/QQ、Excel、PDF 阅读器、canvas 界面）走剪贴板回退：`picker.clipboardFallback` 开启时合成 Ctrl+C，最多等 240ms，读到新文本后把原剪贴板写回；剪贴板含图片/文件时跳过，终端类目标（专用终端进程或 console 窗口类）跳过以免打断命令。
+5. UIA 取不到文本时（Firefox、微信/QQ、Excel、PDF 阅读器、canvas 界面、JetBrains 非编辑器区域）走剪贴板回退：`picker.clipboardFallback` 开启时合成复制快捷键（终端目标用 `Ctrl+Shift+C`，其余用 `Ctrl+C`），最多等 240ms；读到新文本后把原剪贴板文本写回，原剪贴板是图片/文件时无法还原，会保留复制到的文本。
 6. 得到文本 + 鼠标物理坐标 + 显示器 scale。无面板或面板未固定时调用 `windows::show_picker` 在主 picker 中显示新工具栏并替换旧面板；已固定面板时调用 `windows::show_toolbar`，在独立 `picker-toolbar` 窗口中显示，不中止旧请求。
 7. 点击翻译、总结、解释、润色或文本自定义技能时，临时工具栏才调用 `picker_toolbar_run_skill` 替换旧面板；朗读、复制、搜索、截图入口不会立即替换面板。截图结果生成时才替换。点击外部只隐藏临时工具栏，未固定面板在普通外部单击后延迟隐藏，划词动作会取消该隐藏。
 8. 可观测性：每次失败都写带前台程序名的 `WARN`（3 秒节流），成功日志带「应用：<进程名>」，UI Automation 失败转用剪贴板回退时单独记一条 INFO。
@@ -149,8 +149,8 @@ picker.js → invoke("picker_translate", {requestId,text,targetLang})
 ## 已知限制
 
 - 提权（管理员）运行的应用无法取词（Windows UIPI）；截图/长截图同样会被 UIPI 限制。
-- 取词优先读 UI Automation TextPattern（Chrome/Edge/Chromium/Electron/JetBrains/Terminal 等）。不暴露 TextPattern 的应用（Firefox、微信/QQ、Excel、多数 PDF 阅读器、canvas 界面）改用剪贴板回退（合成 Ctrl+C + 临时占用剪贴板后恢复原文）；剪贴板含图片/文件时**不回退**，终端类窗口也不回退（避免打断命令），因此这些场景仍可能取不到词。可在设置 → 划词行为中关闭「剪贴板兜底」。
-- 剪贴板回退期间目标应用必须响应 Ctrl+C（只读窗口、被其他窗口遮挡选区的应用可能复制不到内容）。
+- 取词优先读 UI Automation TextPattern（Chrome/Edge/Chromium/Electron/JetBrains 编辑器/Terminal 等）。不暴露 TextPattern 的应用（Firefox、微信/QQ、Excel、多数 PDF 阅读器、canvas 界面、JetBrains 非编辑器区域）改用剪贴板回退：普通应用发 `Ctrl+C`，终端目标发 `Ctrl+Shift+C`（不打断命令）；读到文本后恢复原剪贴板文本，原剪贴板是图片/文件时会被复制到的文本覆盖且无法恢复。可在设置 → 划词行为中关闭「剪贴板兜底」。
+- 剪贴板回退期间目标应用必须响应复制快捷键；被其他窗口遮挡、只读或拒绝 UIA/剪贴板的应用仍可能复制不到内容。
 - 长截图依赖用户手动滚动目标应用：视频/动画、固定悬浮层、管理员窗口可能导致 stalled 或拼接错位；横向需目标内容支持左右滚动。
 - 标注的文字/序号缩放按字号等比调整；极端单轴缩放时包围盒与实际字宽可能略有差异。
 - 混合 DPI 多屏等场景见 `docs/spike-report.md` 的遗留风险。

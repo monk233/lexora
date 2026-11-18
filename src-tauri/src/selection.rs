@@ -413,8 +413,13 @@ fn process_capture(inner: &Arc<Inner>, request: &CaptureRequest) -> Result<(), S
             let foreground_class = win::foreground_window_class();
             match clipboard_fallback(&foreground_program, &foreground_class) {
                 Ok(text) => {
+                    let shortcut = if is_terminal_target(&foreground_program, &foreground_class) {
+                        "Ctrl+Shift+C"
+                    } else {
+                        "Ctrl+C"
+                    };
                     inner.logger.info(&format!(
-                        "{program}：UI Automation 无文本选区（{}），已回退剪贴板捕获 {} 字符",
+                        "{program}：UI Automation 无文本选区（{}），已用 {shortcut} 回退捕获 {} 字符",
                         failure.detail,
                         text.chars().count()
                     ));
@@ -733,7 +738,7 @@ fn display_program(program: &str) -> String {
     }
 }
 
-fn is_terminal_program(program: &str, window_class: &str) -> bool {
+fn is_terminal_target(program: &str, window_class: &str) -> bool {
     let program = normalize_program_name(program);
     if !program.is_empty() && TERMINAL_PROGRAMS.contains(&program.as_str()) {
         return true;
@@ -741,22 +746,20 @@ fn is_terminal_program(program: &str, window_class: &str) -> bool {
     !window_class.is_empty() && TERMINAL_WINDOW_CLASSES.contains(&window_class)
 }
 
-/// Reads the selection through the clipboard: synthesize Ctrl+C, wait for the
-/// clipboard to change, then restore the previous text-only clipboard.
+/// Reads the selection through the clipboard: synthesize a copy shortcut, wait
+/// for the clipboard to change, then restore the previous text clipboard.
 ///
-/// Refuses (instead of guessing) when the clipboard holds non-text content or
-/// when the foreground program is a terminal: a stray Ctrl+C there would
-/// interrupt the user's command.
+/// Terminals get `Ctrl+Shift+C` (their copy shortcut) instead of `Ctrl+C`,
+/// which would interrupt the running command. A clipboard that holds image or
+/// file data is still overwritten (that is the only way those applications can
+/// be read at all) but its content cannot be restored, so it is left with the
+/// copied text and a warning is logged.
 fn clipboard_fallback(program: &str, window_class: &str) -> Result<String, String> {
-    if is_terminal_program(program, window_class) {
-        return Err("终端应用不发送 Ctrl+C".to_string());
-    }
-    if crate::win32::clipboard_has_non_text_content() {
-        return Err("剪贴板含图片/文件，跳过回退".to_string());
-    }
+    let terminal = is_terminal_target(program, window_class);
     let previous = crate::win32::read_clipboard_text();
-    if !crate::win32::send_copy_shortcut() {
-        return Err("无法发送 Ctrl+C".to_string());
+    let rich_clipboard = crate::win32::clipboard_has_non_text_content();
+    if !crate::win32::send_copy_shortcut(terminal) {
+        return Err("无法发送复制快捷键".to_string());
     }
     let deadline = Instant::now() + CLIPBOARD_WAIT;
     let mut captured = None;
@@ -769,17 +772,27 @@ fn clipboard_fallback(program: &str, window_class: &str) -> Result<String, Strin
             }
         }
     }
-    // Restore the user's clipboard. Non-text content was rejected above, so
-    // only text (or an empty clipboard) can be overwritten here.
-    match previous.as_ref() {
-        Some(text) => {
-            let _ = crate::win32::write_clipboard_text(text);
-        }
-        None => {
-            let _ = crate::win32::clear_clipboard();
+    if captured.is_some() {
+        if rich_clipboard {
+            // Nothing to restore: the previous clipboard was image/file data.
+        } else {
+            match previous.as_ref() {
+                Some(text) => {
+                    let _ = crate::win32::write_clipboard_text(text);
+                }
+                None => {
+                    let _ = crate::win32::clear_clipboard();
+                }
+            }
         }
     }
-    captured.ok_or_else(|| "剪贴板没有出现新文本".to_string())
+    captured.ok_or_else(|| {
+        if terminal {
+            "终端没有复制到新文本（已发 Ctrl+Shift+C）".to_string()
+        } else {
+            "剪贴板没有出现新文本".to_string()
+        }
+    })
 }
 
 /// Same-text de-duplication with a rolling 400 ms window.

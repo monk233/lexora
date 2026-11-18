@@ -17,7 +17,7 @@
 
 ### Fixed
 
-- 划词在多个应用中不灵敏：不暴露 UI Automation TextPattern 的应用（火狐、微信/QQ、Excel、多数 PDF 阅读器、canvas 界面）改为默认走「剪贴板兜底」——合成一次 Ctrl+C 读取选区，读完把原剪贴板文本恢复；剪贴板含图片/文件时跳过，终端类目标（专用终端进程或 console 窗口类）跳过以免打断正在运行的命令。新增设置项 `picker.clipboardFallback`（设置 → 划词行为，默认开启）。
+- 划词在多个应用中不灵敏：不暴露 UI Automation TextPattern 的应用（火狐、微信/QQ、Excel、多数 PDF 阅读器、canvas 界面、JetBrains 非编辑器区域）改为默认走「剪贴板兜底」——合成一次复制快捷键读取选区（普通应用 `Ctrl+C`，终端 `Ctrl+Shift+C`，不会打断命令），读完把原剪贴板文本恢复；原剪贴板是图片/文件时仍能取词，但会被复制到的文本覆盖（无法按文本还原）。新增设置项 `picker.clipboardFallback`（设置 → 划词行为，默认开启）。
 - 拖动/双击判定改为读取系统 `SM_CXDRAG` / `SM_CXDOUBLECLK` 在当前显示器 DPI 下的物理像素值（原先写死 6px：100% 缩放下太钝，非 100% 缩放下又偏松）。
 - 取词进行中再次划词不再被静默丢弃：动作线程照常入队，取词线程每次处理前抽干队列只保留最新一次。
 - 低级鼠标/键盘钩子回调不再调用 Tauri 窗口 API（面板可见性改为原子量镜像），避免回调超过 `LowLevelHooksTimeout` 被系统跳过/摘钩后整体失灵。
