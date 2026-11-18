@@ -9,7 +9,9 @@ use windows::Win32::Foundation::{CloseHandle, MAX_PATH};
 use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
 };
-use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId,
+};
 
 /// Full image path of a process id. Returns an empty string when the process
 /// cannot be opened (protected / elevated / already exited).
@@ -53,6 +55,24 @@ pub(super) fn foreground_process() -> (u32, String) {
         let mut pid = 0u32;
         GetWindowThreadProcessId(window, Some(&mut pid as *mut u32));
         (pid, process_image_name(pid))
+    }
+}
+
+/// Class name of the foreground window (e.g. `ConsoleWindowClass`), used to
+/// tell a real console apart from a GUI app whose process happens to be
+/// `powershell.exe`.
+pub(super) fn foreground_window_class() -> String {
+    unsafe {
+        let window = GetForegroundWindow();
+        if window.is_invalid() {
+            return String::new();
+        }
+        let mut buffer = [0u16; 256];
+        let length = GetClassNameW(window, &mut buffer);
+        if length <= 0 {
+            return String::new();
+        }
+        String::from_utf16_lossy(&buffer[..length as usize])
     }
 }
 

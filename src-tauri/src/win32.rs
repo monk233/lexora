@@ -7,22 +7,30 @@
 use std::time::Duration;
 
 use windows::Win32::Foundation::POINT;
+use windows::Win32::Foundation::{HANDLE, HGLOBAL};
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_TRANSITIONS_FORCEDISABLED};
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromPoint, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
+use windows::Win32::System::DataExchange::{
+    CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
+    SetClipboardData,
+};
+use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
-use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetSystemMetricsForDpi, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetDoubleClickTime, SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_HWHEEL,
-    MOUSEEVENTF_WHEEL, MOUSEINPUT,
+    GetDoubleClickTime, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
+    KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_WHEEL, MOUSEINPUT,
+    VIRTUAL_KEY, VK_C, VK_CONTROL,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, GetAncestor, GetCursorPos, GetForegroundWindow, GetSystemMetrics,
     GetWindowLongPtrW, GetWindowThreadProcessId, SetCursorPos, SetForegroundWindow,
     SetWindowLongPtrW, SetWindowPos, WindowFromPoint, GA_ROOT, GWL_EXSTYLE, HWND_TOP,
-    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_FRAMECHANGED,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WHEEL_DELTA, WS_EX_NOACTIVATE,
+    SM_CXDOUBLECLK, SM_CXDRAG, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+    SM_YVIRTUALSCREEN, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SYSTEM_METRICS_INDEX, WHEEL_DELTA, WS_EX_NOACTIVATE,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -302,6 +310,182 @@ pub fn monitor_scale_factor(x: i32, y: i32) -> f64 {
     } else {
         1.0
     }
+}
+
+// ---------------------------------------------------------------------------
+// Selection gesture metrics (DPI aware)
+// ---------------------------------------------------------------------------
+
+/// Physical distance (px) that turns a mouse press into a selection drag.
+///
+/// `SM_CXDRAG` is 4 logical pixels on a default system; scaling it through
+/// `GetSystemMetricsForDpi` keeps the threshold identical to what the shell
+/// itself uses for drags on every monitor (a hard-coded 6 px was too strict on
+/// 100% screens and too loose on 200% ones).
+pub fn drag_threshold_physical(x: i32, y: i32) -> f64 {
+    system_metric_physical(SM_CXDRAG, x, y)
+}
+
+/// Physical double-click position tolerance (`SM_CXDOUBLECLK`, 4 logical px).
+pub fn double_click_slop_physical(x: i32, y: i32) -> f64 {
+    system_metric_physical(SM_CXDOUBLECLK, x, y)
+}
+
+fn system_metric_physical(index: SYSTEM_METRICS_INDEX, x: i32, y: i32) -> f64 {
+    let dpi = dpi_at_point(x, y);
+    let for_point = unsafe { GetSystemMetricsForDpi(index, dpi) };
+    let fallback = unsafe { GetSystemMetrics(index) };
+    let value = if for_point > 0 { for_point } else { fallback };
+    let physical = if value > 0 {
+        value as f64
+    } else {
+        4.0 * dpi as f64 / 96.0
+    };
+    physical.clamp(2.0, 64.0)
+}
+
+fn dpi_at_point(x: i32, y: i32) -> u32 {
+    let monitor = monitor_from_point(x, y);
+    if monitor.is_invalid() {
+        return 96;
+    }
+    let mut dpi_x = 96u32;
+    let mut dpi_y = 96u32;
+    let result = unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) };
+    if result.is_ok() && dpi_x > 0 {
+        dpi_x
+    } else {
+        96
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Clipboard fallback (apps without UIA_TextPattern)
+// ---------------------------------------------------------------------------
+
+const CF_BITMAP: u32 = 2;
+const CF_DIB: u32 = 8;
+const CF_UNICODETEXT: u32 = 13;
+const CF_ENHMETAFILE: u32 = 14;
+const CF_HDROP: u32 = 15;
+/// The clipboard is a shared, lock-guarded resource; other processes may hold
+/// it for a few milliseconds while they publish their own data.
+const CLIPBOARD_OPEN_ATTEMPTS: u32 = 6;
+
+fn open_clipboard() -> bool {
+    for _ in 0..CLIPBOARD_OPEN_ATTEMPTS {
+        if unsafe { OpenClipboard(None) }.is_ok() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    false
+}
+
+/// True when the clipboard owns content that cannot be restored as plain text
+/// (images, files, metafiles). The fallback then leaves the clipboard alone
+/// instead of destroying the user's data.
+pub fn clipboard_has_non_text_content() -> bool {
+    [CF_BITMAP, CF_DIB, CF_HDROP, CF_ENHMETAFILE]
+        .iter()
+        .any(|format| unsafe { IsClipboardFormatAvailable(*format) }.is_ok())
+}
+
+/// Reads the clipboard's `CF_UNICODETEXT`, if any.
+pub fn read_clipboard_text() -> Option<String> {
+    if !open_clipboard() {
+        return None;
+    }
+    let mut text = None;
+    unsafe {
+        if let Ok(handle) = GetClipboardData(CF_UNICODETEXT) {
+            if !handle.is_invalid() {
+                let global = HGLOBAL(handle.0);
+                let pointer = GlobalLock(global) as *const u16;
+                if !pointer.is_null() {
+                    let mut length = 0usize;
+                    while *pointer.add(length) != 0 && length < 1_048_576 {
+                        length += 1;
+                    }
+                    let slice = std::slice::from_raw_parts(pointer, length);
+                    text = Some(String::from_utf16_lossy(slice));
+                    let _ = GlobalUnlock(global);
+                }
+            }
+        }
+        let _ = CloseClipboard();
+    }
+    text
+}
+
+/// Replaces the clipboard with `text` as `CF_UNICODETEXT`.
+pub fn write_clipboard_text(text: &str) -> bool {
+    if !open_clipboard() {
+        return false;
+    }
+    let mut written = false;
+    unsafe {
+        if EmptyClipboard().is_ok() {
+            let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+            let bytes = wide.len() * std::mem::size_of::<u16>();
+            if let Ok(memory) = GlobalAlloc(GMEM_MOVEABLE, bytes) {
+                let pointer = GlobalLock(memory) as *mut u16;
+                if !pointer.is_null() {
+                    std::ptr::copy_nonoverlapping(wide.as_ptr(), pointer, wide.len());
+                    let _ = GlobalUnlock(memory);
+                    // On success the clipboard owns the block; on failure it is
+                    // intentionally not freed here (see win32 GlobalAlloc docs:
+                    // SetClipboardData takes ownership).
+                    written = SetClipboardData(CF_UNICODETEXT, Some(HANDLE(memory.0))).is_ok();
+                }
+            }
+        }
+        let _ = CloseClipboard();
+    }
+    written
+}
+
+/// Empties the clipboard (restores a previously empty clipboard).
+pub fn clear_clipboard() -> bool {
+    if !open_clipboard() {
+        return false;
+    }
+    let result = unsafe {
+        let cleared = EmptyClipboard().is_ok();
+        let _ = CloseClipboard();
+        cleared
+    };
+    result
+}
+
+/// Synthesizes a plain Ctrl+C into the foreground application through
+/// `SendInput`, i.e. exactly what a real key press would do.
+pub fn send_copy_shortcut() -> bool {
+    fn key(vk: VIRTUAL_KEY, released: bool) -> INPUT {
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: vk,
+                    wScan: 0,
+                    dwFlags: if released {
+                        KEYEVENTF_KEYUP
+                    } else {
+                        KEYBD_EVENT_FLAGS(0)
+                    },
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        }
+    }
+    let inputs = [
+        key(VK_CONTROL, false),
+        key(VK_C, false),
+        key(VK_C, true),
+        key(VK_CONTROL, true),
+    ];
+    unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) == inputs.len() as u32 }
 }
 
 #[cfg(test)]

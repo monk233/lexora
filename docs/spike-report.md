@@ -34,7 +34,8 @@
 2. **超时不是硬保证**：挂起 provider 仍耗 4.97s。生产实现必须加看门狗：每次取词独立线程 + `recv_timeout(1500ms)`，超时放弃线程，绝不 join。
 3. **取词锚点**：精确定位用 `IUIAutomationTextRange::GetBoundingRectangles()`（SAFEARRAY(R8)，每 4 个 double `[left, top, width, height]`，物理像素），取最后一个 range 的 `(right, bottom)`；MVP 用鼠标物理坐标。
 4. **键盘/鼠标钩子**：`rdev` 可用（无停止 API，用 AtomicBool 门控）；UIPI 下无法读取提权窗口。
-5. **应用覆盖**：Chrome/Edge/Word/Notepad/多数 Chromium 应用可用；Excel 无 TextPattern；微信、多数 PDF 阅读器、Firefox 需无法取词（与原 Electron 版一致，原版同样关闭剪贴板回退）。
+5. **应用覆盖**：Chrome/Edge/Word/Notepad/多数 Chromium 应用可用；Excel 无 TextPattern；微信、多数 PDF 阅读器、Firefox 无 TextPattern（原 Electron 版同样关闭剪贴板回退；0.4.x 起改为默认开启剪贴板兜底，见 `docs/architecture.md` 取词数据流）。
+   补充实测（0.4.x，150% DPI）：Chrome/Chromium、Electron（ChatGPT）、JetBrains PyCharm（Java Access Bridge 已随 JBR 启用）、Xshell 7 终端均能通过 UIA TextPattern 取词，mouseup 到工具栏显示 10–30ms；双显示器 + 150% DPI 下坐标换算正确。
 6. **Windows 11 Notepad 是 WinUI/UWP**：UIA 正常，但自动化测试需按窗口标题/进程名匹配，不能依赖启动器 PID。
 
 ## 二、悬浮窗 UI 能力

@@ -1406,6 +1406,10 @@
     var picker = state.settings.picker || {};
     setChecked(byId("picker-enabled"), picker.enabled !== false);
     setChecked(byId("picker-compact"), picker.compact === true);
+    setChecked(
+      byId("picker-clipboard-fallback"),
+      picker.clipboardFallback !== false
+    );
     renderPanelMode();
     renderHotkey("capture");
     /* Localized target-language labels: the select is filled from the packs so
@@ -4817,6 +4821,9 @@
     });
     byId("picker-compact").addEventListener("change", function (event) {
       save({ picker: { compact: event.target.checked } });
+    });
+    byId("picker-clipboard-fallback").addEventListener("change", function (event) {
+      save({ picker: { clipboardFallback: event.target.checked } });
     });
     byId("capture-hotkey").addEventListener("click", function () {
       startHotkeyRecording("capture");

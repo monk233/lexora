@@ -95,6 +95,11 @@ pub fn default_skills() -> Vec<String> {
         .collect()
 }
 
+/// Serde default for boolean switches that ship enabled.
+pub fn default_true() -> bool {
+    true
+}
+
 /// Default screenshot toolbar actions, in canonical order.
 pub fn default_capture_skills() -> Vec<String> {
     CAPTURE_SKILLS
@@ -270,6 +275,13 @@ pub struct PickerSettings {
     /// Panel sizing mode; one of [`PANEL_MODES`].
     #[serde(default = "default_panel_mode")]
     pub panel_mode: String,
+    /// When UI Automation cannot read the selection (Firefox, WeChat/QQ, Excel,
+    /// most PDF viewers, canvas UIs), fall back to a synthetic Ctrl+C and read
+    /// the text from the clipboard. Terminal apps are always excluded because a
+    /// stray Ctrl+C would interrupt their running command. Default on: those
+    /// apps otherwise never show the picker at all.
+    #[serde(default = "default_true")]
+    pub clipboard_fallback: bool,
     /// Screenshot toolbar entries in toolbar order: the local/AI tools
     /// ([`CAPTURE_SKILLS`], v6: pin + annotation tools + ocr/translate/explain +
     /// longshot) and enabled custom `kind=image` skill ids. `copy` is not a
@@ -435,6 +447,7 @@ impl Default for PickerSettings {
             search_engine: DEFAULT_SEARCH_ENGINE.to_string(),
             panel_pinned: false,
             panel_mode: default_panel_mode(),
+            clipboard_fallback: true,
             capture_skills: default_capture_skills(),
             capture_prompts: CapturePrompts::default(),
             prompts: PromptSettings::default(),
@@ -1385,6 +1398,35 @@ mod tests {
             .update_json(json!({ "picker": { "panelMode": "hack" } }))
             .unwrap();
         assert_eq!(invalid.picker.panel_mode, "auto");
+    }
+
+    #[test]
+    fn clipboard_fallback_defaults_to_enabled_and_roundtrips() {
+        let settings = Settings::default().normalize();
+        assert!(settings.picker.clipboard_fallback);
+        assert_eq!(
+            serde_json::to_value(&settings).unwrap()["picker"]["clipboardFallback"],
+            true
+        );
+
+        // Older files without the key keep the enabled default.
+        let legacy: Settings =
+            serde_json::from_value(json!({ "version": 11, "picker": {} })).unwrap();
+        assert!(legacy.picker.clipboard_fallback);
+
+        let disabled: Settings = serde_json::from_value(json!({
+            "version": SETTINGS_VERSION,
+            "picker": { "clipboardFallback": false }
+        }))
+        .unwrap();
+        assert!(!disabled.picker.clipboard_fallback);
+
+        // Persisted through the settings patch path (camelCase key).
+        let (store, _dir) = store();
+        let updated = store
+            .update_json(json!({ "picker": { "clipboardFallback": false } }))
+            .unwrap();
+        assert!(!updated.picker.clipboard_fallback);
     }
 
     #[test]

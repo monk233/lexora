@@ -440,6 +440,8 @@
     "settings.hint.pickerEnabled": "关闭后不弹出工具栏",
     "settings.field.compactMode": "紧凑模式",
     "settings.hint.compactMode": "工具栏只显示图标",
+    "settings.field.clipboardFallback": "剪贴板兜底",
+    "settings.hint.clipboardFallback": "火狐、微信、QQ、Excel、PDF 阅读器等应用不提供可读选区：改用临时 Ctrl+C 复制取词。终端类应用始终跳过。",
     "settings.field.panelMode": "面板模式",
     "settings.hint.panelMode": "滚动：固定高度、显示滚动条；自适应：固定宽度、限高并隐藏滚动条",
     "settings.panelMode.scroll": "滚动",

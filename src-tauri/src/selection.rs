@@ -11,10 +11,12 @@
 //!   of its window.
 //!
 //! The hook callback only updates a local state machine and forwards work
-//! through channels, keeping it far below the ~300 ms low-level hook budget.
-//! Clipboard fallback is intentionally not implemented (the product decision is
-//! UIA only), and this module never injects input events, so rdev cannot see its
-//! own events.
+//! through channels, keeping it far below the ~300 ms low-level hook budget:
+//! it never calls the Tauri window API (visibility mirrors live in atomics) and
+//! this module never injects input events while listening, so rdev cannot see
+//! its own events. When UI Automation cannot read a selection, the worker falls
+//! back to a synthetic Ctrl+C + clipboard read (`picker.clipboardFallback`),
+//! which is the only path for Firefox, WeChat/QQ, Excel and PDF viewers.
 
 mod hook;
 mod uia;
@@ -97,6 +99,8 @@ enum ActionRequest {
 struct WorkerConfig {
     /// Normalized (lower case, no `.exe`) process names.
     blacklist: Vec<String>,
+    /// Read the selection through Ctrl+C + clipboard when UI Automation fails.
+    clipboard_fallback: bool,
     /// `PickerData.config` as defined by contract §5.5.
     picker_config: serde_json::Value,
 }
@@ -105,6 +109,7 @@ impl Default for WorkerConfig {
     fn default() -> Self {
         Self {
             blacklist: Vec::new(),
+            clipboard_fallback: true,
             picker_config: serde_json::Value::Null,
         }
     }
@@ -122,6 +127,10 @@ struct Inner {
     enabled: AtomicBool,
     worker_config: Mutex<WorkerConfig>,
     picker_visible: AtomicBool,
+    /// Mirror of `is_toolbar_visible` maintained by `windows.rs`, so the input
+    /// hook callback never has to call into the Tauri window API (a blocking
+    /// cross-thread call there risks the ~300 ms `LowLevelHooksTimeout`).
+    toolbar_visible: AtomicBool,
     panel_pinned: AtomicBool,
     /// A result panel is open: keyboard, wheel and secondary buttons keep it
     /// open; an outside left press dismisses it unless pinned.
@@ -143,12 +152,10 @@ impl Inner {
         lock(&self.worker_config).clone()
     }
 
-    /// Queues a capture request. Triggers fired while a capture is already
-    /// running are dropped on purpose (contract §6.2).
+    /// Queues a capture request. The worker drains the channel to the newest
+    /// trigger before capturing, so a slow capture can never swallow the
+    /// selection the user made next.
     fn send_capture(&self, source: TriggerSource, anchor: Option<(i32, i32)>) {
-        if self.capturing.load(Ordering::Acquire) {
-            return;
-        }
         self.send_action(ActionRequest::Capture(CaptureRequest {
             source,
             anchor,
@@ -213,6 +220,7 @@ impl SelectionService {
             enabled: AtomicBool::new(true),
             worker_config: Mutex::new(WorkerConfig::default()),
             picker_visible: AtomicBool::new(false),
+            toolbar_visible: AtomicBool::new(false),
             panel_pinned: AtomicBool::new(false),
             panel_open: AtomicBool::new(false),
             capture_active: AtomicBool::new(false),
@@ -283,9 +291,15 @@ impl SelectionService {
     pub fn set_picker_visible(&self, visible: bool) {
         self.inner.picker_visible.store(visible, Ordering::Release);
         if !visible {
+            self.inner.toolbar_visible.store(false, Ordering::Release);
             self.inner.panel_pinned.store(false, Ordering::Release);
             self.inner.panel_open.store(false, Ordering::Release);
         }
+    }
+
+    /// Mirror of the transient toolbar's visibility for the input hook.
+    pub fn set_toolbar_visible(&self, visible: bool) {
+        self.inner.toolbar_visible.store(visible, Ordering::Release);
     }
 
     pub fn set_panel_pinned(&self, pinned: bool) {
@@ -331,7 +345,13 @@ impl SelectionService {
 }
 
 fn capture_worker(inner: Arc<Inner>, receiver: Receiver<CaptureRequest>) {
-    while let Ok(request) = receiver.recv() {
+    while let Ok(mut request) = receiver.recv() {
+        // Only the newest trigger matters: drop anything the user superseded
+        // while the previous capture was still running. The old code refused
+        // such triggers in the hook callback, which read as "no reaction".
+        while let Ok(newer) = receiver.try_recv() {
+            request = newer;
+        }
         if request.at.elapsed() > STALE_TRIGGER {
             continue;
         }
@@ -345,11 +365,10 @@ fn capture_worker(inner: Arc<Inner>, receiver: Receiver<CaptureRequest>) {
         let result = process_capture(&inner, &request);
         inner.capturing.store(false, Ordering::Release);
         if let Err(message) = result {
-            // "Nothing selected" happens on every drag across non-text content;
-            // it is a normal outcome, not a failure worth a log line.
-            if message != "没有选中文本" {
-                inner.log_capture_failure(&message);
-            }
+            // Every failure is logged with the foreground program name: the old
+            // rule discarded "没有选中文本" entirely, so "划词没反应" reports had
+            // no trace at all.
+            inner.log_capture_failure(&message);
         }
     }
 }
@@ -381,7 +400,38 @@ fn process_capture(inner: &Arc<Inner>, request: &CaptureRequest) -> Result<(), S
         return Ok(());
     }
 
-    let captured = uia::capture_selection(Some(anchor))?;
+    let captured = match uia::capture_selection(Some(anchor)) {
+        Ok(captured) => captured,
+        Err(failure) => {
+            let program = display_program(&foreground_program);
+            if !config.clipboard_fallback {
+                return Err(format!("{program}：{}", failure.detail));
+            }
+            // Firefox, WeChat/QQ, Excel, most PDF viewers and canvas UIs expose
+            // no UIA text pattern at all, so without this fallback the picker
+            // simply never appears there.
+            let foreground_class = win::foreground_window_class();
+            match clipboard_fallback(&foreground_program, &foreground_class) {
+                Ok(text) => {
+                    inner.logger.info(&format!(
+                        "{program}：UI Automation 无文本选区（{}），已回退剪贴板捕获 {} 字符",
+                        failure.detail,
+                        text.chars().count()
+                    ));
+                    uia::CapturedSelection {
+                        text,
+                        program_name: foreground_program.clone(),
+                    }
+                }
+                Err(reason) => {
+                    return Err(format!(
+                        "{program}：没有取到选中文本（UIA：{}；剪贴板回退：{}）",
+                        failure.detail, reason
+                    ));
+                }
+            }
+        }
+    };
 
     // Chromium and Office may expose the text from a child process; re-check
     // the element owner against our own name and the blacklist.
@@ -405,6 +455,7 @@ fn process_capture(inner: &Arc<Inner>, request: &CaptureRequest) -> Result<(), S
         foreground_program
     };
     let char_count = captured.text.chars().count();
+    let display_name = display_program(&program_name);
     let payload = PickerPayload {
         text: captured.text,
         program_name,
@@ -435,9 +486,10 @@ fn process_capture(inner: &Arc<Inner>, request: &CaptureRequest) -> Result<(), S
     *lock(&inner.last_selection) = Some(payload);
     inner.picker_visible.store(true, Ordering::Release);
     inner.logger.info(&format!(
-        "已捕获选中文本（{} 字符，来源：{}）",
+        "已捕获选中文本（{} 字符，来源：{}，应用：{}）",
         char_count,
-        request.source.label()
+        request.source.label(),
+        display_name
     ));
     Ok(())
 }
@@ -558,6 +610,7 @@ fn config_from_settings(settings: &Settings) -> WorkerConfig {
             .map(|entry| normalize_program_name(entry))
             .filter(|entry| !entry.is_empty())
             .collect(),
+        clipboard_fallback: settings.picker.clipboard_fallback,
         picker_config: picker_config(settings),
     }
 }
@@ -640,6 +693,93 @@ fn is_blacklisted(program: &str, blacklist: &[String]) -> bool {
 fn is_own_program(program: &str, own_program: &str) -> bool {
     let program = normalize_program_name(program);
     !program.is_empty() && program == normalize_program_name(own_program)
+}
+
+/// Dedicated terminal hosts: the whole window is a console, so a synthetic
+/// Ctrl+C would interrupt the running command.
+const TERMINAL_PROGRAMS: [&str; 10] = [
+    "windowsterminal",
+    "conhost",
+    "mintty",
+    "alacritty",
+    "wezterm-gui",
+    "putty",
+    "xshell",
+    "mobaxterm",
+    "tabby",
+    "conemu",
+];
+/// Window classes that host a console even though the process is a generic
+/// shell (`cmd.exe`, `powershell.exe`, ...). The class check keeps GUI apps that
+/// merely run under `powershell.exe` (or a script host) out of that exclusion.
+const TERMINAL_WINDOW_CLASSES: [&str; 3] = [
+    "ConsoleWindowClass",
+    "CASCADIA_HOSTING_WINDOW_CLASS",
+    "mintty",
+];
+/// How long the clipboard fallback waits for the application to publish the
+/// copied text after the synthetic Ctrl+C.
+const CLIPBOARD_WAIT: Duration = Duration::from_millis(240);
+/// Clipboard polling interval inside [`CLIPBOARD_WAIT`].
+const CLIPBOARD_POLL: Duration = Duration::from_millis(20);
+
+/// User-facing program name for log lines.
+fn display_program(program: &str) -> String {
+    let normalized = normalize_program_name(program);
+    if normalized.is_empty() {
+        "未知应用".to_string()
+    } else {
+        normalized
+    }
+}
+
+fn is_terminal_program(program: &str, window_class: &str) -> bool {
+    let program = normalize_program_name(program);
+    if !program.is_empty() && TERMINAL_PROGRAMS.contains(&program.as_str()) {
+        return true;
+    }
+    !window_class.is_empty() && TERMINAL_WINDOW_CLASSES.contains(&window_class)
+}
+
+/// Reads the selection through the clipboard: synthesize Ctrl+C, wait for the
+/// clipboard to change, then restore the previous text-only clipboard.
+///
+/// Refuses (instead of guessing) when the clipboard holds non-text content or
+/// when the foreground program is a terminal: a stray Ctrl+C there would
+/// interrupt the user's command.
+fn clipboard_fallback(program: &str, window_class: &str) -> Result<String, String> {
+    if is_terminal_program(program, window_class) {
+        return Err("终端应用不发送 Ctrl+C".to_string());
+    }
+    if crate::win32::clipboard_has_non_text_content() {
+        return Err("剪贴板含图片/文件，跳过回退".to_string());
+    }
+    let previous = crate::win32::read_clipboard_text();
+    if !crate::win32::send_copy_shortcut() {
+        return Err("无法发送 Ctrl+C".to_string());
+    }
+    let deadline = Instant::now() + CLIPBOARD_WAIT;
+    let mut captured = None;
+    while Instant::now() < deadline {
+        std::thread::sleep(CLIPBOARD_POLL);
+        if let Some(text) = crate::win32::read_clipboard_text() {
+            if !text.trim().is_empty() && Some(&text) != previous.as_ref() {
+                captured = Some(text.trim().to_string());
+                break;
+            }
+        }
+    }
+    // Restore the user's clipboard. Non-text content was rejected above, so
+    // only text (or an empty clipboard) can be overwritten here.
+    match previous.as_ref() {
+        Some(text) => {
+            let _ = crate::win32::write_clipboard_text(text);
+        }
+        None => {
+            let _ = crate::win32::clear_clipboard();
+        }
+    }
+    captured.ok_or_else(|| "剪贴板没有出现新文本".to_string())
 }
 
 /// Same-text de-duplication with a rolling 400 ms window.

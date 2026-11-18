@@ -337,11 +337,14 @@ pub struct SelectionService {
 
 实现要求：
 - `rdev::listen` 专用线程；回调只做状态判断 + channel send（<300ms）。全局快捷键已移除，触发方式只有鼠标：
-  - 抬起位移 ≥6 物理像素：拖动选词，触发 `TriggerSource::Mouse`；
-  - 抬起位移 <6 物理像素：按多击处理（与上次释放同点 ±6px 且间隔 ≤ `GetDoubleClickTime()` 时计数 +1），计数 ≥2 时触发 `TriggerSource::Click`，即双击/三击选词也能弹出工具栏；单次点击绝不触发 UIA。
-  - 同文本 400ms 去重；捕获进行中不重复触发。
-- 忽略：`picker.enabled=false`、自身进程（`std::process::id()` 对应 exe 名 `lexora.exe`）、黑名单进程（大小写/.exe 容错）、空文本、写剪贴板回退关闭（不做回退）。
-- UIA 取词（移植 spike 代码，见 `E:\document\workspace\AIProjects\lingopick-spike\src\main.rs`）：`CoInitializeEx(MTA)` + `CoCreateInstance(CLSID_CUIAutomation8)` + `IUIAutomation2::SetConnectionTimeout(1500)/SetTransactionTimeout(1000)`；`GetFocusedElement` → TextPattern → `GetSelection` → `GetText(8192)`；失败重试 2 次（间隔 150ms）；无 TextPattern 时用 `ElementFromPoint(mouse)` 向上找最多 6 层；**每次取词在独立线程执行，recv_timeout(1500ms) 看门狗，超时放弃该线程（不 join）并返回失败**。
+  - 抬起位移 ≥ 拖动阈值：拖动选词，触发 `TriggerSource::Mouse`；阈值取系统 `SM_CXDRAG`（默认 4 逻辑像素）在该鼠标位置显示器 DPI 下的物理值（`GetSystemMetricsForDpi`），不再写死 6px；
+  - 抬起位移低于阈值：按多击处理（与上次释放同点 ± `SM_CXDOUBLECLK` 物理值 且间隔 ≤ `GetDoubleClickTime()` 时计数 +1），计数 ≥2 时触发 `TriggerSource::Click`，即双击/三击选词也能弹出工具栏；单次点击绝不触发 UIA。
+  - 同文本 400ms 去重；捕获进行中的新触发**不再丢弃**：动作线程照常入队，取词线程每次处理前把队列抽干只保留最新一次。
+- 过滤：`picker.enabled=false`、自身进程（`std::process::id()` 对应 exe 名 `lexora.exe`）、黑名单进程（大小写/.exe 容错）、空文本。
+- UIA 取词（移植 spike 代码，见 `E:\document\workspace\AIProjects\lingopick-spike\src\main.rs`）：`CoInitializeEx(MTA)` + `CoCreateInstance(CLSID_CUIAutomation8)` + `IUIAutomation2::SetConnectionTimeout(1500)/SetTransactionTimeout(1000)`；`GetFocusedElement` → TextPattern → `GetSelection` → `GetText(8192)`；失败按类型分类（`NoTextPattern` / `EmptySelection` / `Timeout` / `Unavailable`）：**只有 `EmptySelection` 重试 2 次（间隔 150ms，等待目标应用提交选区），`NoTextPattern` 立即放弃**；无 TextPattern 时用 `ElementFromPoint(mouse)` 向上找最多 6 层；**每次取词在独立线程执行，recv_timeout(1500ms) 看门狗，超时放弃该线程（不 join）并返回失败**。
+- 剪贴板回退（`picker.clipboardFallback`，默认开启）：UIA 取不到文本时，向目标应用合成 Ctrl+C 并读取剪贴板（最多等 240ms，20ms 轮询），成功后**把原剪贴板文本写回**。安全边界：剪贴板含图片/文件/图元（`CF_BITMAP`/`CF_DIB`/`CF_HDROP`/`CF_ENHMETAFILE`）时不回退；终端目标不回退（专用终端进程 `WindowsTerminal`/`conhost`/`mintty`/`alacritty`/`wezterm-gui`/`putty`/`Xshell`/`MobaXterm`/`Tabby`/`ConEmu`，或窗口类 `ConsoleWindowClass`/`CASCADIA_HOSTING_WINDOW_CLASS`/`mintty`），避免打断正在运行的命令。回退是 Firefox、微信/QQ、Excel、多数 PDF 阅读器与 canvas 界面唯一可用的取词路径。
+- 失败可观测性：每次取词失败都写带前台程序名的 `WARN`（3 秒节流），成功日志带“应用：<进程名>”；不再按“没有选中文本”静默丢弃。
+- 低级钩子回调内禁止阻塞：`DismissOnInput` 判定只读原子量（`picker_visible` / `toolbar_visible` / `panel_pinned` / `panel_open`），窗口可见性由 `windows.rs` 在 show/hide 时镜像到原子量；回调内不得调用 Tauri 窗口 API，否则超过 `LowLevelHooksTimeout` 会被系统摘钩。
 - 锚点：鼠标物理坐标（释放点）；`scale_factor` 用 `win32::monitor_scale_factor(anchor_x, anchor_y)`；`config` 来自 settings 的 skills/compact/defaultTargetLang；随后调用 `crate::windows::show_picker(&app, &payload)`，并更新 `last_selection`。
 - 外部点击隐藏：picker 可见且未固定时，全局左键按下若在 picker 窗口外 → `windows::hide_picker(&app)`；picker 内点击不隐藏。
 - 不打断用户操作：picker 是 **非激活窗口**（`focusable: false`，`WS_EX_NOACTIVATE`），显示时不抢前台焦点，因此 Delete / Ctrl+C / Ctrl+X 等按键仍作用于用户原来的应用。未固定时，收到任意键盘输入、右键/中键 → `ActionRequest::DismissOnInput`，由动作线程自动隐藏工具栏；面板已固定时保持显示。**鼠标滚轮/触摸板滚动不隐藏工具栏**：滚轮事件照常送达光标下窗口（面板内滚动长内容，host 应用滚动页面），工具栏与功能面板保持显示。

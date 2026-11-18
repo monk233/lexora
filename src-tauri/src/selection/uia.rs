@@ -53,12 +53,43 @@ pub(super) struct CapturedSelection {
     pub program_name: String,
 }
 
+/// Why a capture produced no text. The caller decides between retrying,
+/// falling back to the clipboard and giving up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CaptureFailureKind {
+    /// The element (and its inspected ancestors) exposes no `UIA_TextPattern`.
+    NoTextPattern,
+    /// `UIA_TextPattern` exists but the application reports no selection.
+    EmptySelection,
+    /// The watchdog fired: the target application did not answer in time.
+    Timeout,
+    /// COM / UIA client setup failed.
+    Unavailable,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct CaptureFailure {
+    pub kind: CaptureFailureKind,
+    pub detail: String,
+}
+
+impl CaptureFailure {
+    fn new(kind: CaptureFailureKind, detail: impl Into<String>) -> Self {
+        Self {
+            kind,
+            detail: detail.into(),
+        }
+    }
+}
+
 /// Reads the current text selection of the foreground application.
 ///
 /// `mouse` is the physical cursor position used by the `ElementFromPoint`
 /// fallback. Returns a user-facing failure message on timeout / unsupported
 /// applications; never blocks longer than [`CAPTURE_TIMEOUT`].
-pub(super) fn capture_selection(mouse: Option<(i32, i32)>) -> Result<CapturedSelection, String> {
+pub(super) fn capture_selection(
+    mouse: Option<(i32, i32)>,
+) -> Result<CapturedSelection, CaptureFailure> {
     let (sender, receiver) = mpsc::sync_channel(1);
     let spawned = thread::Builder::new()
         .name("lexora-uia".to_string())
@@ -68,24 +99,38 @@ pub(super) fn capture_selection(mouse: Option<(i32, i32)>) -> Result<CapturedSel
             let _ = sender.send(result);
         });
     if let Err(error) = spawned {
-        return Err(format!("无法启动取词线程：{error}"));
+        return Err(CaptureFailure::new(
+            CaptureFailureKind::Unavailable,
+            format!("无法启动取词线程：{error}"),
+        ));
     }
 
     match receiver.recv_timeout(CAPTURE_TIMEOUT) {
         Ok(result) => result,
         Err(mpsc::RecvTimeoutError::Timeout) => {
             // Do not join: a stuck provider thread is abandoned on purpose.
-            Err("读取选中文本超时，目标应用未响应".to_string())
+            Err(CaptureFailure::new(
+                CaptureFailureKind::Timeout,
+                "读取选中文本超时，目标应用未响应",
+            ))
         }
-        Err(mpsc::RecvTimeoutError::Disconnected) => Err("取词线程异常退出".to_string()),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(CaptureFailure::new(
+            CaptureFailureKind::Unavailable,
+            "取词线程异常退出",
+        )),
     }
 }
 
-fn capture_on_thread(mouse: Option<(i32, i32)>) -> Result<CapturedSelection, String> {
+fn capture_on_thread(mouse: Option<(i32, i32)>) -> Result<CapturedSelection, CaptureFailure> {
     unsafe {
         CoInitializeEx(None, COINIT_MULTITHREADED)
             .ok()
-            .map_err(|error| format!("COM 初始化失败：{error}"))?;
+            .map_err(|error| {
+                CaptureFailure::new(
+                    CaptureFailureKind::Unavailable,
+                    format!("COM 初始化失败：{error}"),
+                )
+            })?;
     }
     let result = capture_with_automation(mouse);
     unsafe {
@@ -94,9 +139,14 @@ fn capture_on_thread(mouse: Option<(i32, i32)>) -> Result<CapturedSelection, Str
     result
 }
 
-fn capture_with_automation(mouse: Option<(i32, i32)>) -> Result<CapturedSelection, String> {
+fn capture_with_automation(mouse: Option<(i32, i32)>) -> Result<CapturedSelection, CaptureFailure> {
     let automation: IUIAutomation = unsafe { CoCreateInstance(&CUIAutomation8, None, CLSCTX_ALL) }
-        .map_err(|error| format!("创建 UI Automation 客户端失败：{error}"))?;
+        .map_err(|error| {
+            CaptureFailure::new(
+                CaptureFailureKind::Unavailable,
+                format!("创建 UI Automation 客户端失败：{error}"),
+            )
+        })?;
 
     unsafe {
         if let Ok(automation2) = automation.cast::<IUIAutomation2>() {
@@ -105,11 +155,21 @@ fn capture_with_automation(mouse: Option<(i32, i32)>) -> Result<CapturedSelectio
         }
     }
 
-    let mut last_error = String::from("未获取到选中文本");
+    let mut last_error = CaptureFailure::new(CaptureFailureKind::Unavailable, "未获取到选中文本");
     for attempt in 0..ATTEMPTS {
         match read_focused_selection(&automation) {
             Ok(selection) => return Ok(selection),
-            Err(error) => last_error = error,
+            Err(failure) => {
+                // A missing text pattern will not appear by waiting; only an
+                // empty selection can still be committed by the application
+                // right after `WM_LBUTTONUP`. Retrying the former wasted ~300 ms
+                // that the clipboard fallback now uses instead.
+                let retry = failure.kind == CaptureFailureKind::EmptySelection;
+                last_error = failure;
+                if !retry {
+                    break;
+                }
+            }
         }
         if attempt + 1 < ATTEMPTS {
             thread::sleep(RETRY_DELAY);
@@ -122,18 +182,25 @@ fn capture_with_automation(mouse: Option<(i32, i32)>) -> Result<CapturedSelectio
         match read_point_selection(&automation, x, y) {
             Ok(Some(selection)) => return Ok(selection),
             Ok(None) => {}
-            Err(error) => last_error = error,
+            Err(failure) => {
+                if last_error.kind == CaptureFailureKind::EmptySelection {
+                    last_error = failure;
+                }
+            }
         }
     }
 
     Err(last_error)
 }
 
-fn read_focused_selection(automation: &IUIAutomation) -> Result<CapturedSelection, String> {
+fn read_focused_selection(automation: &IUIAutomation) -> Result<CapturedSelection, CaptureFailure> {
     unsafe {
-        let element = automation
-            .GetFocusedElement()
-            .map_err(|error| format!("无法获取焦点控件：{error}"))?;
+        let element = automation.GetFocusedElement().map_err(|error| {
+            CaptureFailure::new(
+                CaptureFailureKind::Unavailable,
+                format!("无法获取焦点控件：{error}"),
+            )
+        })?;
         read_element_selection(&element)
     }
 }
@@ -142,11 +209,16 @@ fn read_point_selection(
     automation: &IUIAutomation,
     x: i32,
     y: i32,
-) -> Result<Option<CapturedSelection>, String> {
+) -> Result<Option<CapturedSelection>, CaptureFailure> {
     unsafe {
         let mut element = automation
             .ElementFromPoint(POINT { x, y })
-            .map_err(|error| format!("鼠标位置没有可用的 UI 元素：{error}"))?;
+            .map_err(|error| {
+                CaptureFailure::new(
+                    CaptureFailureKind::NoTextPattern,
+                    format!("鼠标位置没有可用的 UI 元素：{error}"),
+                )
+            })?;
         let walker = automation.ControlViewWalker().ok();
         for _ in 0..MAX_PARENT_HOPS {
             if let Ok(selection) = read_element_selection(&element) {
@@ -165,35 +237,60 @@ fn read_point_selection(
 }
 
 /// Reads the selection of one element through `UIA_TextPatternId`.
-fn read_element_selection(element: &IUIAutomationElement) -> Result<CapturedSelection, String> {
+fn read_element_selection(
+    element: &IUIAutomationElement,
+) -> Result<CapturedSelection, CaptureFailure> {
     unsafe {
         let pattern: IUIAutomationTextPattern = element
             .GetCurrentPatternAs(UIA_TextPatternId)
-            .map_err(|error| format!("控件不支持文本选区：{error}"))?;
-        let ranges = pattern
-            .GetSelection()
-            .map_err(|error| format!("读取选区失败：{error}"))?;
-        let count = ranges
-            .Length()
-            .map_err(|error| format!("读取选区数量失败：{error}"))?;
+            .map_err(|error| {
+                CaptureFailure::new(
+                    CaptureFailureKind::NoTextPattern,
+                    format!("控件不支持文本选区：{error}"),
+                )
+            })?;
+        let ranges = pattern.GetSelection().map_err(|error| {
+            CaptureFailure::new(
+                CaptureFailureKind::EmptySelection,
+                format!("读取选区失败：{error}"),
+            )
+        })?;
+        let count = ranges.Length().map_err(|error| {
+            CaptureFailure::new(
+                CaptureFailureKind::EmptySelection,
+                format!("读取选区数量失败：{error}"),
+            )
+        })?;
         if count <= 0 {
-            return Err("没有选中文本".to_string());
+            return Err(CaptureFailure::new(
+                CaptureFailureKind::EmptySelection,
+                "没有选中文本",
+            ));
         }
 
         let mut text = String::new();
         for index in 0..count {
-            let range = ranges
-                .GetElement(index)
-                .map_err(|error| format!("读取选区失败：{error}"))?;
-            let value = range
-                .GetText(MAX_TEXT_LENGTH)
-                .map_err(|error| format!("读取选区文本失败：{error}"))?;
+            let range = ranges.GetElement(index).map_err(|error| {
+                CaptureFailure::new(
+                    CaptureFailureKind::EmptySelection,
+                    format!("读取选区失败：{error}"),
+                )
+            })?;
+            let value = range.GetText(MAX_TEXT_LENGTH).map_err(|error| {
+                CaptureFailure::new(
+                    CaptureFailureKind::EmptySelection,
+                    format!("读取选区文本失败：{error}"),
+                )
+            })?;
             text.push_str(&value.to_string());
         }
 
         let text = text.trim().to_string();
         if text.is_empty() {
-            return Err("没有选中文本".to_string());
+            return Err(CaptureFailure::new(
+                CaptureFailureKind::EmptySelection,
+                "没有选中文本",
+            ));
         }
 
         let pid = element.CurrentProcessId().unwrap_or(0).max(0) as u32;

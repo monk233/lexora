@@ -40,8 +40,10 @@ const ANCHOR_LEFT_OFFSET: f64 = 40.0;
 /// Vertical gap between selection and toolbar.
 const ANCHOR_GAP: f64 = 12.0;
 /// Ignore blur events right after showing (the window can briefly report blur
-/// while it is being shown without activating).
-const FOCUS_GUARD: Duration = Duration::from_millis(250);
+/// while it is being shown without activating, and the picker webview needs a
+/// first frame to finish laying out: a 250 ms guard was short enough that the
+/// very first selection after a cold start hid the toolbar almost instantly).
+const FOCUS_GUARD: Duration = Duration::from_millis(1200);
 const EVENT_PICKER_DATA: &str = "picker-data";
 const EVENT_PICKER_HIDDEN: &str = "picker-hidden";
 const EVENT_TOOLBAR_DATA: &str = "picker-toolbar-data";
@@ -236,6 +238,7 @@ pub fn show_toolbar(app: &tauri::AppHandle, payload: &PickerPayload) -> bool {
     };
     if let Some(state) = state(app) {
         state.selection.set_picker_visible(true);
+        state.selection.set_toolbar_visible(true);
         state.log.info(&format!(
             "picker toolbar shown at physical=({x},{y}) size={width}x{height} scale={scale:.3} \
              anchor=({}, {}) placement={placement} text_chars={} reused={was_visible}",
@@ -266,6 +269,7 @@ pub fn hide_toolbar(app: &tauri::AppHandle) -> bool {
         serde_json::json!({}),
     );
     if let Some(state) = state(app) {
+        state.selection.set_toolbar_visible(is_toolbar_visible(app));
         state.selection.set_picker_visible(is_picker_visible(app));
     }
     was_visible

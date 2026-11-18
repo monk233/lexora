@@ -16,8 +16,10 @@ use rdev::{listen, Button, Event, EventType, Key};
 
 use super::{ActionRequest, Inner, TriggerSource};
 
-/// Minimum physical drag distance for a mouse gesture to count as a selection.
-const DRAG_THRESHOLD_PX: f64 = 6.0;
+/// Fallback drag distance in physical pixels (100% DPI). Production reads the
+/// DPI-aware `SM_CXDRAG` value from [`crate::win32::drag_threshold_physical`],
+/// this constant only backs the pure helpers and their tests.
+const DRAG_THRESHOLD_PX: f64 = 4.0;
 
 /// State tracked between events of the single hook callback.
 #[derive(Default)]
@@ -42,16 +44,20 @@ struct ClickChain {
     point: Option<(f64, f64)>,
     /// Number of clicks in the current chain (0 = no chain).
     count: u32,
+    /// Physical position tolerance (`SM_CXDOUBLECLK` at the monitor DPI);
+    /// `None` falls back to [`DRAG_THRESHOLD_PX`].
+    slop: Option<f64>,
 }
 
 impl ClickChain {
     /// Folds one click release into the chain and returns the new run length.
     /// Releasing too late or too far from the previous click starts a new chain.
     fn register(&mut self, point: (f64, f64), now: Instant, double_click_time: Duration) -> u32 {
+        let slop = self.slop.unwrap_or(DRAG_THRESHOLD_PX);
         let continues = match (self.released_at, self.point) {
             (Some(released_at), Some(previous)) => {
                 now.saturating_duration_since(released_at) <= double_click_time
-                    && points_within(previous, point, DRAG_THRESHOLD_PX)
+                    && points_within(previous, point, slop)
             }
             _ => false,
         };
@@ -156,12 +162,14 @@ fn dismiss_picker_on_input(inner: &Arc<Inner>, reason: &'static str) {
     if !inner.picker_visible.load(Ordering::Acquire) {
         return;
     }
-    let Some(app) = inner.app.get() else {
-        return;
-    };
     // A transient toolbar may sit above an open panel. Input dismisses only
     // that toolbar; the panel remains alive with its stream and pin state.
-    if !crate::windows::is_toolbar_visible(app)
+    //
+    // Everything here is an atomic load on purpose: this runs inside the
+    // low-level hook callback, where any blocking call (the Tauri window API
+    // used to be queried here) can push the callback past
+    // `LowLevelHooksTimeout` and make Windows silently drop the hook.
+    if !inner.toolbar_visible.load(Ordering::Acquire)
         && (inner.panel_pinned.load(Ordering::Acquire) || inner.panel_open.load(Ordering::Acquire))
     {
         return;
@@ -196,25 +204,30 @@ fn handle_left_release(inner: &Arc<Inner>, state: &mut HookState) {
         return;
     };
 
-    if is_drag_gesture(origin, end, DRAG_THRESHOLD_PX) {
+    let anchor = (end.0.round() as i32, end.1.round() as i32);
+    // Both tolerances come from the shell's own metrics at the monitor DPI, so
+    // a 100% screen uses 4 px instead of the old hard-coded 6 px (which made
+    // short drags and slightly shaky double clicks go unnoticed).
+    let drag_threshold = crate::win32::drag_threshold_physical(anchor.0, anchor.1);
+    let click_slop = crate::win32::double_click_slop_physical(anchor.0, anchor.1);
+
+    if is_drag_gesture(origin, end, drag_threshold) {
         state.clicks.reset();
         if !inner.enabled.load(Ordering::Acquire) {
             return;
         }
-        let anchor = (end.0.round() as i32, end.1.round() as i32);
         inner.send_capture(TriggerSource::Mouse, Some(anchor));
         return;
     }
 
     // Plain click: the first click of a chain never captures, only a
     // double/triple click selects a word or paragraph worth reading.
+    state.clicks.slop = Some(click_slop);
     let count = state
         .clicks
         .register(end, Instant::now(), crate::win32::double_click_time());
     if count >= 2 && inner.enabled.load(Ordering::Acquire) {
-        let anchor = (end.0.round() as i32, end.1.round() as i32);
         inner.send_capture(TriggerSource::Click, Some(anchor));
-        return;
     }
 }
 
@@ -314,24 +327,29 @@ mod tests {
     const TEST_DOUBLE_CLICK: Duration = Duration::from_millis(500);
 
     #[test]
-    fn drag_threshold_is_six_physical_pixels() {
-        assert!(!is_drag_gesture((0.0, 0.0), (5.9, 0.0), 6.0));
-        assert!(is_drag_gesture((0.0, 0.0), (6.0, 0.0), 6.0));
-        assert!(is_drag_gesture((0.0, 0.0), (6.1, 0.0), 6.0));
-        // 3-4-5 triangle stays below the threshold.
+    fn drag_threshold_is_four_physical_pixels_at_100_percent() {
+        assert!(!is_drag_gesture((0.0, 0.0), (3.9, 0.0), DRAG_THRESHOLD_PX));
+        assert!(is_drag_gesture((0.0, 0.0), (4.0, 0.0), DRAG_THRESHOLD_PX));
+        assert!(is_drag_gesture((0.0, 0.0), (4.1, 0.0), DRAG_THRESHOLD_PX));
+        // A 3-4-5 triangle is 5 px: above 4, below the old hard-coded 6.
+        assert!(is_drag_gesture((0.0, 0.0), (3.0, 4.0), 5.0));
         assert!(!is_drag_gesture((0.0, 0.0), (3.0, 4.0), 6.0));
         // Negative directions work as well.
-        assert!(is_drag_gesture((100.0, 100.0), (94.0, 102.0), 6.0));
-        assert!(is_drag_gesture((0.0, 0.0), (0.0, -6.0), 6.0));
-        assert!(!is_drag_gesture((0.0, 0.0), (0.0, 0.0), 6.0));
+        assert!(is_drag_gesture(
+            (100.0, 100.0),
+            (93.0, 102.0),
+            DRAG_THRESHOLD_PX
+        ));
+        assert!(is_drag_gesture((0.0, 0.0), (0.0, -4.0), DRAG_THRESHOLD_PX));
+        assert!(!is_drag_gesture((0.0, 0.0), (0.0, 0.0), DRAG_THRESHOLD_PX));
     }
 
     #[test]
-    fn click_points_use_the_same_threshold() {
+    fn click_points_use_the_system_double_click_slop() {
         assert!(points_within((0.0, 0.0), (0.0, 0.0), DRAG_THRESHOLD_PX));
-        assert!(points_within((0.0, 0.0), (3.0, 4.0), DRAG_THRESHOLD_PX));
-        assert!(points_within((0.0, 0.0), (6.0, 0.0), DRAG_THRESHOLD_PX));
-        assert!(!points_within((0.0, 0.0), (4.0, 5.0), DRAG_THRESHOLD_PX));
+        assert!(points_within((0.0, 0.0), (2.0, 2.0), DRAG_THRESHOLD_PX));
+        assert!(points_within((0.0, 0.0), (4.0, 0.0), DRAG_THRESHOLD_PX));
+        assert!(!points_within((0.0, 0.0), (4.0, 1.0), DRAG_THRESHOLD_PX));
         assert!(!points_within(
             (100.0, 100.0),
             (100.0, 110.0),

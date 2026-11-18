@@ -439,6 +439,8 @@
     "settings.hint.pickerEnabled": "The toolbar stays hidden when disabled",
     "settings.field.compactMode": "Compact mode",
     "settings.hint.compactMode": "Show icons only in the toolbar",
+    "settings.field.clipboardFallback": "Clipboard fallback",
+    "settings.hint.clipboardFallback": "Firefox, WeChat, QQ, Excel and PDF viewers expose no readable selection: copy it with a temporary Ctrl+C instead. Terminals are always skipped.",
     "settings.field.panelMode": "Panel mode",
     "settings.hint.panelMode": "Scroll: fixed height with a scrollbar; Auto: fixed width, capped height and no scrollbar",
     "settings.panelMode.scroll": "Scroll",
